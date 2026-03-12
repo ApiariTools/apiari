@@ -99,9 +99,16 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         None => return,
     };
 
-    // Zoomed panel: render just that panel full-screen
-    if let Some(panel) = app.zoomed_panel {
+    // Zoomed panel (or auto-zoom on narrow terminals)
+    let zoomed = if area.width < 50 {
+        Some(app.zoomed_panel.unwrap_or(app.focused_panel))
+    } else {
+        app.zoomed_panel
+    };
+
+    if let Some(panel) = zoomed {
         match panel {
+            Panel::Home => draw_home_panel(frame, app, ws, area),
             Panel::Workers => draw_workers_panel(frame, app, ws, area),
             Panel::Signals => draw_signals_card(frame, app, ws, area),
             Panel::Feed => draw_feed_panel(frame, app, ws, area),
@@ -182,6 +189,36 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     draw_chat_panel(frame, app, ws, rows[4]);
+}
+
+// ── Home panel (full-screen zoom) ────────────────────────
+
+fn draw_home_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
+    let actions = build_action_summary(app, ws);
+    let action_h: u16 = if actions.is_empty() { 0 } else { 1 };
+
+    let has_thoughts = !ws.thoughts.is_empty();
+    let thoughts_h: u16 = if has_thoughts { 2 } else { 0 };
+
+    // KPI gets most of the space, action banner + thoughts at bottom
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(4),              // KPI cards (fill)
+            Constraint::Length(action_h),     // Action banner
+            Constraint::Length(thoughts_h),   // Thoughts
+        ])
+        .split(area);
+
+    draw_kpi_strip(frame, app, ws, rows[0]);
+
+    if !actions.is_empty() {
+        draw_action_banner(frame, &actions, rows[1]);
+    }
+
+    if has_thoughts {
+        draw_thoughts_strip(frame, app, ws, rows[2]);
+    }
 }
 
 // ── KPI strip (single inline bar) ────────────────────────
@@ -1544,6 +1581,12 @@ fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
             ])
             .style(bg),
         );
+        // URL on second line (cmd+clickable in terminals)
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(&pr.url, Style::default().fg(theme::FROST)),
+        ]));
+        lines.push(Line::from(""));
     }
 
     if prs.is_empty() {
@@ -1589,6 +1632,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     // Context-sensitive hints
     let hints: Vec<Span> = match &app.view {
         View::Dashboard => {
+            let zoomed = if area.width < 50 {
+                Some(app.zoomed_panel.unwrap_or(app.focused_panel))
+            } else {
+                app.zoomed_panel
+            };
             if app.chat_focused {
                 vec![
                     Span::raw(" "),
@@ -1600,6 +1648,28 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(":scroll  ", theme::key_desc()),
                     Span::styled("esc", theme::key_hint()),
                     Span::styled(":back to nav", theme::key_desc()),
+                ]
+            } else if zoomed.is_some() {
+                // Panel indicator + zoom nav hints
+                let panel_name = match app.focused_panel {
+                    Panel::Home => "Home",
+                    Panel::Workers => "Workers",
+                    Panel::Signals => "Signals",
+                    Panel::Feed => "Feed",
+                    Panel::Chat => "Chat",
+                };
+                vec![
+                    Span::raw(" "),
+                    Span::styled(panel_name, Style::default().fg(theme::HONEY).add_modifier(Modifier::BOLD)),
+                    Span::styled("  ", theme::key_desc()),
+                    Span::styled("h/l", theme::key_hint()),
+                    Span::styled(":prev/next  ", theme::key_desc()),
+                    Span::styled("z", theme::key_hint()),
+                    Span::styled(":unzoom  ", theme::key_desc()),
+                    Span::styled("c", theme::key_hint()),
+                    Span::styled(":chat  ", theme::key_desc()),
+                    Span::styled("q", theme::key_hint()),
+                    Span::styled(":quit", theme::key_desc()),
                 ]
             } else {
                 vec![

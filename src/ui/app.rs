@@ -31,6 +31,7 @@ pub enum View {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
+    Home,
     Workers,
     Signals,
     Feed,
@@ -205,6 +206,8 @@ pub struct App {
     pub daemon_alive: bool,
     pub daemon_uptime_secs: Option<u64>,
     pub last_extras_refresh: Instant,
+    // Terminal size (updated each frame)
+    pub terminal_width: u16,
     // Common
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashMessage>,
@@ -292,6 +295,7 @@ impl App {
             daemon_alive: false,
             daemon_uptime_secs: None,
             last_extras_refresh: Instant::now(),
+            terminal_width: 80,
             pending_action: None,
             flash: None,
             needs_redraw: true,
@@ -373,10 +377,11 @@ impl App {
 
     pub fn next_panel(&mut self) {
         self.focused_panel = match self.focused_panel {
+            Panel::Home => Panel::Workers,
             Panel::Workers => Panel::Signals,
             Panel::Signals => Panel::Feed,
             Panel::Feed => Panel::Chat,
-            Panel::Chat => Panel::Workers,
+            Panel::Chat => Panel::Home,
         };
         self.chat_focused = false;
         self.needs_redraw = true;
@@ -384,7 +389,8 @@ impl App {
 
     pub fn prev_panel(&mut self) {
         self.focused_panel = match self.focused_panel {
-            Panel::Workers => Panel::Chat,
+            Panel::Home => Panel::Chat,
+            Panel::Workers => Panel::Home,
             Panel::Signals => Panel::Workers,
             Panel::Feed => Panel::Signals,
             Panel::Chat => Panel::Feed,
@@ -395,6 +401,7 @@ impl App {
 
     pub fn select_next_in_panel(&mut self) {
         match self.focused_panel {
+            Panel::Home => {}
             Panel::Workers => {
                 let count = self.current_ws().map_or(0, |ws| ws.workers.len());
                 if count > 0 && self.worker_selection + 1 < count {
@@ -421,6 +428,7 @@ impl App {
 
     pub fn select_prev_in_panel(&mut self) {
         match self.focused_panel {
+            Panel::Home => {}
             Panel::Workers => {
                 self.worker_selection = self.worker_selection.saturating_sub(1);
             }
@@ -536,6 +544,7 @@ impl App {
     /// Drill into the currently selected panel item.
     pub fn drill_in(&mut self) {
         match self.focused_panel {
+            Panel::Home => {} // Home has no drill-in
             Panel::Workers => {
                 if let Some(ws) = self.current_ws()
                     && self.worker_selection < ws.workers.len()

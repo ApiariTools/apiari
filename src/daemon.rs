@@ -272,6 +272,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
                                 if let Err(e) = watcher.reconcile(&slot.store) {
                                     error!("[{}] [{}] reconcile failed: {e}", slot.name, watcher.name());
                                 }
+                                // Update cursor timestamp so TUI shows watcher as healthy
+                                let _ = slot.store.set_cursor(watcher.name(), "ok");
                             }
                             Err(e) => {
                                 error!("[{}] [{}] poll failed: {e}", slot.name, watcher.name());

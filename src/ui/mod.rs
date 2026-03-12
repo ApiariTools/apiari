@@ -124,6 +124,9 @@ async fn event_loop(
 
     loop {
         if app.needs_redraw {
+            if let Ok(size) = crossterm::terminal::size() {
+                app.terminal_width = size.0;
+            }
             terminal.draw(|f| render::draw(f, &app))?;
             app.needs_redraw = false;
         }
@@ -218,8 +221,15 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
                 let idx = (c as usize) - ('1' as usize);
                 app.switch_tab(idx);
             }
+            KeyCode::Char('z') => app.toggle_zoom(),
             _ => {}
         }
+        return KeyAction::Redraw;
+    }
+
+    // Ctrl+Z toggles zoom
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('z') {
+        app.toggle_zoom();
         return KeyAction::Redraw;
     }
 
@@ -336,6 +346,22 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
             app.needs_redraw = true;
         }
         KeyCode::Char('z') => app.toggle_zoom(),
+        KeyCode::Char('h') | KeyCode::Left => {
+            if app.zoomed_panel.is_some() || app.terminal_width < 50 {
+                app.prev_panel();
+                if app.zoomed_panel.is_some() {
+                    app.zoomed_panel = Some(app.focused_panel);
+                }
+            }
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            if app.zoomed_panel.is_some() || app.terminal_width < 50 {
+                app.next_panel();
+                if app.zoomed_panel.is_some() {
+                    app.zoomed_panel = Some(app.focused_panel);
+                }
+            }
+        }
         KeyCode::Char('p') => app.enter_pr_list(),
         KeyCode::Char('s') => app.enter_signal_list(),
         KeyCode::Char('o') => {
@@ -355,6 +381,11 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 let id = signal.id;
                 app.pending_action = Some(PendingAction::ResolveSignal(id));
                 app.mode = Mode::Confirm;
+            }
+        }
+        KeyCode::Char('G') => {
+            if let Some(ws) = app.current_ws_mut() {
+                ws.chat_scroll.scroll_to_bottom();
             }
         }
         KeyCode::Char('?') => {
