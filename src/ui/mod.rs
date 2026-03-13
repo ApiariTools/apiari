@@ -1,6 +1,7 @@
 //! `apiari ui` — Unified TUI dashboard.
 
 pub mod app;
+pub mod daemon_client;
 pub mod history;
 pub mod render;
 pub mod theme;
@@ -18,11 +19,14 @@ use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use buzz::coordinator::Coordinator;
-use buzz::coordinator::skills::{SkillContext, build_skills_prompt, default_coordinator_tools};
+use buzz::coordinator::{Coordinator, CoordinatorEvent};
+use buzz::coordinator::skills::{
+    build_skills_prompt, default_coordinator_disallowed_tools, default_coordinator_tools,
+};
 use buzz::signal::store::SignalStore;
 
-use crate::config::{self, WorkspaceConfig};
+use crate::config;
+use crate::git_safety::GitSafetyHooks;
 
 // ── Channel types ────────────────────────────────────────
 
@@ -39,6 +43,13 @@ enum CoordResponse {
     Token(String),
     Done,
     Error(String),
+    /// Activity broadcast from daemon (Telegram or other TUI-originated).
+    Activity {
+        source: String,
+        workspace: String,
+        kind: String,
+        text: String,
+    },
 }
 
 // ── Key actions ──────────────────────────────────────────
@@ -68,20 +79,30 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    let app = App::new(workspaces, focus_workspace);
+    let mut app = App::new(workspaces, focus_workspace);
 
     // Coordinator channels
     let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
     let (coord_tx, coord_rx) = mpsc::channel::<CoordResponse>(64);
 
-    // Spawn coordinator on a dedicated thread (SignalStore is !Send).
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to build coordinator runtime");
-        rt.block_on(coordinator_task(user_rx, coord_tx));
-    });
+    // Choose daemon client (shared session) or local coordinator (standalone)
+    let use_daemon = daemon_client::socket_exists() && crate::daemon::is_daemon_running();
+    app.daemon_connected = use_daemon;
+
+    if use_daemon {
+        // Spawn daemon client task (tokio task — the daemon handles coordinator)
+        let coord_tx_clone = coord_tx.clone();
+        tokio::spawn(daemon_client_task(user_rx, coord_tx_clone));
+    } else {
+        // Spawn coordinator on a dedicated thread (SignalStore is !Send).
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to build coordinator runtime");
+            rt.block_on(coordinator_task(user_rx, coord_tx));
+        });
+    }
 
     // Terminal setup
     stdout().execute(EnterAlternateScreen)?;
@@ -178,14 +199,41 @@ async fn event_loop(
                     CoordResponse::Error(e) => {
                         app.push_system_message(format!("Error: {e}"));
                     }
+                    CoordResponse::Activity { source, workspace, kind, text } => {
+                        app.push_activity(&workspace, &source, &kind, &text);
+                    }
                 }
             }
 
             _ = tick.tick() => {
                 app.spinner_tick = app.spinner_tick.wrapping_add(1);
+
+                // Push activity value: streaming = rollercoaster, idle = heartbeat blip
+                let streaming = app.current_ws().map_or(false, |ws| ws.streaming);
+                let val = if streaming {
+                    // Rollercoaster: use layered sine for organic tall values (3-7)
+                    let t = app.spinner_tick as f64;
+                    let w1 = ((t / 7.0) * std::f64::consts::TAU).sin();
+                    let w2 = ((t / 3.0) * std::f64::consts::TAU).sin() * 0.6;
+                    let combined = (w1 + w2 + 1.0) / 2.0; // ~0..1
+                    (combined * 5.0) as u8 + 3 // 3-7 range
+                } else if app.daemon_alive {
+                    // Heartbeat: mostly 0, with a small bump every ~18 ticks
+                    let phase = app.spinner_tick % 18;
+                    match phase {
+                        0 => 1,
+                        1 => 2,
+                        2 => 1,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                };
+                app.push_activity_value(val);
+
                 app.tick_flash();
                 app.maybe_refresh();
-                app.needs_redraw = true; // spinner animation
+                app.needs_redraw = true;
             }
         }
     }
@@ -827,6 +875,81 @@ async fn handle_action(
     None
 }
 
+// ── Daemon client task ───────────────────────────────────
+
+/// Runs when TUI is connected to the daemon via Unix socket.
+/// Forwards user messages to daemon, receives Token/Done/Error/Activity back.
+async fn daemon_client_task(
+    mut user_rx: mpsc::Receiver<UserMessage>,
+    coord_tx: mpsc::Sender<CoordResponse>,
+) {
+    let socket_path = crate::config::socket_path();
+    let mut client = match daemon_client::DaemonClient::connect(&socket_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = coord_tx
+                .send(CoordResponse::Error(format!(
+                    "Failed to connect to daemon: {e}"
+                )))
+                .await;
+            return;
+        }
+    };
+
+    loop {
+        tokio::select! {
+            Some(msg) = user_rx.recv() => {
+                match msg {
+                    UserMessage::Chat { workspace_name, text } => {
+                        if let Err(e) = client.send_chat(&workspace_name, &text).await {
+                            let _ = coord_tx
+                                .send(CoordResponse::Error(format!("Socket send error: {e}")))
+                                .await;
+                        }
+                    }
+                }
+            }
+
+            resp = client.next_response() => {
+                match resp {
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { text })) => {
+                        let _ = coord_tx.send(CoordResponse::Token(text)).await;
+                    }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Done)) => {
+                        let _ = coord_tx.send(CoordResponse::Done).await;
+                    }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { text })) => {
+                        let _ = coord_tx.send(CoordResponse::Error(text)).await;
+                    }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Activity { source, workspace, kind, text })) => {
+                        // Skip our own echoed messages — we already have them
+                        // (user message pushed locally, assistant via Token stream)
+                        if source == "tui" {
+                            continue;
+                        }
+                        let _ = coord_tx
+                            .send(CoordResponse::Activity { source, workspace, kind, text })
+                            .await;
+                    }
+                    Ok(None) => {
+                        // Daemon disconnected
+                        let _ = coord_tx
+                            .send(CoordResponse::Error("Daemon disconnected".into()))
+                            .await;
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = coord_tx
+                            .send(CoordResponse::Error(format!("Socket read error: {e}")))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── Coordinator task ─────────────────────────────────────
 
 async fn coordinator_task(
@@ -872,11 +995,37 @@ async fn coordinator_task(
                     }
                 };
 
-                // Use streaming to get real-time token delivery
                 let token_tx = coord_tx.clone();
                 match coordinator
-                    .handle_message_streaming(&text, &store, move |token| {
-                        let _ = token_tx.try_send(CoordResponse::Token(token.to_string()));
+                    .handle_message(&text, &store, move |event| {
+                        match event {
+                            CoordinatorEvent::Token(t) => {
+                                let _ = token_tx.try_send(CoordResponse::Token(t));
+                            }
+                            CoordinatorEvent::FilesModified { files } => {
+                                let file_list: Vec<String> = files
+                                    .iter()
+                                    .map(|(repo, file)| format!("{repo}/{file}"))
+                                    .collect();
+                                let alert = format!(
+                                    "Warning: coordinator modified workspace files:\n{}",
+                                    file_list
+                                        .iter()
+                                        .map(|f| format!("  - {f}"))
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                );
+                                let _ = token_tx.try_send(CoordResponse::Error(alert));
+                            }
+                            CoordinatorEvent::BashAudit {
+                                command,
+                                matched_pattern,
+                            } => {
+                                let _ = token_tx.try_send(CoordResponse::Error(format!(
+                                    "Bash audit ({matched_pattern}): {command}"
+                                )));
+                            }
+                        }
                     })
                     .await
                 {
@@ -892,7 +1041,7 @@ async fn coordinator_task(
     }
 }
 
-/// Build a Coordinator for a workspace.
+/// Build a Coordinator for a workspace with safety hooks pre-configured.
 fn build_coordinator(workspace_name: &str) -> Option<Coordinator> {
     let workspaces = config::discover_workspaces().ok()?;
     let ws = workspaces.iter().find(|w| w.name == workspace_name)?;
@@ -903,22 +1052,21 @@ fn build_coordinator(workspace_name: &str) -> Option<Coordinator> {
     );
     coordinator.set_name(ws.config.coordinator.name.clone());
 
-    let skill_ctx = build_skill_context(workspace_name, &ws.config);
+    let skill_ctx = config::build_skill_context(workspace_name, &ws.config);
     coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
+    if let Some(ref preamble) = skill_ctx.prompt_preamble {
+        coordinator.set_prompt_preamble(preamble.clone());
+    }
     coordinator.set_tools(default_coordinator_tools());
+    coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
     coordinator.set_working_dir(ws.config.root.clone());
+    if let Some(settings) = config::coordinator_settings_json() {
+        coordinator.set_settings(settings);
+    }
+    coordinator.set_safety_hooks(Box::new(GitSafetyHooks {
+        workspace_root: ws.config.root.clone(),
+    }));
 
     Some(coordinator)
 }
 
-/// Build a SkillContext from workspace config.
-fn build_skill_context(workspace_name: &str, config: &WorkspaceConfig) -> SkillContext {
-    SkillContext {
-        workspace_name: workspace_name.to_string(),
-        workspace_root: config.root.clone(),
-        config_path: config::workspaces_dir().join(format!("{workspace_name}.toml")),
-        repos: config.repos.clone(),
-        has_sentry: config.watchers.sentry.is_some(),
-        has_swarm: config.watchers.swarm.is_some(),
-    }
-}

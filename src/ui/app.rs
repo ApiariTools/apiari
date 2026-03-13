@@ -45,11 +45,19 @@ pub enum Mode {
     Help,
 }
 
+/// Where a chat message originated from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageSource {
+    Tui,
+    Telegram,
+    System,
+}
+
 #[derive(Debug, Clone)]
 pub enum ChatLine {
-    User(String, String),      // content, timestamp
-    Assistant(String, String), // content, timestamp
-    System(String),            // system message
+    User(String, String, Option<MessageSource>),      // content, timestamp, source
+    Assistant(String, String, Option<MessageSource>), // content, timestamp, source
+    System(String),                                    // system message
 }
 
 #[derive(Debug, Clone)]
@@ -173,7 +181,6 @@ pub struct WorkspaceState {
     prev_pr_workers: std::collections::HashSet<String>,
     // Dashboard extras
     pub sparkline_data: Vec<u64>,
-    pub heartbeat_data: Vec<u64>, // 18 buckets of 10-min signal activity
     pub watcher_health: Vec<WatcherHealth>,
     pub feed: Vec<FeedItem>,
     pub feed_scroll: ScrollState,
@@ -204,10 +211,13 @@ pub struct App {
     pub pr_list_selection: usize,
     // Daemon / extras
     pub daemon_alive: bool,
+    pub daemon_connected: bool, // true if TUI is connected to daemon via socket
     pub daemon_uptime_secs: Option<u64>,
     pub last_extras_refresh: Instant,
     // Terminal size (updated each frame)
     pub terminal_width: u16,
+    // Activity graph (network-style throughput chart in status bar)
+    pub activity_buf: Vec<u8>, // fixed array, each value = bar height 0-7
     // Common
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashMessage>,
@@ -229,16 +239,21 @@ impl App {
                     .into_iter()
                     .map(|msg| {
                         let ts = msg.ts.format("%H:%M").to_string();
+                        let source = msg.source.as_deref().map(|s| match s {
+                            "telegram" => MessageSource::Telegram,
+                            "system" => MessageSource::System,
+                            _ => MessageSource::Tui,
+                        });
                         match msg.role.as_str() {
-                            "user" => ChatLine::User(msg.content, ts),
-                            _ => ChatLine::Assistant(msg.content, ts),
+                            "user" => ChatLine::User(msg.content, ts, source),
+                            _ => ChatLine::Assistant(msg.content, ts, source),
                         }
                     })
                     .collect();
 
                 // Extract coordinator preview from last assistant message
                 let coordinator_preview = chat_history.iter().rev().find_map(|msg| {
-                    if let ChatLine::Assistant(s, _) = msg {
+                    if let ChatLine::Assistant(s, _, _) = msg {
                         Some(truncate_preview(s, 120))
                     } else {
                         None
@@ -257,7 +272,6 @@ impl App {
                     coordinator_preview,
                     has_unread_response: false,
                     sparkline_data: vec![0; 24],
-                    heartbeat_data: vec![0; 18],
                     watcher_health: Vec::new(),
                     feed: Vec::new(),
                     prev_worker_phases: std::collections::HashMap::new(),
@@ -293,9 +307,11 @@ impl App {
             signal_list_selection: 0,
             pr_list_selection: 0,
             daemon_alive: false,
+            daemon_connected: false,
             daemon_uptime_secs: None,
             last_extras_refresh: Instant::now(),
             terminal_width: 80,
+            activity_buf: vec![0; 18],
             pending_action: None,
             flash: None,
             needs_redraw: true,
@@ -629,9 +645,14 @@ impl App {
     // ── Chat ──────────────────────────────────────────────
 
     pub fn push_user_message(&mut self, text: String) {
+        self.push_user_message_with_source(text, None);
+    }
+
+    pub fn push_user_message_with_source(&mut self, text: String, source: Option<MessageSource>) {
         let ts = now_ts();
         if let Some(ws) = self.current_ws_mut() {
-            ws.chat_history.push(ChatLine::User(text.clone(), ts));
+            ws.chat_history
+                .push(ChatLine::User(text.clone(), ts, source));
             ws.streaming = true;
             ws.chat_scroll.scroll_to_bottom();
         }
@@ -643,6 +664,11 @@ impl App {
                     role: "user".into(),
                     content: text,
                     ts: Utc::now(),
+                    source: source.map(|s| match s {
+                        MessageSource::Telegram => "telegram".into(),
+                        MessageSource::System => "system".into(),
+                        MessageSource::Tui => "tui".into(),
+                    }),
                 },
             );
         }
@@ -651,11 +677,11 @@ impl App {
 
     pub fn append_assistant_token(&mut self, token: &str) {
         if let Some(ws) = self.current_ws_mut() {
-            if let Some(ChatLine::Assistant(s, _)) = ws.chat_history.last_mut() {
+            if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last_mut() {
                 s.push_str(token);
             } else {
                 ws.chat_history
-                    .push(ChatLine::Assistant(token.to_string(), now_ts()));
+                    .push(ChatLine::Assistant(token.to_string(), now_ts(), None));
             }
             ws.chat_scroll.scroll_to_bottom();
             self.needs_redraw = true;
@@ -666,13 +692,14 @@ impl App {
         let is_chat_visible = matches!(self.view, View::Dashboard);
         if let Some(ws) = self.current_ws_mut() {
             ws.streaming = false;
-            if let Some(ChatLine::Assistant(s, _)) = ws.chat_history.last() {
+            if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last() {
                 let _ = super::history::save_message(
                     &ws.name,
                     &super::history::ChatMessage {
                         role: "assistant".into(),
                         content: s.clone(),
                         ts: Utc::now(),
+                        source: None,
                     },
                 );
                 ws.coordinator_preview = Some(truncate_preview(s, 120));
@@ -690,6 +717,45 @@ impl App {
             ws.streaming = false;
             self.needs_redraw = true;
         }
+    }
+
+    /// Push an activity event from the daemon (Telegram or TUI-sourced).
+    pub fn push_activity(
+        &mut self,
+        workspace: &str,
+        source: &str,
+        kind: &str,
+        text: &str,
+    ) {
+        let ws = match self.workspaces.iter_mut().find(|ws| ws.name == workspace) {
+            Some(ws) => ws,
+            None => return,
+        };
+
+        let msg_source = match source {
+            "telegram" => Some(MessageSource::Telegram),
+            "tui" => Some(MessageSource::Tui),
+            _ => Some(MessageSource::System),
+        };
+
+        let ts = now_ts();
+        match kind {
+            "user_message" => {
+                ws.chat_history
+                    .push(ChatLine::User(text.to_string(), ts, msg_source));
+            }
+            "assistant_message" => {
+                ws.chat_history
+                    .push(ChatLine::Assistant(text.to_string(), ts, msg_source));
+                ws.coordinator_preview = Some(truncate_preview(text, 120));
+                ws.has_unread_response = true;
+            }
+            _ => {
+                ws.chat_history.push(ChatLine::System(text.to_string()));
+            }
+        }
+        ws.chat_scroll.scroll_to_bottom();
+        self.needs_redraw = true;
     }
 
     // ── Scroll ────────────────────────────────────────────
@@ -754,6 +820,19 @@ impl App {
         {
             self.flash = None;
             self.needs_redraw = true;
+        }
+    }
+
+    /// Push a new value into the activity graph — shifts everything right,
+    /// new data enters from the left, oldest falls off the right edge.
+    pub fn push_activity_value(&mut self, val: u8) {
+        let len = self.activity_buf.len();
+        if len > 1 {
+            // Shift right: drop last, insert at front
+            self.activity_buf.pop();
+            self.activity_buf.insert(0, val);
+        } else if len == 1 {
+            self.activity_buf[0] = val;
         }
     }
 
@@ -910,11 +989,6 @@ impl App {
             if let Ok(store) = SignalStore::open(&db, &ws.name) {
                 // Sparkline
                 ws.sparkline_data = store.count_signals_by_hour().unwrap_or_else(|_| vec![0; 24]);
-
-                // Heartbeat: 18 buckets of 10 minutes = 3 hours of activity
-                ws.heartbeat_data = store
-                    .count_signal_activity(10, 18)
-                    .unwrap_or_else(|_| vec![0; 18]);
 
                 // Thoughts from MemoryStore
                 let mem = MemoryStore::new(store.conn(), &ws.name);

@@ -5,6 +5,7 @@
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Root directory for all apiari config.
 pub fn config_dir() -> PathBuf {
@@ -31,6 +32,11 @@ pub fn pid_path() -> PathBuf {
 /// Path to the daemon log file.
 pub fn log_path() -> PathBuf {
     config_dir().join("daemon.log")
+}
+
+/// Path to the daemon Unix socket (TUI ↔ daemon IPC).
+pub fn socket_path() -> PathBuf {
+    config_dir().join("daemon.sock")
 }
 
 /// A fully self-contained workspace configuration.
@@ -80,6 +86,10 @@ pub struct CoordinatorConfig {
     pub model: String,
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
+    /// Custom prompt preamble (identity + role). If set, replaces the default.
+    /// Signals, repos, and skills are still auto-appended.
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 impl Default for CoordinatorConfig {
@@ -88,6 +98,7 @@ impl Default for CoordinatorConfig {
             name: default_coordinator_name(),
             model: default_model(),
             max_turns: default_max_turns(),
+            prompt: None,
         }
     }
 }
@@ -179,6 +190,108 @@ pub fn discover_workspaces() -> Result<Vec<Workspace>> {
     }
 
     Ok(workspaces)
+}
+
+/// Auto-discover git repos in immediate subdirectories of `root`.
+///
+/// Skips hidden dirs, `target/`, and `node_modules/`. For each dir containing `.git/`,
+/// tries to extract a GitHub `org/repo` slug from the origin remote; falls back to the
+/// directory name.
+pub fn discover_repos(root: &Path) -> Vec<String> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut repos: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            e.file_type().is_ok_and(|ft| ft.is_dir())
+                && !name.starts_with('.')
+                && name != "target"
+                && name != "node_modules"
+        })
+        .filter(|e| e.path().join(".git").exists())
+        .map(|e| {
+            extract_github_slug(&e.path())
+                .unwrap_or_else(|| e.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+
+    repos.sort();
+    repos.dedup();
+    repos
+}
+
+/// Extract a GitHub `org/repo` slug from a repo's origin remote URL.
+fn extract_github_slug(repo_path: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8_lossy(&output.stdout);
+    parse_github_slug(url.trim())
+}
+
+/// Parse a GitHub `org/repo` slug from an HTTPS or SSH URL.
+///
+/// Handles:
+/// - `https://github.com/Org/Repo.git`
+/// - `https://github.com/Org/Repo`
+/// - `git@github.com:Org/Repo.git`
+///
+/// Returns `None` for non-GitHub URLs or malformed input.
+fn parse_github_slug(url: &str) -> Option<String> {
+    let path = if let Some(rest) = url.strip_prefix("https://github.com/") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest
+    } else {
+        return None;
+    };
+
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let parts: Vec<&str> = path.splitn(3, '/').collect();
+    if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+        Some(format!("{}/{}", parts[0], parts[1]))
+    } else {
+        None
+    }
+}
+
+/// Resolve repos for a workspace: use explicit `repos` if non-empty, otherwise auto-discover.
+pub fn resolve_repos(config: &WorkspaceConfig) -> Vec<String> {
+    if !config.repos.is_empty() {
+        return config.repos.clone();
+    }
+    discover_repos(&config.root)
+}
+
+/// Build a SkillContext from workspace config.
+///
+/// Uses `resolve_repos()` so auto-discovered repos flow into the coordinator prompt.
+pub fn build_skill_context(
+    workspace_name: &str,
+    config: &WorkspaceConfig,
+) -> buzz::coordinator::skills::SkillContext {
+    let repos = resolve_repos(config);
+    buzz::coordinator::skills::SkillContext {
+        workspace_name: workspace_name.to_string(),
+        workspace_root: config.root.clone(),
+        config_path: workspaces_dir().join(format!("{workspace_name}.toml")),
+        repos,
+        has_sentry: config.watchers.sentry.is_some(),
+        has_swarm: config.watchers.swarm.is_some(),
+        prompt_preamble: config.coordinator.prompt.clone(),
+    }
 }
 
 /// Convert a WorkspaceConfig into a buzz BuzzConfig for watcher/coordinator use.
@@ -288,6 +401,29 @@ pub fn to_pipeline_rules(config: &PipelineConfig) -> Vec<buzz::pipeline::rule::P
         .collect()
 }
 
+/// Build the settings JSON for the coordinator (PreToolUse hook).
+///
+/// Shared by daemon, TUI, and CLI chat — configures the `apiari validate-bash`
+/// hook so the coordinator's Bash calls are audited.
+pub fn coordinator_settings_json() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_str = exe.to_string_lossy();
+
+    let settings = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("{exe_str} validate-bash")
+                }]
+            }]
+        }
+    });
+
+    Some(settings.to_string())
+}
+
 fn default_batch_window() -> u64 {
     60
 }
@@ -359,6 +495,72 @@ root = "/tmp/test"
         assert!(config.telegram.is_none());
         assert_eq!(config.coordinator.model, "sonnet");
         assert_eq!(config.coordinator.max_turns, 20);
+    }
+
+    #[test]
+    fn test_parse_github_slug_https() {
+        assert_eq!(
+            parse_github_slug("https://github.com/ApiariTools/swarm.git"),
+            Some("ApiariTools/swarm".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_github_slug_https_no_dot_git() {
+        assert_eq!(
+            parse_github_slug("https://github.com/ApiariTools/swarm"),
+            Some("ApiariTools/swarm".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_github_slug_ssh() {
+        assert_eq!(
+            parse_github_slug("git@github.com:ApiariTools/swarm.git"),
+            Some("ApiariTools/swarm".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_parse_github_slug_non_github() {
+        assert_eq!(
+            parse_github_slug("https://gitlab.com/Org/Repo.git"),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_parse_github_slug_malformed() {
+        assert_eq!(parse_github_slug("not-a-url"), None);
+        assert_eq!(parse_github_slug("https://github.com/"), None);
+        assert_eq!(parse_github_slug("https://github.com/only-org"), None);
+    }
+
+    #[test]
+    fn test_resolve_repos_explicit_override() {
+        let config = WorkspaceConfig {
+            root: "/tmp/nonexistent".into(),
+            repos: vec!["Org/Repo".to_string()],
+            telegram: None,
+            coordinator: CoordinatorConfig::default(),
+            watchers: WatchersConfig::default(),
+            pipeline: PipelineConfig::default(),
+        };
+        assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
+    }
+
+    #[test]
+    fn test_resolve_repos_empty_discovers() {
+        // With a non-existent root, discover_repos returns empty
+        let config = WorkspaceConfig {
+            root: "/tmp/nonexistent-dir-12345".into(),
+            repos: vec![],
+            telegram: None,
+            coordinator: CoordinatorConfig::default(),
+            watchers: WatchersConfig::default(),
+            pipeline: PipelineConfig::default(),
+        };
+        assert!(resolve_repos(&config).is_empty());
     }
 
     #[test]

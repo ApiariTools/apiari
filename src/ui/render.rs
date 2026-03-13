@@ -778,14 +778,24 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
             .chat_history
             .iter()
             .map(|msg| match msg {
-                ChatLine::User(text, ts) => conversation::ConversationEntry::User {
-                    text: text.clone(),
-                    timestamp: ts.clone(),
-                },
-                ChatLine::Assistant(text, ts) => conversation::ConversationEntry::AssistantText {
-                    text: text.clone(),
-                    timestamp: ts.clone(),
-                },
+                ChatLine::User(text, ts, source) => {
+                    let display_text =
+                        if matches!(source, Some(app::MessageSource::Telegram)) {
+                            format!("[TG] {text}")
+                        } else {
+                            text.clone()
+                        };
+                    conversation::ConversationEntry::User {
+                        text: display_text,
+                        timestamp: ts.clone(),
+                    }
+                }
+                ChatLine::Assistant(text, ts, _source) => {
+                    conversation::ConversationEntry::AssistantText {
+                        text: text.clone(),
+                        timestamp: ts.clone(),
+                    }
+                }
                 ChatLine::System(text) => conversation::ConversationEntry::Status {
                     text: text.clone(),
                 },
@@ -1759,10 +1769,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let cur_ws = app.current_ws();
     let healthy_w = cur_ws.map_or(0, |ws| ws.watcher_health.iter().filter(|w| w.healthy).count());
     let total_w = cur_ws.map_or(0, |ws| ws.watcher_health.len());
-    let hb_data = cur_ws
-        .map(|ws| ws.heartbeat_data.as_slice())
-        .unwrap_or(&[]);
-    let ecg = ecg_trace(hb_data, app.daemon_alive, app.spinner_tick);
+    let ecg = activity_graph(&app.activity_buf);
     // ECG color reflects signal severity
     let ecg_color = if !app.daemon_alive {
         theme::STEEL
@@ -1786,6 +1793,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         theme::MINT
     };
+    let conn_indicator = if app.daemon_connected {
+        "\u{25cf}" // ● connected to daemon
+    } else {
+        "\u{25cb}" // ○ local fallback
+    };
+    let conn_label = if app.daemon_connected { "daemon" } else { "local" };
     let daemon_spans: Vec<Span> = if app.daemon_alive {
         let uptime_str = match app.daemon_uptime_secs {
             Some(s) if s >= 3600 => format!("{}h{}m", s / 3600, (s % 3600) / 60),
@@ -1800,14 +1813,23 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         };
         vec![
             Span::styled(ecg, Style::default().fg(ecg_color)),
-            Span::styled(format!(" {uptime_str}{watcher_str} "), theme::muted()),
+            Span::styled(
+                format!(" {conn_indicator} {conn_label} {uptime_str}{watcher_str} "),
+                theme::muted(),
+            ),
         ]
     } else {
         vec![
             Span::styled(ecg, Style::default().fg(ecg_color)),
-            Span::styled(" offline ", theme::muted()),
+            Span::styled(
+                format!(" {conn_indicator} {conn_label} offline "),
+                theme::muted(),
+            ),
         ]
     };
+
+    // On narrow terminals (mobile), skip key hints — just show daemon status
+    let hints = if area.width < 120 { vec![Span::raw(" ")] } else { hints };
 
     // Calculate padding for right-alignment
     let hints_len: usize = hints.iter().map(|s| s.content.len()).sum();
@@ -2027,53 +2049,16 @@ fn severity_style(severity: &buzz::signal::Severity) -> Style {
     }
 }
 
-/// Data-driven ECG trace for the status bar.
-/// Each position = one time bucket of real signal activity.
-/// Height reflects event volume. Flatlines when offline or no data.
-/// When alive but quiet, a small traveling pulse shows the daemon is running.
-fn ecg_trace(data: &[u64], alive: bool, tick: usize) -> String {
+/// Activity graph — just renders the buffer as block bars.
+/// Data is pushed in from the left and scrolls right. The buffer IS the graph.
+fn activity_graph(buf: &[u8]) -> String {
     const BLOCKS: &[char] = &[
         '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}',
         '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
     ];
-    let width = if data.is_empty() { 18 } else { data.len() };
-
-    if !alive {
-        return "\u{2581}".repeat(width);
-    }
-
-    let max_val = data.iter().copied().max().unwrap_or(0);
-
-    if max_val == 0 {
-        // Alive but quiet: ECG-shaped pulse traveling across slowly
-        // Pulse shape: ▁▂▃▅█▅▃▂▁ (9 chars wide, moves every 3 ticks = 750ms)
-        const PULSE: &[usize] = &[1, 2, 4, 7, 4, 2, 1];
-        let pos = (tick / 3) % (width + PULSE.len());
-        let mut chars = vec![BLOCKS[0]; width];
-        for (pi, &level) in PULSE.iter().enumerate() {
-            let ci = pos as isize - PULSE.len() as isize + pi as isize;
-            if ci >= 0 && (ci as usize) < width {
-                chars[ci as usize] = BLOCKS[level];
-            }
-        }
-        return chars.into_iter().collect();
-    }
-
-    // Data-driven: scale heights relative to max
-    let mut result = String::with_capacity(width * 3);
-    for &count in data {
-        let level = if count == 0 {
-            0
-        } else if max_val == 1 {
-            3 // single event = visible bump
-        } else {
-            // Scale 1..max → levels 2..7
-            let normalized = count as f64 / max_val as f64;
-            (normalized * 5.0).ceil() as usize + 2
-        };
-        result.push(BLOCKS[level.min(7)]);
-    }
-    result
+    buf.iter()
+        .map(|&v| BLOCKS[(v as usize).min(7)])
+        .collect()
 }
 
 /// Truncate a string to `max` chars, appending "..." if truncated.

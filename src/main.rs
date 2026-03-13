@@ -1,7 +1,9 @@
 mod config;
 mod daemon;
+mod git_safety;
 mod init;
 mod ui;
+mod validate_bash;
 
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
@@ -50,6 +52,10 @@ enum Command {
         #[arg(long)]
         workspace: Option<String>,
     },
+
+    /// PreToolUse hook: validate Bash commands (used internally by coordinator)
+    #[command(hide = true)]
+    ValidateBash,
 }
 
 #[tokio::main]
@@ -86,6 +92,9 @@ async fn main() -> Result<()> {
         }
         Command::Ui { workspace } => {
             ui::run(workspace.as_deref()).await?;
+        }
+        Command::ValidateBash => {
+            std::process::exit(validate_bash::run());
         }
     }
 

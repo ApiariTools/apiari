@@ -3,16 +3,23 @@
 //! Discovers workspace configs, builds per-workspace watcher registries,
 //! shares Telegram connections by bot_token, and routes messages by (chat_id, topic_id).
 
+pub mod socket;
+
 use color_eyre::eyre::{Result, WrapErr};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use crate::git_safety::GitSafetyHooks;
+
 use buzz::channel::telegram::TelegramChannel;
 use buzz::channel::{Channel, ChannelEvent, OutboundMessage};
-use buzz::coordinator::Coordinator;
+use buzz::coordinator::{Coordinator, CoordinatorEvent};
 use buzz::coordinator::prompt::format_signal_summary;
-use buzz::coordinator::skills::{SkillContext, build_skills_prompt, default_coordinator_tools};
+use buzz::coordinator::skills::{
+    SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
+    default_coordinator_tools,
+};
 use buzz::daemon::config as buzz_daemon_config;
 use buzz::pipeline::Pipeline;
 use buzz::signal::store::SignalStore;
@@ -25,6 +32,14 @@ use crate::config::{
     self, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config,
     to_pipeline_rules,
 };
+
+/// Why the event loop exited.
+enum ExitReason {
+    /// Clean shutdown (Ctrl+C).
+    Shutdown,
+    /// Error — daemon should restart.
+    Error(color_eyre::eyre::Error),
+}
 
 /// A workspace slot in the daemon — holds per-workspace state.
 struct WorkspaceSlot {
@@ -54,24 +69,39 @@ fn get_channel<'a>(
         .and_then(|tg| channels.get(&tg.bot_token))
 }
 
-/// Run the daemon in the foreground.
+/// Run the daemon in the foreground with auto-restart on errors.
 pub async fn run_foreground() -> Result<()> {
-    let workspaces = config::discover_workspaces()?;
-    if workspaces.is_empty() {
-        eprintln!(
-            "No workspace configs found in {}",
-            config::workspaces_dir().display()
-        );
-        eprintln!("Run `apiari init` in a project directory to create one.");
-        return Ok(());
-    }
-
-    info!("discovered {} workspace(s)", workspaces.len());
     write_pid()?;
 
-    let result = run_event_loop(workspaces).await;
+    loop {
+        let workspaces = config::discover_workspaces()?;
+        if workspaces.is_empty() {
+            eprintln!(
+                "No workspace configs found in {}",
+                config::workspaces_dir().display()
+            );
+            eprintln!("Run `apiari init` in a project directory to create one.");
+            remove_pid();
+            return Ok(());
+        }
+
+        info!("discovered {} workspace(s)", workspaces.len());
+
+        match run_event_loop(workspaces).await {
+            ExitReason::Shutdown => {
+                info!("clean shutdown");
+                break;
+            }
+            ExitReason::Error(e) => {
+                error!("event loop error: {e:#}");
+                info!("restarting in 5 seconds...");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    }
+
     remove_pid();
-    result
+    Ok(())
 }
 
 /// Spawn the daemon in the background.
@@ -96,17 +126,24 @@ pub fn spawn_background() -> Result<()> {
 }
 
 /// Main event loop across all workspaces.
-async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
+async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
     let db = db_path();
-    std::fs::create_dir_all(db.parent().unwrap())?;
+    if let Err(e) = std::fs::create_dir_all(db.parent().unwrap()) {
+        return ExitReason::Error(e.into());
+    }
 
     // Build workspace slots
     let mut slots: Vec<WorkspaceSlot> = Vec::new();
     // Route (chat_id, topic_id) → workspace index
     let mut route_map: HashMap<RouteKey, usize> = HashMap::new();
+    // Workspace name → slot index
+    let mut name_map: HashMap<String, usize> = HashMap::new();
 
     for ws in &workspaces {
-        let store = SignalStore::open(&db, &ws.name)?;
+        let store = match SignalStore::open(&db, &ws.name) {
+            Ok(s) => s,
+            Err(e) => return ExitReason::Error(e),
+        };
         let buzz_config = to_buzz_config(&ws.config);
 
         let mut registry = WatcherRegistry::new();
@@ -150,8 +187,18 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
         coordinator.set_name(ws.config.coordinator.name.clone());
         let skill_ctx = build_skill_context(&ws.name, &ws.config);
         coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
+        if let Some(ref preamble) = skill_ctx.prompt_preamble {
+            coordinator.set_prompt_preamble(preamble.clone());
+        }
         coordinator.set_tools(default_coordinator_tools());
+        coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
         coordinator.set_working_dir(ws.config.root.clone());
+        if let Some(settings) = config::coordinator_settings_json() {
+            coordinator.set_settings(settings);
+        }
+        coordinator.set_safety_hooks(Box::new(GitSafetyHooks {
+            workspace_root: ws.config.root.clone(),
+        }));
 
         // Build route key
         if let Some(tg) = &ws.config.telegram {
@@ -165,6 +212,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
         let pipeline_rules = to_pipeline_rules(&ws.config.pipeline);
         let pipeline = Pipeline::new(pipeline_rules, ws.config.pipeline.batch_window_secs);
 
+        name_map.insert(ws.name.clone(), slots.len());
         info!("[{}] {} watcher(s) enabled", ws.name, registry.len());
         slots.push(WorkspaceSlot {
             name: ws.name.clone(),
@@ -175,6 +223,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
             pipeline,
         });
     }
+
+    // Start TUI socket server (optional — warn on failure)
+    let socket_path = config::socket_path();
+    let (mut tui_rx, socket_server) = match socket::DaemonSocketServer::start(&socket_path) {
+        Ok((rx, server)) => (Some(rx), Some(server)),
+        Err(e) => {
+            warn!("failed to start TUI socket server: {e}");
+            (None, None)
+        }
+    };
 
     // Deduplicate Telegram connections by bot_token
     let (tx, mut rx) = mpsc::channel::<ChannelEvent>(64);
@@ -224,11 +282,20 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
     );
 
     loop {
+        // Helper: recv from tui_rx if it exists, else pend forever
+        let tui_recv = async {
+            match tui_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutting down");
                 let _ = cancel_tx.send(true);
-                break;
+                drop(socket_server); // clean up socket file
+                return ExitReason::Shutdown;
             }
 
             _ = poll_timer.tick() => {
@@ -237,15 +304,32 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
                         continue;
                     }
 
+                    let mut new_swarm_events: Vec<String> = Vec::new();
+
                     for watcher in slot.registry.watchers_mut() {
+                        let watcher_name = watcher.name().to_string();
                         match watcher.poll(&slot.store).await {
                             Ok(updates) => {
                                 if !updates.is_empty() {
-                                    info!("[{}] [{}] polled {} update(s)", slot.name, watcher.name(), updates.len());
+                                    info!("[{}] [{}] polled {} update(s)", slot.name, watcher_name, updates.len());
                                 }
                                 for update in &updates {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, true)) => {
+                                            // Collect new swarm signals for coordinator follow-through
+                                            if watcher_name == "swarm" {
+                                                if let Ok(Some(record)) = slot.store.get_signal(id) {
+                                                    let desc = if let Some(ref url) = record.url {
+                                                        format!("{} ({})", record.title, url)
+                                                    } else if let Some(ref body) = record.body {
+                                                        format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
+                                                    } else {
+                                                        record.title.clone()
+                                                    };
+                                                    new_swarm_events.push(desc);
+                                                }
+                                            }
+
                                             if let Ok(Some(record)) = slot.store.get_signal(id)
                                                 && let Some(text) = slot.pipeline.process(&record)
                                                 && let Some(tg) = &slot.config.telegram
@@ -270,13 +354,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
                                 }
                                 // Reconcile: resolve signals no longer in the source
                                 if let Err(e) = watcher.reconcile(&slot.store) {
-                                    error!("[{}] [{}] reconcile failed: {e}", slot.name, watcher.name());
+                                    error!("[{}] [{}] reconcile failed: {e}", slot.name, watcher_name);
                                 }
                                 // Update cursor timestamp so TUI shows watcher as healthy
-                                let _ = slot.store.set_cursor(watcher.name(), "ok");
+                                let _ = slot.store.set_cursor(&watcher_name, "ok");
                             }
                             Err(e) => {
-                                error!("[{}] [{}] poll failed: {e}", slot.name, watcher.name());
+                                error!("[{}] [{}] poll failed: {e}", slot.name, watcher_name);
                             }
                         }
                     }
@@ -299,6 +383,111 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
 
                     // Periodically evict old notification log entries
                     slot.pipeline.evict_old_log_entries();
+
+                    // Coordinator follow-through for swarm events
+                    if !new_swarm_events.is_empty() && slot.coordinator.has_session() {
+                        let notification = format_system_notification(&new_swarm_events);
+                        info!("[{}] triggering coordinator follow-through ({} swarm event(s))", slot.name, new_swarm_events.len());
+
+                        let saved_turns = slot.coordinator.max_turns();
+                        slot.coordinator.set_max_turns(3);
+
+                        match slot.coordinator.handle_message(&notification, &slot.store, |_| {}).await {
+                            Ok(response) => {
+                                let response = response.trim().to_string();
+                                if !response.is_empty() && response.to_lowercase() != "ack" {
+                                    // Send to Telegram
+                                    if let Some(tg) = &slot.config.telegram
+                                        && let Some(channel) = telegram_channels.get(&tg.bot_token)
+                                    {
+                                        let msg = OutboundMessage {
+                                            chat_id: tg.chat_id,
+                                            text: response.clone(),
+                                            buttons: vec![],
+                                            topic_id: tg.topic_id,
+                                        };
+                                        if let Err(e) = channel.send_message(&msg).await {
+                                            error!("[{}] failed to send follow-through: {e}", slot.name);
+                                        }
+                                    }
+                                    // Broadcast to TUI
+                                    if let Some(ref server) = socket_server {
+                                        server.broadcast_activity("system", &slot.name, "assistant_message", &response);
+                                    }
+                                } else {
+                                    info!("[{}] coordinator ack'd swarm events (no message sent)", slot.name);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("[{}] coordinator follow-through failed: {e}", slot.name);
+                            }
+                        }
+
+                        slot.coordinator.set_max_turns(saved_turns);
+                    }
+                }
+            }
+
+            // ── TUI socket requests ──
+            Some(client_req) = tui_recv => {
+                match client_req.request {
+                    socket::DaemonRequest::Chat { ref workspace, ref text } => {
+                        let ws_name = workspace.clone();
+                        let user_text = text.clone();
+
+                        if let Some(&idx) = name_map.get(&ws_name) {
+                            let slot = &mut slots[idx];
+                            info!("[{}] TUI chat: {user_text}", slot.name);
+
+                            // Broadcast user message to all TUI clients
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity("tui", &ws_name, "user_message", &user_text);
+                            }
+
+                            let slot_name = slot.name.clone();
+                            let responder = client_req.responder.clone();
+
+                            match slot.coordinator.handle_message(&user_text, &slot.store, |event| {
+                                match event {
+                                    CoordinatorEvent::Token(t) => {
+                                        let _ = responder.send(socket::DaemonResponse::Token { text: t });
+                                    }
+                                    CoordinatorEvent::BashAudit { command, matched_pattern } => {
+                                        warn!(
+                                            "[{slot_name}] coordinator bash MUTATING ({matched_pattern}): {command}"
+                                        );
+                                    }
+                                    CoordinatorEvent::FilesModified { files } => {
+                                        let file_list: Vec<String> = files
+                                            .iter()
+                                            .map(|(repo, file)| format!("{repo}/{file}"))
+                                            .collect();
+                                        warn!(
+                                            "[{slot_name}] coordinator modified files: {}",
+                                            file_list.join(", ")
+                                        );
+                                    }
+                                }
+                            }).await {
+                                Ok(response) => {
+                                    let _ = client_req.responder.send(socket::DaemonResponse::Done);
+                                    // Broadcast completed assistant message to all TUI clients
+                                    if let Some(ref server) = socket_server {
+                                        server.broadcast_activity("tui", &ws_name, "assistant_message", &response);
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = client_req.responder.send(socket::DaemonResponse::Error {
+                                        text: format!("{e}"),
+                                    });
+                                }
+                            }
+                        } else {
+                            let _ = client_req.responder.send(socket::DaemonResponse::Error {
+                                text: format!("workspace '{ws_name}' not found"),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -313,12 +502,66 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
                             let slot = &mut slots[idx];
                             info!("[{}] message from {user_name}: {text}", slot.name);
 
+                            // Broadcast Telegram user message to TUI clients
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity("telegram", &slot.name, "user_message", &text);
+                            }
+
                             if let Some(channel) = get_channel(slot, &telegram_channels) {
                                 channel.send_typing(chat_id, topic_id).await;
                                 channel.send_reaction(chat_id, message_id, "🧠").await;
 
-                                match slot.coordinator.handle_message(&text, &slot.store).await {
+                                let slot_name = slot.name.clone();
+                                let mut alerts: Vec<String> = Vec::new();
+
+                                match slot.coordinator.handle_message(&text, &slot.store, |event| {
+                                    match event {
+                                        CoordinatorEvent::BashAudit { command, matched_pattern } => {
+                                            warn!(
+                                                "[{slot_name}] coordinator bash MUTATING ({matched_pattern}): {command}"
+                                            );
+                                        }
+                                        CoordinatorEvent::FilesModified { files } => {
+                                            let file_list: Vec<String> = files
+                                                .iter()
+                                                .map(|(repo, file)| format!("{repo}/{file}"))
+                                                .collect();
+                                            warn!(
+                                                "[{slot_name}] coordinator modified files: {}",
+                                                file_list.join(", ")
+                                            );
+                                            alerts.push(format!(
+                                                "⚠️ Coordinator modified workspace files:\n{}",
+                                                file_list
+                                                    .iter()
+                                                    .map(|f| format!("- `{f}`"))
+                                                    .collect::<Vec<_>>()
+                                                    .join("\n")
+                                            ));
+                                        }
+                                        CoordinatorEvent::Token(_) => {}
+                                    }
+                                }).await {
                                     Ok(response) => {
+                                        // Broadcast Telegram assistant response to TUI clients
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &response);
+                                        }
+
+                                        for alert in alerts {
+                                            let alert_msg = OutboundMessage {
+                                                chat_id,
+                                                text: alert.clone(),
+                                                buttons: vec![],
+                                                topic_id,
+                                            };
+                                            let _ = channel.send_message(&alert_msg).await;
+                                            // Broadcast safety alerts to TUI
+                                            if let Some(ref server) = socket_server {
+                                                server.broadcast_activity("system", &slot.name, "safety_alert", &alert);
+                                            }
+                                        }
+
                                         let msg = OutboundMessage {
                                             chat_id,
                                             text: response,
@@ -401,8 +644,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> Result<()> {
             }
         }
     }
-
-    Ok(())
 }
 
 /// Show open signals from the database.
@@ -483,8 +724,18 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
 
     let skill_ctx = build_skill_context(workspace_name, &ws.config);
     coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
+    if let Some(ref preamble) = skill_ctx.prompt_preamble {
+        coordinator.set_prompt_preamble(preamble.clone());
+    }
     coordinator.set_tools(default_coordinator_tools());
+    coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
     coordinator.set_working_dir(ws.config.root.clone());
+    if let Some(settings) = config::coordinator_settings_json() {
+        coordinator.set_settings(settings);
+    }
+    coordinator.set_safety_hooks(Box::new(GitSafetyHooks {
+        workspace_root: ws.config.root.clone(),
+    }));
 
     if !Coordinator::is_available().await {
         eprintln!("claude CLI not found — coordinator requires it");
@@ -493,7 +744,11 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
 
     if let Some(msg) = message {
         eprintln!("Thinking...");
-        let response = coordinator.handle_message(&msg, &store).await?;
+        let response = coordinator
+            .handle_message(&msg, &store, |event| {
+                print_event_to_stderr(&event);
+            })
+            .await?;
         println!("{response}");
     } else {
         println!("apiari chat [{workspace_name}] (type 'quit' to exit)\n");
@@ -514,7 +769,12 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
             }
 
             eprintln!("Thinking...");
-            match coordinator.handle_message(trimmed, &store).await {
+            match coordinator
+                .handle_message(trimmed, &store, |event| {
+                    print_event_to_stderr(&event);
+                })
+                .await
+            {
                 Ok(response) => println!("\n{response}\n"),
                 Err(e) => eprintln!("error: {e}"),
             }
@@ -522,6 +782,26 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
     }
 
     Ok(())
+}
+
+/// Print safety events to stderr for CLI chat.
+fn print_event_to_stderr(event: &CoordinatorEvent) {
+    match event {
+        CoordinatorEvent::BashAudit {
+            command,
+            matched_pattern,
+        } => {
+            eprintln!("Bash audit ({matched_pattern}): {command}");
+        }
+        CoordinatorEvent::FilesModified { files } => {
+            let list: Vec<String> = files
+                .iter()
+                .map(|(repo, file)| format!("  - {repo}/{file}"))
+                .collect();
+            eprintln!("Warning: coordinator modified workspace files:\n{}", list.join("\n"));
+        }
+        CoordinatorEvent::Token(_) => {}
+    }
 }
 
 /// Check if the daemon is currently running.
@@ -553,16 +833,17 @@ fn is_process_alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-/// Build a SkillContext from workspace config.
+/// Build a SkillContext, logging auto-discovered repos.
 fn build_skill_context(workspace_name: &str, config: &WorkspaceConfig) -> SkillContext {
-    SkillContext {
-        workspace_name: workspace_name.to_string(),
-        workspace_root: config.root.clone(),
-        config_path: config::workspaces_dir().join(format!("{workspace_name}.toml")),
-        repos: config.repos.clone(),
-        has_sentry: config.watchers.sentry.is_some(),
-        has_swarm: config.watchers.swarm.is_some(),
+    let ctx = config::build_skill_context(workspace_name, config);
+    if config.repos.is_empty() && !ctx.repos.is_empty() {
+        info!(
+            "[{workspace_name}] auto-discovered {} repo(s): {}",
+            ctx.repos.len(),
+            ctx.repos.join(", ")
+        );
     }
+    ctx
 }
 
 fn write_pid() -> Result<()> {
@@ -575,4 +856,20 @@ fn write_pid() -> Result<()> {
 
 fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
+}
+
+/// Format swarm events into a system notification for the coordinator.
+fn format_system_notification(events: &[String]) -> String {
+    let mut msg = String::from(
+        "[System notification — swarm activity]\n\
+         The following worker events just occurred:\n",
+    );
+    for e in events {
+        msg.push_str(&format!("- {e}\n"));
+    }
+    msg.push_str(
+        "\nIf any of these are relevant to your recent conversations, \
+         provide a brief contextual update. Otherwise respond with just \"ack\".",
+    );
+    msg
 }

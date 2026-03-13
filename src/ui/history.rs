@@ -14,6 +14,9 @@ pub struct ChatMessage {
     pub content: String,
     #[serde(default)]
     pub ts: DateTime<Utc>,
+    /// Origin of this message: "tui", "telegram", "system". None for legacy entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// Path to chat history for a workspace.

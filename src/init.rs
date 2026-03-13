@@ -6,13 +6,26 @@ use std::path::Path;
 use crate::config::workspaces_dir;
 
 /// Generate a template workspace TOML.
-fn workspace_template(root: &Path) -> String {
+fn workspace_template(root: &Path, coordinator_name: &str) -> String {
     let root_str = root.display();
     let swarm_state = root.join(".swarm/state.json");
+    let default_prompt = buzz::coordinator::prompt::default_preamble(coordinator_name);
+    // Indent for TOML multi-line string
+    let prompt_lines: String = default_prompt
+        .lines()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     format!(
         r#"root = "{root_str}"
-repos = []
+repos = []  # empty = auto-discover from workspace root
 
 # [telegram]
 # bot_token = "your-bot-token-from-botfather"
@@ -22,6 +35,8 @@ repos = []
 [coordinator]
 model = "sonnet"
 max_turns = 20
+prompt = """
+{prompt_lines}"""
 
 # [watchers.github]
 # repos = ["owner/repo"]
@@ -61,10 +76,10 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    let template = workspace_template(&cwd);
-    std::fs::write(&config_path, template)?;
+    let template = workspace_template(&cwd, "Bee");
+    std::fs::write(&config_path, &template)?;
     println!("Created workspace config: {}", config_path.display());
-    println!("Edit it to configure Telegram, watchers, etc.");
+    println!("Edit the [coordinator] prompt to customize behavior.");
 
     Ok(())
 }
