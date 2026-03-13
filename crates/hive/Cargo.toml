@@ -1,0 +1,40 @@
+[package]
+name = "hive"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Plan and coordinate the work. Quests, coordinator, context."
+
+[dependencies]
+apiari-common.workspace = true
+apiari-claude-sdk.workspace = true
+apiari-tui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap.workspace = true
+color-eyre.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+serde_yaml = "0.9"
+tokio-util = { version = "0.7", features = ["rt"] }
+toml = "0.8"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+croner = "3"
+dirs = "6"
+tempfile = "3"
+pulldown-cmark = "0.13"
+
+[dev-dependencies]
+mockall = "0.12"
+tokio-test = "0.4"
+tokio = { workspace = true, features = ["test-util"] }

@@ -1,0 +1,452 @@
+//! GitHub watcher — polls GitHub for events using the `gh` CLI.
+//!
+//! Queries open issues, PR review requests, watched labels, and failed CI.
+//! Uses cross-poll dedup to avoid re-firing for persistent conditions.
+
+use std::collections::HashSet;
+
+use async_trait::async_trait;
+use color_eyre::Result;
+use tracing::{info, warn};
+
+use super::Watcher;
+use crate::config::GithubWatcherConfig;
+use crate::signal::store::SignalStore;
+use crate::signal::{Severity, SignalUpdate};
+
+/// Watches GitHub repositories via the `gh` CLI.
+pub struct GithubWatcher {
+    config: GithubWatcherConfig,
+    gh_available: Option<bool>,
+    username: Option<String>,
+    /// Dedup keys from previous poll — only emit new signals.
+    seen: HashSet<String>,
+    /// External IDs from the last successful poll, for reconciliation.
+    /// `None` = never polled successfully, `Some(vec![])` = polled and got zero.
+    last_poll_ids: Option<Vec<String>>,
+}
+
+impl GithubWatcher {
+    pub fn new(config: GithubWatcherConfig) -> Self {
+        Self {
+            config,
+            gh_available: None,
+            username: None,
+            seen: HashSet::new(),
+            last_poll_ids: None,
+        }
+    }
+
+    async fn ensure_gh_available(&mut self) -> bool {
+        if let Some(available) = self.gh_available {
+            return available;
+        }
+
+        let which_result = tokio::process::Command::new("which")
+            .arg("gh")
+            .output()
+            .await;
+
+        match which_result {
+            Ok(output) if output.status.success() => {}
+            _ => {
+                warn!("gh CLI is not installed or not on PATH");
+                self.gh_available = Some(false);
+                return false;
+            }
+        }
+
+        let auth_result = tokio::process::Command::new("gh")
+            .args(["auth", "status"])
+            .output()
+            .await;
+
+        match auth_result {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!("gh is not authenticated: {}", stderr.trim());
+                self.gh_available = Some(false);
+                return false;
+            }
+            Err(e) => {
+                warn!("failed to check gh auth status: {e}");
+                self.gh_available = Some(false);
+                return false;
+            }
+        }
+
+        let user_result = tokio::process::Command::new("gh")
+            .args(["api", "user", "--jq", ".login"])
+            .output()
+            .await;
+
+        if let Ok(output) = user_result
+            && output.status.success()
+        {
+            self.username = Some(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        }
+
+        self.gh_available = Some(true);
+        true
+    }
+
+    async fn gh_api(&self, endpoint: &str) -> Option<serde_json::Value> {
+        let output = match tokio::process::Command::new("gh")
+            .args(["api", endpoint])
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            Err(e) => {
+                warn!("failed to run `gh api {endpoint}`: {e}");
+                return None;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("`gh api {endpoint}` failed: {}", stderr.trim());
+            return None;
+        }
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                warn!("failed to parse JSON from `gh api {endpoint}`: {e}");
+                None
+            }
+        }
+    }
+
+    async fn poll_repo(&self, repo: &str) -> Vec<(String, SignalUpdate)> {
+        let mut signals = Vec::new();
+
+        // Open issues assigned to user
+        if let Some(ref username) = self.username
+            && let Some(issues_value) = self
+                .gh_api(&format!(
+                    "repos/{repo}/issues?state=open&assignee={username}&per_page=10"
+                ))
+                .await
+            && let Some(issues) = issues_value.as_array()
+        {
+            for issue in issues {
+                if let Some((key, signal)) = issue_to_signal(repo, issue) {
+                    signals.push((key, signal));
+                }
+            }
+        }
+
+        // PR review requests
+        if let Some(search_value) = self
+            .gh_api(&format!(
+                "search/issues?q=repo:{repo}+type:pr+state:open+review-requested:@me&per_page=10"
+            ))
+            .await
+            && let Some(items) = search_value.get("items").and_then(|v| v.as_array())
+        {
+            for item in items {
+                if let Some((key, signal)) = review_request_to_signal(repo, item) {
+                    signals.push((key, signal));
+                }
+            }
+        }
+
+        // Watched labels
+        for label in &self.config.watch_labels {
+            if let Some(issues_value) = self
+                .gh_api(&format!(
+                    "repos/{repo}/issues?state=open&labels={label}&per_page=10"
+                ))
+                .await
+                && let Some(issues) = issues_value.as_array()
+            {
+                for issue in issues {
+                    if let Some((key, signal)) = labeled_issue_to_signal(repo, issue, label) {
+                        signals.push((key, signal));
+                    }
+                }
+            }
+        }
+
+        // Failed CI checks
+        if let Some(response) = self
+            .gh_api(&format!(
+                "repos/{repo}/commits/HEAD/check-runs?status=completed&per_page=10"
+            ))
+            .await
+            && let Some(check_runs) = response.get("check_runs").and_then(|v| v.as_array())
+        {
+            for run in check_runs {
+                if let Some((key, signal)) = check_run_to_signal(repo, run) {
+                    signals.push((key, signal));
+                }
+            }
+        }
+
+        signals
+    }
+}
+
+#[async_trait]
+impl Watcher for GithubWatcher {
+    fn name(&self) -> &str {
+        "github"
+    }
+
+    async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
+        if !self.ensure_gh_available().await {
+            return Ok(Vec::new());
+        }
+
+        let mut all_signals = Vec::new();
+        let mut current_keys: HashSet<String> = HashSet::new();
+
+        for repo in &self.config.repos.clone() {
+            let signals = self.poll_repo(repo).await;
+            for (key, signal) in signals {
+                current_keys.insert(key.clone());
+                if !self.seen.contains(&key) {
+                    all_signals.push(signal);
+                }
+            }
+        }
+
+        if !all_signals.is_empty() {
+            info!("github: {} new signal(s)", all_signals.len());
+        }
+
+        self.last_poll_ids = Some(current_keys.iter().cloned().collect());
+
+        // Prune seen set to only currently-active signals
+        self.seen = current_keys;
+
+        Ok(all_signals)
+    }
+
+    fn reconcile(&self, store: &SignalStore) -> Result<usize> {
+        let Some(ref ids) = self.last_poll_ids else {
+            return Ok(0); // Never polled yet — skip
+        };
+        let resolved = store.resolve_missing_signals("github", ids)?;
+        if resolved > 0 {
+            info!("github: reconciled {resolved} resolved signal(s)");
+        }
+        Ok(resolved)
+    }
+}
+
+fn has_label(issue: &serde_json::Value, label_name: &str) -> bool {
+    issue
+        .get("labels")
+        .and_then(|v| v.as_array())
+        .is_some_and(|labels| {
+            labels
+                .iter()
+                .any(|l| l.get("name").and_then(|n| n.as_str()) == Some(label_name))
+        })
+}
+
+fn issue_to_signal(repo: &str, issue: &serde_json::Value) -> Option<(String, SignalUpdate)> {
+    let number = issue.get("number")?.as_u64()?;
+    let title = issue.get("title")?.as_str()?;
+    let html_url = issue.get("html_url")?.as_str()?;
+    let body = issue.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+    let is_pr = issue.get("pull_request").is_some();
+    let kind = if is_pr { "pr" } else { "issue" };
+
+    let severity = if has_label(issue, "critical") || has_label(issue, "P0") {
+        Severity::Critical
+    } else if has_label(issue, "bug") || has_label(issue, "P1") {
+        Severity::Warning
+    } else {
+        Severity::Info
+    };
+
+    let key = format!("gh-{kind}-{repo}-{number}");
+    let signal = SignalUpdate::new(
+        "github",
+        &key,
+        format!("[{repo}] {kind} #{number}: {title}"),
+        severity,
+    )
+    .with_body(body)
+    .with_url(html_url);
+
+    Some((key, signal))
+}
+
+fn review_request_to_signal(
+    repo: &str,
+    item: &serde_json::Value,
+) -> Option<(String, SignalUpdate)> {
+    let number = item.get("number")?.as_u64()?;
+    let title = item.get("title")?.as_str()?;
+    let html_url = item.get("html_url")?.as_str()?;
+
+    let key = format!("gh-review-{repo}-{number}");
+    let signal = SignalUpdate::new(
+        "github",
+        &key,
+        format!("[{repo}] review requested: PR #{number}: {title}"),
+        Severity::Warning,
+    )
+    .with_body(format!(
+        "Your review is requested on PR #{number} in {repo}"
+    ))
+    .with_url(html_url);
+
+    Some((key, signal))
+}
+
+fn labeled_issue_to_signal(
+    repo: &str,
+    issue: &serde_json::Value,
+    label: &str,
+) -> Option<(String, SignalUpdate)> {
+    let number = issue.get("number")?.as_u64()?;
+    let title = issue.get("title")?.as_str()?;
+    let html_url = issue.get("html_url")?.as_str()?;
+
+    let is_pr = issue.get("pull_request").is_some();
+    let kind = if is_pr { "pr" } else { "issue" };
+
+    let severity = if label == "critical" || label == "P0" {
+        Severity::Critical
+    } else if label == "bug" || label == "P1" {
+        Severity::Warning
+    } else {
+        Severity::Info
+    };
+
+    let key = format!("gh-label-{label}-{repo}-{number}");
+    let signal = SignalUpdate::new(
+        "github",
+        &key,
+        format!("[{repo}] [{label}] {kind} #{number}: {title}"),
+        severity,
+    )
+    .with_body(format!("{kind} #{number} has label '{label}' in {repo}"))
+    .with_url(html_url);
+
+    Some((key, signal))
+}
+
+fn check_run_to_signal(repo: &str, run: &serde_json::Value) -> Option<(String, SignalUpdate)> {
+    let conclusion = run.get("conclusion")?.as_str()?;
+    if conclusion != "failure" {
+        return None;
+    }
+
+    let name = run.get("name")?.as_str()?;
+    let html_url = run.get("html_url").and_then(|v| v.as_str()).unwrap_or("");
+    let id = run.get("id")?.as_u64()?;
+
+    let key = format!("gh-ci-{repo}-{id}");
+    let mut signal = SignalUpdate::new(
+        "github",
+        &key,
+        format!("[{repo}] CI failed: {name}"),
+        Severity::Warning,
+    )
+    .with_body(format!("Check run '{name}' failed on {repo}"));
+
+    if !html_url.is_empty() {
+        signal = signal.with_url(html_url);
+    }
+
+    Some((key, signal))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_issue_to_signal() {
+        let issue = serde_json::json!({
+            "number": 42,
+            "title": "Something broke",
+            "html_url": "https://github.com/org/repo/issues/42",
+            "body": "It's broken",
+            "labels": [{"name": "bug"}],
+        });
+        let (key, signal) = issue_to_signal("org/repo", &issue).unwrap();
+        assert_eq!(key, "gh-issue-org/repo-42");
+        assert_eq!(signal.severity, Severity::Warning); // "bug" label
+        assert!(signal.title.contains("#42"));
+    }
+
+    #[test]
+    fn test_issue_to_signal_pr() {
+        let issue = serde_json::json!({
+            "number": 10,
+            "title": "Add feature",
+            "html_url": "https://github.com/org/repo/pull/10",
+            "pull_request": {},
+            "labels": [],
+        });
+        let (key, _) = issue_to_signal("org/repo", &issue).unwrap();
+        assert!(key.starts_with("gh-pr-"));
+    }
+
+    #[test]
+    fn test_review_request_to_signal() {
+        let item = serde_json::json!({
+            "number": 5,
+            "title": "Review me",
+            "html_url": "https://github.com/org/repo/pull/5",
+        });
+        let (key, signal) = review_request_to_signal("org/repo", &item).unwrap();
+        assert_eq!(key, "gh-review-org/repo-5");
+        assert_eq!(signal.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn test_check_run_failure() {
+        let run = serde_json::json!({
+            "id": 999,
+            "name": "CI Build",
+            "conclusion": "failure",
+            "html_url": "https://github.com/org/repo/actions/runs/999",
+        });
+        let (key, signal) = check_run_to_signal("org/repo", &run).unwrap();
+        assert_eq!(key, "gh-ci-org/repo-999");
+        assert!(signal.title.contains("CI failed"));
+    }
+
+    #[test]
+    fn test_check_run_success_ignored() {
+        let run = serde_json::json!({
+            "id": 999,
+            "name": "CI Build",
+            "conclusion": "success",
+        });
+        assert!(check_run_to_signal("org/repo", &run).is_none());
+    }
+
+    #[test]
+    fn test_has_label() {
+        let issue = serde_json::json!({
+            "labels": [{"name": "bug"}, {"name": "P1"}],
+        });
+        assert!(has_label(&issue, "bug"));
+        assert!(has_label(&issue, "P1"));
+        assert!(!has_label(&issue, "P0"));
+    }
+
+    #[test]
+    fn test_labeled_issue_critical() {
+        let issue = serde_json::json!({
+            "number": 1,
+            "title": "Critical issue",
+            "html_url": "https://example.com",
+            "labels": [],
+        });
+        let (_, signal) = labeled_issue_to_signal("org/repo", &issue, "critical").unwrap();
+        assert_eq!(signal.severity, Severity::Critical);
+    }
+}

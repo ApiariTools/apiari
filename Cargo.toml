@@ -1,32 +1,37 @@
-[package]
-name = "apiari"
-version = "0.1.0"
-edition.workspace = true
-license.workspace = true
+[workspace]
+resolver = "3"
+members = [
+    "crates/apiari",
+    "crates/hive",
+    "crates/buzz",
+    "crates/claude-sdk",
+    "crates/codex-sdk",
+]
 
-[[bin]]
-name = "apiari"
-path = "src/main.rs"
+[workspace.package]
+edition = "2024"
+license = "MIT"
 
-[dependencies]
-buzz = { path = "../buzz" }
-apiari-claude-sdk = { path = "../claude-sdk" }
-apiari-tui.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-clap.workspace = true
-color-eyre.workspace = true
-chrono.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-toml = "0.8"
-dirs = "6"
-libc = "0.2"
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-ratatui.workspace = true
-crossterm.workspace = true
-futures = "0.3"
-
-[dev-dependencies]
-tempfile = "3"
+libc = "0.2"
+apiari-common = "0.1.0"
+apiari-tui = "0.1.0"
+apiari-claude-sdk = { path = "crates/claude-sdk" }
+apiari-codex-sdk = { path = "crates/codex-sdk" }
+buzz = { path = "crates/buzz" }
