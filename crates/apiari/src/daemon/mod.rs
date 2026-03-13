@@ -152,9 +152,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             && gh_config.enabled
         {
             info!(
-                "[{}] enabling github watcher ({} repo(s))",
+                "[{}] github watcher: watching {} repo(s): {}",
                 ws.name,
-                gh_config.repos.len()
+                gh_config.repos.len(),
+                gh_config.repos.join(", ")
             );
             registry.add(Box::new(GithubWatcher::new(gh_config.clone())));
         }

@@ -311,7 +311,11 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> buzz::config::BuzzConfig {
                 .map(|g| buzz::config::GithubWatcherConfig {
                     enabled: true,
                     interval_secs: g.interval_secs,
-                    repos: g.repos.clone(),
+                    repos: if g.repos.is_empty() {
+                        discover_repos(&ws.root)
+                    } else {
+                        g.repos.clone()
+                    },
                     watch_labels: vec![],
                 }),
             sentry: ws
