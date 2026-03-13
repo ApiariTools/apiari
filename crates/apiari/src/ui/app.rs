@@ -102,9 +102,11 @@ pub struct WorkerInfo {
     pub id: String,
     pub branch: String,
     pub prompt: String,
+    #[allow(dead_code)]
     pub agent_kind: String,
     pub phase: Option<String>,
     pub agent_session_status: Option<String>,
+    #[allow(dead_code)]
     pub summary: Option<String>,
     pub created_at: Option<DateTime<Local>>,
     pub pr: Option<PrInfo>,

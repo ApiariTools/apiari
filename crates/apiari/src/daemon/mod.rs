@@ -317,17 +317,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, true)) => {
                                             // Collect new swarm signals for coordinator follow-through
-                                            if watcher_name == "swarm" {
-                                                if let Ok(Some(record)) = slot.store.get_signal(id) {
-                                                    let desc = if let Some(ref url) = record.url {
-                                                        format!("{} ({})", record.title, url)
-                                                    } else if let Some(ref body) = record.body {
-                                                        format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
-                                                    } else {
-                                                        record.title.clone()
-                                                    };
-                                                    new_swarm_events.push(desc);
-                                                }
+                                            if watcher_name == "swarm"
+                                                && let Ok(Some(record)) = slot.store.get_signal(id)
+                                            {
+                                                let desc = if let Some(ref url) = record.url {
+                                                    format!("{} ({})", record.title, url)
+                                                } else if let Some(ref body) = record.body {
+                                                    format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
+                                                } else {
+                                                    record.title.clone()
+                                                };
+                                                new_swarm_events.push(desc);
                                             }
 
                                             if let Ok(Some(record)) = slot.store.get_signal(id)

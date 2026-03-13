@@ -132,6 +132,7 @@ impl DaemonSocketServer {
     }
 
     /// Check if any TUI clients are connected.
+    #[allow(dead_code)]
     pub fn has_clients(&self) -> bool {
         self.activity_tx.receiver_count() > 0
     }

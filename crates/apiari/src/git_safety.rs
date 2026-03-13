@@ -63,15 +63,14 @@ impl GitSnapshot {
                 .args(["status", "--porcelain"])
                 .current_dir(&path)
                 .output()
+                && output.status.success()
             {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    for line in stdout.lines() {
-                        // porcelain format: "XY filename" (3 chars prefix)
-                        if line.len() > 3 {
-                            let file = line[3..].trim().to_string();
-                            dirty_files.insert((repo_name.clone(), file));
-                        }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    // porcelain format: "XY filename" (3 chars prefix)
+                    if line.len() > 3 {
+                        let file = line[3..].trim().to_string();
+                        dirty_files.insert((repo_name.clone(), file));
                     }
                 }
             }

@@ -209,7 +209,7 @@ async fn event_loop(
                 app.spinner_tick = app.spinner_tick.wrapping_add(1);
 
                 // Push activity value: streaming = rollercoaster, idle = heartbeat blip
-                let streaming = app.current_ws().map_or(false, |ws| ws.streaming);
+                let streaming = app.current_ws().is_some_and(|ws| ws.streaming);
                 let val = if streaming {
                     // Rollercoaster: use layered sine for organic tall values (3-7)
                     let t = app.spinner_tick as f64;

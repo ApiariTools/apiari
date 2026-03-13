@@ -182,30 +182,29 @@ impl Coordinator {
             } => {
                 // Audit Bash tool uses
                 for tool_use in tool_uses {
-                    if tool_use.name == "Bash" {
-                        if let Some(command) = tool_use.input.get("command").and_then(|v| v.as_str())
-                        {
-                            let classification = audit::classify_bash_command(command);
-                            match &classification {
-                                audit::BashClassification::ReadOnly => {
-                                    info!(
-                                        "[coordinator] bash (read-only): {}",
-                                        truncate_cmd(command)
-                                    );
-                                }
-                                audit::BashClassification::PotentiallyMutating {
+                    if tool_use.name == "Bash"
+                        && let Some(command) = tool_use.input.get("command").and_then(|v| v.as_str())
+                    {
+                        let classification = audit::classify_bash_command(command);
+                        match &classification {
+                            audit::BashClassification::ReadOnly => {
+                                info!(
+                                    "[coordinator] bash (read-only): {}",
+                                    truncate_cmd(command)
+                                );
+                            }
+                            audit::BashClassification::PotentiallyMutating {
+                                matched_pattern,
+                            } => {
+                                warn!(
+                                    "[coordinator] bash MUTATING ({}): {}",
                                     matched_pattern,
-                                } => {
-                                    warn!(
-                                        "[coordinator] bash MUTATING ({}): {}",
-                                        matched_pattern,
-                                        truncate_cmd(command)
-                                    );
-                                    events.push(CoordinatorEvent::BashAudit {
-                                        command: command.to_string(),
-                                        matched_pattern: matched_pattern.clone(),
-                                    });
-                                }
+                                    truncate_cmd(command)
+                                );
+                                events.push(CoordinatorEvent::BashAudit {
+                                    command: command.to_string(),
+                                    matched_pattern: matched_pattern.clone(),
+                                });
                             }
                         }
                     }
