@@ -93,9 +93,7 @@ pub(crate) fn is_process_alive(pid: u32) -> bool {
 /// where `<sanitized-path>` is the absolute workspace path with `/` replaced by `-`.
 fn claude_memory_path(workspace_root: &Path) -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let sanitized = workspace_root
-        .to_string_lossy()
-        .replace('/', "-");
+    let sanitized = workspace_root.to_string_lossy().replace('/', "-");
     home.join(".claude/projects")
         .join(sanitized)
         .join("memory/MEMORY.md")
@@ -2723,20 +2721,18 @@ impl DaemonRunner {
     async fn handle_remember_command(&mut self, chat_id: i64, args: &str) -> Result<()> {
         let text = args.trim();
         if text.is_empty() {
-            return self
-                .send(chat_id, "Usage: /remember <text to save>")
-                .await;
+            return self.send(chat_id, "Usage: /remember <text to save>").await;
         }
 
         let memory_path = claude_memory_path(&self.active_ws().workspace_root);
 
         // Ensure the memory directory exists.
-        if let Some(parent) = memory_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return self
-                    .send(chat_id, &format!("Failed to create memory directory: {e}"))
-                    .await;
-            }
+        if let Some(parent) = memory_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return self
+                .send(chat_id, &format!("Failed to create memory directory: {e}"))
+                .await;
         }
 
         // Append the entry (with a blank line before for clean markdown).
