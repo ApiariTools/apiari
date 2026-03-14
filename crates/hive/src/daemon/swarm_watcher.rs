@@ -157,6 +157,13 @@ pub enum SwarmNotification {
         summary: Option<String>,
         pr_url: Option<String>,
     },
+    /// A worker closed without opening a PR and lived less than 5 minutes.
+    FastFail {
+        worktree_id: String,
+        branch: String,
+        summary: Option<String>,
+        duration_secs: u64,
+    },
 }
 
 /// What kind of stall was detected.
@@ -243,6 +250,17 @@ impl SwarmNotification {
                     "⏳ *Worker waiting* — {lead}\nBranch: `{branch}`{pr_line}\nReply here to send a message to this worker."
                 )
             }
+            Self::FastFail {
+                branch,
+                summary,
+                duration_secs,
+                ..
+            } => {
+                let lead = summary_or_short(summary, branch);
+                format!(
+                    "⚠️ *Fast fail* — Worker {lead} closed without opening a PR (lived {duration_secs}s) — may have failed\nBranch: `{branch}`"
+                )
+            }
         }
     }
 
@@ -290,6 +308,14 @@ impl SwarmNotification {
                 let short = short_branch(branch);
                 format!("Worker waiting — {short}")
             }
+            Self::FastFail {
+                branch,
+                duration_secs,
+                ..
+            } => {
+                let short = short_branch(branch);
+                format!("Fast fail — {short} (lived {duration_secs}s)")
+            }
         }
     }
 
@@ -336,7 +362,10 @@ impl SwarmNotification {
                     callback_data: format!("close_worker:{worktree_id}"),
                 }]]
             }
-            Self::AgentSpawned { .. } | Self::AgentCompleted { .. } | Self::AgentClosed { .. } => {
+            Self::AgentSpawned { .. }
+            | Self::AgentCompleted { .. }
+            | Self::AgentClosed { .. }
+            | Self::FastFail { .. } => {
                 vec![]
             }
         }
@@ -350,7 +379,8 @@ impl SwarmNotification {
             | Self::AgentClosed { worktree_id, .. }
             | Self::PrOpened { worktree_id, .. }
             | Self::AgentStalled { worktree_id, .. }
-            | Self::AgentWaiting { worktree_id, .. } => worktree_id,
+            | Self::AgentWaiting { worktree_id, .. }
+            | Self::FastFail { worktree_id, .. } => worktree_id,
         }
     }
 
@@ -452,6 +482,8 @@ struct TrackedWorktree {
     branch: String,
     had_agent: bool,
     created_at: DateTime<Local>,
+    /// When the worker was first seen as spawned (phase → running).
+    spawned_at: Option<DateTime<Utc>>,
     /// Whether a stall notification has already been sent for this worktree.
     stall_notified: bool,
     agent_kind: Option<String>,
@@ -670,12 +702,19 @@ impl SwarmWatcher {
         self.initialized = true;
 
         for wt in &state.worktrees {
+            // For workers already running at init, record their created_at as spawned_at.
+            let spawned_at = if wt.agent.is_some() {
+                Some(wt.created_at.with_timezone(&Utc))
+            } else {
+                None
+            };
             self.known.insert(
                 wt.id.clone(),
                 TrackedWorktree {
                     branch: wt.branch.clone(),
                     had_agent: wt.agent.is_some(),
                     created_at: wt.created_at,
+                    spawned_at,
                     stall_notified: false,
                     agent_kind: wt.agent_kind.clone(),
                     pr_url: wt.pr_url(),
@@ -740,6 +779,10 @@ impl SwarmWatcher {
                     WorkerPhase::Running
                         if matches!(from, WorkerPhase::Creating | WorkerPhase::Starting) =>
                     {
+                        // Record spawned_at for fast-fail detection.
+                        if let Some(tracked) = self.known.get_mut(worktree) {
+                            tracked.spawned_at = Some(Utc::now());
+                        }
                         let ctx = self.event_context(worktree, current);
                         notifications.push(SwarmNotification::AgentSpawned {
                             worktree_id: worktree.clone(),
@@ -763,11 +806,19 @@ impl SwarmWatcher {
                         let ctx = self.event_context(worktree, current);
                         notifications.push(SwarmNotification::AgentCompleted {
                             worktree_id: worktree.clone(),
-                            branch: ctx.branch,
-                            summary: ctx.summary,
+                            branch: ctx.branch.clone(),
+                            summary: ctx.summary.clone(),
                             duration: ctx.duration,
-                            pr_url: ctx.pr_url,
+                            pr_url: ctx.pr_url.clone(),
                         });
+                        // Fast-fail: closed without PR and lived < 5 minutes.
+                        if ctx.pr_url.is_none() {
+                            if let Some(fast_fail) =
+                                self.check_fast_fail(worktree, &ctx.branch, &ctx.summary)
+                            {
+                                notifications.push(fast_fail);
+                            }
+                        }
                     }
                     _ => {} // Creating, Starting, Unknown — no notification
                 },
@@ -795,11 +846,19 @@ impl SwarmWatcher {
                     let ctx = self.event_context(worktree, current);
                     notifications.push(SwarmNotification::AgentClosed {
                         worktree_id: worktree.clone(),
-                        branch: ctx.branch,
-                        summary: ctx.summary,
+                        branch: ctx.branch.clone(),
+                        summary: ctx.summary.clone(),
                         duration: ctx.duration,
-                        pr_url: ctx.pr_url,
+                        pr_url: ctx.pr_url.clone(),
                     });
+                    // Fast-fail: closed without PR and lived < 5 minutes.
+                    if ctx.pr_url.is_none() {
+                        if let Some(fast_fail) =
+                            self.check_fast_fail(worktree, &ctx.branch, &ctx.summary)
+                        {
+                            notifications.push(fast_fail);
+                        }
+                    }
                 }
                 SwarmEventMirror::Unknown => {} // Forward compat: silently skip
             }
@@ -808,26 +867,26 @@ impl SwarmWatcher {
 
     /// Update known state from current state.json snapshot.
     fn update_known(&mut self, state: &SwarmState) {
-        let old_stall: HashMap<String, bool> = self
-            .known
-            .iter()
-            .map(|(id, t)| (id.clone(), t.stall_notified))
-            .collect();
-        self.known.clear();
+        let old: HashMap<String, &TrackedWorktree> =
+            self.known.iter().map(|(id, t)| (id.clone(), t)).collect();
+        let mut new_known = HashMap::new();
         for wt in &state.worktrees {
-            self.known.insert(
+            let prev = old.get(&wt.id);
+            new_known.insert(
                 wt.id.clone(),
                 TrackedWorktree {
                     branch: wt.branch.clone(),
                     had_agent: wt.agent.is_some(),
                     created_at: wt.created_at,
-                    stall_notified: old_stall.get(&wt.id).copied().unwrap_or(false),
+                    spawned_at: prev.and_then(|t| t.spawned_at),
+                    stall_notified: prev.map(|t| t.stall_notified).unwrap_or(false),
                     agent_kind: wt.agent_kind.clone(),
                     pr_url: wt.pr_url(),
                     summary: wt.summary.clone(),
                 },
             );
         }
+        self.known = new_known;
     }
 
     /// Re-emit notifications for workers that were already waiting or had PRs at init.
@@ -907,6 +966,34 @@ impl SwarmWatcher {
             summary: None,
             pr_url: None,
             duration: "?".to_string(),
+        }
+    }
+
+    /// Check if a worker qualifies as a fast-fail: spawned → closed without
+    /// ever opening a PR, and lived less than 5 minutes.
+    fn check_fast_fail(
+        &self,
+        worktree_id: &str,
+        branch: &str,
+        summary: &Option<String>,
+    ) -> Option<SwarmNotification> {
+        const FAST_FAIL_THRESHOLD_SECS: u64 = 300; // 5 minutes
+
+        let spawned_at = self
+            .known
+            .get(worktree_id)
+            .and_then(|t| t.spawned_at)?;
+
+        let elapsed = (Utc::now() - spawned_at).num_seconds().max(0) as u64;
+        if elapsed < FAST_FAIL_THRESHOLD_SECS {
+            Some(SwarmNotification::FastFail {
+                worktree_id: worktree_id.to_string(),
+                branch: branch.to_string(),
+                summary: summary.clone(),
+                duration_secs: elapsed,
+            })
+        } else {
+            None
         }
     }
 
@@ -2200,5 +2287,141 @@ mod tests {
         let json = r#"{"event":"agent_started","worktree":"w1","pane_id":"%1","timestamp":"2026-02-26T10:00:00-08:00"}"#;
         let event: SwarmEventMirror = serde_json::from_str(json).unwrap();
         assert!(matches!(event, SwarmEventMirror::Unknown));
+    }
+
+    // --- Fast-fail detection tests ---
+
+    #[test]
+    fn test_fast_fail_on_worktree_closed_without_pr() {
+        let (mut watcher, dir) = setup_event_watcher(
+            r#"{"worktrees":[{"id":"w1","branch":"swarm/quick-fail","agent":{"pane_id":"%1"},"created_at":"2026-02-26T10:00:00-08:00","summary":"Fix bug"}]}"#,
+        );
+
+        // Worker transitions: starting → running (spawned_at recorded).
+        append_event(
+            &dir,
+            r#"{"event":"phase_changed","worktree":"w1","from":"starting","to":"running","timestamp":"2026-02-26T10:00:05-08:00"}"#,
+        );
+        let notes = watcher.poll();
+        assert!(notes.iter().any(|n| matches!(n, SwarmNotification::AgentSpawned { .. })));
+
+        // Worker closes immediately (no PR, < 5 min from spawned_at).
+        update_state(&dir, r#"{"worktrees":[]}"#);
+        append_event(
+            &dir,
+            r#"{"event":"worktree_closed","worktree":"w1","timestamp":"2026-02-26T10:01:00-08:00"}"#,
+        );
+        let notes = watcher.poll();
+
+        let fast_fails: Vec<_> = notes
+            .iter()
+            .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
+            .collect();
+        assert_eq!(fast_fails.len(), 1, "should emit FastFail for short-lived worker without PR");
+
+        let msg = fast_fails[0].format_telegram();
+        assert!(msg.contains("Fast fail"), "message should mention fast fail");
+        assert!(msg.contains("Fix bug"), "message should include summary");
+        assert!(msg.contains("without opening a PR"), "message should mention no PR");
+    }
+
+    #[test]
+    fn test_fast_fail_on_phase_failed_without_pr() {
+        let (mut watcher, dir) = setup_event_watcher(
+            r#"{"worktrees":[{"id":"w1","branch":"swarm/broken","agent":{"pane_id":"%1"},"created_at":"2026-02-26T10:00:00-08:00"}]}"#,
+        );
+
+        // Spawn the worker.
+        append_event(
+            &dir,
+            r#"{"event":"phase_changed","worktree":"w1","from":"creating","to":"running","timestamp":"2026-02-26T10:00:02-08:00"}"#,
+        );
+        watcher.poll();
+
+        // Worker fails immediately.
+        append_event(
+            &dir,
+            r#"{"event":"phase_changed","worktree":"w1","from":"running","to":"failed","timestamp":"2026-02-26T10:00:30-08:00"}"#,
+        );
+        let notes = watcher.poll();
+
+        let fast_fails: Vec<_> = notes
+            .iter()
+            .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
+            .collect();
+        assert_eq!(fast_fails.len(), 1, "should emit FastFail for failed worker without PR");
+    }
+
+    #[test]
+    fn test_no_fast_fail_when_pr_exists() {
+        let (mut watcher, dir) = setup_event_watcher(
+            r#"{"worktrees":[{"id":"w1","branch":"swarm/good","agent":{"pane_id":"%1"},"created_at":"2026-02-26T10:00:00-08:00","pr":{"url":"https://github.com/ex/pull/1","title":"Good PR"}}]}"#,
+        );
+
+        // Spawn the worker.
+        append_event(
+            &dir,
+            r#"{"event":"phase_changed","worktree":"w1","from":"starting","to":"running","timestamp":"2026-02-26T10:00:05-08:00"}"#,
+        );
+        watcher.poll();
+
+        // Worker closes quickly but has a PR.
+        update_state(&dir, r#"{"worktrees":[]}"#);
+        append_event(
+            &dir,
+            r#"{"event":"worktree_closed","worktree":"w1","timestamp":"2026-02-26T10:01:00-08:00"}"#,
+        );
+        let notes = watcher.poll();
+
+        let fast_fails: Vec<_> = notes
+            .iter()
+            .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
+            .collect();
+        assert!(fast_fails.is_empty(), "should NOT emit FastFail when worker has a PR");
+    }
+
+    #[test]
+    fn test_no_fast_fail_when_never_spawned() {
+        let (_watcher, _dir) = setup_event_watcher(
+            r#"{"worktrees":[{"id":"w1","branch":"swarm/never-ran","agent":{"pane_id":"%1"},"created_at":"2026-02-26T10:00:00-08:00"}]}"#,
+        );
+
+        // Worker closes without ever transitioning to running (no spawned_at).
+        // Use a worker with no agent so spawned_at is None.
+        let (mut watcher, dir) = setup_event_watcher(
+            r#"{"worktrees":[{"id":"w1","branch":"swarm/never-ran","created_at":"2026-02-26T10:00:00-08:00"}]}"#,
+        );
+
+        update_state(&dir, r#"{"worktrees":[]}"#);
+        append_event(
+            &dir,
+            r#"{"event":"worktree_closed","worktree":"w1","timestamp":"2026-02-26T10:01:00-08:00"}"#,
+        );
+        let notes = watcher.poll();
+
+        let fast_fails: Vec<_> = notes
+            .iter()
+            .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
+            .collect();
+        assert!(fast_fails.is_empty(), "should NOT emit FastFail when worker was never spawned");
+    }
+
+    #[test]
+    fn test_fast_fail_format_telegram() {
+        let ff = SwarmNotification::FastFail {
+            worktree_id: "w1".into(),
+            branch: "swarm/broke".into(),
+            summary: Some("Fix auth".into()),
+            duration_secs: 42,
+        };
+        let msg = ff.format_telegram();
+        assert!(msg.contains("Fast fail"));
+        assert!(msg.contains("Fix auth"));
+        assert!(msg.contains("42s"));
+        assert!(msg.contains("without opening a PR"));
+
+        let line = ff.summary_line();
+        assert!(line.contains("Fast fail"));
+        assert!(line.contains("42s"));
     }
 }
