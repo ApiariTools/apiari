@@ -1716,9 +1716,6 @@ impl DaemonRunner {
             )
             .await;
 
-            // Stop typing indicator.
-            typing_cancel.cancel();
-
             let outcome = match result {
                 Ok((final_text, session_id, turn_dispatches)) => {
                     // Extract buttons and dispatch blocks from the response.
@@ -1782,6 +1779,9 @@ impl DaemonRunner {
                     }
                 }
             };
+
+            // Stop typing indicator now that all messages have been sent.
+            typing_cancel.cancel();
 
             // Send result back to the main loop for state mutations.
             let _ = msg_done_tx.send(MessageResult {
