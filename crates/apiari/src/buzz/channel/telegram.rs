@@ -153,8 +153,18 @@ impl TelegramChannel {
             .send()
             .await;
 
-        if let Err(e) = resp {
-            warn!("setMessageReaction failed: {e}");
+        match resp {
+            Err(e) => {
+                warn!("setMessageReaction failed: {e}");
+            }
+            Ok(resp) => {
+                if let Ok(body) = resp.json::<TgResponse<serde_json::Value>>().await {
+                    if !body.ok {
+                        let desc = body.description.unwrap_or_default();
+                        warn!("setMessageReaction failed: {desc}");
+                    }
+                }
+            }
         }
     }
 

@@ -522,7 +522,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             }
 
                             if let Some(channel) = get_channel(slot, &telegram_channels) {
-                                channel.send_reaction(chat_id, message_id, "🧠").await;
+                                channel.send_reaction(chat_id, message_id, "👀").await;
 
                                 // Start typing indicator loop (expires after ~5s, so resend every 4s).
                                 let typing_cancel = CancellationToken::new();
