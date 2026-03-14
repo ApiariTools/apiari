@@ -2927,7 +2927,8 @@ impl DaemonRunner {
                     swarm_watcher::SwarmNotification::PrOpened { .. }
                     | swarm_watcher::SwarmNotification::AgentSpawned { .. }
                     | swarm_watcher::SwarmNotification::AgentStalled { .. }
-                    | swarm_watcher::SwarmNotification::AgentWaiting { .. } => {}
+                    | swarm_watcher::SwarmNotification::AgentWaiting { .. }
+                    | swarm_watcher::SwarmNotification::FastFail { .. } => {}
                 }
             }
 
@@ -3855,7 +3856,8 @@ fn notification_to_ui_event(
                 worktree_id: worktree_id.clone(),
             })
         }
-        swarm_watcher::SwarmNotification::AgentSpawned { .. } => None,
+        swarm_watcher::SwarmNotification::AgentSpawned { .. }
+        | swarm_watcher::SwarmNotification::FastFail { .. } => None,
     }
 }
 
