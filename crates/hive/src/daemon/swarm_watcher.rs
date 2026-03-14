@@ -812,12 +812,11 @@ impl SwarmWatcher {
                             pr_url: ctx.pr_url.clone(),
                         });
                         // Fast-fail: closed without PR and lived < 5 minutes.
-                        if ctx.pr_url.is_none() {
-                            if let Some(fast_fail) =
+                        if ctx.pr_url.is_none()
+                            && let Some(fast_fail) =
                                 self.check_fast_fail(worktree, &ctx.branch, &ctx.summary)
-                            {
-                                notifications.push(fast_fail);
-                            }
+                        {
+                            notifications.push(fast_fail);
                         }
                     }
                     _ => {} // Creating, Starting, Unknown — no notification
@@ -852,12 +851,11 @@ impl SwarmWatcher {
                         pr_url: ctx.pr_url.clone(),
                     });
                     // Fast-fail: closed without PR and lived < 5 minutes.
-                    if ctx.pr_url.is_none() {
-                        if let Some(fast_fail) =
+                    if ctx.pr_url.is_none()
+                        && let Some(fast_fail) =
                             self.check_fast_fail(worktree, &ctx.branch, &ctx.summary)
-                        {
-                            notifications.push(fast_fail);
-                        }
+                    {
+                        notifications.push(fast_fail);
                     }
                 }
                 SwarmEventMirror::Unknown => {} // Forward compat: silently skip
