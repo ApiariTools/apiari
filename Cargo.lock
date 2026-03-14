@@ -137,6 +137,8 @@ dependencies = [
 [[package]]
 name = "apiari-claude-sdk"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bcc19084bb2861ba4976032ce8c0e4fc72f650699c98bf3560a479118ae082b5"
 dependencies = [
  "chrono",
  "libc",
@@ -146,18 +148,6 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "apiari-codex-sdk"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
 ]
 
 [[package]]
