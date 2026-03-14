@@ -8,6 +8,7 @@ pub mod socket;
 use color_eyre::eyre::{Result, WrapErr};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::git_safety::GitSafetyHooks;
@@ -521,8 +522,23 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             }
 
                             if let Some(channel) = get_channel(slot, &telegram_channels) {
-                                channel.send_typing(chat_id, topic_id).await;
                                 channel.send_reaction(chat_id, message_id, "🧠").await;
+
+                                // Start typing indicator loop (expires after ~5s, so resend every 4s).
+                                let typing_cancel = CancellationToken::new();
+                                {
+                                    let typing_token = typing_cancel.clone();
+                                    let typing_channel = channel.clone();
+                                    tokio::spawn(async move {
+                                        loop {
+                                            typing_channel.send_typing(chat_id, topic_id).await;
+                                            tokio::select! {
+                                                _ = typing_token.cancelled() => break,
+                                                _ = tokio::time::sleep(std::time::Duration::from_secs(4)) => {}
+                                            }
+                                        }
+                                    });
+                                }
 
                                 let slot_name = slot.name.clone();
                                 let mut alerts: Vec<String> = Vec::new();
@@ -596,6 +612,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&msg).await;
                                     }
                                 }
+
+                                // Stop typing indicator after all messages are sent.
+                                typing_cancel.cancel();
                             }
                         } else {
                             warn!("no workspace route for chat_id={chat_id} topic_id={topic_id:?}");
