@@ -55,9 +55,9 @@ pub enum MessageSource {
 
 #[derive(Debug, Clone)]
 pub enum ChatLine {
-    User(String, String, Option<MessageSource>),      // content, timestamp, source
+    User(String, String, Option<MessageSource>), // content, timestamp, source
     Assistant(String, String, Option<MessageSource>), // content, timestamp, source
-    System(String),                                    // system message
+    System(String),                              // system message
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +91,7 @@ pub enum FeedKind {
 #[derive(Debug, Clone)]
 pub struct WatcherHealth {
     pub name: String,
-    pub healthy: bool,       // updated_at within 5 min
+    pub healthy: bool,        // updated_at within 5 min
     pub last_check_secs: i64, // seconds since last check
 }
 
@@ -474,12 +474,11 @@ impl App {
 
     /// Clamp selections after data refresh.
     pub fn clamp_selections(&mut self) {
-        let (worker_count, sig_count, feed_count) =
-            if let Some(ws) = self.current_ws() {
-                (ws.workers.len(), ws.signals.len(), ws.feed.len())
-            } else {
-                return;
-            };
+        let (worker_count, sig_count, feed_count) = if let Some(ws) = self.current_ws() {
+            (ws.workers.len(), ws.signals.len(), ws.feed.len())
+        } else {
+            return;
+        };
 
         if worker_count == 0 {
             self.worker_selection = 0;
@@ -722,41 +721,57 @@ impl App {
     }
 
     /// Push an activity event from the daemon (Telegram or TUI-sourced).
-    pub fn push_activity(
-        &mut self,
-        workspace: &str,
-        source: &str,
-        kind: &str,
-        text: &str,
-    ) {
-        let ws = match self.workspaces.iter_mut().find(|ws| ws.name == workspace) {
-            Some(ws) => ws,
-            None => return,
+    pub fn push_activity(&mut self, workspace: &str, source: &str, kind: &str, text: &str) {
+        let ws_name = {
+            let ws = match self.workspaces.iter_mut().find(|ws| ws.name == workspace) {
+                Some(ws) => ws,
+                None => return,
+            };
+
+            let msg_source = match source {
+                "telegram" => Some(MessageSource::Telegram),
+                "tui" => Some(MessageSource::Tui),
+                _ => Some(MessageSource::System),
+            };
+
+            let ts = now_ts();
+            match kind {
+                "user_message" => {
+                    ws.chat_history
+                        .push(ChatLine::User(text.to_string(), ts, msg_source));
+                }
+                "assistant_message" => {
+                    ws.chat_history
+                        .push(ChatLine::Assistant(text.to_string(), ts, msg_source));
+                    ws.coordinator_preview = Some(truncate_preview(text, 120));
+                    ws.has_unread_response = true;
+                }
+                _ => {
+                    ws.chat_history.push(ChatLine::System(text.to_string()));
+                }
+            }
+            ws.chat_scroll.scroll_to_bottom();
+            ws.name.clone()
         };
 
-        let msg_source = match source {
-            "telegram" => Some(MessageSource::Telegram),
-            "tui" => Some(MessageSource::Tui),
-            _ => Some(MessageSource::System),
+        // Persist user/assistant messages from external sources (e.g. Telegram)
+        let role = match kind {
+            "user_message" => Some("user"),
+            "assistant_message" => Some("assistant"),
+            _ => None,
         };
-
-        let ts = now_ts();
-        match kind {
-            "user_message" => {
-                ws.chat_history
-                    .push(ChatLine::User(text.to_string(), ts, msg_source));
-            }
-            "assistant_message" => {
-                ws.chat_history
-                    .push(ChatLine::Assistant(text.to_string(), ts, msg_source));
-                ws.coordinator_preview = Some(truncate_preview(text, 120));
-                ws.has_unread_response = true;
-            }
-            _ => {
-                ws.chat_history.push(ChatLine::System(text.to_string()));
-            }
+        if let Some(role) = role {
+            let _ = super::history::save_message(
+                &ws_name,
+                &super::history::ChatMessage {
+                    role: role.into(),
+                    content: text.to_string(),
+                    ts: chrono::Utc::now(),
+                    source: Some(source.to_string()),
+                },
+            );
         }
-        ws.chat_scroll.scroll_to_bottom();
+
         self.needs_redraw = true;
     }
 
@@ -879,10 +894,8 @@ impl App {
                         }
                     } else {
                         // New worker appeared
-                        ws.chat_history.push(ChatLine::System(format!(
-                            "\u{25cf} {} spawned",
-                            worker.id
-                        )));
+                        ws.chat_history
+                            .push(ChatLine::System(format!("\u{25cf} {} spawned", worker.id)));
                         ws.has_unread_response = true;
                         ws.chat_scroll.scroll_to_bottom();
                     }
@@ -990,7 +1003,9 @@ impl App {
         for ws in &mut self.workspaces {
             if let Ok(store) = SignalStore::open(&db, &ws.name) {
                 // Sparkline
-                ws.sparkline_data = store.count_signals_by_hour().unwrap_or_else(|_| vec![0; 24]);
+                ws.sparkline_data = store
+                    .count_signals_by_hour()
+                    .unwrap_or_else(|_| vec![0; 24]);
 
                 // Thoughts from MemoryStore
                 let mem = MemoryStore::new(store.conn(), &ws.name);
@@ -1312,7 +1327,10 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
     let collapsed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let char_count = collapsed.chars().count();
     if char_count > max_chars {
-        let truncated: String = collapsed.chars().take(max_chars.saturating_sub(3)).collect();
+        let truncated: String = collapsed
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect();
         format!("{truncated}...")
     } else {
         collapsed

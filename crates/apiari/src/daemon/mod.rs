@@ -599,11 +599,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             let slot = &mut slots[idx];
                             info!("[{}] command: /{command}", slot.name);
 
+                            // Broadcast command to TUI
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity("telegram", &slot.name, "user_message", &format!("/{command}"));
+                            }
+
                             if let Some(channel) = get_channel(slot, &telegram_channels) {
                                 match command.as_str() {
                                     "status" => {
                                         let signals = slot.store.get_open_signals().unwrap_or_default();
                                         let summary = format_signal_summary(&signals);
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &summary);
+                                        }
                                         let msg = OutboundMessage {
                                             chat_id,
                                             text: summary,
@@ -614,6 +622,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     }
                                     "reset" => {
                                         slot.coordinator.reset_session();
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", "Session reset.");
+                                        }
                                         let msg = OutboundMessage {
                                             chat_id,
                                             text: "Session reset.".to_string(),
@@ -630,6 +641,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 let desc = cmd.description.as_deref().unwrap_or("(no description)");
                                                 text.push_str(&format!("\n/{} — {}", cmd.name, desc));
                                             }
+                                        }
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
                                         }
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
@@ -660,6 +674,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                         .join("\n");
                                                     if !tail.is_empty() {
                                                         text.push_str(&format!("\n```\n{tail}\n```"));
+                                                    }
+                                                    if let Some(ref server) = socket_server {
+                                                        server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
                                                     }
                                                     let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
 
