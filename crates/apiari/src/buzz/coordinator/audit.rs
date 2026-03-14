@@ -59,10 +59,14 @@ const GIT_MUTATING: &[&str] = &[
 /// needs to write prompt files there for `swarm --prompt-file`).
 pub fn classify_bash_command(command: &str) -> BashClassification {
     let trimmed = command.trim();
+    // Strip heredoc bodies so their text doesn't trigger pattern matches or
+    // false-positive redirect detection.
+    let stripped = strip_heredoc_bodies(trimmed);
+    let check = stripped.as_str();
 
     // Check each pattern
     for &pattern in WRITE_PATTERNS {
-        if contains_pattern(trimmed, pattern) && !all_targets_allowed(trimmed, pattern) {
+        if contains_pattern(check, pattern) && !all_targets_allowed(check, pattern) {
             return BashClassification::PotentiallyMutating {
                 matched_pattern: pattern.to_string(),
             };
@@ -71,7 +75,7 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
 
     // Git mutating commands
     for &pattern in GIT_MUTATING {
-        if contains_pattern(trimmed, pattern) {
+        if contains_pattern(check, pattern) {
             return BashClassification::PotentiallyMutating {
                 matched_pattern: pattern.to_string(),
             };
@@ -80,23 +84,23 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
 
     // Output redirects: > and >> (but not 2> which is stderr)
     // Check for echo/cat/printf writing to files
-    if has_file_redirect(trimmed) && !redirect_targets_allowed(trimmed) {
+    if has_file_redirect(check) && !redirect_targets_allowed(check) {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "output redirect".to_string(),
         };
     }
 
     // tee (writes to files)
-    if contains_pattern(trimmed, "tee ") && !all_targets_allowed(trimmed, "tee ") {
+    if contains_pattern(check, "tee ") && !all_targets_allowed(check, "tee ") {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "tee".to_string(),
         };
     }
 
     // curl -o / -O / --output (downloads to file)
-    if (contains_pattern(trimmed, "curl ") || contains_pattern(trimmed, "curl\t"))
-        && has_curl_output_flag(trimmed)
-        && !curl_output_targets_allowed(trimmed)
+    if (contains_pattern(check, "curl ") || contains_pattern(check, "curl\t"))
+        && has_curl_output_flag(check)
+        && !curl_output_targets_allowed(check)
     {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "curl download".to_string(),
@@ -104,6 +108,71 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
     }
 
     BashClassification::ReadOnly
+}
+
+/// Strip heredoc bodies from a command string.
+///
+/// Removes everything between a heredoc marker (`<< 'DELIM'`, `<< "DELIM"`,
+/// or `<< DELIM`) and the matching closing `DELIM` line, replacing the body
+/// with a placeholder so the outer command structure is preserved.
+fn strip_heredoc_bodies(command: &str) -> String {
+    let mut result = String::with_capacity(command.len());
+    let lines: Vec<&str> = command.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        // Look for heredoc start: << optionally followed by - then delimiter
+        if let Some(delim) = extract_heredoc_delimiter(line) {
+            // Keep the first line (the command with <<) but replace the marker
+            // body with nothing — just emit the command line itself.
+            result.push_str(line);
+            result.push('\n');
+            i += 1;
+            // Skip lines until we find the closing delimiter
+            while i < lines.len() {
+                if lines[i].trim() == delim {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        } else {
+            result.push_str(line);
+            if i + 1 < lines.len() {
+                result.push('\n');
+            }
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Extract the heredoc delimiter from a line containing `<<`.
+///
+/// Handles `<< 'DELIM'`, `<< "DELIM"`, `<<-DELIM`, and `<< DELIM`.
+/// Returns `None` if no heredoc marker is found.
+fn extract_heredoc_delimiter(line: &str) -> Option<&str> {
+    let idx = line.find("<<")?;
+    let after = &line[idx + 2..];
+    // Skip optional `-` (for <<- which strips leading tabs)
+    let after = after.strip_prefix('-').unwrap_or(after);
+    let after = after.trim_start();
+    if after.is_empty() {
+        return None;
+    }
+    // Strip quotes: 'DELIM' or "DELIM"
+    if (after.starts_with('\'') && after[1..].contains('\''))
+        || (after.starts_with('"') && after[1..].contains('"'))
+    {
+        let quote = after.as_bytes()[0];
+        let end = after[1..].find(quote as char)? + 1;
+        Some(&after[1..end])
+    } else {
+        // Unquoted: take until whitespace or end
+        Some(after.split_whitespace().next().unwrap_or(after))
+    }
 }
 
 /// Check if a command contains a pattern, respecting word boundaries at the start.
@@ -135,9 +204,10 @@ fn is_allowed_write_target(path: &str) -> bool {
         return true;
     }
     // Claude Code project memory files.
-    // Matches: ~/.claude/.../memory/..., /Users/.../. claude/.../memory/..., $HOME/.claude/.../memory/...
-    let has_claude =
-        path.contains("/.claude/") || path.starts_with("~/.claude/") || path.contains("$HOME/.claude/");
+    // Matches: ~/.claude/.../memory/..., /Users/.../.claude/.../memory/..., $HOME/.claude/.../memory/...
+    let has_claude = path.contains("/.claude/")
+        || path.starts_with("~/.claude/")
+        || path.contains("$HOME/.claude/");
     has_claude && (path.contains("/memory/") || path.ends_with("/memory"))
 }
 
@@ -203,6 +273,10 @@ fn has_file_redirect(command: &str) -> bool {
 
 /// Check if redirect targets are allowed write paths.
 fn redirect_targets_allowed(command: &str) -> bool {
+    // Python open() writing to /tmp/ counts as a tmp-targeted write
+    if command.contains("open('/tmp/") || command.contains("open(\"/tmp/") {
+        return true;
+    }
     // Find the part after > or >>
     if let Some(idx) = command.find('>') {
         let after = &command[idx..];
@@ -278,10 +352,7 @@ mod tests {
         ];
         for (cmd, expected_pattern) in &mutating {
             let result = classify_bash_command(cmd);
-            assert!(
-                result.is_mutating(),
-                "expected mutating for: {cmd}"
-            );
+            assert!(result.is_mutating(), "expected mutating for: {cmd}");
             if let BashClassification::PotentiallyMutating { matched_pattern } = &result {
                 assert_eq!(
                     matched_pattern, expected_pattern,
@@ -303,10 +374,7 @@ mod tests {
         ];
         for (cmd, expected_pattern) in &mutating {
             let result = classify_bash_command(cmd);
-            assert!(
-                result.is_mutating(),
-                "expected mutating for: {cmd}"
-            );
+            assert!(result.is_mutating(), "expected mutating for: {cmd}");
             if let BashClassification::PotentiallyMutating { matched_pattern } = &result {
                 assert_eq!(
                     matched_pattern, expected_pattern,
@@ -343,10 +411,7 @@ mod tests {
     #[test]
     fn test_cargo_install() {
         let result = classify_bash_command("cargo install --path .");
-        assert!(
-            result.is_mutating(),
-            "cargo install should be mutating"
-        );
+        assert!(result.is_mutating(), "cargo install should be mutating");
     }
 
     #[test]
@@ -430,9 +495,8 @@ mod tests {
 
     #[test]
     fn test_claude_memory_exception_tilde() {
-        let result = classify_bash_command(
-            "echo 'fact' >> ~/.claude/projects/-proj/memory/MEMORY.md",
-        );
+        let result =
+            classify_bash_command("echo 'fact' >> ~/.claude/projects/-proj/memory/MEMORY.md");
         assert_eq!(
             result,
             BashClassification::ReadOnly,
@@ -442,9 +506,7 @@ mod tests {
 
     #[test]
     fn test_claude_memory_exception_mkdir() {
-        let result = classify_bash_command(
-            "mkdir -p /Users/josh/.claude/projects/-proj/memory",
-        );
+        let result = classify_bash_command("mkdir -p /Users/josh/.claude/projects/-proj/memory");
         assert_eq!(
             result,
             BashClassification::ReadOnly,
@@ -455,12 +517,96 @@ mod tests {
     #[test]
     fn test_non_memory_claude_path_still_blocked() {
         // Writing to other .claude paths (not /memory/) should still be blocked.
-        let result = classify_bash_command(
-            "echo 'bad' >> /Users/josh/.claude/projects/-proj/settings.json",
-        );
+        let result =
+            classify_bash_command("echo 'bad' >> /Users/josh/.claude/projects/-proj/settings.json");
         assert!(
             result.is_mutating(),
             "writing to non-memory .claude path should be mutating"
+        );
+    }
+
+    #[test]
+    fn test_heredoc_to_tmp_with_blocked_keyword_in_body() {
+        // Heredoc writing to /tmp/ whose body mentions "cargo install" should
+        // NOT be flagged — the body text is not a real command.
+        let cmd = "cat > /tmp/task.txt << 'EOF'\nRun cargo install --path . to set up.\nEOF";
+        let result = classify_bash_command(cmd);
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "heredoc to /tmp/ with blocked keyword in body should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_heredoc_to_non_tmp_still_blocked() {
+        // Heredoc writing to a non-tmp path should still be flagged.
+        let cmd = "cat > /home/user/file.txt << 'EOF'\nhello\nEOF";
+        let result = classify_bash_command(cmd);
+        assert!(
+            result.is_mutating(),
+            "heredoc to non-tmp path should be mutating"
+        );
+    }
+
+    #[test]
+    fn test_python_open_tmp_is_readonly() {
+        // python3 -c with open('/tmp/...') should be ReadOnly even though
+        // the script body may contain '>' characters.
+        let cmd = r#"python3 -c "
+import json
+data = {'key': 'value'}
+if len(data) > 0:
+    with open('/tmp/out.json', 'w') as f:
+        json.dump(data, f)
+""#;
+        let result = classify_bash_command(cmd);
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "python3 writing to /tmp/ via open() should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_redirect_to_non_tmp_still_blocked() {
+        // Redirect to a non-tmp path should still be blocked.
+        let cmd = "python3 -c 'print(\"hello\")' > /home/user/output.txt";
+        let result = classify_bash_command(cmd);
+        assert!(
+            result.is_mutating(),
+            "redirect to non-tmp path should be mutating"
+        );
+    }
+
+    #[test]
+    fn test_heredoc_with_git_mutating_in_body() {
+        // Heredoc body mentioning "git push" should not trigger git-mutating check.
+        let cmd =
+            "cat > /tmp/instructions.md << 'EOF'\nRemember to git push after committing.\nEOF";
+        let result = classify_bash_command(cmd);
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "heredoc to /tmp/ with git push in body should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_strip_heredoc_bodies() {
+        let input = "cat > /tmp/f.txt << 'MARKER'\ncargo install bad\ngit push evil\nMARKER";
+        let stripped = strip_heredoc_bodies(input);
+        assert!(
+            !stripped.contains("cargo install"),
+            "heredoc body should be stripped"
+        );
+        assert!(
+            !stripped.contains("git push"),
+            "heredoc body should be stripped"
+        );
+        assert!(
+            stripped.contains("cat > /tmp/f.txt"),
+            "command line should be preserved"
         );
     }
 }
