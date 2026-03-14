@@ -3,7 +3,7 @@
 //! Queries open issues, PR review requests, watched labels, and failed CI.
 //! Uses cross-poll dedup to avoid re-firing for persistent conditions.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use color_eyre::Result;
@@ -24,6 +24,9 @@ pub struct GithubWatcher {
     /// External IDs from the last successful poll, for reconciliation.
     /// `None` = never polled successfully, `Some(vec![])` = polled and got zero.
     last_poll_ids: Option<Vec<String>>,
+    /// Tracks PRs with CI failures for recovery detection.
+    /// Key: "{repo}#{pr_number}", Value: pr_title.
+    ci_failed_prs: HashMap<String, String>,
 }
 
 impl GithubWatcher {
@@ -34,6 +37,7 @@ impl GithubWatcher {
             username: None,
             seen: HashSet::new(),
             last_poll_ids: None,
+            ci_failed_prs: HashMap::new(),
         }
     }
 
@@ -118,6 +122,64 @@ impl GithubWatcher {
                 None
             }
         }
+    }
+
+    /// Fetch open pull requests for a repo. Returns (pr_number, pr_title, head_branch).
+    async fn fetch_open_prs(&self, repo: &str) -> Vec<(u64, String, String)> {
+        let mut result = Vec::new();
+        if let Some(prs) = self
+            .gh_api(&format!(
+                "repos/{repo}/pulls?state=open&per_page=20"
+            ))
+            .await
+            && let Some(prs) = prs.as_array()
+        {
+            for pr in prs {
+                if let Some(number) = pr.get("number").and_then(|v| v.as_u64())
+                    && let Some(title) = pr.get("title").and_then(|v| v.as_str())
+                    && let Some(branch) = pr
+                        .get("head")
+                        .and_then(|v| v.get("ref"))
+                        .and_then(|v| v.as_str())
+                {
+                    result.push((number, title.to_string(), branch.to_string()));
+                }
+            }
+        }
+        result
+    }
+
+    /// Fetch the latest workflow run for a branch using `gh run list`.
+    async fn fetch_latest_run(&self, repo: &str, branch: &str) -> Option<serde_json::Value> {
+        let output = tokio::process::Command::new("gh")
+            .args([
+                "run",
+                "list",
+                "--json",
+                "status,conclusion,headBranch,databaseId,url",
+                "--repo",
+                repo,
+                "--branch",
+                branch,
+                "--limit",
+                "1",
+            ])
+            .output()
+            .await
+            .ok()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "`gh run list` for {repo}@{branch} failed: {}",
+                stderr.trim()
+            );
+            return None;
+        }
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        let runs: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
+        runs.into_iter().next()
     }
 
     async fn poll_repo(&self, repo: &str) -> Vec<(String, SignalUpdate)> {
@@ -213,6 +275,62 @@ impl Watcher for GithubWatcher {
                 }
             }
         }
+
+        // PR CI failure and recovery signals
+        let mut new_ci_failed: HashMap<String, String> = HashMap::new();
+        for repo in &self.config.repos.clone() {
+            let prs = self.fetch_open_prs(repo).await;
+            for (pr_number, pr_title, head_branch) in prs {
+                if let Some(run) = self.fetch_latest_run(repo, &head_branch).await {
+                    let conclusion = run.get("conclusion").and_then(|v| v.as_str());
+                    let run_id = run.get("databaseId").and_then(|v| v.as_u64());
+                    let run_url = run.get("url").and_then(|v| v.as_str());
+                    let pr_key = format!("{repo}#{pr_number}");
+
+                    match conclusion {
+                        Some("failure") => {
+                            if let Some(run_id) = run_id {
+                                let key = format!("ci-failure-{run_id}");
+                                let mut signal = SignalUpdate::new(
+                                    "github",
+                                    &key,
+                                    format!("CI failed: {pr_title} (#{pr_number})"),
+                                    Severity::Error,
+                                );
+                                if let Some(url) = run_url {
+                                    signal = signal.with_body(url).with_url(url);
+                                }
+                                current_keys.insert(key.clone());
+                                if !self.seen.contains(&key) {
+                                    all_signals.push(signal);
+                                }
+                            }
+                            new_ci_failed.insert(pr_key, pr_title);
+                        }
+                        Some("success") if self.ci_failed_prs.contains_key(&pr_key) => {
+                            if let Some(run_id) = run_id {
+                                let key = format!("ci-recovery-{run_id}");
+                                let mut signal = SignalUpdate::new(
+                                    "github",
+                                    &key,
+                                    format!("CI passed: {pr_title} (#{pr_number})"),
+                                    Severity::Info,
+                                );
+                                if let Some(url) = run_url {
+                                    signal = signal.with_url(url);
+                                }
+                                current_keys.insert(key.clone());
+                                if !self.seen.contains(&key) {
+                                    all_signals.push(signal);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        self.ci_failed_prs = new_ci_failed;
 
         if !all_signals.is_empty() {
             info!("github: {} new signal(s)", all_signals.len());
@@ -436,6 +554,53 @@ mod tests {
         assert!(has_label(&issue, "bug"));
         assert!(has_label(&issue, "P1"));
         assert!(!has_label(&issue, "P0"));
+    }
+
+    #[test]
+    fn test_ci_failure_signal() {
+        let run_id = 456u64;
+        let pr_title = "Add feature X";
+        let pr_number = 42u64;
+        let run_url = "https://github.com/org/repo/actions/runs/456";
+
+        let key = format!("ci-failure-{run_id}");
+        let signal = SignalUpdate::new(
+            "github",
+            &key,
+            format!("CI failed: {pr_title} (#{pr_number})"),
+            Severity::Error,
+        )
+        .with_body(run_url)
+        .with_url(run_url);
+
+        assert_eq!(signal.external_id, "ci-failure-456");
+        assert_eq!(signal.severity, Severity::Error);
+        assert!(signal.title.contains("CI failed"));
+        assert!(signal.title.contains("#42"));
+        assert_eq!(signal.url.as_deref(), Some(run_url));
+        assert_eq!(signal.body.as_deref(), Some(run_url));
+    }
+
+    #[test]
+    fn test_ci_recovery_signal() {
+        let run_id = 789u64;
+        let pr_title = "Add feature X";
+        let pr_number = 42u64;
+        let run_url = "https://github.com/org/repo/actions/runs/789";
+
+        let key = format!("ci-recovery-{run_id}");
+        let signal = SignalUpdate::new(
+            "github",
+            &key,
+            format!("CI passed: {pr_title} (#{pr_number})"),
+            Severity::Info,
+        )
+        .with_url(run_url);
+
+        assert_eq!(signal.external_id, "ci-recovery-789");
+        assert_eq!(signal.severity, Severity::Info);
+        assert!(signal.title.contains("CI passed"));
+        assert!(signal.title.contains("#42"));
     }
 
     #[test]
