@@ -13,6 +13,7 @@ use tracing::warn;
 const MAX_MESSAGE_LEN: usize = 4000;
 
 /// Telegram Bot API client.
+#[derive(Clone)]
 pub struct TelegramChannel {
     bot_token: String,
     client: reqwest::Client,
