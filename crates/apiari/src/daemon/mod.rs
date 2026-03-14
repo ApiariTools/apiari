@@ -39,6 +39,8 @@ enum ExitReason {
     Shutdown,
     /// Error — daemon should restart.
     Error(color_eyre::eyre::Error),
+    /// Self-update — exec the new binary.
+    Restart,
 }
 
 /// A workspace slot in the daemon — holds per-workspace state.
@@ -90,6 +92,16 @@ pub async fn run_foreground() -> Result<()> {
         match run_event_loop(workspaces).await {
             ExitReason::Shutdown => {
                 info!("clean shutdown");
+                break;
+            }
+            ExitReason::Restart => {
+                use std::os::unix::process::CommandExt;
+                info!("exec'ing new binary...");
+                remove_pid();
+                let exe = std::env::current_exe()?;
+                let err = std::process::Command::new(&exe).arg("daemon").exec();
+                // exec only returns on error
+                error!("exec failed: {err}");
                 break;
             }
             ExitReason::Error(e) => {
@@ -688,8 +700,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                             buttons: vec![],
                                                             topic_id,
                                                         }).await;
-                                                        // Return error to trigger run_foreground() restart loop
-                                                        return ExitReason::Error(color_eyre::eyre::eyre!("restart requested by /{command}"));
+                                                        // Exec the new binary
+                                                        return ExitReason::Restart;
                                                     }
                                                 }
                                                 Err(e) => {
