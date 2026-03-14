@@ -48,6 +48,12 @@ prompt = """
 # token = "sntrys_..."
 # interval_secs = 120
 
+# [[commands]]
+# name = "reinstall"
+# script = "cargo install --force --path {root_str}/cli/crates/apiari 2>&1 && cargo install --force --path {root_str}/swarm 2>&1"
+# description = "Rebuild and install apiari and swarm binaries"
+# restart = true
+
 # [watchers.swarm]
 # state_path = "{swarm_state}"
 # interval_secs = 15
