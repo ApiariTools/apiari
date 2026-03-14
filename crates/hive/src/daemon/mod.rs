@@ -83,6 +83,25 @@ pub(crate) fn is_process_alive(pid: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Claude Code project memory path
+// ---------------------------------------------------------------------------
+
+/// Compute the Claude Code project memory file path for a workspace.
+///
+/// Claude Code stores per-project memory at:
+///   `~/.claude/projects/<sanitized-path>/memory/MEMORY.md`
+/// where `<sanitized-path>` is the absolute workspace path with `/` replaced by `-`.
+fn claude_memory_path(workspace_root: &Path) -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let sanitized = workspace_root
+        .to_string_lossy()
+        .replace('/', "-");
+    home.join(".claude/projects")
+        .join(sanitized)
+        .join("memory/MEMORY.md")
+}
+
+// ---------------------------------------------------------------------------
 // Public API: start / stop
 // ---------------------------------------------------------------------------
 
@@ -758,6 +777,30 @@ fn build_coordinator_prompt(workspace_root: &Path, bot_username: Option<&str>) -
         "When the user asks about Sentry issues or triage, check `.hive/last_sweep.md` for the latest sweep results. \
          This file is updated after each `/sweep` command and contains issue titles, severity, event counts, and links.\n",
     );
+
+    // Memory update instructions
+    let memory_path = claude_memory_path(workspace_root);
+    let memory_path_str = memory_path.display();
+    prompt.push_str("\n## Persistent Memory\n\n");
+    prompt.push_str(&format!(
+        "You have a persistent memory file at:\n  {memory_path_str}\n\n"
+    ));
+    prompt.push_str(&format!(
+        "You can read it with `cat` and update it using Bash, e.g.:\n\
+         ```\n\
+         echo '- New fact to remember' >> {memory_path_str}\n\
+         ```\n\n\
+         Update your memory when you learn something worth remembering across sessions:\n\
+         - User preferences and communication style\n\
+         - Project conventions or architectural decisions\n\
+         - Recurring patterns or solutions\n\
+         - Important context about repos, workflows, or team practices\n\n\
+         The file uses markdown. Append new entries as `- ` bullet points.\n\
+         Keep entries concise — this file is included in future system prompts.\n\
+         Read the file before writing to avoid duplicates.\n\
+         The user can also save notes directly via the /remember command.\n",
+    ));
+
     Ok(prompt)
 }
 
@@ -1500,6 +1543,7 @@ impl DaemonRunner {
             "remind" => self.handle_remind_command(chat_id, args).await,
             "reminders" => self.handle_reminders_command(chat_id, args).await,
             "sweep" => self.handle_sweep_command(chat_id).await,
+            "remember" => self.handle_remember_command(chat_id, args).await,
             "help" => {
                 let mut text = String::from(
                     "Commands:\n\
@@ -1512,6 +1556,7 @@ impl DaemonRunner {
                      /reminders — List pending reminders\n\
                      /reminders cancel <id> — Cancel a reminder\n\
                      /sweep — Run a Sentry sweep now\n\
+                     /remember <text> — Save a note to memory\n\
                      /help — Show this message",
                 );
                 // Append custom commands.
@@ -2674,6 +2719,49 @@ impl DaemonRunner {
     }
 
     /// Handle `/sweep` Telegram command — run a sweep on demand for the active workspace.
+    /// Handle /remember — append a note to the Claude Code project memory file.
+    async fn handle_remember_command(&mut self, chat_id: i64, args: &str) -> Result<()> {
+        let text = args.trim();
+        if text.is_empty() {
+            return self
+                .send(chat_id, "Usage: /remember <text to save>")
+                .await;
+        }
+
+        let memory_path = claude_memory_path(&self.active_ws().workspace_root);
+
+        // Ensure the memory directory exists.
+        if let Some(parent) = memory_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return self
+                    .send(chat_id, &format!("Failed to create memory directory: {e}"))
+                    .await;
+            }
+        }
+
+        // Append the entry (with a blank line before for clean markdown).
+        let entry = format!("\n- {text}\n");
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&memory_path)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                if let Err(e) = f.write_all(entry.as_bytes()) {
+                    return self
+                        .send(chat_id, &format!("Failed to write to memory: {e}"))
+                        .await;
+                }
+                self.send(chat_id, &format!("Remembered: {text}")).await
+            }
+            Err(e) => {
+                self.send(chat_id, &format!("Failed to open memory file: {e}"))
+                    .await
+            }
+        }
+    }
+
     async fn handle_sweep_command(&mut self, chat_id: i64) -> Result<()> {
         let has_buzz = self.workspaces.iter().any(|ws| ws.buzz_slot.is_some());
 

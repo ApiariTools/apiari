@@ -62,7 +62,7 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
 
     // Check each pattern
     for &pattern in WRITE_PATTERNS {
-        if contains_pattern(trimmed, pattern) && !all_targets_tmp(trimmed, pattern) {
+        if contains_pattern(trimmed, pattern) && !all_targets_allowed(trimmed, pattern) {
             return BashClassification::PotentiallyMutating {
                 matched_pattern: pattern.to_string(),
             };
@@ -80,14 +80,14 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
 
     // Output redirects: > and >> (but not 2> which is stderr)
     // Check for echo/cat/printf writing to files
-    if has_file_redirect(trimmed) && !redirect_targets_tmp(trimmed) {
+    if has_file_redirect(trimmed) && !redirect_targets_allowed(trimmed) {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "output redirect".to_string(),
         };
     }
 
     // tee (writes to files)
-    if contains_pattern(trimmed, "tee ") && !all_targets_tmp(trimmed, "tee ") {
+    if contains_pattern(trimmed, "tee ") && !all_targets_allowed(trimmed, "tee ") {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "tee".to_string(),
         };
@@ -96,7 +96,7 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
     // curl -o / -O / --output (downloads to file)
     if (contains_pattern(trimmed, "curl ") || contains_pattern(trimmed, "curl\t"))
         && has_curl_output_flag(trimmed)
-        && !curl_output_targets_tmp(trimmed)
+        && !curl_output_targets_allowed(trimmed)
     {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "curl download".to_string(),
@@ -124,11 +124,28 @@ fn contains_pattern(command: &str, pattern: &str) -> bool {
     false
 }
 
-/// Check if the destination/target of a write command is under /tmp/.
+/// Check if a path is an allowed write target.
+///
+/// Allowed targets:
+/// - `/tmp/` — the coordinator needs this for swarm `--prompt-file`.
+/// - Claude Code project memory paths (`~/.claude/.../memory/`) — the
+///   coordinator is allowed to update its own persistent memory.
+fn is_allowed_write_target(path: &str) -> bool {
+    if path.starts_with("/tmp/") || path == "/tmp" {
+        return true;
+    }
+    // Claude Code project memory files.
+    // Matches: ~/.claude/.../memory/..., /Users/.../. claude/.../memory/..., $HOME/.claude/.../memory/...
+    let has_claude =
+        path.contains("/.claude/") || path.starts_with("~/.claude/") || path.contains("$HOME/.claude/");
+    has_claude && (path.contains("/memory/") || path.ends_with("/memory"))
+}
+
+/// Check if the destination/target of a write command is an allowed path.
 ///
 /// For commands like `cp`, `mv`, `tee`, the last non-flag argument is the destination.
-/// For others we check if any argument points to /tmp/.
-fn all_targets_tmp(command: &str, pattern: &str) -> bool {
+/// For others we check if any argument points to an allowed path.
+fn all_targets_allowed(command: &str, pattern: &str) -> bool {
     // Find the subcommand portion that matched
     let relevant = find_relevant_part(command, pattern);
     let parts: Vec<&str> = relevant.split_whitespace().collect();
@@ -145,15 +162,13 @@ fn all_targets_tmp(command: &str, pattern: &str) -> bool {
     // For cp/mv: destination is the last argument
     if pattern.starts_with("cp ") || pattern.starts_with("mv ") {
         if let Some(dest) = non_flag_args.last() {
-            return dest.starts_with("/tmp/") || *dest == "/tmp";
+            return is_allowed_write_target(dest);
         }
         return false;
     }
 
-    // For tee/touch/mkdir/chmod/etc: all targets must be /tmp/
-    non_flag_args
-        .iter()
-        .all(|p| p.starts_with("/tmp/") || *p == "/tmp")
+    // For tee/touch/mkdir/chmod/etc: all targets must be allowed
+    non_flag_args.iter().all(|p| is_allowed_write_target(p))
 }
 
 /// Find the relevant subcommand in a pipeline that matches the pattern.
@@ -186,14 +201,14 @@ fn has_file_redirect(command: &str) -> bool {
     false
 }
 
-/// Check if redirect targets are under /tmp/.
-fn redirect_targets_tmp(command: &str) -> bool {
+/// Check if redirect targets are allowed write paths.
+fn redirect_targets_allowed(command: &str) -> bool {
     // Find the part after > or >>
     if let Some(idx) = command.find('>') {
         let after = &command[idx..];
         // Skip > or >>
         let after = after.trim_start_matches('>').trim();
-        after.starts_with("/tmp/") || after.starts_with("/tmp")
+        is_allowed_write_target(after)
     } else {
         false
     }
@@ -207,12 +222,12 @@ fn has_curl_output_flag(command: &str) -> bool {
         .any(|p| *p == "-o" || *p == "-O" || *p == "--output" || p.starts_with("-o"))
 }
 
-/// Check if curl output target is /tmp/.
-fn curl_output_targets_tmp(command: &str) -> bool {
+/// Check if curl output target is an allowed write path.
+fn curl_output_targets_allowed(command: &str) -> bool {
     let parts: Vec<&str> = command.split_whitespace().collect();
     for (i, part) in parts.iter().enumerate() {
         if (*part == "-o" || *part == "--output") && i + 1 < parts.len() {
-            return parts[i + 1].starts_with("/tmp/");
+            return is_allowed_write_target(parts[i + 1]);
         }
     }
     false
@@ -385,6 +400,67 @@ mod tests {
             result,
             BashClassification::ReadOnly,
             "2> stderr redirect should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_claude_memory_exception_redirect() {
+        // Writing to Claude project memory is allowed (coordinator self-memory).
+        let result = classify_bash_command(
+            "echo '- New fact' >> /Users/josh/.claude/projects/-Users-josh-Developer-apiari/memory/MEMORY.md",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "redirect to Claude memory should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_claude_memory_exception_tee() {
+        let result = classify_bash_command(
+            "echo 'fact' | tee -a /Users/josh/.claude/projects/-proj/memory/MEMORY.md",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "tee to Claude memory should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_claude_memory_exception_tilde() {
+        let result = classify_bash_command(
+            "echo 'fact' >> ~/.claude/projects/-proj/memory/MEMORY.md",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "redirect to ~/.claude memory should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_claude_memory_exception_mkdir() {
+        let result = classify_bash_command(
+            "mkdir -p /Users/josh/.claude/projects/-proj/memory",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "mkdir for Claude memory dir should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_non_memory_claude_path_still_blocked() {
+        // Writing to other .claude paths (not /memory/) should still be blocked.
+        let result = classify_bash_command(
+            "echo 'bad' >> /Users/josh/.claude/projects/-proj/settings.json",
+        );
+        assert!(
+            result.is_mutating(),
+            "writing to non-memory .claude path should be mutating"
         );
     }
 }
