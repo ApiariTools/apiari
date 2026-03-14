@@ -664,8 +664,75 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         };
                                         let _ = channel.send_message(&msg).await;
                                     }
+                                    "update" => {
+                                        info!("[{}] running /update", slot.name);
+                                        let updating_msg = OutboundMessage {
+                                            chat_id,
+                                            text: "Updating apiari + swarm from crates.io...".to_string(),
+                                            buttons: vec![],
+                                            topic_id,
+                                        };
+                                        let _ = channel.send_message(&updating_msg).await;
+
+                                        let script = "source /Users/josh/.cargo/env 2>/dev/null; \
+                                            /Users/josh/.cargo/bin/cargo install --force apiari 2>&1 && \
+                                            codesign -f -s - /Users/josh/.cargo/bin/apiari 2>&1 && \
+                                            /Users/josh/.cargo/bin/cargo install --force swarm 2>&1 && \
+                                            codesign -f -s - /Users/josh/.cargo/bin/swarm 2>&1";
+
+                                        let output = tokio::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(script)
+                                            .output()
+                                            .await;
+
+                                        match output {
+                                            Ok(out) => {
+                                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                                let status_icon = if out.status.success() { "✅" } else { "❌" };
+                                                let mut text = format!("{status_icon} /update");
+                                                let combined = format!("{stdout}{stderr}");
+                                                let tail: String = combined
+                                                    .lines()
+                                                    .rev()
+                                                    .take(20)
+                                                    .collect::<Vec<_>>()
+                                                    .into_iter()
+                                                    .rev()
+                                                    .collect::<Vec<_>>()
+                                                    .join("\n");
+                                                if !tail.is_empty() {
+                                                    text.push_str(&format!("\n```\n{tail}\n```"));
+                                                }
+                                                if let Some(ref server) = socket_server {
+                                                    server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                                }
+                                                let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+
+                                                if out.status.success() {
+                                                    info!("[{}] /update succeeded, restarting", slot.name);
+                                                    let _ = channel.send_message(&OutboundMessage {
+                                                        chat_id,
+                                                        text: "Restarting daemon...".to_string(),
+                                                        buttons: vec![],
+                                                        topic_id,
+                                                    }).await;
+                                                    return ExitReason::Restart;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let _ = channel.send_message(&OutboundMessage {
+                                                    chat_id,
+                                                    text: format!("❌ /update failed: {e}"),
+                                                    buttons: vec![],
+                                                    topic_id,
+                                                }).await;
+                                            }
+                                        }
+                                    }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/reset — reset coordinator session\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/reset — reset coordinator session\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
