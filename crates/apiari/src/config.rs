@@ -45,7 +45,7 @@ pub struct WorkspaceConfig {
     /// Absolute path to the workspace root.
     pub root: PathBuf,
 
-    /// Repository slugs (e.g. ["ApiariTools/swarm"]).
+    /// Repository slugs (e.g. ["ApiariTools/swarm", "ApiariTools/apiari"]).
     #[serde(default)]
     pub repos: Vec<String>,
 
