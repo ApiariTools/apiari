@@ -39,7 +39,7 @@ prompt = """
 {prompt_lines}"""
 
 # [watchers.github]
-# repos = ["owner/repo"]
+# repos = ["owner/repo1", "owner/repo2"]
 # interval_secs = 120
 
 # [watchers.sentry]
