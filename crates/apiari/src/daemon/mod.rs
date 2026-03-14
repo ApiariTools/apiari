@@ -14,12 +14,12 @@ use crate::git_safety::GitSafetyHooks;
 
 use buzz::channel::telegram::TelegramChannel;
 use buzz::channel::{Channel, ChannelEvent, OutboundMessage};
-use buzz::coordinator::{Coordinator, CoordinatorEvent};
 use buzz::coordinator::prompt::format_signal_summary;
 use buzz::coordinator::skills::{
     SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
     default_coordinator_tools,
 };
+use buzz::coordinator::{Coordinator, CoordinatorEvent};
 use buzz::daemon::config as buzz_daemon_config;
 use buzz::pipeline::Pipeline;
 use buzz::signal::store::SignalStore;
@@ -622,14 +622,76 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         };
                                         let _ = channel.send_message(&msg).await;
                                     }
+                                    "help" => {
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/reset — reset coordinator session\n/help — this message".to_string();
+                                        if !slot.config.commands.is_empty() {
+                                            text.push_str("\n\nCustom commands:");
+                                            for cmd in &slot.config.commands {
+                                                let desc = cmd.description.as_deref().unwrap_or("(no description)");
+                                                text.push_str(&format!("\n/{} — {}", cmd.name, desc));
+                                            }
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+                                    }
                                     _ => {
-                                        let msg = OutboundMessage {
-                                            chat_id,
-                                            text: format!("Unknown command: /{command}"),
-                                            buttons: vec![],
-                                            topic_id,
-                                        };
-                                        let _ = channel.send_message(&msg).await;
+                                        if let Some(cmd_cfg) = slot.config.commands.iter().find(|c| c.name == command) {
+                                            info!("[{}] running custom command: /{}", slot.name, command);
+                                            let output = tokio::process::Command::new("sh")
+                                                .arg("-c")
+                                                .arg(&cmd_cfg.script)
+                                                .output()
+                                                .await;
+
+                                            match output {
+                                                Ok(out) => {
+                                                    let stdout = String::from_utf8_lossy(&out.stdout);
+                                                    let stderr = String::from_utf8_lossy(&out.stderr);
+                                                    let status_icon = if out.status.success() { "✅" } else { "❌" };
+                                                    let mut text = format!("{status_icon} /{command}");
+                                                    let combined = format!("{stdout}{stderr}");
+                                                    let tail: String = combined
+                                                        .lines()
+                                                        .rev()
+                                                        .take(20)
+                                                        .collect::<Vec<_>>()
+                                                        .into_iter()
+                                                        .rev()
+                                                        .collect::<Vec<_>>()
+                                                        .join("\n");
+                                                    if !tail.is_empty() {
+                                                        text.push_str(&format!("\n```\n{tail}\n```"));
+                                                    }
+                                                    let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+
+                                                    if cmd_cfg.restart && out.status.success() {
+                                                        info!("[{}] command /{} requested restart", slot.name, command);
+                                                        let _ = channel.send_message(&OutboundMessage {
+                                                            chat_id,
+                                                            text: "Restarting daemon...".to_string(),
+                                                            buttons: vec![],
+                                                            topic_id,
+                                                        }).await;
+                                                        // Return error to trigger run_foreground() restart loop
+                                                        return ExitReason::Error(color_eyre::eyre::eyre!("restart requested by /{command}"));
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    let _ = channel.send_message(&OutboundMessage {
+                                                        chat_id,
+                                                        text: format!("❌ /{command} failed: {e}"),
+                                                        buttons: vec![],
+                                                        topic_id,
+                                                    }).await;
+                                                }
+                                            }
+                                        } else {
+                                            let _ = channel.send_message(&OutboundMessage {
+                                                chat_id,
+                                                text: format!("Unknown command: /{command}"),
+                                                buttons: vec![],
+                                                topic_id,
+                                            }).await;
+                                        }
                                     }
                                 }
                             }
@@ -799,7 +861,10 @@ fn print_event_to_stderr(event: &CoordinatorEvent) {
                 .iter()
                 .map(|(repo, file)| format!("  - {repo}/{file}"))
                 .collect();
-            eprintln!("Warning: coordinator modified workspace files:\n{}", list.join("\n"));
+            eprintln!(
+                "Warning: coordinator modified workspace files:\n{}",
+                list.join("\n")
+            );
         }
         CoordinatorEvent::Token(_) => {}
     }

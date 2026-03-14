@@ -64,6 +64,10 @@ pub struct WorkspaceConfig {
     /// Notification pipeline configuration.
     #[serde(default)]
     pub pipeline: PipelineConfig,
+
+    /// Custom slash commands.
+    #[serde(default)]
+    pub commands: Vec<CommandConfig>,
 }
 
 /// Telegram bot configuration.
@@ -346,6 +350,21 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> buzz::config::BuzzConfig {
     }
 }
 
+/// A custom slash command executable via Telegram.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandConfig {
+    /// Command name (without the leading `/`).
+    pub name: String,
+    /// Shell script to run via `sh -c`.
+    pub script: String,
+    /// Description shown in `/help`.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// If true, daemon restarts itself after the script succeeds.
+    #[serde(default)]
+    pub restart: bool,
+}
+
 /// Notification pipeline configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineConfig {
@@ -527,10 +546,7 @@ root = "/tmp/test"
 
     #[test]
     fn test_parse_github_slug_non_github() {
-        assert_eq!(
-            parse_github_slug("https://gitlab.com/Org/Repo.git"),
-            None,
-        );
+        assert_eq!(parse_github_slug("https://gitlab.com/Org/Repo.git"), None,);
     }
 
     #[test]
@@ -549,6 +565,7 @@ root = "/tmp/test"
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
             pipeline: PipelineConfig::default(),
+            commands: vec![],
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -563,6 +580,7 @@ root = "/tmp/test"
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
             pipeline: PipelineConfig::default(),
+            commands: vec![],
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -581,6 +599,7 @@ root = "/tmp/test"
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
             pipeline: PipelineConfig::default(),
+            commands: vec![],
         };
 
         let buzz = to_buzz_config(&ws);
