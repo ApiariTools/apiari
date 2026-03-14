@@ -1,6 +1,6 @@
 //! Pipeline rules — match signals and decide actions.
 
-use crate::signal::Severity;
+use crate::buzz::signal::Severity;
 
 /// What to do with a signal that matches a rule.
 #[derive(Debug, Clone, PartialEq, Eq)]

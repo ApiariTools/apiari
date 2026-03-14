@@ -1,6 +1,6 @@
 //! Daemon-specific configuration helpers.
 
-use crate::config::BuzzConfig;
+use crate::buzz::config::BuzzConfig;
 
 /// Check if Telegram is configured.
 pub fn has_telegram(config: &BuzzConfig) -> bool {
@@ -42,7 +42,7 @@ pub fn min_watcher_interval(config: &BuzzConfig) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::*;
+    use crate::buzz::config::*;
 
     #[test]
     fn test_has_telegram() {

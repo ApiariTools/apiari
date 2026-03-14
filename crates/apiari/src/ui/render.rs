@@ -356,7 +356,7 @@ fn draw_kpi_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, area:
             .filter(|s| {
                 matches!(
                     s.severity,
-                    buzz::signal::Severity::Critical | buzz::signal::Severity::Error
+                    crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error
                 )
             })
             .count();
@@ -432,9 +432,9 @@ fn build_action_summary(_app: &App, ws: &app::WorkspaceState) -> Vec<(Style, Str
     for sig in &ws.signals {
         let entry = by_source.entry(sig.source.as_str()).or_default();
         match sig.severity {
-            buzz::signal::Severity::Critical | buzz::signal::Severity::Error => entry.0 += 1,
-            buzz::signal::Severity::Warning => entry.1 += 1,
-            buzz::signal::Severity::Info => entry.2 += 1,
+            crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error => entry.0 += 1,
+            crate::buzz::signal::Severity::Warning => entry.1 += 1,
+            crate::buzz::signal::Severity::Info => entry.2 += 1,
         }
     }
 
@@ -626,7 +626,7 @@ fn bee_status(app: &App, ws: &app::WorkspaceState) -> (String, String) {
         .filter(|s| {
             matches!(
                 s.severity,
-                buzz::signal::Severity::Critical | buzz::signal::Severity::Error
+                crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error
             )
         })
         .count();
@@ -1233,7 +1233,7 @@ fn render_worker_item(
 
 /// Render a single signal line inside a card.
 fn render_signal_line(
-    signal: &buzz::signal::SignalRecord,
+    signal: &crate::buzz::signal::SignalRecord,
     selected: bool,
     width: usize,
 ) -> Line<'static> {
@@ -1252,9 +1252,9 @@ fn render_signal_line(
 
     // Severity-colored bar
     let sev_color = match signal.severity {
-        buzz::signal::Severity::Critical | buzz::signal::Severity::Error => theme::EMBER,
-        buzz::signal::Severity::Warning => theme::NECTAR,
-        buzz::signal::Severity::Info => theme::SMOKE,
+        crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error => theme::EMBER,
+        crate::buzz::signal::Severity::Warning => theme::NECTAR,
+        crate::buzz::signal::Severity::Info => theme::SMOKE,
     };
 
     let ago = time_ago(&signal.updated_at);
@@ -1777,11 +1777,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let has_crit = ws.signals.iter().any(|s| {
             matches!(
                 s.severity,
-                buzz::signal::Severity::Critical | buzz::signal::Severity::Error
+                crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error
             )
         });
         let has_warn = ws.signals.iter().any(|s| {
-            s.severity == buzz::signal::Severity::Warning
+            s.severity == crate::buzz::signal::Severity::Warning
         });
         if has_crit {
             theme::EMBER
@@ -2040,12 +2040,12 @@ fn strip_repo_prefix(title: &str) -> &str {
     title
 }
 
-fn severity_style(severity: &buzz::signal::Severity) -> Style {
+fn severity_style(severity: &crate::buzz::signal::Severity) -> Style {
     match severity {
-        buzz::signal::Severity::Critical => theme::error(),
-        buzz::signal::Severity::Error => Style::default().fg(theme::NECTAR),
-        buzz::signal::Severity::Warning => Style::default().fg(theme::POLLEN),
-        buzz::signal::Severity::Info => theme::muted(),
+        crate::buzz::signal::Severity::Critical => theme::error(),
+        crate::buzz::signal::Severity::Error => Style::default().fg(theme::NECTAR),
+        crate::buzz::signal::Severity::Warning => Style::default().fg(theme::POLLEN),
+        crate::buzz::signal::Severity::Info => theme::muted(),
     }
 }
 

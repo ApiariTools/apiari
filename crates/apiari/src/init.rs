@@ -9,7 +9,7 @@ use crate::config::workspaces_dir;
 fn workspace_template(root: &Path, coordinator_name: &str) -> String {
     let root_str = root.display();
     let swarm_state = root.join(".swarm/state.json");
-    let default_prompt = buzz::coordinator::prompt::default_preamble(coordinator_name);
+    let default_prompt = crate::buzz::coordinator::prompt::default_preamble(coordinator_name);
     // Indent for TOML multi-line string
     let prompt_lines: String = default_prompt
         .lines()

@@ -7,7 +7,7 @@ use std::any::Any;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use buzz::coordinator::SafetyHooks;
+use crate::buzz::coordinator::SafetyHooks;
 
 /// Safety hooks backed by `git status` snapshots.
 ///

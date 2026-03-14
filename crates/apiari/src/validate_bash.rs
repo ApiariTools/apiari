@@ -5,7 +5,7 @@
 //! - 0: allow (read-only command)
 //! - 2: block (potentially mutating command)
 
-use buzz::coordinator::audit::{self, BashClassification};
+use crate::buzz::coordinator::audit::{self, BashClassification};
 use std::io::Read;
 
 /// Run the validate-bash hook.

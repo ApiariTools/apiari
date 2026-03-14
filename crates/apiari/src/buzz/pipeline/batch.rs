@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::signal::SignalRecord;
+use crate::buzz::signal::SignalRecord;
 
 /// Collects signals into time-windowed batches.
 pub struct BatchCollector {
@@ -62,7 +62,7 @@ impl BatchCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::{Severity, SignalStatus};
+    use crate::buzz::signal::{Severity, SignalStatus};
     use chrono::Utc;
 
     fn make_record(source: &str, title: &str) -> SignalRecord {

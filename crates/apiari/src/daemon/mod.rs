@@ -12,21 +12,21 @@ use tracing::{error, info, warn};
 
 use crate::git_safety::GitSafetyHooks;
 
-use buzz::channel::telegram::TelegramChannel;
-use buzz::channel::{Channel, ChannelEvent, OutboundMessage};
-use buzz::coordinator::prompt::format_signal_summary;
-use buzz::coordinator::skills::{
+use crate::buzz::channel::telegram::TelegramChannel;
+use crate::buzz::channel::{Channel, ChannelEvent, OutboundMessage};
+use crate::buzz::coordinator::prompt::format_signal_summary;
+use crate::buzz::coordinator::skills::{
     SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
     default_coordinator_tools,
 };
-use buzz::coordinator::{Coordinator, CoordinatorEvent};
-use buzz::daemon::config as buzz_daemon_config;
-use buzz::pipeline::Pipeline;
-use buzz::signal::store::SignalStore;
-use buzz::watcher::WatcherRegistry;
-use buzz::watcher::github::GithubWatcher;
-use buzz::watcher::sentry::SentryWatcher;
-use buzz::watcher::swarm::SwarmWatcher;
+use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
+use crate::buzz::daemon::config as buzz_daemon_config;
+use crate::buzz::pipeline::Pipeline;
+use crate::buzz::signal::store::SignalStore;
+use crate::buzz::watcher::WatcherRegistry;
+use crate::buzz::watcher::github::GithubWatcher;
+use crate::buzz::watcher::sentry::SentryWatcher;
+use crate::buzz::watcher::swarm::SwarmWatcher;
 
 use crate::config::{
     self, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config,

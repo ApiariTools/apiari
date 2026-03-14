@@ -10,9 +10,9 @@ use std::collections::HashMap;
 use tracing::info;
 
 use super::Watcher;
-use crate::config::SwarmWatcherConfig;
-use crate::signal::store::SignalStore;
-use crate::signal::{Severity, SignalStatus, SignalUpdate};
+use crate::buzz::config::SwarmWatcherConfig;
+use crate::buzz::signal::store::SignalStore;
+use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate};
 
 /// Minimal swarm state deserialization.
 #[derive(Debug, Clone, Deserialize)]

@@ -10,9 +10,9 @@ use color_eyre::Result;
 use tracing::{info, warn};
 
 use super::Watcher;
-use crate::config::GithubWatcherConfig;
-use crate::signal::store::SignalStore;
-use crate::signal::{Severity, SignalUpdate};
+use crate::buzz::config::GithubWatcherConfig;
+use crate::buzz::signal::store::SignalStore;
+use crate::buzz::signal::{Severity, SignalUpdate};
 
 /// Watches GitHub repositories via the `gh` CLI.
 pub struct GithubWatcher {
