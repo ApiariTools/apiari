@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use super::Watcher;
-use crate::config::SentryWatcherConfig;
-use crate::signal::store::SignalStore;
-use crate::signal::{Severity, SignalUpdate};
+use crate::buzz::config::SentryWatcherConfig;
+use crate::buzz::signal::store::SignalStore;
+use crate::buzz::signal::{Severity, SignalUpdate};
 
 /// Per-issue metadata tracked across polls for dedup decisions.
 #[derive(Debug, Clone, Serialize, Deserialize)]

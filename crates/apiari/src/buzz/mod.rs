@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod channel;
 pub mod config;
 pub mod coordinator;

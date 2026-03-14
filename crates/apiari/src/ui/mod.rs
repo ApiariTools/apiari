@@ -19,11 +19,11 @@ use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use buzz::coordinator::{Coordinator, CoordinatorEvent};
-use buzz::coordinator::skills::{
+use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
+use crate::buzz::coordinator::skills::{
     build_skills_prompt, default_coordinator_disallowed_tools, default_coordinator_tools,
 };
-use buzz::signal::store::SignalStore;
+use crate::buzz::signal::store::SignalStore;
 
 use crate::config;
 use crate::git_safety::GitSafetyHooks;

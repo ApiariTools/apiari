@@ -285,9 +285,9 @@ pub fn resolve_repos(config: &WorkspaceConfig) -> Vec<String> {
 pub fn build_skill_context(
     workspace_name: &str,
     config: &WorkspaceConfig,
-) -> buzz::coordinator::skills::SkillContext {
+) -> crate::buzz::coordinator::skills::SkillContext {
     let repos = resolve_repos(config);
-    buzz::coordinator::skills::SkillContext {
+    crate::buzz::coordinator::skills::SkillContext {
         workspace_name: workspace_name.to_string(),
         workspace_root: config.root.clone(),
         config_path: workspaces_dir().join(format!("{workspace_name}.toml")),
@@ -299,20 +299,20 @@ pub fn build_skill_context(
 }
 
 /// Convert a WorkspaceConfig into a buzz BuzzConfig for watcher/coordinator use.
-pub fn to_buzz_config(ws: &WorkspaceConfig) -> buzz::config::BuzzConfig {
-    buzz::config::BuzzConfig {
-        telegram: ws.telegram.as_ref().map(|t| buzz::config::TelegramConfig {
+pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
+    crate::buzz::config::BuzzConfig {
+        telegram: ws.telegram.as_ref().map(|t| crate::buzz::config::TelegramConfig {
             bot_token: t.bot_token.clone(),
             chat_id: t.chat_id,
             topic_id: t.topic_id,
             allowed_user_ids: t.allowed_user_ids.clone(),
         }),
-        watchers: buzz::config::WatchersConfig {
+        watchers: crate::buzz::config::WatchersConfig {
             github: ws
                 .watchers
                 .github
                 .as_ref()
-                .map(|g| buzz::config::GithubWatcherConfig {
+                .map(|g| crate::buzz::config::GithubWatcherConfig {
                     enabled: true,
                     interval_secs: g.interval_secs,
                     repos: if g.repos.is_empty() {
@@ -326,7 +326,7 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> buzz::config::BuzzConfig {
                 .watchers
                 .sentry
                 .as_ref()
-                .map(|s| buzz::config::SentryWatcherConfig {
+                .map(|s| crate::buzz::config::SentryWatcherConfig {
                     enabled: true,
                     interval_secs: s.interval_secs,
                     org: s.org.clone(),
@@ -337,13 +337,13 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> buzz::config::BuzzConfig {
                 .watchers
                 .swarm
                 .as_ref()
-                .map(|s| buzz::config::SwarmWatcherConfig {
+                .map(|s| crate::buzz::config::SwarmWatcherConfig {
                     enabled: true,
                     interval_secs: s.interval_secs,
                     state_path: s.state_path.clone(),
                 }),
         },
-        coordinator: buzz::config::CoordinatorConfig {
+        coordinator: crate::buzz::config::CoordinatorConfig {
             model: ws.coordinator.model.clone(),
             max_turns: ws.coordinator.max_turns,
         },
@@ -401,9 +401,9 @@ pub struct PipelineRuleConfig {
 }
 
 /// Convert pipeline config rules into buzz pipeline rules.
-pub fn to_pipeline_rules(config: &PipelineConfig) -> Vec<buzz::pipeline::rule::PipelineRule> {
-    use buzz::pipeline::rule::{PipelineAction, PipelineRule};
-    use buzz::signal::Severity;
+pub fn to_pipeline_rules(config: &PipelineConfig) -> Vec<crate::buzz::pipeline::rule::PipelineRule> {
+    use crate::buzz::pipeline::rule::{PipelineAction, PipelineRule};
+    use crate::buzz::signal::Severity;
 
     config
         .rules

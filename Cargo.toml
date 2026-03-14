@@ -3,7 +3,6 @@ resolver = "3"
 members = [
     "crates/apiari",
     "crates/hive",
-    "crates/buzz",
 ]
 
 [workspace.package]
@@ -32,4 +31,3 @@ apiari-common = "0.1.0"
 apiari-tui = "0.1.0"
 apiari-claude-sdk = "0.1.0"
 apiari-codex-sdk = "0.1.0"
-buzz = { path = "crates/buzz" }

@@ -17,7 +17,7 @@ use tracing::{info, warn};
 use apiari_claude_sdk::types::ContentBlock;
 use apiari_claude_sdk::{ClaudeClient, Event, SessionOptions};
 
-use crate::signal::store::SignalStore;
+use crate::buzz::signal::store::SignalStore;
 
 /// Structured events emitted by the coordinator during a turn.
 #[derive(Debug, Clone)]

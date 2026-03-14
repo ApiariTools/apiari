@@ -10,8 +10,8 @@ pub mod swarm;
 use async_trait::async_trait;
 use color_eyre::Result;
 
-use crate::signal::SignalUpdate;
-use crate::signal::store::SignalStore;
+use crate::buzz::signal::SignalUpdate;
+use crate::buzz::signal::store::SignalStore;
 
 /// A pluggable source that can be polled for new signals.
 #[async_trait]

@@ -1,6 +1,6 @@
 //! Signal formatting for notifications.
 
-use crate::signal::{Severity, SignalRecord};
+use crate::buzz::signal::{Severity, SignalRecord};
 
 /// Severity emoji prefix.
 fn severity_emoji(severity: &Severity) -> &'static str {
@@ -64,7 +64,7 @@ pub fn format_batch_notification(signals: &[SignalRecord]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::SignalStatus;
+    use crate::buzz::signal::SignalStatus;
     use chrono::Utc;
 
     fn make_record(

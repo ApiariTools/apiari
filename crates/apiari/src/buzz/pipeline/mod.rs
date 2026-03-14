@@ -10,7 +10,7 @@ pub mod rule;
 
 use std::time::Duration;
 
-use crate::signal::SignalRecord;
+use crate::buzz::signal::SignalRecord;
 use rule::{PipelineAction, PipelineRule, default_rules};
 use tracing::debug;
 
@@ -110,7 +110,7 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal::{Severity, SignalStatus};
+    use crate::buzz::signal::{Severity, SignalStatus};
     use chrono::Utc;
     use rule::PipelineRule;
 

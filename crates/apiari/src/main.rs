@@ -1,3 +1,4 @@
+mod buzz;
 mod config;
 mod daemon;
 mod git_safety;
