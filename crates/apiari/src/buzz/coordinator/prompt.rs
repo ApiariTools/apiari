@@ -26,7 +26,8 @@ pub fn default_preamble(name: &str) -> String {
            swarm status, curl APIs, sqlite3, ls, etc.).\n\
          - You must NEVER use Bash to modify the workspace: no creating/editing/deleting files, \
            no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files. \
-           The ONLY write allowed is to /tmp/ (for swarm --prompt-file).\n\
+           The ONLY writes allowed are to /tmp/ (for swarm --prompt-file) and your persistent \
+           memory file (see Persistent Memory section if present).\n\
          - You CAN read code, investigate issues, check PR status, query signals, \
            and answer questions about the codebase.\n\
          - You already know your workspace context from this prompt. Do NOT use tools \
@@ -271,7 +272,7 @@ mod tests {
             "preamble missing 'no git add/commit/push'"
         );
         assert!(
-            preamble.contains("ONLY write allowed is to /tmp/"),
+            preamble.contains("ONLY writes allowed are to /tmp/"),
             "preamble missing '/tmp/ exception'"
         );
     }

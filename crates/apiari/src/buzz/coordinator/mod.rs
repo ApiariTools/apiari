@@ -176,26 +176,19 @@ impl Coordinator {
         let mut events = Vec::new();
 
         match event {
-            Event::Assistant {
-                message,
-                tool_uses,
-            } => {
+            Event::Assistant { message, tool_uses } => {
                 // Audit Bash tool uses
                 for tool_use in tool_uses {
                     if tool_use.name == "Bash"
-                        && let Some(command) = tool_use.input.get("command").and_then(|v| v.as_str())
+                        && let Some(command) =
+                            tool_use.input.get("command").and_then(|v| v.as_str())
                     {
                         let classification = audit::classify_bash_command(command);
                         match &classification {
                             audit::BashClassification::ReadOnly => {
-                                info!(
-                                    "[coordinator] bash (read-only): {}",
-                                    truncate_cmd(command)
-                                );
+                                info!("[coordinator] bash (read-only): {}", truncate_cmd(command));
                             }
-                            audit::BashClassification::PotentiallyMutating {
-                                matched_pattern,
-                            } => {
+                            audit::BashClassification::PotentiallyMutating { matched_pattern } => {
                                 warn!(
                                     "[coordinator] bash MUTATING ({}): {}",
                                     matched_pattern,
@@ -298,9 +291,6 @@ impl Coordinator {
 
 /// Truncate a command string for logging.
 fn truncate_cmd(cmd: &str) -> &str {
-    let end = cmd
-        .char_indices()
-        .nth(120)
-        .map_or(cmd.len(), |(i, _)| i);
+    let end = cmd.char_indices().nth(120).map_or(cmd.len(), |(i, _)| i);
     &cmd[..end]
 }
