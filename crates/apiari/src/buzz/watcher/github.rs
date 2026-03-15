@@ -1,9 +1,7 @@
 //! GitHub watcher — polls GitHub for events using the `gh` CLI.
 //!
-//! Queries open issues, PR review requests, watched labels, and failed CI.
-//! Uses cross-poll dedup to avoid re-firing for persistent conditions.
-
-use std::collections::{HashMap, HashSet};
+//! Queries open issues, PR review requests, watched labels, and CI status.
+//! Stateless — emits all signals every poll; the DB handles dedup via UNIQUE constraints.
 
 use async_trait::async_trait;
 use color_eyre::Result;
@@ -19,14 +17,6 @@ pub struct GithubWatcher {
     config: GithubWatcherConfig,
     gh_available: Option<bool>,
     username: Option<String>,
-    /// Dedup keys from previous poll — only emit new signals.
-    seen: HashSet<String>,
-    /// External IDs from the last successful poll, for reconciliation.
-    /// `None` = never polled successfully, `Some(vec![])` = polled and got zero.
-    last_poll_ids: Option<Vec<String>>,
-    /// Tracks PRs with CI failures for recovery detection.
-    /// Key: "{repo}#{pr_number}", Value: pr_title.
-    ci_failed_prs: HashMap<String, String>,
 }
 
 impl GithubWatcher {
@@ -35,9 +25,6 @@ impl GithubWatcher {
             config,
             gh_available: None,
             username: None,
-            seen: HashSet::new(),
-            last_poll_ids: None,
-            ci_failed_prs: HashMap::new(),
         }
     }
 
@@ -128,9 +115,7 @@ impl GithubWatcher {
     async fn fetch_open_prs(&self, repo: &str) -> Vec<(u64, String, String)> {
         let mut result = Vec::new();
         if let Some(prs) = self
-            .gh_api(&format!(
-                "repos/{repo}/pulls?state=open&per_page=20"
-            ))
+            .gh_api(&format!("repos/{repo}/pulls?state=open&per_page=20"))
             .await
             && let Some(prs) = prs.as_array()
         {
@@ -264,20 +249,15 @@ impl Watcher for GithubWatcher {
         }
 
         let mut all_signals = Vec::new();
-        let mut current_keys: HashSet<String> = HashSet::new();
 
         for repo in &self.config.repos.clone() {
             let signals = self.poll_repo(repo).await;
-            for (key, signal) in signals {
-                current_keys.insert(key.clone());
-                if !self.seen.contains(&key) {
-                    all_signals.push(signal);
-                }
+            for (_key, signal) in signals {
+                all_signals.push(signal);
             }
         }
 
-        // PR CI failure and recovery signals
-        let mut new_ci_failed: HashMap<String, String> = HashMap::new();
+        // PR CI failure and pass signals
         for repo in &self.config.repos.clone() {
             let prs = self.fetch_open_prs(repo).await;
             for (pr_number, pr_title, head_branch) in prs {
@@ -285,7 +265,6 @@ impl Watcher for GithubWatcher {
                     let conclusion = run.get("conclusion").and_then(|v| v.as_str());
                     let run_id = run.get("databaseId").and_then(|v| v.as_u64());
                     let run_url = run.get("url").and_then(|v| v.as_str());
-                    let pr_key = format!("{repo}#{pr_number}");
 
                     match conclusion {
                         Some("failure") => {
@@ -300,16 +279,12 @@ impl Watcher for GithubWatcher {
                                 if let Some(url) = run_url {
                                     signal = signal.with_body(url).with_url(url);
                                 }
-                                current_keys.insert(key.clone());
-                                if !self.seen.contains(&key) {
-                                    all_signals.push(signal);
-                                }
+                                all_signals.push(signal);
                             }
-                            new_ci_failed.insert(pr_key, pr_title);
                         }
-                        Some("success") if self.ci_failed_prs.contains_key(&pr_key) => {
+                        Some("success") => {
                             if let Some(run_id) = run_id {
-                                let key = format!("ci-recovery-{run_id}");
+                                let key = format!("ci-pass-{run_id}");
                                 let mut signal = SignalUpdate::new(
                                     "github",
                                     &key,
@@ -319,10 +294,7 @@ impl Watcher for GithubWatcher {
                                 if let Some(url) = run_url {
                                     signal = signal.with_url(url);
                                 }
-                                current_keys.insert(key.clone());
-                                if !self.seen.contains(&key) {
-                                    all_signals.push(signal);
-                                }
+                                all_signals.push(signal);
                             }
                         }
                         _ => {}
@@ -330,29 +302,12 @@ impl Watcher for GithubWatcher {
                 }
             }
         }
-        self.ci_failed_prs = new_ci_failed;
 
         if !all_signals.is_empty() {
-            info!("github: {} new signal(s)", all_signals.len());
+            info!("github: {} signal(s)", all_signals.len());
         }
-
-        self.last_poll_ids = Some(current_keys.iter().cloned().collect());
-
-        // Prune seen set to only currently-active signals
-        self.seen = current_keys;
 
         Ok(all_signals)
-    }
-
-    fn reconcile(&self, store: &SignalStore) -> Result<usize> {
-        let Some(ref ids) = self.last_poll_ids else {
-            return Ok(0); // Never polled yet — skip
-        };
-        let resolved = store.resolve_missing_signals("github", ids)?;
-        if resolved > 0 {
-            info!("github: reconciled {resolved} resolved signal(s)");
-        }
-        Ok(resolved)
     }
 }
 
@@ -582,13 +537,13 @@ mod tests {
     }
 
     #[test]
-    fn test_ci_recovery_signal() {
+    fn test_ci_pass_signal() {
         let run_id = 789u64;
         let pr_title = "Add feature X";
         let pr_number = 42u64;
         let run_url = "https://github.com/org/repo/actions/runs/789";
 
-        let key = format!("ci-recovery-{run_id}");
+        let key = format!("ci-pass-{run_id}");
         let signal = SignalUpdate::new(
             "github",
             &key,
@@ -597,7 +552,7 @@ mod tests {
         )
         .with_url(run_url);
 
-        assert_eq!(signal.external_id, "ci-recovery-789");
+        assert_eq!(signal.external_id, "ci-pass-789");
         assert_eq!(signal.severity, Severity::Info);
         assert!(signal.title.contains("CI passed"));
         assert!(signal.title.contains("#42"));
