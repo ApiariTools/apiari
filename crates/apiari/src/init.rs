@@ -101,19 +101,19 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
     println!("     apiari ui\n");
 
     // Offer to open in $EDITOR if stdin is a TTY
-    if let Ok(editor) = std::env::var("EDITOR") {
-        if std::io::stdin().is_terminal() {
-            print!("  Press enter to open in {editor}, or ctrl+c to skip: ");
-            std::io::stdout().flush()?;
-            let mut buf = [0u8; 1];
-            // Read one byte — enter proceeds, anything else or error skips
-            if std::io::stdin().read(&mut buf).is_ok() && buf[0] == b'\n' {
-                let status = std::process::Command::new(&editor)
-                    .arg(&config_path)
-                    .status();
-                if let Err(e) = status {
-                    eprintln!("  Failed to open editor: {e}");
-                }
+    if let Ok(editor) = std::env::var("EDITOR")
+        && std::io::stdin().is_terminal()
+    {
+        print!("  Press enter to open in {editor}, or ctrl+c to skip: ");
+        std::io::stdout().flush()?;
+        let mut buf = [0u8; 1];
+        // Read one byte — enter proceeds, anything else or error skips
+        if std::io::stdin().read(&mut buf).is_ok() && buf[0] == b'\n' {
+            let status = std::process::Command::new(&editor)
+                .arg(&config_path)
+                .status();
+            if let Err(e) = status {
+                eprintln!("  Failed to open editor: {e}");
             }
         }
     }

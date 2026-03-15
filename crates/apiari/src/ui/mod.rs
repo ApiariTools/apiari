@@ -173,25 +173,19 @@ async fn onboarding_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdou
 
         tokio::select! {
             maybe_event = events.next() => {
-                match maybe_event {
-                    Some(Ok(Event::Key(key))) => {
-                        if key.code == KeyCode::Char('q')
-                            || key.code == KeyCode::Esc
-                            || (key.modifiers.contains(KeyModifiers::CONTROL)
-                                && key.code == KeyCode::Char('c'))
-                        {
-                            break;
-                        }
-                    }
-                    _ => {}
+                if let Some(Ok(Event::Key(key))) = maybe_event
+                    && (key.code == KeyCode::Char('q')
+                        || key.code == KeyCode::Esc
+                        || (key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('c')))
+                {
+                    break;
                 }
             }
             _ = poll_tick.tick() => {
                 // Check if a workspace config has appeared
-                if let Ok(ws) = config::discover_workspaces() {
-                    if !ws.is_empty() {
-                        break;
-                    }
+                if let Ok(ws) = config::discover_workspaces() && !ws.is_empty() {
+                    break;
                 }
             }
             _ = tick.tick() => {
