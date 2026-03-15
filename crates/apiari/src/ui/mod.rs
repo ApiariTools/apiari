@@ -15,6 +15,8 @@ use crossterm::terminal::{
 };
 use futures::StreamExt;
 use ratatui::prelude::*;
+use ratatui::symbols::border;
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -69,14 +71,14 @@ enum KeyAction {
 
 /// Launch the TUI.
 pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
-    let workspaces = config::discover_workspaces()?;
+    let mut workspaces = config::discover_workspaces()?;
     if workspaces.is_empty() {
-        eprintln!(
-            "No workspace configs found in {}",
-            config::workspaces_dir().display()
-        );
-        eprintln!("Run `apiari init` in a project directory to create one.");
-        return Ok(());
+        run_onboarding().await?;
+        // Re-check after onboarding exits (user pressed q, or a workspace appeared)
+        workspaces = config::discover_workspaces()?;
+        if workspaces.is_empty() {
+            return Ok(());
+        }
     }
 
     let mut app = App::new(workspaces, focus_workspace);
@@ -129,6 +131,235 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     stdout().execute(LeaveAlternateScreen)?;
 
     result
+}
+
+// ── Onboarding screen ────────────────────────────────────
+
+/// Show a welcome/setup screen when no workspaces are configured.
+/// Polls every 2s for new workspace configs and auto-transitions.
+async fn run_onboarding() -> Result<()> {
+    stdout().execute(EnterAlternateScreen)?;
+    enable_raw_mode()?;
+
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    terminal.clear()?;
+
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = stdout().execute(LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
+    let result = onboarding_loop(&mut terminal).await;
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+
+    result
+}
+
+/// Returns Ok(()) when user quits or a workspace config appears.
+async fn onboarding_loop(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+    let mut events = EventStream::new();
+    let mut poll_tick = tokio::time::interval(Duration::from_secs(2));
+    poll_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut frame_count: usize = 0;
+
+    loop {
+        terminal.draw(|f| draw_onboarding(f, frame_count))?;
+
+        tokio::select! {
+            maybe_event = events.next() => {
+                match maybe_event {
+                    Some(Ok(Event::Key(key))) => {
+                        if key.code == KeyCode::Char('q')
+                            || key.code == KeyCode::Esc
+                            || (key.modifiers.contains(KeyModifiers::CONTROL)
+                                && key.code == KeyCode::Char('c'))
+                        {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ = poll_tick.tick() => {
+                // Check if a workspace config has appeared
+                if let Ok(ws) = config::discover_workspaces() {
+                    if !ws.is_empty() {
+                        break;
+                    }
+                }
+            }
+            _ = tick.tick() => {
+                frame_count = frame_count.wrapping_add(1);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn draw_onboarding(frame: &mut ratatui::Frame, tick: usize) {
+    let size = frame.area();
+
+    // Background fill
+    let bg = Block::default().style(Style::default().bg(theme::COMB));
+    frame.render_widget(bg, size);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // body (centered)
+            Constraint::Length(1), // bottom hint bar
+        ])
+        .split(size);
+
+    // ── Body content ──
+    let content_width = 60u16.min(rows[0].width.saturating_sub(4));
+    let content_height = 22u16.min(rows[0].height.saturating_sub(2));
+    let cx = (rows[0].width.saturating_sub(content_width)) / 2;
+    let cy = (rows[0].height.saturating_sub(content_height)) / 2;
+    let content_area = Rect::new(cx, cy, content_width, content_height);
+
+    let wings = match tick % 4 {
+        0 => ("~", "~"),
+        1 => ("-", "-"),
+        2 => ("~", "~"),
+        _ => ("-", "-"),
+    };
+    let bee = format!("{}(*v*){}", wings.0, wings.1);
+
+    let config_dir = config::workspaces_dir();
+    let config_dir_display = config_dir.to_string_lossy().replace(
+        &dirs::home_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        "~",
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Logo / title
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("       * ", Style::default().fg(theme::HONEY)),
+        Span::styled(
+            "apiari",
+            Style::default()
+                .fg(theme::HONEY)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![Span::styled(
+        format!("      {bee}"),
+        Style::default().fg(theme::POLLEN),
+    )]));
+    lines.push(Line::from(""));
+
+    // Welcome
+    lines.push(Line::from(vec![Span::styled(
+        "  Welcome! Let's get your hive set up.",
+        Style::default().fg(theme::FROST),
+    )]));
+    lines.push(Line::from(""));
+
+    // Steps
+    let step_style = Style::default()
+        .fg(theme::HONEY)
+        .add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(theme::SMOKE);
+    let cmd_style = Style::default().fg(theme::FROST);
+    let path_style = Style::default().fg(theme::ICE);
+
+    lines.push(Line::from(vec![
+        Span::styled("  1. ", step_style),
+        Span::styled("Create a workspace config:", text_style),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("     "),
+        Span::styled("cd ~/your-project && apiari init", cmd_style),
+    ]));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![
+        Span::styled("  2. ", step_style),
+        Span::styled("Edit your config with bot credentials:", text_style),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("     "),
+        Span::styled(format!("{config_dir_display}/"), path_style),
+        Span::styled("<name>.toml", Style::default().fg(theme::POLLEN)),
+    ]));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![
+        Span::styled("  3. ", step_style),
+        Span::styled("Get a Telegram bot token from ", text_style),
+        Span::styled("@BotFather", Style::default().fg(theme::MINT)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("     "),
+        Span::styled("Get your chat_id from ", text_style),
+        Span::styled("@userinfobot", Style::default().fg(theme::MINT)),
+    ]));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![
+        Span::styled("  4. ", step_style),
+        Span::styled("Start the daemon:", text_style),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("     "),
+        Span::styled("apiari daemon --background", cmd_style),
+    ]));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![
+        Span::styled("  5. ", step_style),
+        Span::styled("Come back here ", text_style),
+        Span::styled("(apiari ui)", cmd_style),
+        Span::styled(" — you're live!", text_style),
+    ]));
+    lines.push(Line::from(""));
+
+    // Waiting indicator
+    let dots = match tick % 4 {
+        0 => ".",
+        1 => "..",
+        2 => "...",
+        _ => "",
+    };
+    lines.push(Line::from(vec![Span::styled(
+        format!("  Watching for configs{dots}"),
+        Style::default().fg(theme::STEEL),
+    )]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme::HONEY))
+        .style(Style::default().bg(theme::COMB));
+    let inner = block.inner(content_area);
+    frame.render_widget(block, content_area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+
+    // ── Bottom hint ──
+    let hint_spans = vec![
+        Span::raw(" "),
+        Span::styled("q", Style::default().fg(theme::HONEY)),
+        Span::styled(" to quit", Style::default().fg(theme::SMOKE)),
+        Span::styled(
+            "    auto-refreshing every 2s",
+            Style::default().fg(theme::STEEL),
+        ),
+    ];
+    let hint = Paragraph::new(Line::from(hint_spans)).style(Style::default().bg(theme::COMB));
+    frame.render_widget(hint, rows[1]);
 }
 
 // ── Event loop ───────────────────────────────────────────
