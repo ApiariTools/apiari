@@ -79,6 +79,36 @@ impl TelegramChannel {
         format!("https://api.telegram.org/bot{}/{method}", self.bot_token)
     }
 
+    /// Validate the bot token by calling the Telegram `getMe` endpoint.
+    ///
+    /// Returns `Ok(username)` on success or `Err(description)` on failure.
+    pub async fn validate(&self) -> std::result::Result<String, String> {
+        let resp = self
+            .client
+            .get(self.api_url("getMe"))
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?;
+
+        let body: TgResponse<TgUser> = resp
+            .json()
+            .await
+            .map_err(|e| format!("failed to parse response: {e}"))?;
+
+        if body.ok {
+            if let Some(user) = body.result {
+                let username = user.username.unwrap_or(user.first_name);
+                Ok(username)
+            } else {
+                Err("ok=true but no result".to_string())
+            }
+        } else {
+            Err(body
+                .description
+                .unwrap_or_else(|| "unknown error".to_string()))
+        }
+    }
+
     fn parse_message(msg: &TgMessage) -> Option<ChannelEvent> {
         let text = msg.text.as_deref()?.trim();
         if text.is_empty() {
