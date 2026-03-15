@@ -1,9 +1,9 @@
 //! App state machine for the apiari TUI.
 
-use apiari_tui::conversation::ConversationEntry;
 use crate::buzz::coordinator::memory::MemoryStore;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalRecord};
+use apiari_tui::conversation::ConversationEntry;
 use chrono::{DateTime, Local, Utc};
 use serde::Deserialize;
 use std::io::{BufRead, Seek, SeekFrom};

@@ -60,6 +60,12 @@ enum CoordResponse {
     },
     /// Dispatch cleared by daemon.
     DispatchCleared,
+    /// An incoming message from an external channel (e.g. Telegram), mirrored to the TUI.
+    IncomingMessage {
+        source: String,
+        user_name: String,
+        text: String,
+    },
 }
 
 /// Async action results sent back to the event loop.
@@ -268,6 +274,15 @@ async fn daemon_client_task(
                                 per_repo,
                             },
                             TuiResponse::DispatchCleared => CoordResponse::DispatchCleared,
+                            TuiResponse::IncomingMessage {
+                                source,
+                                user_name,
+                                text,
+                            } => CoordResponse::IncomingMessage {
+                                source,
+                                user_name,
+                                text,
+                            },
                         };
                         if coord_tx.send(coord_msg).await.is_err() {
                             break;
@@ -414,6 +429,17 @@ async fn event_loop(
                     app.active_dispatch = None;
                     app.clamp_sidebar_selection();
                     app.streaming = false;
+                }
+                CoordResponse::IncomingMessage {
+                    source,
+                    user_name,
+                    text,
+                } => {
+                    let label = format!("[{source}] {user_name}");
+                    app.chat_history
+                        .push(ChatLine::User(format!("{label}: {text}"), app::now_ts()));
+                    app.streaming = true;
+                    app.chat_scroll = 0;
                 }
             }
         }
