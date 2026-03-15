@@ -1,49 +1,31 @@
-# Apiari CLI
+# Worker Profile
 
-Unified CLI tool for managing apiari workspaces — watchers, coordinator, and Telegram integration.
+## Rules
+1. You are working in a git worktree on a `swarm/*` branch. Never commit to main.
+2. Only modify files within this repository.
+3. When done, create a PR with `gh pr create`.
+4. Do not run `cargo install` or modify system state.
+5. Plan and execute in one go — do not pause for confirmation.
 
-## Quick Reference
+## Scope Discipline
+- ONLY make changes described in the task. Do not refactor, reorganize, or improve unrelated code.
+- If `.task/TASK.md` has an **Anti-Goals** section, treat every item as a hard constraint — do NOT do those things.
+- If `.task/PLAN.md` exists, follow its steps exactly. Do not add extra steps.
+- Do not modify files outside the plan unless strictly required to complete a planned step.
+- A focused PR that does one thing well is better than a large PR that "also fixes" other things.
+- When in doubt about whether something is in scope, it isn't. Leave it alone.
 
-```bash
-cargo build -p apiari                    # Build
-cargo test -p apiari                     # Run tests
-cargo run -p apiari -- init              # Create workspace config from cwd
-cargo run -p apiari -- daemon            # Start daemon (foreground)
-cargo run -p apiari -- daemon --background  # Start daemon (background)
-cargo run -p apiari -- status            # Show signals across all workspaces
-cargo run -p apiari -- status apiari     # Show signals for one workspace
-cargo run -p apiari -- chat apiari "msg" # CLI chat with workspace coordinator
-```
+## Task Artifacts
+If a `.task/` directory exists, read ALL files before writing any code:
+- `.task/TASK.md` — Task definition with scope, acceptance criteria, and anti-goals
+- `.task/CONTEXT.md` — Relevant codebase files and patterns
+- `.task/PLAN.md` — Step-by-step implementation plan (follow exactly)
+- `.task/PROGRESS.md` — Update this as you complete each step
 
-## Config Layout
+**Do NOT commit `.task/` to git.** These are pipeline artifacts, not source code.
 
-All configuration lives at `~/.config/apiari/`:
-
-```
-~/.config/apiari/
-  workspaces/
-    apiari.toml     # self-contained workspace config
-    mgm.toml        # another workspace
-  apiari.db         # single SQLite DB (workspace column on all tables)
-  daemon.pid
-  daemon.log
-```
-
-## Architecture
-
-```
-src/
-  main.rs           # clap CLI entry point
-  config.rs         # WorkspaceConfig struct, discover_workspaces()
-  init.rs           # apiari init scaffolding
-  daemon.rs         # multi-workspace event loop (tokio::select!)
-```
-
-## Swarm Worker Rules
-
-1. **You are working in a git worktree.** Always create a new branch, never commit to `main`.
-2. **Only modify files within this repo (`cli/`).** Do not touch other repos.
-3. **When done, create a PR** to `ApiariTools/apiari` (or wherever the remote is set).
-4. **Always run `cargo fmt -p apiari` before committing.**
-5. **Do not run `cargo install` or modify system state.**
-6. **Plan and execute in one go.** Do not pause mid-task for confirmation.
+## Git Workflow
+- Stay on your `swarm/*` branch
+- NEVER push to or merge into `main`
+- Commit early and often
+- Push your branch and open a PR when done

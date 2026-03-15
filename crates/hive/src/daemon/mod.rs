@@ -1296,11 +1296,6 @@ impl DaemonRunner {
 
         self.active_workspace = Some(ws_idx);
 
-        // React immediately so the user knows we received their message.
-        self.active_channel()
-            .send_reaction(chat_id, message_id, "👀")
-            .await;
-
         // Touch the telegram channel so presence routing knows telegram is active.
         let _ = crate::presence::touch_channel(&self.active_ws().workspace_root, "telegram");
 
@@ -1312,6 +1307,10 @@ impl DaemonRunner {
                 args,
                 ..
             } => {
+                // React immediately for commands (fast path, not spawned).
+                self.active_channel()
+                    .send_reaction(chat_id, message_id, "👀")
+                    .await;
                 tracing::info!(user_name, command, args, "Command received");
                 self.handle_command(chat_id, &command, &args).await
             }
@@ -1329,7 +1328,9 @@ impl DaemonRunner {
                     text = %truncate(&text, 80),
                     "Message received",
                 );
-                self.handle_message(chat_id, user_id, &user_name, &text)
+                // send_reaction is deferred into the spawned task so the
+                // event loop can immediately process the next message.
+                self.handle_message(chat_id, message_id, user_id, &user_name, &text)
                     .await
             }
             ChannelEvent::CallbackQuery { .. } => unreachable!(),
@@ -1360,7 +1361,7 @@ impl DaemonRunner {
                 .unwrap_or_else(|| data.to_owned());
             let synthetic_message = format!("User tapped: \"{label}\"");
             tracing::debug!(synthetic_message, "Routing callback to coordinator");
-            self.handle_message(chat_id, 0, "button_tap", &synthetic_message)
+            self.handle_message(chat_id, 0, 0, "button_tap", &synthetic_message)
                 .await
         }
     }
@@ -1669,6 +1670,7 @@ impl DaemonRunner {
     async fn handle_message(
         &mut self,
         chat_id: i64,
+        message_id: i64,
         user_id: i64,
         user_name: &str,
         text: &str,
@@ -1712,6 +1714,13 @@ impl DaemonRunner {
 
         // -- Phase B: spawn the long-running coordinator work --
         tokio::spawn(async move {
+            // React immediately so the user knows we received their message.
+            // This is done inside the spawn so the event loop stays unblocked.
+            // message_id == 0 for synthetic callback messages — skip the reaction.
+            if message_id != 0 {
+                channel.send_reaction(chat_id, message_id, "👀").await;
+            }
+
             // Start typing indicator loop (expires after 5s, so we resend every 4s).
             let typing_cancel = CancellationToken::new();
             {
