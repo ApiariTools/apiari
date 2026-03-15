@@ -7,6 +7,7 @@ pub mod socket;
 
 use color_eyre::eyre::{Result, WrapErr};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -49,7 +50,7 @@ struct WorkspaceSlot {
     name: String,
     config: WorkspaceConfig,
     registry: WatcherRegistry,
-    coordinator: Coordinator,
+    coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
     store: SignalStore,
     pipeline: Pipeline,
 }
@@ -61,6 +62,36 @@ struct RouteKey {
     topic_id: Option<i64>,
 }
 
+/// A job to be processed by a workspace's dedicated coordinator task.
+enum CoordinatorJob {
+    /// Handle a Telegram user message.
+    TelegramMessage {
+        text: String,
+        chat_id: i64,
+        topic_id: Option<i64>,
+        message_id: i64,
+        channel: TelegramChannel,
+        socket_server: Option<Arc<socket::DaemonSocketServer>>,
+        slot_name: String,
+    },
+    /// Handle a TUI chat message with streaming tokens.
+    TuiChat {
+        text: String,
+        responder: mpsc::UnboundedSender<socket::DaemonResponse>,
+        socket_server: Option<Arc<socket::DaemonSocketServer>>,
+        ws_name: String,
+    },
+    /// Reset the coordinator session.
+    ResetSession,
+    /// Coordinator follow-through for swarm events.
+    SwarmFollowThrough {
+        events: Vec<String>,
+        telegram: Option<(TelegramChannel, i64, Option<i64>)>,
+        socket_server: Option<Arc<socket::DaemonSocketServer>>,
+        slot_name: String,
+    },
+}
+
 /// Helper: look up the Telegram channel for a workspace slot.
 fn get_channel<'a>(
     slot: &WorkspaceSlot,
@@ -70,6 +101,279 @@ fn get_channel<'a>(
         .telegram
         .as_ref()
         .and_then(|tg| channels.get(&tg.bot_token))
+}
+
+/// Per-workspace coordinator task — processes jobs serially to preserve session ordering.
+async fn run_coordinator_task(
+    mut coordinator: Coordinator,
+    store: SignalStore,
+    mut job_rx: mpsc::UnboundedReceiver<CoordinatorJob>,
+) {
+    while let Some(job) = job_rx.recv().await {
+        match job {
+            CoordinatorJob::TelegramMessage {
+                text,
+                chat_id,
+                topic_id,
+                message_id,
+                channel,
+                socket_server,
+                slot_name,
+            } => {
+                channel.send_reaction(chat_id, message_id, "👀").await;
+
+                // Start typing indicator loop
+                let typing_cancel = CancellationToken::new();
+                {
+                    let typing_token = typing_cancel.clone();
+                    let typing_channel = channel.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            typing_channel.send_typing(chat_id, topic_id).await;
+                            tokio::select! {
+                                _ = typing_token.cancelled() => break,
+                                _ = tokio::time::sleep(std::time::Duration::from_secs(4)) => {}
+                            }
+                        }
+                    });
+                }
+
+                let opts = match coordinator.build_options(&store) {
+                    Ok(opts) => opts,
+                    Err(e) => {
+                        error!("[{slot_name}] failed to build coordinator options: {e}");
+                        typing_cancel.cancel();
+                        continue;
+                    }
+                };
+
+                let name_for_cb = slot_name.clone();
+                let mut alerts: Vec<String> = Vec::new();
+
+                let result = coordinator
+                    .handle_message_with_options(&text, opts, |event| match event {
+                        CoordinatorEvent::BashAudit {
+                            command,
+                            matched_pattern,
+                        } => {
+                            warn!(
+                                "[{name_for_cb}] coordinator bash MUTATING ({matched_pattern}): {command}"
+                            );
+                        }
+                        CoordinatorEvent::FilesModified { files } => {
+                            let file_list: Vec<String> = files
+                                .iter()
+                                .map(|(repo, file)| format!("{repo}/{file}"))
+                                .collect();
+                            warn!(
+                                "[{name_for_cb}] coordinator modified files: {}",
+                                file_list.join(", ")
+                            );
+                            alerts.push(format!(
+                                "⚠️ Coordinator modified workspace files:\n{}",
+                                file_list
+                                    .iter()
+                                    .map(|f| format!("- `{f}`"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            ));
+                        }
+                        CoordinatorEvent::Token(_) => {}
+                    })
+                    .await;
+
+                // Stop typing indicator
+                typing_cancel.cancel();
+
+                match result {
+                    Ok(response) => {
+                        if let Some(ref server) = socket_server {
+                            server.broadcast_activity(
+                                "telegram",
+                                &slot_name,
+                                "assistant_message",
+                                &response,
+                            );
+                        }
+
+                        for alert in alerts {
+                            let alert_msg = OutboundMessage {
+                                chat_id,
+                                text: alert.clone(),
+                                buttons: vec![],
+                                topic_id,
+                            };
+                            let _ = channel.send_message(&alert_msg).await;
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity(
+                                    "system",
+                                    &slot_name,
+                                    "safety_alert",
+                                    &alert,
+                                );
+                            }
+                        }
+
+                        let msg = OutboundMessage {
+                            chat_id,
+                            text: response,
+                            buttons: vec![],
+                            topic_id,
+                        };
+                        if let Err(e) = channel.send_message(&msg).await {
+                            error!("[{slot_name}] failed to send response: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        error!("[{slot_name}] coordinator error: {e}");
+                        let msg = OutboundMessage {
+                            chat_id,
+                            text: format!("Error: {e}"),
+                            buttons: vec![],
+                            topic_id,
+                        };
+                        let _ = channel.send_message(&msg).await;
+                    }
+                }
+            }
+
+            CoordinatorJob::TuiChat {
+                text,
+                responder,
+                socket_server,
+                ws_name,
+            } => {
+                let opts = match coordinator.build_options(&store) {
+                    Ok(opts) => opts,
+                    Err(e) => {
+                        let _ = responder.send(socket::DaemonResponse::Error {
+                            text: format!("{e}"),
+                        });
+                        continue;
+                    }
+                };
+
+                let name_for_cb = ws_name.clone();
+                let responder_for_cb = responder.clone();
+
+                let result = coordinator
+                    .handle_message_with_options(&text, opts, |event| match event {
+                        CoordinatorEvent::Token(t) => {
+                            let _ =
+                                responder_for_cb.send(socket::DaemonResponse::Token { text: t });
+                        }
+                        CoordinatorEvent::BashAudit {
+                            command,
+                            matched_pattern,
+                        } => {
+                            warn!(
+                                "[{name_for_cb}] coordinator bash MUTATING ({matched_pattern}): {command}"
+                            );
+                        }
+                        CoordinatorEvent::FilesModified { files } => {
+                            let file_list: Vec<String> = files
+                                .iter()
+                                .map(|(repo, file)| format!("{repo}/{file}"))
+                                .collect();
+                            warn!(
+                                "[{name_for_cb}] coordinator modified files: {}",
+                                file_list.join(", ")
+                            );
+                        }
+                    })
+                    .await;
+
+                match result {
+                    Ok(response) => {
+                        let _ = responder.send(socket::DaemonResponse::Done);
+                        if let Some(ref server) = socket_server {
+                            server.broadcast_activity(
+                                "tui",
+                                &ws_name,
+                                "assistant_message",
+                                &response,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        let _ = responder.send(socket::DaemonResponse::Error {
+                            text: format!("{e}"),
+                        });
+                    }
+                }
+            }
+
+            CoordinatorJob::ResetSession => {
+                coordinator.reset_session();
+            }
+
+            CoordinatorJob::SwarmFollowThrough {
+                events,
+                telegram,
+                socket_server,
+                slot_name,
+            } => {
+                if !coordinator.has_session() {
+                    continue;
+                }
+
+                let notification = format_system_notification(&events);
+                info!(
+                    "[{slot_name}] triggering coordinator follow-through ({} swarm event(s))",
+                    events.len()
+                );
+
+                let saved_turns = coordinator.max_turns();
+                coordinator.set_max_turns(3);
+
+                let opts = match coordinator.build_options(&store) {
+                    Ok(opts) => opts,
+                    Err(e) => {
+                        warn!("[{slot_name}] failed to build coordinator options: {e}");
+                        coordinator.set_max_turns(saved_turns);
+                        continue;
+                    }
+                };
+
+                match coordinator
+                    .handle_message_with_options(&notification, opts, |_| {})
+                    .await
+                {
+                    Ok(response) => {
+                        let response = response.trim().to_string();
+                        if !response.is_empty() && response.to_lowercase() != "ack" {
+                            if let Some((ref channel, chat_id, topic_id)) = telegram {
+                                let msg = OutboundMessage {
+                                    chat_id,
+                                    text: response.clone(),
+                                    buttons: vec![],
+                                    topic_id,
+                                };
+                                if let Err(e) = channel.send_message(&msg).await {
+                                    error!("[{slot_name}] failed to send follow-through: {e}");
+                                }
+                            }
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity(
+                                    "system",
+                                    &slot_name,
+                                    "assistant_message",
+                                    &response,
+                                );
+                            }
+                        } else {
+                            info!("[{slot_name}] coordinator ack'd swarm events (no message sent)");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("[{slot_name}] coordinator follow-through failed: {e}");
+                    }
+                }
+
+                coordinator.set_max_turns(saved_turns);
+            }
+        }
+    }
 }
 
 /// Run the daemon in the foreground with auto-restart on errors.
@@ -226,13 +530,21 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         let pipeline_rules = to_pipeline_rules(&ws.config.pipeline);
         let pipeline = Pipeline::new(pipeline_rules, ws.config.pipeline.batch_window_secs);
 
+        // Spawn dedicated coordinator task for this workspace
+        let coord_store = match SignalStore::open(&db, &ws.name) {
+            Ok(s) => s,
+            Err(e) => return ExitReason::Error(e),
+        };
+        let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
+        tokio::spawn(run_coordinator_task(coordinator, coord_store, coord_rx));
+
         name_map.insert(ws.name.clone(), slots.len());
         info!("[{}] {} watcher(s) enabled", ws.name, registry.len());
         slots.push(WorkspaceSlot {
             name: ws.name.clone(),
             config: ws.config.clone(),
             registry,
-            coordinator,
+            coord_tx,
             store,
             pipeline,
         });
@@ -398,46 +710,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     // Periodically evict old notification log entries
                     slot.pipeline.evict_old_log_entries();
 
-                    // Coordinator follow-through for swarm events
-                    if !new_swarm_events.is_empty() && slot.coordinator.has_session() {
-                        let notification = format_system_notification(&new_swarm_events);
-                        info!("[{}] triggering coordinator follow-through ({} swarm event(s))", slot.name, new_swarm_events.len());
-
-                        let saved_turns = slot.coordinator.max_turns();
-                        slot.coordinator.set_max_turns(3);
-
-                        match slot.coordinator.handle_message(&notification, &slot.store, |_| {}).await {
-                            Ok(response) => {
-                                let response = response.trim().to_string();
-                                if !response.is_empty() && response.to_lowercase() != "ack" {
-                                    // Send to Telegram
-                                    if let Some(tg) = &slot.config.telegram
-                                        && let Some(channel) = telegram_channels.get(&tg.bot_token)
-                                    {
-                                        let msg = OutboundMessage {
-                                            chat_id: tg.chat_id,
-                                            text: response.clone(),
-                                            buttons: vec![],
-                                            topic_id: tg.topic_id,
-                                        };
-                                        if let Err(e) = channel.send_message(&msg).await {
-                                            error!("[{}] failed to send follow-through: {e}", slot.name);
-                                        }
-                                    }
-                                    // Broadcast to TUI
-                                    if let Some(ref server) = socket_server {
-                                        server.broadcast_activity("system", &slot.name, "assistant_message", &response);
-                                    }
-                                } else {
-                                    info!("[{}] coordinator ack'd swarm events (no message sent)", slot.name);
-                                }
-                            }
-                            Err(e) => {
-                                warn!("[{}] coordinator follow-through failed: {e}", slot.name);
-                            }
-                        }
-
-                        slot.coordinator.set_max_turns(saved_turns);
+                    // Coordinator follow-through for swarm events (non-blocking)
+                    if !new_swarm_events.is_empty() {
+                        let telegram_info = slot.config.telegram.as_ref().and_then(|tg| {
+                            telegram_channels.get(&tg.bot_token).map(|ch| {
+                                (ch.clone(), tg.chat_id, tg.topic_id)
+                            })
+                        });
+                        let _ = slot.coord_tx.send(CoordinatorJob::SwarmFollowThrough {
+                            events: new_swarm_events,
+                            telegram: telegram_info,
+                            socket_server: socket_server.clone(),
+                            slot_name: slot.name.clone(),
+                        });
                     }
                 }
             }
@@ -450,51 +735,23 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         let user_text = text.clone();
 
                         if let Some(&idx) = name_map.get(&ws_name) {
-                            let slot = &mut slots[idx];
+                            let slot = &slots[idx];
                             info!("[{}] TUI chat: {user_text}", slot.name);
 
-                            // Broadcast user message to all TUI clients
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("tui", &ws_name, "user_message", &user_text);
                             }
 
-                            let slot_name = slot.name.clone();
-                            let responder = client_req.responder.clone();
-
-                            match slot.coordinator.handle_message(&user_text, &slot.store, |event| {
-                                match event {
-                                    CoordinatorEvent::Token(t) => {
-                                        let _ = responder.send(socket::DaemonResponse::Token { text: t });
-                                    }
-                                    CoordinatorEvent::BashAudit { command, matched_pattern } => {
-                                        warn!(
-                                            "[{slot_name}] coordinator bash MUTATING ({matched_pattern}): {command}"
-                                        );
-                                    }
-                                    CoordinatorEvent::FilesModified { files } => {
-                                        let file_list: Vec<String> = files
-                                            .iter()
-                                            .map(|(repo, file)| format!("{repo}/{file}"))
-                                            .collect();
-                                        warn!(
-                                            "[{slot_name}] coordinator modified files: {}",
-                                            file_list.join(", ")
-                                        );
-                                    }
-                                }
-                            }).await {
-                                Ok(response) => {
-                                    let _ = client_req.responder.send(socket::DaemonResponse::Done);
-                                    // Broadcast completed assistant message to all TUI clients
-                                    if let Some(ref server) = socket_server {
-                                        server.broadcast_activity("tui", &ws_name, "assistant_message", &response);
-                                    }
-                                }
-                                Err(e) => {
-                                    let _ = client_req.responder.send(socket::DaemonResponse::Error {
-                                        text: format!("{e}"),
-                                    });
-                                }
+                            let job = CoordinatorJob::TuiChat {
+                                text: user_text,
+                                responder: client_req.responder.clone(),
+                                socket_server: socket_server.clone(),
+                                ws_name,
+                            };
+                            if slot.coord_tx.send(job).is_err() {
+                                let _ = client_req.responder.send(socket::DaemonResponse::Error {
+                                    text: "coordinator task shut down".to_string(),
+                                });
                             }
                         } else {
                             let _ = client_req.responder.send(socket::DaemonResponse::Error {
@@ -513,108 +770,26 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             .or_else(|| route_map.get(&RouteKey { chat_id, topic_id: None }).copied());
 
                         if let Some(idx) = slot_idx {
-                            let slot = &mut slots[idx];
+                            let slot = &slots[idx];
                             info!("[{}] message from {user_name}: {text}", slot.name);
 
-                            // Broadcast Telegram user message to TUI clients
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("telegram", &slot.name, "user_message", &text);
                             }
 
                             if let Some(channel) = get_channel(slot, &telegram_channels) {
-                                channel.send_reaction(chat_id, message_id, "👀").await;
-
-                                // Start typing indicator loop (expires after ~5s, so resend every 4s).
-                                let typing_cancel = CancellationToken::new();
-                                {
-                                    let typing_token = typing_cancel.clone();
-                                    let typing_channel = channel.clone();
-                                    tokio::spawn(async move {
-                                        loop {
-                                            typing_channel.send_typing(chat_id, topic_id).await;
-                                            tokio::select! {
-                                                _ = typing_token.cancelled() => break,
-                                                _ = tokio::time::sleep(std::time::Duration::from_secs(4)) => {}
-                                            }
-                                        }
-                                    });
+                                let job = CoordinatorJob::TelegramMessage {
+                                    text,
+                                    chat_id,
+                                    topic_id,
+                                    message_id,
+                                    channel: channel.clone(),
+                                    socket_server: socket_server.clone(),
+                                    slot_name: slot.name.clone(),
+                                };
+                                if let Err(e) = slot.coord_tx.send(job) {
+                                    error!("[{}] coordinator job send failed: {e}", slot.name);
                                 }
-
-                                let slot_name = slot.name.clone();
-                                let mut alerts: Vec<String> = Vec::new();
-
-                                match slot.coordinator.handle_message(&text, &slot.store, |event| {
-                                    match event {
-                                        CoordinatorEvent::BashAudit { command, matched_pattern } => {
-                                            warn!(
-                                                "[{slot_name}] coordinator bash MUTATING ({matched_pattern}): {command}"
-                                            );
-                                        }
-                                        CoordinatorEvent::FilesModified { files } => {
-                                            let file_list: Vec<String> = files
-                                                .iter()
-                                                .map(|(repo, file)| format!("{repo}/{file}"))
-                                                .collect();
-                                            warn!(
-                                                "[{slot_name}] coordinator modified files: {}",
-                                                file_list.join(", ")
-                                            );
-                                            alerts.push(format!(
-                                                "⚠️ Coordinator modified workspace files:\n{}",
-                                                file_list
-                                                    .iter()
-                                                    .map(|f| format!("- `{f}`"))
-                                                    .collect::<Vec<_>>()
-                                                    .join("\n")
-                                            ));
-                                        }
-                                        CoordinatorEvent::Token(_) => {}
-                                    }
-                                }).await {
-                                    Ok(response) => {
-                                        // Broadcast Telegram assistant response to TUI clients
-                                        if let Some(ref server) = socket_server {
-                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &response);
-                                        }
-
-                                        for alert in alerts {
-                                            let alert_msg = OutboundMessage {
-                                                chat_id,
-                                                text: alert.clone(),
-                                                buttons: vec![],
-                                                topic_id,
-                                            };
-                                            let _ = channel.send_message(&alert_msg).await;
-                                            // Broadcast safety alerts to TUI
-                                            if let Some(ref server) = socket_server {
-                                                server.broadcast_activity("system", &slot.name, "safety_alert", &alert);
-                                            }
-                                        }
-
-                                        let msg = OutboundMessage {
-                                            chat_id,
-                                            text: response,
-                                            buttons: vec![],
-                                            topic_id,
-                                        };
-                                        if let Err(e) = channel.send_message(&msg).await {
-                                            error!("[{}] failed to send response: {e}", slot.name);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("[{}] coordinator error: {e}", slot.name);
-                                        let msg = OutboundMessage {
-                                            chat_id,
-                                            text: format!("Error: {e}"),
-                                            buttons: vec![],
-                                            topic_id,
-                                        };
-                                        let _ = channel.send_message(&msg).await;
-                                    }
-                                }
-
-                                // Stop typing indicator after all messages are sent.
-                                typing_cancel.cancel();
                             }
                         } else {
                             warn!("no workspace route for chat_id={chat_id} topic_id={topic_id:?}");
@@ -652,7 +827,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&msg).await;
                                     }
                                     "reset" => {
-                                        slot.coordinator.reset_session();
+                                        let _ = slot.coord_tx.send(CoordinatorJob::ResetSession);
                                         if let Some(ref server) = socket_server {
                                             server.broadcast_activity("telegram", &slot.name, "assistant_message", "Session reset.");
                                         }
