@@ -587,6 +587,29 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         }
     }
 
+    // Validate Telegram bot tokens at startup
+    for slot in &slots {
+        if let Some(tg) = &slot.config.telegram {
+            if let Some(channel) = telegram_channels.get(&tg.bot_token) {
+                let channel = channel.clone();
+                let ws_name = slot.name.clone();
+                tokio::spawn(async move {
+                    match channel.validate().await {
+                        Ok(username) => {
+                            info!("[{ws_name}] Telegram bot @{username} connected");
+                        }
+                        Err(description) => {
+                            warn!(
+                                "[{ws_name}] Telegram bot token appears invalid (getMe failed: {description}). \
+                                 Notifications will not be delivered. Check your bot_token in ~/.config/apiari/workspaces/{ws_name}.toml"
+                            );
+                        }
+                    }
+                });
+            }
+        }
+    }
+
     // Compute min poll interval across all workspaces
     let min_interval = slots
         .iter()
