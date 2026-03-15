@@ -142,7 +142,7 @@ impl Coordinator {
     }
 
     /// Build session options with current signal context.
-    fn build_options(&self, store: &SignalStore) -> Result<SessionOptions> {
+    pub fn build_options(&self, store: &SignalStore) -> Result<SessionOptions> {
         let signals = store.get_open_signals()?;
 
         let system_prompt = prompt::build_system_prompt(
@@ -230,12 +230,30 @@ impl Coordinator {
         &mut self,
         message: &str,
         store: &SignalStore,
-        mut on_event: F,
+        on_event: F,
     ) -> Result<String>
     where
         F: FnMut(CoordinatorEvent),
     {
         let opts = self.build_options(store)?;
+        self.handle_message_with_options(message, opts, on_event)
+            .await
+    }
+
+    /// Handle a message with pre-built session options.
+    ///
+    /// Use this instead of `handle_message` when the `&SignalStore` reference
+    /// cannot be held across await points (e.g. in spawned tasks where
+    /// `SignalStore` is not `Sync`).
+    pub async fn handle_message_with_options<F>(
+        &mut self,
+        message: &str,
+        opts: SessionOptions,
+        mut on_event: F,
+    ) -> Result<String>
+    where
+        F: FnMut(CoordinatorEvent),
+    {
         let client = ClaudeClient::new();
         let mut session = client.spawn(opts).await?;
         session.send_message(message).await?;
