@@ -114,13 +114,7 @@ impl DaemonSocketServer {
     }
 
     /// Broadcast an activity event to all connected TUI clients.
-    pub fn broadcast_activity(
-        &self,
-        source: &str,
-        workspace: &str,
-        kind: &str,
-        text: &str,
-    ) {
+    pub fn broadcast_activity(&self, source: &str, workspace: &str, kind: &str, text: &str) {
         let msg = DaemonResponse::Activity {
             source: source.to_string(),
             workspace: workspace.to_string(),

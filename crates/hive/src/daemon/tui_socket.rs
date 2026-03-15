@@ -76,6 +76,12 @@ pub enum TuiResponse {
     },
     /// Dispatch was executed or cancelled — no longer active.
     DispatchCleared,
+    /// A message received from an external channel (e.g. Telegram) — mirrored to TUI.
+    IncomingMessage {
+        source: String,
+        user_name: String,
+        text: String,
+    },
 }
 
 /// A handle to a connected TUI client's write channel.
@@ -142,6 +148,11 @@ impl TuiSocketServer {
     /// Push an arbitrary response to all connected TUI clients.
     pub fn push_response(&self, response: TuiResponse) {
         let _ = self.notify_tx.send(response);
+    }
+
+    /// Get a clone of the broadcast sender for use in spawned tasks.
+    pub fn broadcast_tx(&self) -> broadcast::Sender<TuiResponse> {
+        self.notify_tx.clone()
     }
 
     /// Check if any TUI clients are connected.

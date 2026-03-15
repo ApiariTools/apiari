@@ -19,10 +19,10 @@ use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
 use crate::buzz::coordinator::skills::{
     build_skills_prompt, default_coordinator_disallowed_tools, default_coordinator_tools,
 };
+use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
 use crate::buzz::signal::store::SignalStore;
 
 use crate::config;
@@ -997,34 +997,32 @@ async fn coordinator_task(
 
                 let token_tx = coord_tx.clone();
                 match coordinator
-                    .handle_message(&text, &store, move |event| {
-                        match event {
-                            CoordinatorEvent::Token(t) => {
-                                let _ = token_tx.try_send(CoordResponse::Token(t));
-                            }
-                            CoordinatorEvent::FilesModified { files } => {
-                                let file_list: Vec<String> = files
+                    .handle_message(&text, &store, move |event| match event {
+                        CoordinatorEvent::Token(t) => {
+                            let _ = token_tx.try_send(CoordResponse::Token(t));
+                        }
+                        CoordinatorEvent::FilesModified { files } => {
+                            let file_list: Vec<String> = files
+                                .iter()
+                                .map(|(repo, file)| format!("{repo}/{file}"))
+                                .collect();
+                            let alert = format!(
+                                "Warning: coordinator modified workspace files:\n{}",
+                                file_list
                                     .iter()
-                                    .map(|(repo, file)| format!("{repo}/{file}"))
-                                    .collect();
-                                let alert = format!(
-                                    "Warning: coordinator modified workspace files:\n{}",
-                                    file_list
-                                        .iter()
-                                        .map(|f| format!("  - {f}"))
-                                        .collect::<Vec<_>>()
-                                        .join("\n")
-                                );
-                                let _ = token_tx.try_send(CoordResponse::Error(alert));
-                            }
-                            CoordinatorEvent::BashAudit {
-                                command,
-                                matched_pattern,
-                            } => {
-                                let _ = token_tx.try_send(CoordResponse::Error(format!(
-                                    "Bash audit ({matched_pattern}): {command}"
-                                )));
-                            }
+                                    .map(|f| format!("  - {f}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            );
+                            let _ = token_tx.try_send(CoordResponse::Error(alert));
+                        }
+                        CoordinatorEvent::BashAudit {
+                            command,
+                            matched_pattern,
+                        } => {
+                            let _ = token_tx.try_send(CoordResponse::Error(format!(
+                                "Bash audit ({matched_pattern}): {command}"
+                            )));
                         }
                     })
                     .await
@@ -1069,4 +1067,3 @@ fn build_coordinator(workspace_name: &str) -> Option<Coordinator> {
 
     Some(coordinator)
 }
-

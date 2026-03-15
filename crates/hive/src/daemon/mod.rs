@@ -1712,6 +1712,10 @@ impl DaemonRunner {
             .clone();
         let text = text.to_owned();
 
+        // Clone broadcast sender for mirroring to TUI clients.
+        let tui_broadcast_tx = self.tui_socket.as_ref().map(|s| s.broadcast_tx());
+        let user_name = user_name.to_owned();
+
         // -- Phase B: spawn the long-running coordinator work --
         tokio::spawn(async move {
             // React immediately so the user knows we received their message.
@@ -1719,6 +1723,15 @@ impl DaemonRunner {
             // message_id == 0 for synthetic callback messages — skip the reaction.
             if message_id != 0 {
                 channel.send_reaction(chat_id, message_id, "👀").await;
+            }
+
+            // Mirror the incoming user message to TUI clients.
+            if let Some(ref tx) = tui_broadcast_tx {
+                let _ = tx.send(TuiResponse::IncomingMessage {
+                    source: "telegram".into(),
+                    user_name: user_name.clone(),
+                    text: text.clone(),
+                });
             }
 
             // Start typing indicator loop (expires after 5s, so we resend every 4s).
@@ -1737,11 +1750,17 @@ impl DaemonRunner {
                 });
             }
 
-            // Build a callback that sends intermediate text blocks to Telegram.
+            // Build a callback that sends intermediate text blocks to Telegram + TUI.
             let send_channel = channel.clone();
+            let tui_tx_for_send = tui_broadcast_tx.clone();
             let send_fn = move |text: String| {
                 let channel = send_channel.clone();
+                let tui_tx = tui_tx_for_send.clone();
                 async move {
+                    // Mirror intermediate tokens to TUI clients.
+                    if let Some(ref tx) = tui_tx {
+                        let _ = tx.send(TuiResponse::Token { text: text.clone() });
+                    }
                     for chunk in split_message(&text, 4000) {
                         channel
                             .send_message(&OutboundMessage {
@@ -1777,13 +1796,19 @@ impl DaemonRunner {
                     let mut dispatches = turn_dispatches;
                     dispatches.extend(final_dispatches);
 
-                    // Send the final response to Telegram.
+                    // Send the final response to Telegram + mirror to TUI.
                     if !clean_response.is_empty() {
                         tracing::debug!(
                             chars = clean_response.len(),
                             text = %truncate(&clean_response, 80),
                             "Responding",
                         );
+                        // Mirror final text to TUI clients.
+                        if let Some(ref tx) = tui_broadcast_tx {
+                            let _ = tx.send(TuiResponse::Token {
+                                text: clean_response.clone(),
+                            });
+                        }
                         if buttons.is_empty() {
                             let _ = send_to_telegram(&channel, chat_id, &clean_response, topic_id)
                                 .await;
@@ -1797,6 +1822,10 @@ impl DaemonRunner {
                             )
                             .await;
                         }
+                    }
+                    // Signal TUI that the coordinator response is complete.
+                    if let Some(ref tx) = tui_broadcast_tx {
+                        let _ = tx.send(TuiResponse::Done);
                     }
 
                     // Process dispatch blocks after sending the text response.

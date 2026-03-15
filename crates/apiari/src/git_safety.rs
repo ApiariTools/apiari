@@ -114,9 +114,7 @@ mod tests {
         let mut after = BTreeSet::new();
         after.insert(("repo".to_string(), "existing.rs".to_string()));
         after.insert(("repo".to_string(), "new_file.rs".to_string()));
-        let b = GitSnapshot {
-            dirty_files: after,
-        };
+        let b = GitSnapshot { dirty_files: after };
 
         let diff = b.diff(&a);
         assert_eq!(diff.len(), 1);

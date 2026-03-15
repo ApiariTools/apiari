@@ -301,12 +301,15 @@ pub fn build_skill_context(
 /// Convert a WorkspaceConfig into a buzz BuzzConfig for watcher/coordinator use.
 pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
     crate::buzz::config::BuzzConfig {
-        telegram: ws.telegram.as_ref().map(|t| crate::buzz::config::TelegramConfig {
-            bot_token: t.bot_token.clone(),
-            chat_id: t.chat_id,
-            topic_id: t.topic_id,
-            allowed_user_ids: t.allowed_user_ids.clone(),
-        }),
+        telegram: ws
+            .telegram
+            .as_ref()
+            .map(|t| crate::buzz::config::TelegramConfig {
+                bot_token: t.bot_token.clone(),
+                chat_id: t.chat_id,
+                topic_id: t.topic_id,
+                allowed_user_ids: t.allowed_user_ids.clone(),
+            }),
         watchers: crate::buzz::config::WatchersConfig {
             github: ws
                 .watchers
@@ -401,7 +404,9 @@ pub struct PipelineRuleConfig {
 }
 
 /// Convert pipeline config rules into buzz pipeline rules.
-pub fn to_pipeline_rules(config: &PipelineConfig) -> Vec<crate::buzz::pipeline::rule::PipelineRule> {
+pub fn to_pipeline_rules(
+    config: &PipelineConfig,
+) -> Vec<crate::buzz::pipeline::rule::PipelineRule> {
     use crate::buzz::pipeline::rule::{PipelineAction, PipelineRule};
     use crate::buzz::signal::Severity;
 

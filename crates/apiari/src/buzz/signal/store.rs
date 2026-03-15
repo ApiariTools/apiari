@@ -357,9 +357,9 @@ impl SignalStore {
         let now = Utc::now();
         let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
 
-        let mut stmt = self.conn.prepare(
-            "SELECT created_at FROM signals WHERE workspace = ?1 AND created_at >= ?2",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT created_at FROM signals WHERE workspace = ?1 AND created_at >= ?2")?;
         let timestamps: Vec<DateTime<Utc>> = stmt
             .query_map(params![self.workspace, cutoff], |row| {
                 let s: String = row.get(0)?;
@@ -412,9 +412,9 @@ impl SignalStore {
 
     /// Get watcher cursor timestamps for health checking.
     pub fn get_watcher_cursors(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT watcher, updated_at FROM watcher_cursors WHERE workspace = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT watcher, updated_at FROM watcher_cursors WHERE workspace = ?1")?;
         let cursors = stmt
             .query_map(params![self.workspace], |row| {
                 Ok((row.get(0)?, row.get(1)?))
@@ -427,7 +427,11 @@ impl SignalStore {
     /// Returns `num_buckets` counts, each covering `bucket_minutes` minutes.
     /// Index 0 = oldest bucket, last index = most recent.
     /// Counts both created and updated signals (any event = activity).
-    pub fn count_signal_activity(&self, bucket_minutes: i64, num_buckets: usize) -> Result<Vec<u64>> {
+    pub fn count_signal_activity(
+        &self,
+        bucket_minutes: i64,
+        num_buckets: usize,
+    ) -> Result<Vec<u64>> {
         let now = Utc::now();
         let total_minutes = bucket_minutes * num_buckets as i64;
         let cutoff = (now - chrono::Duration::minutes(total_minutes)).to_rfc3339();
@@ -770,7 +774,12 @@ mod tests {
             .upsert_signal(&make_update("sentry", "sentry-1", "Bug 1", Severity::Error))
             .unwrap();
         store
-            .upsert_signal(&make_update("sentry", "sentry-2", "Bug 2", Severity::Warning))
+            .upsert_signal(&make_update(
+                "sentry",
+                "sentry-2",
+                "Bug 2",
+                Severity::Warning,
+            ))
             .unwrap();
         store
             .upsert_signal(&make_update("sentry", "sentry-3", "Bug 3", Severity::Info))
@@ -816,7 +825,12 @@ mod tests {
             .upsert_signal(&make_update("sentry", "sentry-1", "Bug 1", Severity::Error))
             .unwrap();
         store
-            .upsert_signal(&make_update("sentry", "sentry-2", "Bug 2", Severity::Warning))
+            .upsert_signal(&make_update(
+                "sentry",
+                "sentry-2",
+                "Bug 2",
+                Severity::Warning,
+            ))
             .unwrap();
 
         let current = vec!["sentry-1".to_string(), "sentry-2".to_string()];
@@ -853,7 +867,8 @@ mod tests {
             .unwrap();
         store
             .upsert_signal(
-                &make_update("a", "2", "second", Severity::Info).with_status(SignalStatus::Resolved),
+                &make_update("a", "2", "second", Severity::Info)
+                    .with_status(SignalStatus::Resolved),
             )
             .unwrap();
         store

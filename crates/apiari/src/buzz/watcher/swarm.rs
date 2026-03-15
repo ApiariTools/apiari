@@ -431,6 +431,9 @@ mod tests {
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
-        assert!(signals.is_empty(), "claude-tui waiting should be suppressed");
+        assert!(
+            signals.is_empty(),
+            "claude-tui waiting should be suppressed"
+        );
     }
 }

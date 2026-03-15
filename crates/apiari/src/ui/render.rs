@@ -132,9 +132,9 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([
             Constraint::Length(kpi_h),      // KPI cards (Watchers + Today)
             Constraint::Length(action_h),   // Action banner
-            Constraint::Percentage(55),    // Workers + Signals/Feed
+            Constraint::Percentage(55),     // Workers + Signals/Feed
             Constraint::Length(thoughts_h), // Thoughts strip
-            Constraint::Min(5),            // Chat
+            Constraint::Min(5),             // Chat
         ])
         .split(area);
 
@@ -204,9 +204,9 @@ fn draw_home_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(4),              // KPI cards (fill)
-            Constraint::Length(action_h),     // Action banner
-            Constraint::Length(thoughts_h),   // Thoughts
+            Constraint::Min(4),             // KPI cards (fill)
+            Constraint::Length(action_h),   // Action banner
+            Constraint::Length(thoughts_h), // Thoughts
         ])
         .split(area);
 
@@ -384,10 +384,7 @@ fn draw_kpi_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, area:
                 Style::default().fg(theme::FROST),
             ),
             if crit > 0 {
-                Span::styled(
-                    format!("  !!{crit}"),
-                    theme::error(),
-                )
+                Span::styled(format!("  !!{crit}"), theme::error())
             } else {
                 Span::styled("  all clear", Style::default().fg(theme::SMOKE))
             },
@@ -404,15 +401,13 @@ fn draw_kpi_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, area:
                     format!("  \u{27f3}{open_prs} open"),
                     Style::default().fg(theme::MINT),
                 ),
-                Span::styled(
-                    format!(" \u{2713}{merged_prs}"),
-                    theme::status_done(),
-                ),
+                Span::styled(format!(" \u{2713}{merged_prs}"), theme::status_done()),
             ]));
         } else {
-            lines.push(Line::from(vec![
-                Span::styled(" 0 PRs", Style::default().fg(theme::FROST)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                " 0 PRs",
+                Style::default().fg(theme::FROST),
+            )]));
         }
 
         frame.render_widget(Paragraph::new(lines), inner);
@@ -432,7 +427,9 @@ fn build_action_summary(_app: &App, ws: &app::WorkspaceState) -> Vec<(Style, Str
     for sig in &ws.signals {
         let entry = by_source.entry(sig.source.as_str()).or_default();
         match sig.severity {
-            crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error => entry.0 += 1,
+            crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error => {
+                entry.0 += 1
+            }
             crate::buzz::signal::Severity::Warning => entry.1 += 1,
             crate::buzz::signal::Severity::Info => entry.2 += 1,
         }
@@ -443,12 +440,18 @@ fn build_action_summary(_app: &App, ws: &app::WorkspaceState) -> Vec<(Style, Str
         if *crit_err > 0 {
             items.push((
                 theme::error(),
-                format!("{crit_err} {source} error{}", if *crit_err > 1 { "s" } else { "" }),
+                format!(
+                    "{crit_err} {source} error{}",
+                    if *crit_err > 1 { "s" } else { "" }
+                ),
             ));
         } else if *warn > 0 {
             items.push((
                 Style::default().fg(theme::POLLEN),
-                format!("{warn} {source} warning{}", if *warn > 1 { "s" } else { "" }),
+                format!(
+                    "{warn} {source} warning{}",
+                    if *warn > 1 { "s" } else { "" }
+                ),
             ));
         }
     }
@@ -656,10 +659,7 @@ fn bee_status(app: &App, ws: &app::WorkspaceState) -> (String, String) {
             2 => "~(*?*)~",
             _ => " (*?*) ",
         };
-        return (
-            face.into(),
-            format!("{waiting} waiting"),
-        );
+        return (face.into(), format!("{waiting} waiting"));
     }
 
     // Unread response: bee winks to get your attention
@@ -707,10 +707,7 @@ fn bee_status(app: &App, ws: &app::WorkspaceState) -> (String, String) {
     };
     let pad = " ".repeat(patrol_pos);
     let trail = if patrol_pos > 0 { "\u{00b7}" } else { " " };
-    let face = format!(
-        "{trail}{pad}{}(*v*){}",
-        wings.0, wings.1
-    );
+    let face = format!("{trail}{pad}{}(*v*){}", wings.0, wings.1);
     (face, mood.into())
 }
 
@@ -755,9 +752,10 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
         let lines = vec![
             Line::from(""),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("        ~(*v*)~", Style::default().fg(theme::HONEY)),
-            ]),
+            Line::from(vec![Span::styled(
+                "        ~(*v*)~",
+                Style::default().fg(theme::HONEY),
+            )]),
             Line::from(""),
             Line::from(vec![
                 Span::raw("    "),
@@ -779,12 +777,11 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
             .iter()
             .map(|msg| match msg {
                 ChatLine::User(text, ts, source) => {
-                    let display_text =
-                        if matches!(source, Some(app::MessageSource::Telegram)) {
-                            format!("[TG] {text}")
-                        } else {
-                            text.clone()
-                        };
+                    let display_text = if matches!(source, Some(app::MessageSource::Telegram)) {
+                        format!("[TG] {text}")
+                    } else {
+                        text.clone()
+                    };
                     conversation::ConversationEntry::User {
                         text: display_text,
                         timestamp: ts.clone(),
@@ -796,14 +793,19 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
                         timestamp: ts.clone(),
                     }
                 }
-                ChatLine::System(text) => conversation::ConversationEntry::Status {
-                    text: text.clone(),
-                },
+                ChatLine::System(text) => {
+                    conversation::ConversationEntry::Status { text: text.clone() }
+                }
             })
             .collect();
 
         let mut all_lines: Vec<Line> = Vec::new();
-        conversation::render_conversation(&mut all_lines, &entries, None, Some(&ws.config.coordinator.name));
+        conversation::render_conversation(
+            &mut all_lines,
+            &entries,
+            None,
+            Some(&ws.config.coordinator.name),
+        );
 
         if ws.streaming {
             let spin = SPINNER[app.spinner_tick % SPINNER.len()];
@@ -1112,10 +1114,10 @@ fn draw_thoughts_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, a
 
     let category_icon = |cat: &str| -> &str {
         match cat {
-            "observation" => "\u{25cb}",  // ○
-            "decision" => "\u{2713}",     // ✓
-            "preference" => "\u{2605}",   // ★
-            _ => "\u{00b7}",              // ·
+            "observation" => "\u{25cb}", // ○
+            "decision" => "\u{2713}",    // ✓
+            "preference" => "\u{2605}",  // ★
+            _ => "\u{00b7}",             // ·
         }
     };
 
@@ -1135,10 +1137,16 @@ fn draw_thoughts_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, a
             break;
         }
         if used > 1 {
-            spans.push(Span::styled("  \u{00b7}  ", Style::default().fg(theme::WAX)));
+            spans.push(Span::styled(
+                "  \u{00b7}  ",
+                Style::default().fg(theme::WAX),
+            ));
             used += 5;
         }
-        spans.push(Span::styled(icon.to_string(), Style::default().fg(theme::POLLEN)));
+        spans.push(Span::styled(
+            icon.to_string(),
+            Style::default().fg(theme::POLLEN),
+        ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             content.clone(),
@@ -1252,7 +1260,9 @@ fn render_signal_line(
 
     // Severity-colored bar
     let sev_color = match signal.severity {
-        crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error => theme::EMBER,
+        crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error => {
+            theme::EMBER
+        }
         crate::buzz::signal::Severity::Warning => theme::NECTAR,
         crate::buzz::signal::Severity::Info => theme::SMOKE,
     };
@@ -1670,7 +1680,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 vec![
                     Span::raw(" "),
-                    Span::styled(panel_name, Style::default().fg(theme::HONEY).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        panel_name,
+                        Style::default()
+                            .fg(theme::HONEY)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled("  ", theme::key_desc()),
                     Span::styled("h/l", theme::key_hint()),
                     Span::styled(":prev/next  ", theme::key_desc()),
@@ -1767,7 +1782,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Right-aligned daemon status with ECG heartbeat trace
     let cur_ws = app.current_ws();
-    let healthy_w = cur_ws.map_or(0, |ws| ws.watcher_health.iter().filter(|w| w.healthy).count());
+    let healthy_w = cur_ws.map_or(0, |ws| {
+        ws.watcher_health.iter().filter(|w| w.healthy).count()
+    });
     let total_w = cur_ws.map_or(0, |ws| ws.watcher_health.len());
     let ecg = activity_graph(&app.activity_buf);
     // ECG color reflects signal severity
@@ -1780,9 +1797,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 crate::buzz::signal::Severity::Critical | crate::buzz::signal::Severity::Error
             )
         });
-        let has_warn = ws.signals.iter().any(|s| {
-            s.severity == crate::buzz::signal::Severity::Warning
-        });
+        let has_warn = ws
+            .signals
+            .iter()
+            .any(|s| s.severity == crate::buzz::signal::Severity::Warning);
         if has_crit {
             theme::EMBER
         } else if has_warn {
@@ -1798,7 +1816,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "\u{25cb}" // ○ local fallback
     };
-    let conn_label = if app.daemon_connected { "daemon" } else { "local" };
+    let conn_label = if app.daemon_connected {
+        "daemon"
+    } else {
+        "local"
+    };
     let daemon_spans: Vec<Span> = if app.daemon_alive {
         let uptime_str = match app.daemon_uptime_secs {
             Some(s) if s >= 3600 => format!("{}h{}m", s / 3600, (s % 3600) / 60),
@@ -1829,7 +1851,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     // On narrow terminals (mobile), skip key hints — just show daemon status
-    let hints = if area.width < 120 { vec![Span::raw(" ")] } else { hints };
+    let hints = if area.width < 120 {
+        vec![Span::raw(" ")]
+    } else {
+        hints
+    };
 
     // Calculate padding for right-alignment
     let hints_len: usize = hints.iter().map(|s| s.content.len()).sum();
@@ -2053,12 +2079,10 @@ fn severity_style(severity: &crate::buzz::signal::Severity) -> Style {
 /// Data is pushed in from the left and scrolls right. The buffer IS the graph.
 fn activity_graph(buf: &[u8]) -> String {
     const BLOCKS: &[char] = &[
-        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}',
-        '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}',
+        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
     ];
-    buf.iter()
-        .map(|&v| BLOCKS[(v as usize).min(7)])
-        .collect()
+    buf.iter().map(|&v| BLOCKS[(v as usize).min(7)]).collect()
 }
 
 /// Truncate a string to `max` chars, appending "..." if truncated.
