@@ -1,6 +1,7 @@
 //! `apiari init` — scaffold a workspace config from cwd.
 
 use color_eyre::eyre::{Result, WrapErr};
+use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
 use crate::config::workspaces_dir;
@@ -84,8 +85,38 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
 
     let template = workspace_template(&cwd, "Bee");
     std::fs::write(&config_path, &template)?;
-    println!("Created workspace config: {}", config_path.display());
-    println!("Edit the [coordinator] prompt to customize behavior.");
+
+    let config_display = config_path.display();
+
+    println!("\n  \u{2713} Created {config_display}\n");
+    println!("  Next steps:\n");
+    println!("  1. Get a Telegram bot token from @BotFather (https://t.me/BotFather)");
+    println!("     Send /newbot, follow the prompts, copy the token.\n");
+    println!("  2. Get your chat ID by messaging @userinfobot (https://t.me/userinfobot)\n");
+    println!("  3. Edit your config:");
+    println!("     $EDITOR {config_display}\n");
+    println!("  4. Start the daemon:");
+    println!("     apiari daemon --background\n");
+    println!("  5. Open the dashboard:");
+    println!("     apiari ui\n");
+
+    // Offer to open in $EDITOR if stdin is a TTY
+    if let Ok(editor) = std::env::var("EDITOR")
+        && std::io::stdin().is_terminal()
+    {
+        print!("  Press enter to open in {editor}, or ctrl+c to skip: ");
+        std::io::stdout().flush()?;
+        let mut buf = [0u8; 1];
+        // Read one byte — enter proceeds, anything else or error skips
+        if std::io::stdin().read(&mut buf).is_ok() && buf[0] == b'\n' {
+            let status = std::process::Command::new(&editor)
+                .arg(&config_path)
+                .status();
+            if let Err(e) = status {
+                eprintln!("  Failed to open editor: {e}");
+            }
+        }
+    }
 
     Ok(())
 }

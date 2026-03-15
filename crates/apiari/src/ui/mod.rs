@@ -75,7 +75,11 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
             "No workspace configs found in {}",
             config::workspaces_dir().display()
         );
-        eprintln!("Run `apiari init` in a project directory to create one.");
+        eprintln!("Run `apiari init` in a project directory to get started.");
+        eprintln!();
+        eprintln!("Get a Telegram bot token from @BotFather (https://t.me/BotFather)");
+        eprintln!("and your chat ID from @userinfobot (https://t.me/userinfobot).");
+        eprintln!("Then edit the config and run: apiari daemon --background");
         return Ok(());
     }
 
