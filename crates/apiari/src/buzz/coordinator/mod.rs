@@ -17,6 +17,7 @@ use tracing::{info, warn};
 use apiari_claude_sdk::types::ContentBlock;
 use apiari_claude_sdk::{ClaudeClient, Event, SessionOptions};
 
+use crate::buzz::conversation::SessionToken;
 use crate::buzz::signal::store::SignalStore;
 
 /// Structured events emitted by the coordinator during a turn.
@@ -49,8 +50,10 @@ pub trait SafetyHooks: Send {
 pub struct Coordinator {
     name: String,
     model: String,
+    provider: String,
     max_turns: u32,
     session_id: Option<String>,
+    session_token: Option<SessionToken>,
     extra_context: Option<String>,
     prompt_preamble: Option<String>,
     allowed_tools: Vec<String>,
@@ -65,8 +68,10 @@ impl Coordinator {
         Self {
             name: "Bee".to_string(),
             model: model.to_string(),
+            provider: "claude".to_string(),
             max_turns,
             session_id: None,
+            session_token: None,
             extra_context: None,
             prompt_preamble: None,
             allowed_tools: Vec::new(),
@@ -120,6 +125,27 @@ impl Coordinator {
     /// Whether the coordinator has been used (has a persistent session).
     pub fn has_session(&self) -> bool {
         self.session_id.is_some()
+    }
+
+    /// Get the current session token (provider + resume token).
+    pub fn session_token(&self) -> Option<&SessionToken> {
+        self.session_token.as_ref()
+    }
+
+    /// Get the provider name (e.g. "claude").
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    /// Restore a session from a persisted token.
+    pub fn restore_session(&mut self, token: SessionToken) {
+        info!(
+            "restoring {} session (token: {}...)",
+            token.provider,
+            &token.token[..token.token.len().min(12)]
+        );
+        self.session_id = Some(token.token.clone());
+        self.session_token = Some(token);
     }
 
     /// Get current max turns.
@@ -215,6 +241,10 @@ impl Coordinator {
             }
             Event::Result(result) => {
                 self.session_id = Some(result.session_id.clone());
+                self.session_token = Some(SessionToken {
+                    provider: self.provider.clone(),
+                    token: result.session_id.clone(),
+                });
             }
             _ => {}
         }
@@ -304,6 +334,7 @@ impl Coordinator {
     pub fn reset_session(&mut self) {
         info!("coordinator session reset");
         self.session_id = None;
+        self.session_token = None;
     }
 }
 

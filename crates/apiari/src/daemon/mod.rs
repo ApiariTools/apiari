@@ -16,6 +16,7 @@ use crate::git_safety::GitSafetyHooks;
 
 use crate::buzz::channel::telegram::TelegramChannel;
 use crate::buzz::channel::{Channel, ChannelEvent, OutboundMessage};
+use crate::buzz::conversation::ConversationStore;
 use crate::buzz::coordinator::prompt::format_signal_summary;
 use crate::buzz::coordinator::skills::{
     SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
@@ -185,6 +186,27 @@ async fn run_coordinator_task(
                 // Stop typing indicator
                 typing_cancel.cancel();
 
+                // Persist messages to DB (scoped to drop before await)
+                {
+                    let conv = ConversationStore::new(store.conn(), store.workspace());
+                    if let Err(e) = conv.save_message("user", &text, Some("telegram"), None, None) {
+                        warn!("[{slot_name}] failed to save user message: {e}");
+                    }
+                    if let Ok(ref response) = result {
+                        let session_id = coordinator.session_token().map(|t| t.token.as_str());
+                        let provider = Some(coordinator.provider());
+                        if let Err(e) = conv.save_message(
+                            "assistant",
+                            response,
+                            Some("system"),
+                            provider,
+                            session_id,
+                        ) {
+                            warn!("[{slot_name}] failed to save assistant message: {e}");
+                        }
+                    }
+                }
+
                 match result {
                     Ok(response) => {
                         if let Some(ref server) = socket_server {
@@ -226,6 +248,13 @@ async fn run_coordinator_task(
                     }
                     Err(e) => {
                         error!("[{slot_name}] coordinator error: {e}");
+                        // If session resume failed, reset and try fresh next time
+                        if coordinator.has_session() {
+                            warn!(
+                                "[{slot_name}] resetting session after error (possible expired resume token)"
+                            );
+                            coordinator.reset_session();
+                        }
                         let msg = OutboundMessage {
                             chat_id,
                             text: format!("Error: {e}"),
@@ -283,6 +312,27 @@ async fn run_coordinator_task(
                     })
                     .await;
 
+                // Persist messages to DB (scoped to drop before any further borrows)
+                {
+                    let conv = ConversationStore::new(store.conn(), store.workspace());
+                    if let Err(e) = conv.save_message("user", &text, Some("tui"), None, None) {
+                        warn!("[{ws_name}] failed to save user message: {e}");
+                    }
+                    if let Ok(ref response) = result {
+                        let session_id = coordinator.session_token().map(|t| t.token.as_str());
+                        let provider = Some(coordinator.provider());
+                        if let Err(e) = conv.save_message(
+                            "assistant",
+                            response,
+                            Some("system"),
+                            provider,
+                            session_id,
+                        ) {
+                            warn!("[{ws_name}] failed to save assistant message: {e}");
+                        }
+                    }
+                }
+
                 match result {
                     Ok(response) => {
                         let _ = responder.send(socket::DaemonResponse::Done);
@@ -296,6 +346,13 @@ async fn run_coordinator_task(
                         }
                     }
                     Err(e) => {
+                        // If session resume failed, reset and try fresh next time
+                        if coordinator.has_session() {
+                            warn!(
+                                "[{ws_name}] resetting session after error (possible expired resume token)"
+                            );
+                            coordinator.reset_session();
+                        }
                         let _ = responder.send(socket::DaemonResponse::Error {
                             text: format!("{e}"),
                         });
@@ -529,6 +586,31 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
         let pipeline_rules = to_pipeline_rules(&ws.config.pipeline);
         let pipeline = Pipeline::new(pipeline_rules, ws.config.pipeline.batch_window_secs);
+
+        // Restore session from DB if available
+        {
+            let conv = ConversationStore::new(store.conn(), &ws.name);
+            match conv.last_session() {
+                Ok(Some(token)) if token.provider == coordinator.provider() => {
+                    info!("[{}] restoring {} session from DB", ws.name, token.provider);
+                    coordinator.restore_session(token);
+                }
+                Ok(Some(token)) => {
+                    info!(
+                        "[{}] skipping session restore: provider mismatch (db={}, current={})",
+                        ws.name,
+                        token.provider,
+                        coordinator.provider()
+                    );
+                }
+                Ok(None) => {
+                    info!("[{}] no previous session to restore", ws.name);
+                }
+                Err(e) => {
+                    warn!("[{}] failed to query last session: {e}", ws.name);
+                }
+            }
+        }
 
         // Spawn dedicated coordinator task for this workspace
         let coord_store = match SignalStore::open(&db, &ws.name) {
