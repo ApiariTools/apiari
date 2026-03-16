@@ -893,27 +893,39 @@ fn draw_workers_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, ar
 fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
     let panel_focused = app.focused_panel == Panel::Signals;
 
-    let total = ws.signals.len();
+    let filtered: Vec<&crate::buzz::signal::SignalRecord> = app.lensed_signals(&ws.signals);
+    let total = filtered.len();
+
+    // Lens label for title
+    let lens_label = match app.signal_lens {
+        app::LensKind::All => "Signals",
+        app::LensKind::ReviewQueue => "Review Queue",
+    };
 
     // Title with navigation indicator
     let title = if total == 0 {
-        format!("Signals ({})", total)
+        format!("{lens_label} ({total})")
     } else {
         let idx = app.signal_selection.min(total.saturating_sub(1));
-        let signal = &ws.signals[idx];
+        let signal = filtered[idx];
         let icon = app::severity_icon(&signal.severity);
         if panel_focused {
             format!(
-                "Signals ({total})  {icon} \u{25c0} {}/{} \u{25b6}",
+                "{lens_label} ({total})  {icon} \u{25c0} {}/{} \u{25b6}",
                 idx + 1,
                 total
             )
         } else {
-            format!("Signals ({total})  {icon} {}/{}", idx + 1, total)
+            format!("{lens_label} ({total})  {icon} {}/{}", idx + 1, total)
         }
     };
 
-    let block = panel_block(&title, panel_focused, None);
+    let lens_hint = if app.signal_lens != app::LensKind::All {
+        Some("s:lens")
+    } else {
+        None
+    };
+    let block = panel_block(&title, panel_focused, lens_hint);
     let content_area = block.inner(area);
     frame.render_widget(block, area);
 
@@ -923,16 +935,20 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     }
 
     if total == 0 {
+        let empty_msg = match app.signal_lens {
+            app::LensKind::All => "No open signals",
+            app::LensKind::ReviewQueue => "No review queue items",
+        };
         let lines = vec![Line::from(vec![
             Span::raw(" "),
-            Span::styled("No open signals", theme::muted()),
+            Span::styled(empty_msg, theme::muted()),
         ])];
         frame.render_widget(Paragraph::new(lines), content_area);
         return;
     }
 
     let idx = app.signal_selection.min(total.saturating_sub(1));
-    let signal = &ws.signals[idx];
+    let signal = filtered[idx];
     let icon = app::severity_icon(&signal.severity);
     let sev_style = severity_style(&signal.severity);
     let ago = time_ago(&signal.updated_at);
@@ -940,6 +956,25 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let content_lines = content_h;
 
     let mut lines: Vec<Line> = Vec::new();
+
+    // For ReviewQueue lens, show the query name from metadata
+    if app.signal_lens == app::LensKind::ReviewQueue {
+        if let Some(ref meta) = signal.metadata {
+            if let Ok(meta_val) = serde_json::from_str::<serde_json::Value>(meta) {
+                if let Some(qname) = meta_val.get("query_name").and_then(|v| v.as_str()) {
+                    lines.push(Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            qname.to_string(),
+                            Style::default()
+                                .fg(theme::POLLEN)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+            }
+        }
+    }
 
     // Line 1: severity icon + title
     lines.push(Line::from(vec![
@@ -1709,6 +1744,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(":chat  ", theme::key_desc()),
                     Span::styled("z", theme::key_hint()),
                     Span::styled(":zoom  ", theme::key_desc()),
+                    Span::styled("s", theme::key_hint()),
+                    Span::styled(":lens  ", theme::key_desc()),
                     Span::styled("p", theme::key_hint()),
                     Span::styled(":prs  ", theme::key_desc()),
                     Span::styled("?", theme::key_hint()),
@@ -1879,7 +1916,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     let w = 54u16.min(area.width.saturating_sub(4));
-    let h = 28u16.min(area.height.saturating_sub(4));
+    let h = 30u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -1919,6 +1956,14 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  z             ", theme::key_hint()),
             Span::styled("Zoom focused panel", theme::key_desc()),
+        ]),
+        Line::from(vec![
+            Span::styled("  s             ", theme::key_hint()),
+            Span::styled("Cycle signal lens", theme::key_desc()),
+        ]),
+        Line::from(vec![
+            Span::styled("  S             ", theme::key_hint()),
+            Span::styled("Signal list (all)", theme::key_desc()),
         ]),
         Line::from(vec![
             Span::styled("  p             ", theme::key_hint()),

@@ -27,6 +27,7 @@ use crate::buzz::pipeline::Pipeline;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::watcher::WatcherRegistry;
 use crate::buzz::watcher::github::GithubWatcher;
+use crate::buzz::watcher::review_queue::ReviewQueueWatcher;
 use crate::buzz::watcher::sentry::SentryWatcher;
 use crate::buzz::watcher::swarm::SwarmWatcher;
 
@@ -475,6 +476,26 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 gh_config.repos.join(", ")
             );
             registry.add(Box::new(GithubWatcher::new(gh_config.clone())));
+
+            if !gh_config.review_queue.is_empty() {
+                let query_names: Vec<&str> = gh_config
+                    .review_queue
+                    .iter()
+                    .map(|q| q.name.as_str())
+                    .collect();
+                info!(
+                    "[{}] review queue watcher: {} quer{}: {}",
+                    ws.name,
+                    gh_config.review_queue.len(),
+                    if gh_config.review_queue.len() == 1 {
+                        "y"
+                    } else {
+                        "ies"
+                    },
+                    query_names.join(", ")
+                );
+                registry.add(Box::new(ReviewQueueWatcher::new(gh_config)));
+            }
         }
 
         if let Some(sentry_config) = &buzz_config.watchers.sentry

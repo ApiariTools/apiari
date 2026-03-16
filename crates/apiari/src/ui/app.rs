@@ -38,6 +38,15 @@ pub enum Panel {
     Chat,
 }
 
+/// Lens filter for the Signals panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LensKind {
+    /// Show all signals.
+    All,
+    /// Show only review queue signals (source = "github_review_queue").
+    ReviewQueue,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
@@ -202,6 +211,7 @@ pub struct App {
     pub zoomed_panel: Option<Panel>,
     pub worker_selection: usize,
     pub signal_selection: usize,
+    pub signal_lens: LensKind,
     pub feed_selection: usize,
     pub chat_focused: bool,
     // Worker detail
@@ -301,6 +311,7 @@ impl App {
             zoomed_panel: None,
             worker_selection: 0,
             signal_selection: 0,
+            signal_lens: LensKind::All,
             feed_selection: 0,
             chat_focused: false,
             worker_input: String::new(),
@@ -469,7 +480,8 @@ impl App {
     }
 
     fn signal_selectable_count(&self) -> usize {
-        self.current_ws().map_or(0, |ws| ws.signals.len())
+        self.current_ws()
+            .map_or(0, |ws| self.lensed_signals(&ws.signals).len())
     }
 
     /// Clamp selections after data refresh.
@@ -521,6 +533,38 @@ impl App {
         self.signal_list_selection = 0;
         self.content_scroll = 0;
         self.needs_redraw = true;
+    }
+
+    /// Cycle the signal lens through available lenses.
+    /// Only includes ReviewQueue if the workspace has review queue signals.
+    pub fn cycle_signal_lens(&mut self) {
+        let has_rq = self.current_ws().map_or(false, |ws| {
+            ws.signals.iter().any(|s| s.source == "github_review_queue")
+        });
+
+        self.signal_lens = match self.signal_lens {
+            LensKind::All => {
+                if has_rq {
+                    LensKind::ReviewQueue
+                } else {
+                    LensKind::All
+                }
+            }
+            LensKind::ReviewQueue => LensKind::All,
+        };
+        self.signal_selection = 0;
+        self.needs_redraw = true;
+    }
+
+    /// Return signals filtered by the current lens.
+    pub fn lensed_signals<'a>(&self, signals: &'a [SignalRecord]) -> Vec<&'a SignalRecord> {
+        match self.signal_lens {
+            LensKind::All => signals.iter().collect(),
+            LensKind::ReviewQueue => signals
+                .iter()
+                .filter(|s| s.source == "github_review_queue")
+                .collect(),
+        }
     }
 
     pub fn back_to_dashboard(&mut self) {
