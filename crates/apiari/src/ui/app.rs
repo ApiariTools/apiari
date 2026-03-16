@@ -14,10 +14,6 @@ use apiari_tui::scroll::ScrollState;
 
 use crate::config::{self, Workspace};
 
-// ── Constants ─────────────────────────────────────────────
-
-pub const MAX_VISIBLE_SIGNALS: usize = 5;
-
 // ── Types ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,7 +485,11 @@ impl App {
     /// Clamp selections after data refresh.
     pub fn clamp_selections(&mut self) {
         let (worker_count, sig_count, feed_count) = if let Some(ws) = self.current_ws() {
-            (ws.workers.len(), ws.signals.len(), ws.feed.len())
+            (
+                ws.workers.len(),
+                self.lensed_signals(&ws.signals).len(),
+                ws.feed.len(),
+            )
         } else {
             return;
         };
@@ -1246,12 +1246,8 @@ impl App {
         match &self.view {
             View::Dashboard => {
                 if self.focused_panel == Panel::Signals {
-                    let visible = self.current_ws()?.signals.len().min(MAX_VISIBLE_SIGNALS);
-                    if self.signal_selection < visible {
-                        self.current_ws()?.signals.get(self.signal_selection)
-                    } else {
-                        None // "more" item
-                    }
+                    let filtered = self.lensed_signals(&self.current_ws()?.signals);
+                    filtered.get(self.signal_selection).copied()
                 } else {
                     None
                 }
