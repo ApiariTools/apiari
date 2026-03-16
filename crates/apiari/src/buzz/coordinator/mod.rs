@@ -142,7 +142,7 @@ impl Coordinator {
         info!(
             "restoring {} session (token: {}...)",
             token.provider,
-            &token.token[..token.token.len().min(12)]
+            token.token.get(..12).unwrap_or(&token.token)
         );
         self.session_id = Some(token.token.clone());
         self.session_token = Some(token);

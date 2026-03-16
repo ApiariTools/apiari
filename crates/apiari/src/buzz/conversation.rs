@@ -60,7 +60,7 @@ impl<'a> ConversationStore<'a> {
         self.conn.execute(
             "INSERT INTO conversations (workspace, role, content, source, provider, session_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![self.workspace, role, content, source, provider, session_id, now],
+            params![&self.workspace, role, content, source, provider, session_id, now],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -75,7 +75,7 @@ impl<'a> ConversationStore<'a> {
              LIMIT ?2",
         )?;
         let mut rows: Vec<ConversationRow> = stmt
-            .query_map(params![self.workspace, limit as i64], |row| {
+            .query_map(params![&self.workspace, limit as i64], |row| {
                 Ok(ConversationRow {
                     id: row.get(0)?,
                     workspace: row.get(1)?,
@@ -100,7 +100,7 @@ impl<'a> ConversationStore<'a> {
              WHERE workspace = ?1 AND provider IS NOT NULL AND session_id IS NOT NULL
              ORDER BY created_at DESC, id DESC
              LIMIT 1",
-            params![self.workspace],
+            params![&self.workspace],
             |row| {
                 Ok(SessionToken {
                     provider: row.get(0)?,
