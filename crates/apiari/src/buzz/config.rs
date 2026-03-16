@@ -61,6 +61,16 @@ pub struct GithubWatcherConfig {
     pub repos: Vec<String>,
     #[serde(default)]
     pub watch_labels: Vec<String>,
+    /// Named priority queries for the review queue.
+    #[serde(default)]
+    pub review_queue: Vec<ReviewQueueEntry>,
+}
+
+/// A named review queue query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewQueueEntry {
+    pub name: String,
+    pub query: String,
 }
 
 /// Sentry watcher configuration.

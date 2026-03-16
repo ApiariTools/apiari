@@ -125,6 +125,19 @@ pub struct GithubWatcherConfig {
     pub repos: Vec<String>,
     #[serde(default = "default_watcher_interval")]
     pub interval_secs: u64,
+    /// Named priority queries for the review queue.
+    /// Order = priority order (first entry is highest priority).
+    #[serde(default)]
+    pub review_queue: Vec<ReviewQueueEntry>,
+}
+
+/// A named review queue query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewQueueEntry {
+    /// Human-readable name for this query (e.g. "My PRs", "Team Reviews").
+    pub name: String,
+    /// GitHub search query (e.g. "is:pr is:open review-requested:@me").
+    pub query: String,
 }
 
 /// Sentry watcher configuration.
@@ -287,6 +300,12 @@ pub fn build_skill_context(
     config: &WorkspaceConfig,
 ) -> crate::buzz::coordinator::skills::SkillContext {
     let repos = resolve_repos(config);
+    let review_queue_names: Vec<String> = config
+        .watchers
+        .github
+        .as_ref()
+        .map(|g| g.review_queue.iter().map(|e| e.name.clone()).collect())
+        .unwrap_or_default();
     crate::buzz::coordinator::skills::SkillContext {
         workspace_name: workspace_name.to_string(),
         workspace_root: config.root.clone(),
@@ -294,6 +313,8 @@ pub fn build_skill_context(
         repos,
         has_sentry: config.watchers.sentry.is_some(),
         has_swarm: config.watchers.swarm.is_some(),
+        has_review_queue: !review_queue_names.is_empty(),
+        review_queue_names,
         prompt_preamble: config.coordinator.prompt.clone(),
     }
 }
@@ -324,6 +345,14 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                         g.repos.clone()
                     },
                     watch_labels: vec![],
+                    review_queue: g
+                        .review_queue
+                        .iter()
+                        .map(|e| crate::buzz::config::ReviewQueueEntry {
+                            name: e.name.clone(),
+                            query: e.query.clone(),
+                        })
+                        .collect(),
                 }),
             sentry: ws
                 .watchers

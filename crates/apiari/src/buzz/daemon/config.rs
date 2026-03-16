@@ -72,6 +72,7 @@ mod tests {
             interval_secs: 60,
             repos: vec!["org/repo".into()],
             watch_labels: vec![],
+            review_queue: vec![],
         });
         assert!(has_watchers(&config));
     }
@@ -84,6 +85,7 @@ mod tests {
             interval_secs: 60,
             repos: vec![],
             watch_labels: vec![],
+            review_queue: vec![],
         });
         assert!(!has_watchers(&config));
     }
@@ -96,6 +98,7 @@ mod tests {
             interval_secs: 120,
             repos: vec![],
             watch_labels: vec![],
+            review_queue: vec![],
         });
         config.watchers.swarm = Some(SwarmWatcherConfig {
             enabled: true,

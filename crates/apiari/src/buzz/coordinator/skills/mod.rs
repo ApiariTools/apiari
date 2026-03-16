@@ -19,6 +19,8 @@ pub struct SkillContext {
     pub repos: Vec<String>,
     pub has_sentry: bool,
     pub has_swarm: bool,
+    pub has_review_queue: bool,
+    pub review_queue_names: Vec<String>,
     /// Custom prompt preamble loaded from prompt_file.
     /// If set, replaces the default identity/role sections in the system prompt.
     pub prompt_preamble: Option<String>,
@@ -108,6 +110,8 @@ mod tests {
             repos: vec!["org/repo".to_string()],
             has_sentry: true,
             has_swarm: true,
+            has_review_queue: false,
+            review_queue_names: vec![],
             prompt_preamble: None,
         }
     }
