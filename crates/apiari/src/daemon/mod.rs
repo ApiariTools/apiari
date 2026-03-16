@@ -780,6 +780,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 if !updates.is_empty() {
                                     info!("[{}] [{}] polled {} update(s)", slot.name, watcher_name, updates.len());
                                 }
+                                // Collect emitted IDs for auto-reconciliation
+                                throttled.set_poll_ids(
+                                    updates.iter().map(|u| u.external_id.clone()).collect(),
+                                );
                                 for update in &updates {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, true)) => {
@@ -820,7 +824,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     }
                                 }
                                 // Reconcile: resolve signals no longer in the source
-                                if let Err(e) = throttled.watcher().reconcile(&slot.store) {
+                                if let Err(e) = throttled.reconcile(&slot.store) {
                                     error!("[{}] [{}] reconcile failed: {e}", slot.name, watcher_name);
                                 }
                                 // Update cursor timestamp so TUI shows watcher as healthy

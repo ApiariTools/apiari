@@ -49,9 +49,6 @@ pub struct ReviewQueueWatcher {
     client: reqwest::Client,
     /// Lazy-init: `None` = untried, `Some(None)` = failed, `Some(Some(t))` = resolved.
     token: Option<Option<String>>,
-    /// External IDs from the last successful poll, for reconciliation.
-    /// `None` = never polled, `Some(vec![])` = polled and got zero.
-    last_poll_ids: Option<Vec<String>>,
 }
 
 impl ReviewQueueWatcher {
@@ -60,7 +57,6 @@ impl ReviewQueueWatcher {
             queries: config.review_queue.clone(),
             client: reqwest::Client::new(),
             token: None,
-            last_poll_ids: None,
         }
     }
 
@@ -171,6 +167,10 @@ impl Watcher for ReviewQueueWatcher {
         "review_queue"
     }
 
+    fn signal_source(&self) -> &str {
+        SOURCE
+    }
+
     async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
         if self.queries.is_empty() {
             return Ok(Vec::new());
@@ -217,25 +217,11 @@ impl Watcher for ReviewQueueWatcher {
             }
         }
 
-        // Store current IDs for reconciliation
-        self.last_poll_ids = Some(seen_keys.into_iter().collect());
-
         if !all_signals.is_empty() {
             info!("review_queue: {} signal(s)", all_signals.len());
         }
 
         Ok(all_signals)
-    }
-
-    fn reconcile(&self, store: &SignalStore) -> Result<usize> {
-        let Some(ref ids) = self.last_poll_ids else {
-            return Ok(0); // Never polled yet — skip
-        };
-        let resolved = store.resolve_missing_signals(SOURCE, ids)?;
-        if resolved > 0 {
-            info!("review_queue: reconciled {resolved} resolved signal(s)");
-        }
-        Ok(resolved)
     }
 }
 

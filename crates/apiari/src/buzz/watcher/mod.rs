@@ -2,6 +2,11 @@
 //!
 //! Each watcher polls an external source and returns `SignalUpdate`s that
 //! get upserted into the SQLite signal store.
+//!
+//! After each poll, stale signals are automatically reconciled: any open
+//! signal in the DB whose `external_id` was NOT emitted in the latest poll
+//! is resolved. Watchers that need custom reconciliation (e.g. swarm, which
+//! builds IDs from tracked state) can override `reconcile()`.
 
 pub mod github;
 pub mod review_queue;
@@ -12,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use color_eyre::Result;
+use tracing::info;
 
 use crate::buzz::signal::SignalUpdate;
 use crate::buzz::signal::store::SignalStore;
@@ -22,6 +28,12 @@ pub trait Watcher: Send + Sync {
     /// Human-readable name (used in logging and cursor keys).
     fn name(&self) -> &str;
 
+    /// Signal source string stored in the DB. Defaults to `name()`.
+    /// Override if the source differs from the watcher name (e.g. "github_review_queue").
+    fn signal_source(&self) -> &str {
+        self.name()
+    }
+
     /// Poll the external source and return signal updates.
     /// The store is passed so watchers can read/write their own cursors.
     async fn poll(&mut self, store: &SignalStore) -> Result<Vec<SignalUpdate>>;
@@ -29,18 +41,29 @@ pub trait Watcher: Send + Sync {
     /// Reconcile the store after a successful poll.
     ///
     /// Resolves DB signals from this source that are no longer in the latest poll results.
-    /// This is synchronous (not async) because SignalStore is not Sync.
-    /// Default implementation is a no-op; watchers override to provide current external IDs.
-    fn reconcile(&self, _store: &SignalStore) -> Result<usize> {
+    /// Default: uses `signal_source()` + IDs collected by `ThrottledWatcher` (auto-reconcile).
+    /// Override for custom reconciliation logic (e.g. swarm builds IDs from tracked state).
+    fn reconcile(
+        &self,
+        _source: &str,
+        _poll_ids: &[String],
+        _store: &SignalStore,
+    ) -> Result<usize> {
         Ok(0)
     }
 }
 
-/// A watcher with per-watcher poll throttling.
+/// A watcher with per-watcher poll throttling and automatic signal reconciliation.
+///
+/// After each successful poll, collects emitted signal `external_id`s and
+/// resolves any open signals in the DB that weren't in the latest poll.
+/// Watchers that override `reconcile()` get their custom logic called instead.
 pub struct ThrottledWatcher {
     inner: Box<dyn Watcher>,
     interval: Duration,
     last_poll: Option<Instant>,
+    /// External IDs from the last successful poll, for auto-reconciliation.
+    last_poll_ids: Option<Vec<String>>,
 }
 
 impl ThrottledWatcher {
@@ -49,6 +72,7 @@ impl ThrottledWatcher {
             inner: watcher,
             interval: Duration::from_secs(interval_secs),
             last_poll: None,
+            last_poll_ids: None,
         }
     }
 
@@ -63,6 +87,39 @@ impl ThrottledWatcher {
     /// Mark this watcher as just polled.
     pub fn mark_polled(&mut self) {
         self.last_poll = Some(Instant::now());
+    }
+
+    /// Store the external IDs from the latest poll for reconciliation.
+    pub fn set_poll_ids(&mut self, ids: Vec<String>) {
+        self.last_poll_ids = Some(ids);
+    }
+
+    /// Reconcile stale signals after a successful poll.
+    ///
+    /// First tries the watcher's custom `reconcile()`. If it returns 0
+    /// (no custom logic), falls back to auto-reconcile using poll IDs.
+    pub fn reconcile(&self, store: &SignalStore) -> Result<usize> {
+        let source = self.inner.signal_source();
+        let poll_ids = self.last_poll_ids.as_deref().unwrap_or(&[]);
+
+        // Let the watcher handle it if it has custom logic
+        let custom = self.inner.reconcile(source, poll_ids, store)?;
+        if custom > 0 {
+            return Ok(custom);
+        }
+
+        // Auto-reconcile: resolve signals not in latest poll
+        let Some(ref ids) = self.last_poll_ids else {
+            return Ok(0); // Never polled — skip
+        };
+        let resolved = store.resolve_missing_signals(source, ids)?;
+        if resolved > 0 {
+            info!(
+                "{}: reconciled {resolved} stale signal(s)",
+                self.inner.name()
+            );
+        }
+        Ok(resolved)
     }
 
     /// Access the underlying watcher.

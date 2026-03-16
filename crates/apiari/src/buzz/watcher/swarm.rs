@@ -228,7 +228,7 @@ impl Watcher for SwarmWatcher {
         Ok(signals)
     }
 
-    fn reconcile(&self, store: &SignalStore) -> Result<usize> {
+    fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
         if !self.initialized {
             return Ok(0);
         }

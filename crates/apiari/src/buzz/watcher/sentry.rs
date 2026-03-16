@@ -29,9 +29,9 @@ pub struct SentryWatcher {
     config: SentryWatcherConfig,
     client: reqwest::Client,
     seen_issues: HashMap<String, IssueMeta>,
-    /// External IDs from the last successful poll, for reconciliation.
-    /// `None` = never polled successfully, `Some(vec![])` = polled and got zero.
-    last_poll_ids: Option<Vec<String>>,
+    /// All fetched issue IDs (not just emitted), for reconciliation.
+    /// Sentry needs custom reconcile because it tracks more IDs than it emits.
+    fetched_ids: Option<Vec<String>>,
 }
 
 impl SentryWatcher {
@@ -40,7 +40,7 @@ impl SentryWatcher {
             config,
             client: reqwest::Client::new(),
             seen_issues: HashMap::new(),
-            last_poll_ids: None,
+            fetched_ids: None,
         }
     }
 
@@ -169,7 +169,7 @@ impl Watcher for SentryWatcher {
 
         if issues.is_empty() {
             // All issues resolved — empty list so reconcile resolves remaining DB signals.
-            self.last_poll_ids = Some(Vec::new());
+            self.fetched_ids = Some(Vec::new());
             return Ok(Vec::new());
         }
 
@@ -205,14 +205,16 @@ impl Watcher for SentryWatcher {
             info!("sentry: {} new signal(s)", signals.len());
         }
 
-        self.last_poll_ids = Some(current_ids);
+        self.fetched_ids = Some(current_ids);
 
         Ok(signals)
     }
 
-    fn reconcile(&self, store: &SignalStore) -> Result<usize> {
-        let Some(ref ids) = self.last_poll_ids else {
-            return Ok(0); // Never polled yet — skip
+    fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
+        // Sentry uses fetched issue IDs (not emitted signal IDs) for reconcile,
+        // because cross-poll dedup means not all fetched issues emit signals.
+        let Some(ref ids) = self.fetched_ids else {
+            return Ok(0);
         };
         let resolved = store.resolve_missing_signals("sentry", ids)?;
         if resolved > 0 {
