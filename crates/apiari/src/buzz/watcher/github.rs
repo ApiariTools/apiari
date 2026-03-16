@@ -17,6 +17,8 @@ pub struct GithubWatcher {
     config: GithubWatcherConfig,
     gh_available: Option<bool>,
     username: Option<String>,
+    /// External IDs emitted in the last successful poll, for reconciliation.
+    last_poll_ids: Option<Vec<String>>,
 }
 
 impl GithubWatcher {
@@ -25,6 +27,7 @@ impl GithubWatcher {
             config,
             gh_available: None,
             username: None,
+            last_poll_ids: None,
         }
     }
 
@@ -288,11 +291,25 @@ impl Watcher for GithubWatcher {
             }
         }
 
+        // Track emitted IDs for reconciliation
+        self.last_poll_ids = Some(all_signals.iter().map(|s| s.external_id.clone()).collect());
+
         if !all_signals.is_empty() {
             info!("github: {} signal(s)", all_signals.len());
         }
 
         Ok(all_signals)
+    }
+
+    fn reconcile(&self, store: &SignalStore) -> Result<usize> {
+        let Some(ref ids) = self.last_poll_ids else {
+            return Ok(0);
+        };
+        let resolved = store.resolve_missing_signals("github", ids)?;
+        if resolved > 0 {
+            info!("github: reconciled {resolved} stale signal(s)");
+        }
+        Ok(resolved)
     }
 }
 

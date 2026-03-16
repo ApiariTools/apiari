@@ -186,7 +186,7 @@ impl Watcher for SwarmWatcher {
             );
         }
 
-        // Detect closed worktrees
+        // Detect closed worktrees — resolve all related signals
         let current_ids: std::collections::HashSet<&String> =
             state.worktrees.iter().map(|wt| &wt.id).collect();
         let closed: Vec<String> = self
@@ -197,6 +197,18 @@ impl Watcher for SwarmWatcher {
             .collect();
 
         for id in &closed {
+            // Resolve the lifecycle signals for this worker
+            for prefix in &["swarm-spawned", "swarm-waiting", "swarm-pr"] {
+                signals.push(
+                    SignalUpdate::new(
+                        "swarm",
+                        format!("{prefix}-{id}"),
+                        format!("Worker closed: {id}"),
+                        Severity::Info,
+                    )
+                    .with_status(SignalStatus::Resolved),
+                );
+            }
             signals.push(
                 SignalUpdate::new(
                     "swarm",
@@ -214,6 +226,30 @@ impl Watcher for SwarmWatcher {
         }
 
         Ok(signals)
+    }
+
+    fn reconcile(&self, store: &SignalStore) -> Result<usize> {
+        if !self.initialized {
+            return Ok(0);
+        }
+        // Build the set of signal IDs that should remain open:
+        // for each currently-tracked worker, its spawned/waiting/pr signals.
+        let current_ids: Vec<String> = self
+            .tracked
+            .keys()
+            .flat_map(|id| {
+                vec![
+                    format!("swarm-spawned-{id}"),
+                    format!("swarm-waiting-{id}"),
+                    format!("swarm-pr-{id}"),
+                ]
+            })
+            .collect();
+        let resolved = store.resolve_missing_signals("swarm", &current_ids)?;
+        if resolved > 0 {
+            info!("swarm: reconciled {resolved} stale signal(s)");
+        }
+        Ok(resolved)
     }
 }
 
@@ -390,15 +426,15 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert!(signals[0].title.contains("spawned"));
 
-        // Phase 6: worker closed — should emit resolved signal
+        // Phase 6: worker closed — should resolve spawned/waiting/pr + emit closed
         std::fs::write(
             &state_path,
             r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "waiting", "pr": {"url": "https://github.com/org/repo/pull/1", "title": "My PR"}}]}"#,
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
-        assert_eq!(signals.len(), 1);
-        assert!(signals[0].title.contains("closed"));
+        assert_eq!(signals.len(), 4); // 3 resolved (spawned/waiting/pr) + 1 closed
+        assert!(signals.iter().all(|s| s.title.contains("closed")));
     }
 
     /// claude-tui workers should NOT emit waiting signals.
