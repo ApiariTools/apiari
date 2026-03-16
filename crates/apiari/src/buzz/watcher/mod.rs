@@ -8,6 +8,8 @@ pub mod review_queue;
 pub mod sentry;
 pub mod swarm;
 
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
 use color_eyre::Result;
 
@@ -34,9 +36,49 @@ pub trait Watcher: Send + Sync {
     }
 }
 
+/// A watcher with per-watcher poll throttling.
+pub struct ThrottledWatcher {
+    inner: Box<dyn Watcher>,
+    interval: Duration,
+    last_poll: Option<Instant>,
+}
+
+impl ThrottledWatcher {
+    pub fn new(watcher: Box<dyn Watcher>, interval_secs: u64) -> Self {
+        Self {
+            inner: watcher,
+            interval: Duration::from_secs(interval_secs),
+            last_poll: None,
+        }
+    }
+
+    /// Returns true if this watcher has never been polled or enough time has elapsed.
+    pub fn should_poll(&self) -> bool {
+        match self.last_poll {
+            None => true,
+            Some(t) => t.elapsed() >= self.interval,
+        }
+    }
+
+    /// Mark this watcher as just polled.
+    pub fn mark_polled(&mut self) {
+        self.last_poll = Some(Instant::now());
+    }
+
+    /// Access the underlying watcher.
+    pub fn watcher_mut(&mut self) -> &mut dyn Watcher {
+        &mut *self.inner
+    }
+
+    /// Access the underlying watcher (shared ref).
+    pub fn watcher(&self) -> &dyn Watcher {
+        &*self.inner
+    }
+}
+
 /// Registry of active watchers.
 pub struct WatcherRegistry {
-    watchers: Vec<Box<dyn Watcher>>,
+    watchers: Vec<ThrottledWatcher>,
 }
 
 impl WatcherRegistry {
@@ -46,11 +88,18 @@ impl WatcherRegistry {
         }
     }
 
+    /// Add a watcher that polls every tick (interval = 0).
     pub fn add(&mut self, watcher: Box<dyn Watcher>) {
-        self.watchers.push(watcher);
+        self.watchers.push(ThrottledWatcher::new(watcher, 0));
     }
 
-    pub fn watchers_mut(&mut self) -> &mut [Box<dyn Watcher>] {
+    /// Add a watcher with a specific poll interval in seconds.
+    pub fn add_with_interval(&mut self, watcher: Box<dyn Watcher>, interval_secs: u64) {
+        self.watchers
+            .push(ThrottledWatcher::new(watcher, interval_secs));
+    }
+
+    pub fn watchers_mut(&mut self) -> &mut [ThrottledWatcher] {
         &mut self.watchers
     }
 

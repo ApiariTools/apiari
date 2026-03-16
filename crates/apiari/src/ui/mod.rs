@@ -415,7 +415,6 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
             }
         }
         KeyCode::Char('p') => app.enter_pr_list(),
-        KeyCode::Char('s') => app.cycle_signal_lens(),
         KeyCode::Char('S') => app.enter_signal_list(),
         KeyCode::Char('o') => {
             if let Some(url) = app.selected_url() {

@@ -532,7 +532,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 gh_config.repos.len(),
                 gh_config.repos.join(", ")
             );
-            registry.add(Box::new(GithubWatcher::new(gh_config.clone())));
+            registry.add_with_interval(
+                Box::new(GithubWatcher::new(gh_config.clone())),
+                gh_config.interval_secs,
+            );
 
             if !gh_config.review_queue.is_empty() {
                 let query_names: Vec<&str> = gh_config
@@ -551,7 +554,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     },
                     query_names.join(", ")
                 );
-                registry.add(Box::new(ReviewQueueWatcher::new(gh_config)));
+                registry.add_with_interval(
+                    Box::new(ReviewQueueWatcher::new(gh_config)),
+                    gh_config.interval_secs,
+                );
             }
         }
 
@@ -562,7 +568,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling sentry watcher ({}/{})",
                 ws.name, sentry_config.org, sentry_config.project
             );
-            registry.add(Box::new(SentryWatcher::new(sentry_config.clone())));
+            registry.add_with_interval(
+                Box::new(SentryWatcher::new(sentry_config.clone())),
+                sentry_config.interval_secs,
+            );
         }
 
         if let Some(swarm_config) = &buzz_config.watchers.swarm
@@ -573,7 +582,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 ws.name,
                 swarm_config.state_path.display()
             );
-            registry.add(Box::new(SwarmWatcher::new(swarm_config.clone())));
+            registry.add_with_interval(
+                Box::new(SwarmWatcher::new(swarm_config.clone())),
+                swarm_config.interval_secs,
+            );
         }
 
         let mut coordinator = Coordinator::new(
@@ -758,9 +770,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                     let mut new_swarm_events: Vec<String> = Vec::new();
 
-                    for watcher in slot.registry.watchers_mut() {
-                        let watcher_name = watcher.name().to_string();
-                        match watcher.poll(&slot.store).await {
+                    for throttled in slot.registry.watchers_mut() {
+                        if !throttled.should_poll() {
+                            continue;
+                        }
+                        let watcher_name = throttled.watcher().name().to_string();
+                        match throttled.watcher_mut().poll(&slot.store).await {
                             Ok(updates) => {
                                 if !updates.is_empty() {
                                     info!("[{}] [{}] polled {} update(s)", slot.name, watcher_name, updates.len());
@@ -805,14 +820,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     }
                                 }
                                 // Reconcile: resolve signals no longer in the source
-                                if let Err(e) = watcher.reconcile(&slot.store) {
+                                if let Err(e) = throttled.watcher().reconcile(&slot.store) {
                                     error!("[{}] [{}] reconcile failed: {e}", slot.name, watcher_name);
                                 }
                                 // Update cursor timestamp so TUI shows watcher as healthy
                                 let _ = slot.store.set_cursor(&watcher_name, "ok");
+                                throttled.mark_polled();
                             }
                             Err(e) => {
                                 error!("[{}] [{}] poll failed: {e}", slot.name, watcher_name);
+                                // Still mark polled on error to avoid hammering a failing source
+                                throttled.mark_polled();
                             }
                         }
                     }

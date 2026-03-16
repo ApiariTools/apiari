@@ -186,21 +186,6 @@ impl GithubWatcher {
             }
         }
 
-        // PR review requests
-        if let Some(search_value) = self
-            .gh_api(&format!(
-                "search/issues?q=repo:{repo}+type:pr+state:open+review-requested:@me&per_page=10"
-            ))
-            .await
-            && let Some(items) = search_value.get("items").and_then(|v| v.as_array())
-        {
-            for item in items {
-                if let Some((key, signal)) = review_request_to_signal(repo, item) {
-                    signals.push((key, signal));
-                }
-            }
-        }
-
         // Watched labels
         for label in &self.config.watch_labels {
             if let Some(issues_value) = self
@@ -352,29 +337,6 @@ fn issue_to_signal(repo: &str, issue: &serde_json::Value) -> Option<(String, Sig
     Some((key, signal))
 }
 
-fn review_request_to_signal(
-    repo: &str,
-    item: &serde_json::Value,
-) -> Option<(String, SignalUpdate)> {
-    let number = item.get("number")?.as_u64()?;
-    let title = item.get("title")?.as_str()?;
-    let html_url = item.get("html_url")?.as_str()?;
-
-    let key = format!("gh-review-{repo}-{number}");
-    let signal = SignalUpdate::new(
-        "github",
-        &key,
-        format!("[{repo}] review requested: PR #{number}: {title}"),
-        Severity::Warning,
-    )
-    .with_body(format!(
-        "Your review is requested on PR #{number} in {repo}"
-    ))
-    .with_url(html_url);
-
-    Some((key, signal))
-}
-
 fn labeled_issue_to_signal(
     repo: &str,
     issue: &serde_json::Value,
@@ -464,18 +426,6 @@ mod tests {
         });
         let (key, _) = issue_to_signal("org/repo", &issue).unwrap();
         assert!(key.starts_with("gh-pr-"));
-    }
-
-    #[test]
-    fn test_review_request_to_signal() {
-        let item = serde_json::json!({
-            "number": 5,
-            "title": "Review me",
-            "html_url": "https://github.com/org/repo/pull/5",
-        });
-        let (key, signal) = review_request_to_signal("org/repo", &item).unwrap();
-        assert_eq!(key, "gh-review-org/repo-5");
-        assert_eq!(signal.severity, Severity::Warning);
     }
 
     #[test]

@@ -31,19 +31,9 @@ pub enum Panel {
     Home,
     Workers,
     Signals,
+    Reviews,
     Feed,
     Chat,
-}
-
-/// Lens filter for the Signals panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LensKind {
-    /// Show all signals.
-    All,
-    /// Show only review queue signals (source = "github_review_queue").
-    ReviewQueue,
-    /// Placeholder for the upcoming Linear integration.
-    Linear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,7 +200,7 @@ pub struct App {
     pub zoomed_panel: Option<Panel>,
     pub worker_selection: usize,
     pub signal_selection: usize,
-    pub signal_lens: LensKind,
+    pub review_selection: usize,
     pub feed_selection: usize,
     pub chat_focused: bool,
     // Worker detail
@@ -321,7 +311,7 @@ impl App {
             zoomed_panel: None,
             worker_selection: 0,
             signal_selection: 0,
-            signal_lens: LensKind::All,
+            review_selection: 0,
             feed_selection: 0,
             chat_focused: false,
             worker_input: String::new(),
@@ -417,7 +407,14 @@ impl App {
     pub fn next_panel(&mut self) {
         self.focused_panel = match self.focused_panel {
             Panel::Home => Panel::Workers,
-            Panel::Workers => Panel::Signals,
+            Panel::Workers => {
+                if self.has_review_queue() {
+                    Panel::Reviews
+                } else {
+                    Panel::Signals
+                }
+            }
+            Panel::Reviews => Panel::Signals,
             Panel::Signals => Panel::Feed,
             Panel::Feed => Panel::Chat,
             Panel::Chat => Panel::Home,
@@ -430,7 +427,14 @@ impl App {
         self.focused_panel = match self.focused_panel {
             Panel::Home => Panel::Chat,
             Panel::Workers => Panel::Home,
-            Panel::Signals => Panel::Workers,
+            Panel::Reviews => Panel::Workers,
+            Panel::Signals => {
+                if self.has_review_queue() {
+                    Panel::Reviews
+                } else {
+                    Panel::Workers
+                }
+            }
             Panel::Feed => Panel::Signals,
             Panel::Chat => Panel::Feed,
         };
@@ -450,6 +454,10 @@ impl App {
             Panel::Signals => {
                 // Horizontal carousel: j/down = swipe left (previous card)
                 self.signal_selection = self.signal_selection.saturating_sub(1);
+            }
+            Panel::Reviews => {
+                // Horizontal carousel like signals
+                self.review_selection = self.review_selection.saturating_sub(1);
             }
             Panel::Feed => {
                 let count = self.current_ws().map_or(0, |ws| ws.feed.len());
@@ -478,6 +486,12 @@ impl App {
                     self.signal_selection += 1;
                 }
             }
+            Panel::Reviews => {
+                let count = self.review_signal_count();
+                if count > 0 && self.review_selection + 1 < count {
+                    self.review_selection += 1;
+                }
+            }
             Panel::Feed => {
                 self.feed_selection = self.feed_selection.saturating_sub(1);
             }
@@ -490,21 +504,42 @@ impl App {
     }
 
     fn signal_selectable_count(&self) -> usize {
-        self.current_ws()
-            .map_or(0, |ws| self.lensed_signals(&ws.signals).len())
+        self.current_ws().map_or(0, |ws| {
+            ws.signals
+                .iter()
+                .filter(|s| s.source != "github_review_queue")
+                .count()
+        })
+    }
+
+    fn review_signal_count(&self) -> usize {
+        self.current_ws().map_or(0, |ws| {
+            ws.signals
+                .iter()
+                .filter(|s| s.source == "github_review_queue")
+                .count()
+        })
     }
 
     /// Clamp selections after data refresh.
     pub fn clamp_selections(&mut self) {
-        let (worker_count, sig_count, feed_count) = if let Some(ws) = self.current_ws() {
-            (
-                ws.workers.len(),
-                self.lensed_signals(&ws.signals).len(),
-                ws.feed.len(),
-            )
-        } else {
-            return;
-        };
+        let (worker_count, sig_count, review_count, feed_count) =
+            if let Some(ws) = self.current_ws() {
+                (
+                    ws.workers.len(),
+                    ws.signals
+                        .iter()
+                        .filter(|s| s.source != "github_review_queue")
+                        .count(),
+                    ws.signals
+                        .iter()
+                        .filter(|s| s.source == "github_review_queue")
+                        .count(),
+                    ws.feed.len(),
+                )
+            } else {
+                return;
+            };
 
         if worker_count == 0 {
             self.worker_selection = 0;
@@ -516,6 +551,12 @@ impl App {
             self.signal_selection = 0;
         } else if self.signal_selection >= sig_count {
             self.signal_selection = sig_count - 1;
+        }
+
+        if review_count == 0 {
+            self.review_selection = 0;
+        } else if self.review_selection >= review_count {
+            self.review_selection = review_count - 1;
         }
 
         if feed_count == 0 {
@@ -549,55 +590,26 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Cycle the signal lens through available lenses.
-    /// Only includes ReviewQueue if the workspace has review queue signals.
-    pub fn cycle_signal_lens(&mut self) {
-        let has_rq = self
-            .current_ws()
-            .is_some_and(|ws| ws.signals.iter().any(|s| s.source == "github_review_queue"));
-        let has_linear = self
-            .current_ws()
-            .is_some_and(|ws| ws.signals.iter().any(|s| s.source == "linear"));
-
-        self.signal_lens = match self.signal_lens {
-            LensKind::All => {
-                if has_rq {
-                    LensKind::ReviewQueue
-                } else if has_linear {
-                    LensKind::Linear
-                } else {
-                    LensKind::All
-                }
-            }
-            LensKind::ReviewQueue => {
-                if has_linear {
-                    LensKind::Linear
-                } else {
-                    LensKind::All
-                }
-            }
-            LensKind::Linear => LensKind::All,
-        };
-        self.signal_selection = 0;
-        self.needs_redraw = true;
-    }
-
-    /// Return signals filtered by the current lens.
-    pub fn lensed_signals<'a>(&self, signals: &'a [SignalRecord]) -> Vec<&'a SignalRecord> {
-        match self.signal_lens {
-            LensKind::All => signals.iter().collect(),
-            LensKind::ReviewQueue => signals
-                .iter()
-                .filter(|s| s.source == "github_review_queue")
-                .collect(),
-            LensKind::Linear => signals.iter().filter(|s| s.source == "linear").collect(),
-        }
+    /// Whether the current workspace has review queue configured.
+    pub fn has_review_queue(&self) -> bool {
+        self.current_ws().is_some_and(|ws| {
+            ws.config
+                .watchers
+                .github
+                .as_ref()
+                .is_some_and(|gh| !gh.review_queue.is_empty())
+        })
     }
 
     pub fn back_to_dashboard(&mut self) {
         match self.view {
             View::WorkerDetail(_) | View::PrList => self.focused_panel = Panel::Workers,
-            View::SignalDetail(_) | View::SignalList => self.focused_panel = Panel::Signals,
+            View::SignalDetail(_) | View::SignalList => {
+                // Return to whichever signal panel was focused before drill-in
+                if self.focused_panel != Panel::Reviews {
+                    self.focused_panel = Panel::Signals;
+                }
+            }
             _ => {
                 // Preserve current focused_panel
             }
@@ -641,10 +653,29 @@ impl App {
                 }
             }
             Panel::Signals => {
-                if let Some(ws) = self.current_ws()
-                    && self.signal_selection < ws.signals.len()
-                {
-                    self.enter_signal_detail(self.signal_selection);
+                let orig_idx = self.current_ws().and_then(|ws| {
+                    ws.signals
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| s.source != "github_review_queue")
+                        .map(|(i, _)| i)
+                        .nth(self.signal_selection)
+                });
+                if let Some(idx) = orig_idx {
+                    self.enter_signal_detail(idx);
+                }
+            }
+            Panel::Reviews => {
+                let orig_idx = self.current_ws().and_then(|ws| {
+                    ws.signals
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| s.source == "github_review_queue")
+                        .map(|(i, _)| i)
+                        .nth(self.review_selection)
+                });
+                if let Some(idx) = orig_idx {
+                    self.enter_signal_detail(idx);
                 }
             }
             Panel::Feed => {
@@ -1258,8 +1289,17 @@ impl App {
         match &self.view {
             View::Dashboard => {
                 if self.focused_panel == Panel::Signals {
-                    let filtered = self.lensed_signals(&self.current_ws()?.signals);
-                    filtered.get(self.signal_selection).copied()
+                    self.current_ws()?
+                        .signals
+                        .iter()
+                        .filter(|s| s.source != "github_review_queue")
+                        .nth(self.signal_selection)
+                } else if self.focused_panel == Panel::Reviews {
+                    self.current_ws()?
+                        .signals
+                        .iter()
+                        .filter(|s| s.source == "github_review_queue")
+                        .nth(self.review_selection)
                 } else {
                     None
                 }

@@ -111,6 +111,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
             Panel::Home => draw_home_panel(frame, app, ws, area),
             Panel::Workers => draw_workers_panel(frame, app, ws, area),
             Panel::Signals => draw_signals_card(frame, app, ws, area),
+            Panel::Reviews => draw_reviews_pane(frame, app, ws, area),
             Panel::Feed => draw_feed_panel(frame, app, ws, area),
             Panel::Chat => draw_chat_panel(frame, app, ws, area),
         }
@@ -148,6 +149,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     let items = rows[2];
     let wide = items.width >= 80;
     let medium = items.width >= 60;
+    let has_reviews = app.has_review_queue();
 
     if medium {
         let cols = Layout::default()
@@ -159,27 +161,65 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         draw_workers_panel(frame, app, ws, cols[0]);
 
         if wide {
-            // Wide: split right column into Signals (top) + Feed (bottom)
+            if has_reviews {
+                // Wide + reviews: Reviews (35%) + Signals (30%) + Feed (35%)
+                let right_rows = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Percentage(35),
+                        Constraint::Percentage(30),
+                        Constraint::Percentage(35),
+                    ])
+                    .split(cols[1]);
+                draw_reviews_pane(frame, app, ws, right_rows[0]);
+                draw_signals_card(frame, app, ws, right_rows[1]);
+                draw_feed_panel(frame, app, ws, right_rows[2]);
+            } else {
+                // Wide: Signals (top) + Feed (bottom)
+                let right_rows = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+                    .split(cols[1]);
+                draw_signals_card(frame, app, ws, right_rows[0]);
+                draw_feed_panel(frame, app, ws, right_rows[1]);
+            }
+        } else if has_reviews {
+            // Medium + reviews: Reviews (50%) + Signals (50%)
             let right_rows = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(cols[1]);
-            draw_signals_card(frame, app, ws, right_rows[0]);
-            draw_feed_panel(frame, app, ws, right_rows[1]);
+            draw_reviews_pane(frame, app, ws, right_rows[0]);
+            draw_signals_card(frame, app, ws, right_rows[1]);
         } else {
             // Medium: just signals, no feed
             draw_signals_card(frame, app, ws, cols[1]);
         }
     } else {
-        // Narrow: stack vertically, no feed
-        let half = items.height / 2;
-        let wk_area = Rect::new(items.x, items.y, items.width, half);
-        draw_workers_panel(frame, app, ws, wk_area);
-        let sig_y = items.y + half;
-        let sig_rem = items.height.saturating_sub(half);
-        if sig_rem > 0 {
-            let sig_area = Rect::new(items.x, sig_y, items.width, sig_rem);
-            draw_signals_card(frame, app, ws, sig_area);
+        // Narrow: stack vertically
+        if has_reviews {
+            let third = items.height / 3;
+            let wk_area = Rect::new(items.x, items.y, items.width, third);
+            draw_workers_panel(frame, app, ws, wk_area);
+            let rev_y = items.y + third;
+            let rev_area = Rect::new(items.x, rev_y, items.width, third);
+            draw_reviews_pane(frame, app, ws, rev_area);
+            let sig_y = rev_y + third;
+            let sig_rem = items.height.saturating_sub(third * 2);
+            if sig_rem > 0 {
+                let sig_area = Rect::new(items.x, sig_y, items.width, sig_rem);
+                draw_signals_card(frame, app, ws, sig_area);
+            }
+        } else {
+            let half = items.height / 2;
+            let wk_area = Rect::new(items.x, items.y, items.width, half);
+            draw_workers_panel(frame, app, ws, wk_area);
+            let sig_y = items.y + half;
+            let sig_rem = items.height.saturating_sub(half);
+            if sig_rem > 0 {
+                let sig_area = Rect::new(items.x, sig_y, items.width, sig_rem);
+                draw_signals_card(frame, app, ws, sig_area);
+            }
         }
     }
 
@@ -435,8 +475,10 @@ fn build_action_summary(_app: &App, ws: &app::WorkspaceState) -> Vec<(Style, Str
         }
     }
 
-    // Narrative signal summaries per source
-    for (source, (crit_err, warn, _info)) in &by_source {
+    // Narrative signal summaries per source (sorted for stable order)
+    let mut sources: Vec<_> = by_source.iter().collect();
+    sources.sort_by_key(|(name, _)| *name);
+    for (source, (crit_err, warn, _info)) in sources {
         if *crit_err > 0 {
             items.push((
                 theme::error(),
@@ -893,40 +935,33 @@ fn draw_workers_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, ar
 fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
     let panel_focused = app.focused_panel == Panel::Signals;
 
-    let filtered: Vec<&crate::buzz::signal::SignalRecord> = app.lensed_signals(&ws.signals);
+    // Filter out review queue signals — those go in the Reviews pane
+    let filtered: Vec<&crate::buzz::signal::SignalRecord> = ws
+        .signals
+        .iter()
+        .filter(|s| s.source != "github_review_queue")
+        .collect();
     let total = filtered.len();
-
-    // Lens label for title
-    let lens_label = match app.signal_lens {
-        app::LensKind::All => "Signals",
-        app::LensKind::ReviewQueue => "Review Queue",
-        app::LensKind::Linear => "Linear",
-    };
 
     // Title with navigation indicator
     let title = if total == 0 {
-        format!("{lens_label} ({total})")
+        format!("Signals ({total})")
     } else {
         let idx = app.signal_selection.min(total.saturating_sub(1));
         let signal = filtered[idx];
         let icon = app::severity_icon(&signal.severity);
         if panel_focused {
             format!(
-                "{lens_label} ({total})  {icon} \u{25c0} {}/{} \u{25b6}",
+                "Signals ({total})  {icon} \u{25c0} {}/{} \u{25b6}",
                 idx + 1,
                 total
             )
         } else {
-            format!("{lens_label} ({total})  {icon} {}/{}", idx + 1, total)
+            format!("Signals ({total})  {icon} {}/{}", idx + 1, total)
         }
     };
 
-    let lens_hint = if app.signal_lens != app::LensKind::All {
-        Some("s:lens")
-    } else {
-        None
-    };
-    let block = panel_block(&title, panel_focused, lens_hint);
+    let block = panel_block(&title, panel_focused, None);
     let content_area = block.inner(area);
     frame.render_widget(block, area);
 
@@ -936,14 +971,9 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     }
 
     if total == 0 {
-        let empty_msg = match app.signal_lens {
-            app::LensKind::All => "No open signals",
-            app::LensKind::ReviewQueue => "No review queue items",
-            app::LensKind::Linear => "No Linear items",
-        };
         let lines = vec![Line::from(vec![
             Span::raw(" "),
-            Span::styled(empty_msg, theme::muted()),
+            Span::styled("No open signals", theme::muted()),
         ])];
         frame.render_widget(Paragraph::new(lines), content_area);
         return;
@@ -958,23 +988,6 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let content_lines = content_h;
 
     let mut lines: Vec<Line> = Vec::new();
-
-    // For ReviewQueue lens, show the query name from metadata
-    if app.signal_lens == app::LensKind::ReviewQueue
-        && let Some(ref meta) = signal.metadata
-        && let Ok(meta_val) = serde_json::from_str::<serde_json::Value>(meta)
-        && let Some(qname) = meta_val.get("query_name").and_then(|v| v.as_str())
-    {
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                qname.to_string(),
-                Style::default()
-                    .fg(theme::POLLEN)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-    }
 
     // Line 1: severity icon + title
     lines.push(Line::from(vec![
@@ -1041,6 +1054,153 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     }
 
     // No Wrap — keeps URLs on one line so terminal click-detection works
+    let p = Paragraph::new(lines);
+    frame.render_widget(p, content_area);
+
+    if !panel_focused {
+        dim_area(frame, content_area);
+    }
+}
+
+// ── Reviews pane (dedicated review queue card) ───────────
+
+fn draw_reviews_pane(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
+    let panel_focused = app.focused_panel == Panel::Reviews;
+
+    let filtered: Vec<&crate::buzz::signal::SignalRecord> = ws
+        .signals
+        .iter()
+        .filter(|s| s.source == "github_review_queue")
+        .collect();
+    let total = filtered.len();
+
+    let title = if total == 0 {
+        format!("Reviews ({total})")
+    } else {
+        let idx = app.review_selection.min(total.saturating_sub(1));
+        let signal = filtered[idx];
+        let icon = app::severity_icon(&signal.severity);
+        if panel_focused {
+            format!(
+                "Reviews ({total})  {icon} \u{25c0} {}/{} \u{25b6}",
+                idx + 1,
+                total
+            )
+        } else {
+            format!("Reviews ({total})  {icon} {}/{}", idx + 1, total)
+        }
+    };
+
+    let block = panel_block(&title, panel_focused, None);
+    let content_area = block.inner(area);
+    frame.render_widget(block, area);
+
+    let content_h = content_area.height as usize;
+    if content_h == 0 {
+        return;
+    }
+
+    if total == 0 {
+        let lines = vec![Line::from(vec![
+            Span::raw(" "),
+            Span::styled("No review queue items", theme::muted()),
+        ])];
+        frame.render_widget(Paragraph::new(lines), content_area);
+        if !panel_focused {
+            dim_area(frame, content_area);
+        }
+        return;
+    }
+
+    let idx = app.review_selection.min(total.saturating_sub(1));
+    let signal = filtered[idx];
+    let icon = app::severity_icon(&signal.severity);
+    let sev_style = severity_style(&signal.severity);
+    let ago = time_ago(&signal.updated_at);
+    let clean_title = strip_repo_prefix(&signal.title);
+    let content_lines = content_h;
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Show query_name from metadata if available
+    if let Some(ref meta) = signal.metadata
+        && let Ok(meta_val) = serde_json::from_str::<serde_json::Value>(meta)
+        && let Some(qname) = meta_val.get("query_name").and_then(|v| v.as_str())
+    {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                qname.to_string(),
+                Style::default()
+                    .fg(theme::POLLEN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    // Line 1: severity icon + title
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {icon} "), sev_style),
+        Span::styled(
+            clean_title.to_string(),
+            Style::default()
+                .fg(theme::FROST)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    // Line 2: repo + source + time
+    let repo = extract_repo(&signal.external_id);
+    let mut meta_spans = vec![Span::raw("  ")];
+    if let Some(r) = repo {
+        meta_spans.push(Span::styled(r.to_string(), Style::default().fg(theme::ICE)));
+        meta_spans.push(Span::styled(" \u{00b7} ", theme::muted()));
+    }
+    meta_spans.push(Span::styled(signal.source.clone(), theme::muted()));
+    meta_spans.push(Span::styled(format!(" \u{00b7} {ago} ago"), theme::muted()));
+    lines.push(Line::from(meta_spans));
+
+    // Body lines
+    if content_lines > 4
+        && let Some(ref body) = signal.body
+    {
+        let body_adds_info = !body
+            .lines()
+            .next()
+            .is_some_and(|first| clean_title.contains(first.trim()));
+        if body_adds_info {
+            lines.push(Line::from(""));
+            let max_body = content_lines.saturating_sub(5);
+            for line in body.lines().take(max_body) {
+                let clean = strip_repo_prefix(line);
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(clean.to_string(), theme::muted()),
+                ]));
+            }
+        }
+    }
+
+    // URL at the bottom
+    if let Some(ref url) = signal.url
+        && lines.len() < content_lines
+    {
+        let gap = content_lines.saturating_sub(lines.len() + 1);
+        if gap > 0 {
+            lines.push(Line::from(""));
+        }
+        let max_url = (content_area.width as usize).saturating_sub(3);
+        let display_url = if url.len() > max_url {
+            &url[..max_url]
+        } else {
+            url.as_str()
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(display_url.to_string(), Style::default().fg(theme::HONEY)),
+        ]));
+    }
+
     let p = Paragraph::new(lines);
     frame.render_widget(p, content_area);
 
@@ -1710,6 +1870,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Panel::Home => "Home",
                     Panel::Workers => "Workers",
                     Panel::Signals => "Signals",
+                    Panel::Reviews => "Reviews",
                     Panel::Feed => "Feed",
                     Panel::Chat => "Chat",
                 };
@@ -1744,8 +1905,6 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(":chat  ", theme::key_desc()),
                     Span::styled("z", theme::key_hint()),
                     Span::styled(":zoom  ", theme::key_desc()),
-                    Span::styled("s", theme::key_hint()),
-                    Span::styled(":lens  ", theme::key_desc()),
                     Span::styled("p", theme::key_hint()),
                     Span::styled(":prs  ", theme::key_desc()),
                     Span::styled("?", theme::key_hint()),
@@ -1956,10 +2115,6 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  z             ", theme::key_hint()),
             Span::styled("Zoom focused panel", theme::key_desc()),
-        ]),
-        Line::from(vec![
-            Span::styled("  s             ", theme::key_hint()),
-            Span::styled("Cycle signal lens", theme::key_desc()),
         ]),
         Line::from(vec![
             Span::styled("  S             ", theme::key_hint()),

@@ -1,8 +1,8 @@
 //! Review Queue watcher — polls GitHub for PRs matching named priority queries.
 //!
-//! Uses `gh search prs --json ...` to query each configured review queue entry.
-//! Deduplicates across queries: lowest index (highest priority) wins.
-//! Source: `github_review_queue`.
+//! Uses the GitHub REST Search API (`/search/issues`) to query each configured
+//! review queue entry. Deduplicates across queries: lowest index (highest
+//! priority) wins. Source: `github_review_queue`.
 
 use std::collections::HashSet;
 
@@ -17,10 +17,38 @@ use crate::buzz::signal::{Severity, SignalUpdate};
 
 const SOURCE: &str = "github_review_queue";
 
+/// Try `GITHUB_TOKEN` env → `GH_TOKEN` env → `gh auth token` CLI fallback.
+fn resolve_github_token() -> Option<String> {
+    if let Ok(t) = std::env::var("GITHUB_TOKEN") {
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    if let Ok(t) = std::env::var("GH_TOKEN") {
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    // Fallback: ask gh CLI
+    let output = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !token.is_empty() {
+            return Some(token);
+        }
+    }
+    None
+}
+
 /// Watches GitHub for PRs matching named priority queries.
 pub struct ReviewQueueWatcher {
     queries: Vec<ReviewQueueEntry>,
-    gh_available: Option<bool>,
+    client: reqwest::Client,
+    /// Lazy-init: `None` = untried, `Some(None)` = failed, `Some(Some(t))` = resolved.
+    token: Option<Option<String>>,
     /// External IDs from the last successful poll, for reconciliation.
     /// `None` = never polled, `Some(vec![])` = polled and got zero.
     last_poll_ids: Option<Vec<String>>,
@@ -30,75 +58,73 @@ impl ReviewQueueWatcher {
     pub fn new(config: &GithubWatcherConfig) -> Self {
         Self {
             queries: config.review_queue.clone(),
-            gh_available: None,
+            client: reqwest::Client::new(),
+            token: None,
             last_poll_ids: None,
         }
     }
 
-    async fn ensure_gh_available(&mut self) -> bool {
-        if let Some(available) = self.gh_available {
-            return available;
-        }
-
-        let auth_result = tokio::process::Command::new("gh")
-            .args(["auth", "status"])
-            .output()
-            .await;
-
-        match auth_result {
-            Ok(output) if output.status.success() => {
-                self.gh_available = Some(true);
-                true
+    /// Resolve and cache the GitHub token. Returns `Some(token)` on success.
+    fn ensure_token(&mut self) -> Option<&str> {
+        if self.token.is_none() {
+            let resolved = resolve_github_token();
+            if resolved.is_none() {
+                warn!("no GitHub token available for review queue watcher");
             }
-            _ => {
-                warn!("gh CLI not available for review queue watcher");
-                self.gh_available = Some(false);
-                false
-            }
+            self.token = Some(resolved);
         }
+        self.token.as_ref().unwrap().as_deref()
     }
 
-    /// Run a single query and return parsed PR results.
-    async fn search_prs(&self, query: &str) -> Vec<PrResult> {
-        let output = match tokio::process::Command::new("gh")
-            .args([
-                "search",
-                "prs",
-                "--json",
-                "number,title,url,repository,author,updatedAt",
-                "--limit",
-                "30",
-                "--",
-                query,
-            ])
-            .output()
+    /// Run a single query via the GitHub REST Search API and return parsed PR results.
+    async fn search_prs(&self, query: &str, token: &str) -> Vec<PrResult> {
+        let resp = match self
+            .client
+            .get("https://api.github.com/search/issues")
+            .query(&[("q", query), ("per_page", "30")])
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "apiari-buzz")
+            .send()
             .await
         {
-            Ok(output) => output,
+            Ok(r) => r,
             Err(e) => {
-                warn!("failed to run `gh search prs`: {e}");
+                warn!("GitHub search request failed: {e}");
                 return Vec::new();
             }
         };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("`gh search prs` failed: {}", stderr.trim());
+        let status = resp.status();
+        if status == reqwest::StatusCode::FORBIDDEN
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            warn!("GitHub search rate limited (HTTP {status})");
+            return Vec::new();
+        }
+        if !status.is_success() {
+            warn!("GitHub search returned HTTP {status}");
             return Vec::new();
         }
 
-        let body = String::from_utf8_lossy(&output.stdout);
-        match serde_json::from_str::<Vec<serde_json::Value>>(&body) {
-            Ok(items) => items.into_iter().filter_map(parse_pr_result).collect(),
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
             Err(e) => {
-                warn!("failed to parse `gh search prs` JSON: {e}");
-                Vec::new()
+                warn!("failed to parse GitHub search response: {e}");
+                return Vec::new();
             }
-        }
+        };
+
+        let Some(items) = body.get("items").and_then(|v| v.as_array()) else {
+            warn!("GitHub search response missing `items` array");
+            return Vec::new();
+        };
+
+        items.iter().filter_map(parse_pr_result).collect()
     }
 }
 
-/// Parsed PR from `gh search prs` output.
+/// Parsed PR from GitHub search result.
 struct PrResult {
     number: u64,
     title: String,
@@ -107,19 +133,20 @@ struct PrResult {
     author: String,
 }
 
-fn parse_pr_result(val: serde_json::Value) -> Option<PrResult> {
+fn parse_pr_result(val: &serde_json::Value) -> Option<PrResult> {
     let number = val.get("number")?.as_u64()?;
     let title = val.get("title")?.as_str()?.to_string();
-    let url = val.get("url")?.as_str()?.to_string();
+    let url = val.get("html_url")?.as_str()?.to_string();
+    // repository_url is like "https://api.github.com/repos/org/repo"
     let repo = val
-        .get("repository")
-        .and_then(|r| r.get("nameWithOwner"))
-        .and_then(|n| n.as_str())
+        .get("repository_url")
+        .and_then(|r| r.as_str())
+        .and_then(|u| u.strip_prefix("https://api.github.com/repos/"))
         .unwrap_or("")
         .to_string();
     let author = val
-        .get("author")
-        .and_then(|a| a.get("login"))
+        .get("user")
+        .and_then(|u| u.get("login"))
         .and_then(|l| l.as_str())
         .unwrap_or("")
         .to_string();
@@ -149,16 +176,17 @@ impl Watcher for ReviewQueueWatcher {
             return Ok(Vec::new());
         }
 
-        if !self.ensure_gh_available().await {
-            return Ok(Vec::new());
-        }
+        let token = match self.ensure_token() {
+            Some(t) => t.to_string(),
+            None => return Ok(Vec::new()),
+        };
 
         let mut all_signals = Vec::new();
         // Track seen PR keys across queries for dedup (lowest index wins).
         let mut seen_keys: HashSet<String> = HashSet::new();
 
         for (priority, entry) in self.queries.iter().enumerate() {
-            let prs = self.search_prs(&entry.query).await;
+            let prs = self.search_prs(&entry.query, &token).await;
             for pr in prs {
                 let key = external_id(&pr.repo, pr.number);
                 if seen_keys.contains(&key) {
@@ -225,14 +253,15 @@ mod tests {
         let val = serde_json::json!({
             "number": 42,
             "title": "Add feature X",
-            "url": "https://github.com/org/repo/pull/42",
-            "repository": {"nameWithOwner": "org/repo"},
-            "author": {"login": "user1"},
-            "updatedAt": "2025-01-01T00:00:00Z",
+            "html_url": "https://github.com/org/repo/pull/42",
+            "repository_url": "https://api.github.com/repos/org/repo",
+            "user": {"login": "user1"},
+            "updated_at": "2025-01-01T00:00:00Z",
         });
-        let pr = parse_pr_result(val).unwrap();
+        let pr = parse_pr_result(&val).unwrap();
         assert_eq!(pr.number, 42);
         assert_eq!(pr.title, "Add feature X");
+        assert_eq!(pr.url, "https://github.com/org/repo/pull/42");
         assert_eq!(pr.repo, "org/repo");
         assert_eq!(pr.author, "user1");
     }
@@ -240,6 +269,6 @@ mod tests {
     #[test]
     fn test_parse_pr_result_missing_fields() {
         let val = serde_json::json!({"title": "No number"});
-        assert!(parse_pr_result(val).is_none());
+        assert!(parse_pr_result(&val).is_none());
     }
 }
