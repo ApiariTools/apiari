@@ -538,9 +538,9 @@ impl App {
     /// Cycle the signal lens through available lenses.
     /// Only includes ReviewQueue if the workspace has review queue signals.
     pub fn cycle_signal_lens(&mut self) {
-        let has_rq = self.current_ws().map_or(false, |ws| {
-            ws.signals.iter().any(|s| s.source == "github_review_queue")
-        });
+        let has_rq = self
+            .current_ws()
+            .is_some_and(|ws| ws.signals.iter().any(|s| s.source == "github_review_queue"));
 
         self.signal_lens = match self.signal_lens {
             LensKind::All => {

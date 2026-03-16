@@ -958,22 +958,20 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let mut lines: Vec<Line> = Vec::new();
 
     // For ReviewQueue lens, show the query name from metadata
-    if app.signal_lens == app::LensKind::ReviewQueue {
-        if let Some(ref meta) = signal.metadata {
-            if let Ok(meta_val) = serde_json::from_str::<serde_json::Value>(meta) {
-                if let Some(qname) = meta_val.get("query_name").and_then(|v| v.as_str()) {
-                    lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled(
-                            qname.to_string(),
-                            Style::default()
-                                .fg(theme::POLLEN)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                }
-            }
-        }
+    if app.signal_lens == app::LensKind::ReviewQueue
+        && let Some(ref meta) = signal.metadata
+        && let Ok(meta_val) = serde_json::from_str::<serde_json::Value>(meta)
+        && let Some(qname) = meta_val.get("query_name").and_then(|v| v.as_str())
+    {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                qname.to_string(),
+                Style::default()
+                    .fg(theme::POLLEN)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
     }
 
     // Line 1: severity icon + title
