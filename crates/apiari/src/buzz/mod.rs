@@ -2,6 +2,7 @@
 
 pub mod channel;
 pub mod config;
+pub mod conversation;
 pub mod coordinator;
 pub mod daemon;
 pub mod pipeline;

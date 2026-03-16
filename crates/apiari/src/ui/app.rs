@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use apiari_tui::scroll::ScrollState;
 
+use crate::buzz::conversation::ConversationStore;
 use crate::config::{self, Workspace};
 
 // ── Types ─────────────────────────────────────────────────
@@ -240,26 +241,37 @@ pub struct App {
 impl App {
     /// Create app from discovered workspaces, focusing the given tab.
     pub fn new(workspaces: Vec<Workspace>, focus_workspace: Option<&str>) -> Self {
+        let db = config::db_path();
         let ws_states: Vec<WorkspaceState> = workspaces
             .into_iter()
             .map(|ws| {
-                // Load chat history
-                let history = super::history::load_history(&ws.name, 200);
-                let chat_history: Vec<ChatLine> = history
-                    .into_iter()
-                    .map(|msg| {
-                        let ts = msg.ts.format("%H:%M").to_string();
-                        let source = msg.source.as_deref().map(|s| match s {
-                            "telegram" => MessageSource::Telegram,
-                            "system" => MessageSource::System,
-                            _ => MessageSource::Tui,
-                        });
-                        match msg.role.as_str() {
-                            "user" => ChatLine::User(msg.content, ts, source),
-                            _ => ChatLine::Assistant(msg.content, ts, source),
+                // Load chat history from DB (primary), falling back to JSONL (legacy)
+                let chat_history: Vec<ChatLine> =
+                    if let Ok(store) = SignalStore::open(&db, &ws.name) {
+                        let conv = ConversationStore::new(store.conn(), &ws.name);
+                        match conv.load_history(200) {
+                            Ok(rows) if !rows.is_empty() => rows
+                                .into_iter()
+                                .map(|row| {
+                                    let ts = chrono::DateTime::parse_from_rfc3339(&row.created_at)
+                                        .map(|dt| dt.format("%H:%M").to_string())
+                                        .unwrap_or_default();
+                                    let source = row.source.as_deref().map(|s| match s {
+                                        "telegram" => MessageSource::Telegram,
+                                        "system" => MessageSource::System,
+                                        _ => MessageSource::Tui,
+                                    });
+                                    match row.role.as_str() {
+                                        "user" => ChatLine::User(row.content, ts, source),
+                                        _ => ChatLine::Assistant(row.content, ts, source),
+                                    }
+                                })
+                                .collect(),
+                            _ => load_history_from_jsonl(&ws.name),
                         }
-                    })
-                    .collect();
+                    } else {
+                        load_history_from_jsonl(&ws.name)
+                    };
 
                 // Extract coordinator preview from last assistant message
                 let coordinator_preview = chat_history.iter().rev().find_map(|msg| {
@@ -1271,6 +1283,26 @@ impl App {
 }
 
 // ── Free functions ────────────────────────────────────────
+
+/// Legacy fallback: load chat history from JSONL file.
+fn load_history_from_jsonl(workspace: &str) -> Vec<ChatLine> {
+    let history = super::history::load_history(workspace, 200);
+    history
+        .into_iter()
+        .map(|msg| {
+            let ts = msg.ts.format("%H:%M").to_string();
+            let source = msg.source.as_deref().map(|s| match s {
+                "telegram" => MessageSource::Telegram,
+                "system" => MessageSource::System,
+                _ => MessageSource::Tui,
+            });
+            match msg.role.as_str() {
+                "user" => ChatLine::User(msg.content, ts, source),
+                _ => ChatLine::Assistant(msg.content, ts, source),
+            }
+        })
+        .collect()
+}
 
 pub fn now_ts() -> String {
     chrono::Local::now().format("%H:%M").to_string()
