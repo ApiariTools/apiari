@@ -19,15 +19,15 @@ const SOURCE: &str = "github_review_queue";
 
 /// Try `GITHUB_TOKEN` env → `GH_TOKEN` env → `gh auth token` CLI fallback.
 fn resolve_github_token() -> Option<String> {
-    if let Ok(t) = std::env::var("GITHUB_TOKEN") {
-        if !t.is_empty() {
-            return Some(t);
-        }
+    if let Ok(t) = std::env::var("GITHUB_TOKEN")
+        && !t.is_empty()
+    {
+        return Some(t);
     }
-    if let Ok(t) = std::env::var("GH_TOKEN") {
-        if !t.is_empty() {
-            return Some(t);
-        }
+    if let Ok(t) = std::env::var("GH_TOKEN")
+        && !t.is_empty()
+    {
+        return Some(t);
     }
     // Fallback: ask gh CLI
     let output = std::process::Command::new("gh")
