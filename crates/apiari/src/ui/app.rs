@@ -45,6 +45,8 @@ pub enum LensKind {
     All,
     /// Show only review queue signals (source = "github_review_queue").
     ReviewQueue,
+    /// Placeholder for the upcoming Linear integration.
+    Linear,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -541,16 +543,28 @@ impl App {
         let has_rq = self
             .current_ws()
             .is_some_and(|ws| ws.signals.iter().any(|s| s.source == "github_review_queue"));
+        let has_linear = self
+            .current_ws()
+            .is_some_and(|ws| ws.signals.iter().any(|s| s.source == "linear"));
 
         self.signal_lens = match self.signal_lens {
             LensKind::All => {
                 if has_rq {
                     LensKind::ReviewQueue
+                } else if has_linear {
+                    LensKind::Linear
                 } else {
                     LensKind::All
                 }
             }
-            LensKind::ReviewQueue => LensKind::All,
+            LensKind::ReviewQueue => {
+                if has_linear {
+                    LensKind::Linear
+                } else {
+                    LensKind::All
+                }
+            }
+            LensKind::Linear => LensKind::All,
         };
         self.signal_selection = 0;
         self.needs_redraw = true;
@@ -564,6 +578,7 @@ impl App {
                 .iter()
                 .filter(|s| s.source == "github_review_queue")
                 .collect(),
+            LensKind::Linear => signals.iter().filter(|s| s.source == "linear").collect(),
         }
     }
 

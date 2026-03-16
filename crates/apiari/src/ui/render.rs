@@ -900,6 +900,7 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let lens_label = match app.signal_lens {
         app::LensKind::All => "Signals",
         app::LensKind::ReviewQueue => "Review Queue",
+        app::LensKind::Linear => "Linear",
     };
 
     // Title with navigation indicator
@@ -938,6 +939,7 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
         let empty_msg = match app.signal_lens {
             app::LensKind::All => "No open signals",
             app::LensKind::ReviewQueue => "No review queue items",
+            app::LensKind::Linear => "No Linear items",
         };
         let lines = vec![Line::from(vec![
             Span::raw(" "),

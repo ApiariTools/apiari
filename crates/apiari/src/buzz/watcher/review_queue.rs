@@ -21,6 +21,9 @@ const SOURCE: &str = "github_review_queue";
 pub struct ReviewQueueWatcher {
     queries: Vec<ReviewQueueEntry>,
     gh_available: Option<bool>,
+    /// External IDs from the last successful poll, for reconciliation.
+    /// `None` = never polled, `Some(vec![])` = polled and got zero.
+    last_poll_ids: Option<Vec<String>>,
 }
 
 impl ReviewQueueWatcher {
@@ -28,6 +31,7 @@ impl ReviewQueueWatcher {
         Self {
             queries: config.review_queue.clone(),
             gh_available: None,
+            last_poll_ids: None,
         }
     }
 
@@ -169,7 +173,14 @@ impl Watcher for ReviewQueueWatcher {
                     "repo": pr.repo,
                 });
 
-                let signal = SignalUpdate::new(SOURCE, &key, pr.title, Severity::Info)
+                // First query (priority 0) = Warning, others = Info
+                let severity = if priority == 0 {
+                    Severity::Warning
+                } else {
+                    Severity::Info
+                };
+
+                let signal = SignalUpdate::new(SOURCE, &key, pr.title, severity)
                     .with_body(format!("{} — {} by {}", entry.name, pr.repo, pr.author))
                     .with_url(&pr.url)
                     .with_metadata(metadata.to_string());
@@ -177,6 +188,9 @@ impl Watcher for ReviewQueueWatcher {
                 all_signals.push(signal);
             }
         }
+
+        // Store current IDs for reconciliation
+        self.last_poll_ids = Some(seen_keys.into_iter().collect());
 
         if !all_signals.is_empty() {
             info!("review_queue: {} signal(s)", all_signals.len());
@@ -186,19 +200,14 @@ impl Watcher for ReviewQueueWatcher {
     }
 
     fn reconcile(&self, store: &SignalStore) -> Result<usize> {
-        // The poll already emits the full set of current PRs.
-        // We don't track current_ids here because poll is stateless;
-        // the daemon calls resolve_missing_signals after each poll cycle.
-        // We'd need the IDs from the last poll. For now, let the daemon
-        // handle this via the standard pattern.
-        //
-        // Actually, since we return all current signals every poll, we can
-        // use the store's resolve_missing_signals with the current external IDs.
-        // But we don't have them here (poll already finished). The simplest
-        // approach: skip reconcile and let signals be updated on each poll.
-        // They'll get updated_at refreshed, keeping them alive.
-        let _ = store;
-        Ok(0)
+        let Some(ref ids) = self.last_poll_ids else {
+            return Ok(0); // Never polled yet — skip
+        };
+        let resolved = store.resolve_missing_signals(SOURCE, ids)?;
+        if resolved > 0 {
+            info!("review_queue: reconciled {resolved} resolved signal(s)");
+        }
+        Ok(resolved)
     }
 }
 
