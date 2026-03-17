@@ -28,6 +28,7 @@ use crate::buzz::daemon::config as buzz_daemon_config;
 use crate::buzz::pipeline::Pipeline;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::watcher::WatcherRegistry;
+use crate::buzz::watcher::email::EmailWatcher;
 use crate::buzz::watcher::github::GithubWatcher;
 use crate::buzz::watcher::review_queue::ReviewQueueWatcher;
 use crate::buzz::watcher::sentry::SentryWatcher;
@@ -588,6 +589,25 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 Box::new(SwarmWatcher::new(swarm_config.clone())),
                 swarm_config.interval_secs,
             );
+        }
+
+        for email_config in &buzz_config.watchers.email {
+            let mut watcher = EmailWatcher::new(email_config.clone());
+            // Pre-load cursor from store so first poll skips already-seen UIDs
+            if let Ok(Some(val)) = store.get_cursor(watcher.cursor_key())
+                && let Ok(uid) = val.parse::<u32>()
+            {
+                watcher.set_initial_uid(uid);
+                info!(
+                    "[{}] email watcher '{}' resuming from UID {}",
+                    ws.name, email_config.name, uid
+                );
+            }
+            info!(
+                "[{}] enabling email watcher '{}' ({})",
+                ws.name, email_config.name, email_config.host
+            );
+            registry.add_with_interval(Box::new(watcher), email_config.interval_secs);
         }
 
         let mut coordinator = Coordinator::new(

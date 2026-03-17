@@ -13,6 +13,7 @@ pub fn has_watchers(config: &BuzzConfig) -> bool {
     w.github.as_ref().is_some_and(|g| g.enabled)
         || w.sentry.as_ref().is_some_and(|s| s.enabled)
         || w.swarm.as_ref().is_some_and(|s| s.enabled)
+        || !w.email.is_empty()
 }
 
 /// Get the watcher poll interval (minimum across enabled watchers).
@@ -34,6 +35,10 @@ pub fn min_watcher_interval(config: &BuzzConfig) -> u64 {
         && s.enabled
     {
         intervals.push(s.interval_secs);
+    }
+
+    for e in &w.email {
+        intervals.push(e.interval_secs);
     }
 
     intervals.into_iter().min().unwrap_or(60)

@@ -8,6 +8,7 @@
 //! is resolved. Watchers that need custom reconciliation (e.g. swarm, which
 //! builds IDs from tracked state) can override `reconcile()`.
 
+pub mod email;
 pub mod github;
 pub mod review_queue;
 pub mod sentry;
