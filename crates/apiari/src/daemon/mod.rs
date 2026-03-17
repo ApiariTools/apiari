@@ -440,11 +440,11 @@ async fn run_coordinator_task(
 
 /// Run the daemon in the foreground with auto-restart on errors.
 pub async fn run_foreground() -> Result<()> {
-    if let Some(pid) = read_pid() {
-        if is_process_alive(pid) {
-            eprintln!("daemon already running (pid: {pid})");
-            return Ok(());
-        }
+    if let Some(pid) = read_pid()
+        && is_process_alive(pid)
+    {
+        eprintln!("daemon already running (pid: {pid})");
+        return Ok(());
     }
     write_pid()?;
 
@@ -493,11 +493,11 @@ pub async fn run_foreground() -> Result<()> {
 
 /// Spawn the daemon in the background.
 pub fn spawn_background() -> Result<()> {
-    if let Some(pid) = read_pid() {
-        if is_process_alive(pid) {
-            eprintln!("daemon already running (pid: {pid})");
-            return Ok(());
-        }
+    if let Some(pid) = read_pid()
+        && is_process_alive(pid)
+    {
+        eprintln!("daemon already running (pid: {pid})");
+        return Ok(());
     }
 
     let exe = std::env::current_exe()?;
