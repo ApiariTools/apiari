@@ -509,29 +509,6 @@ mod tests {
     }
 
     #[test]
-    fn test_ci_pass_rerun_unique_external_ids() {
-        // Two different run IDs for the same PR should produce different external_ids
-        let pr_number = 30u64;
-        let run_id_1 = 1000u64;
-        let run_id_2 = 1001u64;
-
-        let key1 = format!("ci-pass-{pr_number}-{run_id_1}");
-        let key2 = format!("ci-pass-{pr_number}-{run_id_2}");
-
-        assert_ne!(key1, key2, "re-runs should have unique external_ids");
-        assert_eq!(key1, "ci-pass-30-1000");
-        assert_eq!(key2, "ci-pass-30-1001");
-    }
-
-    #[test]
-    fn test_ci_failure_includes_pr_number() {
-        let pr_number = 42u64;
-        let run_id = 999u64;
-        let key = format!("ci-failure-{pr_number}-{run_id}");
-        assert_eq!(key, "ci-failure-42-999");
-    }
-
-    #[test]
     fn test_labeled_issue_critical() {
         let issue = serde_json::json!({
             "number": 1,

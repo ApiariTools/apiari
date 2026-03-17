@@ -89,6 +89,19 @@ impl Pipeline {
         }
     }
 
+    /// Process a force-notified signal (e.g. CI pass on re-poll).
+    /// Bypasses pipeline rules and uses rate-limiting to prevent duplicate sends.
+    pub fn process_force_notify(&mut self, signal: &SignalRecord) -> Option<String> {
+        let fingerprint = format!("{}:{}", signal.source, signal.external_id);
+        // Rate-limit force notifications to once per 5 minutes
+        if self.log.should_send(&fingerprint, 300) {
+            self.log.record_sent(&fingerprint);
+            Some(format_signal_notification(signal))
+        } else {
+            None
+        }
+    }
+
     /// Flush any pending batches. Returns an optional batch summary message.
     pub fn flush_batches(&mut self) -> Option<String> {
         if let Some(signals) = self.batch.flush_if_ready() {
@@ -304,5 +317,27 @@ mod tests {
         // Info: batched
         let info = make_signal("sentry", "i1", "Info", Severity::Info);
         assert!(pipeline.process(&info).is_none()); // batched
+    }
+
+    #[test]
+    fn test_force_notify_bypasses_rules_with_rate_limit() {
+        let mut pipeline = Pipeline::new(vec![], 60);
+        let signal = make_signal(
+            "github",
+            "ci-pass-42-1000",
+            "CI passed: feat (#42)",
+            Severity::Info,
+        );
+
+        // Normal process: Info severity → batched (no immediate notification)
+        assert!(pipeline.process(&signal).is_none());
+
+        // Force notify: bypasses rules, sends directly
+        let result = pipeline.process_force_notify(&signal);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("CI passed"));
+
+        // Second force notify: rate-limited (300s window)
+        assert!(pipeline.process_force_notify(&signal).is_none());
     }
 }

@@ -109,12 +109,7 @@ pub fn build_system_prompt(
             "Proactively mention CI results to the user when relevant to PRs they are watching.\n",
         );
         for signal in &ci_signals {
-            let icon = if signal.external_id.starts_with("ci-pass-") {
-                "passed"
-            } else {
-                "FAILED"
-            };
-            prompt.push_str(&format!("- CI {icon}: {title}", title = signal.title));
+            prompt.push_str(&format!("- {title}", title = signal.title));
             if let Some(ref url) = signal.url {
                 prompt.push_str(&format!(" ({url})"));
             }
@@ -370,10 +365,10 @@ mod tests {
 
         let prompt = build_system_prompt(&[ci_pass, ci_fail, other], &[], None, None, None);
 
-        // CI signals appear in dedicated section
+        // CI signals appear in dedicated section with titles as-is (no redundant prefix)
         assert!(prompt.contains("## Recent CI Activity"));
-        assert!(prompt.contains("CI passed: CI passed: add snooze (#30)"));
-        assert!(prompt.contains("CI FAILED: CI failed: add morning brief (#29)"));
+        assert!(prompt.contains("- CI passed: add snooze (#30)"));
+        assert!(prompt.contains("- CI failed: add morning brief (#29)"));
 
         // Non-CI signal appears in Current Signals, not in CI section
         assert!(prompt.contains("## Current Signals"));
