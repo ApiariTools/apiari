@@ -1,9 +1,12 @@
 //! Notion watcher — polls the Notion API for mentions and assignments.
 //!
-//! Emits signals into `{name}_review_queue` so they auto-appear in the Reviews
-//! panel. Two signal types:
+//! Emits signals into `{name}_review_queue` so they appear in the Reviews
+//! panel (provided at least one `_review_queue` source is active). Two signal
+//! types:
 //! 1. Comments mentioning the configured user
 //! 2. Database pages assigned to the configured user
+
+use std::time::Duration;
 
 use async_trait::async_trait;
 use color_eyre::Result;
@@ -20,42 +23,47 @@ const NOTION_VERSION: &str = "2022-06-28";
 /// Common assignee-like property names to try when querying databases.
 const ASSIGNEE_PROPERTY_NAMES: &[&str] = &["Assignee", "Assigned to", "Owner", "Person"];
 
+/// Max pages to process per poll for comment scanning (avoids N+1 blowup).
+const MAX_PAGES_PER_POLL: usize = 20;
+
+/// HTTP request timeout for Notion API calls.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Watches Notion for comment mentions and database assignments.
 pub struct NotionWatcher {
     config: NotionWatcherConfig,
     client: reqwest::Client,
     watcher_name: String,
     source: String,
-    search_cursor_key: String,
     last_poll_key: String,
     last_poll_time: Option<String>,
+    /// Whether the current poll encountered any API errors (prevents cursor advance).
+    poll_had_errors: bool,
 }
 
 impl NotionWatcher {
     pub fn new(config: NotionWatcherConfig) -> Self {
         let watcher_name = format!("{}_notion", config.name);
         let source = format!("{}_review_queue", config.name);
-        let search_cursor_key = format!("notion_{}_search_cursor", config.name);
         let last_poll_key = format!("notion_{}_last_poll", config.name);
+        let client = reqwest::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             config,
-            client: reqwest::Client::new(),
+            client,
             watcher_name,
             source,
-            search_cursor_key,
             last_poll_key,
             last_poll_time: None,
+            poll_had_errors: false,
         }
     }
 
     /// Build the signal source name for a Notion watcher.
     pub fn source_name(name: &str) -> String {
         format!("{name}_review_queue")
-    }
-
-    /// Build the search cursor key for a Notion watcher.
-    pub fn search_cursor_key_for(name: &str) -> String {
-        format!("notion_{name}_search_cursor")
     }
 
     /// Build the last-poll cursor key for a Notion watcher.
@@ -74,99 +82,39 @@ impl NotionWatcher {
     }
 
     /// Make an authenticated request to the Notion API.
-    async fn notion_request(
-        &self,
-        method: reqwest::Method,
-        url: &str,
-    ) -> Result<reqwest::RequestBuilder, NotionApiError> {
-        Ok(self
-            .client
+    fn notion_request(&self, method: reqwest::Method, url: &str) -> reqwest::RequestBuilder {
+        self.client
             .request(method, url)
             .header("Authorization", format!("Bearer {}", self.config.token))
             .header("Notion-Version", NOTION_VERSION)
-            .header("Content-Type", "application/json"))
+            .header("Content-Type", "application/json")
     }
 
-    /// Search for recently-edited pages.
+    /// Search for recently-edited pages, with pagination.
+    /// Returns up to MAX_PAGES_PER_POLL pages, using client-side cutoff
+    /// to skip pages older than last_poll_time.
     async fn search_pages(&self) -> std::result::Result<Vec<NotionPage>, NotionApiError> {
         let url = format!("{NOTION_API_BASE}/search");
-        let mut body = serde_json::json!({
+        let body = serde_json::json!({
             "filter": {"value": "page", "property": "object"},
             "sort": {"direction": "descending", "timestamp": "last_edited_time"}
         });
 
-        // If we have a last poll time, use it to limit results
-        if let Some(ref last_poll) = self.last_poll_time {
-            body["filter"]["last_edited_time"] = serde_json::json!({"after": last_poll});
-        }
+        let mut all_pages = Vec::new();
+        let mut start_cursor: Option<String> = None;
 
-        let req = self.notion_request(reqwest::Method::POST, &url).await?;
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(NotionApiError::Network)?;
+        loop {
+            let mut req_body = body.clone();
+            if let Some(ref cursor) = start_cursor {
+                req_body["start_cursor"] = serde_json::json!(cursor);
+            }
 
-        check_response_status(&resp)?;
-
-        let json: serde_json::Value = resp.json().await.map_err(NotionApiError::Network)?;
-        let results = json
-            .get("results")
-            .and_then(|r| r.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        Ok(results.into_iter().filter_map(parse_page).collect())
-    }
-
-    /// Fetch comments for a page/block.
-    async fn fetch_comments(
-        &self,
-        block_id: &str,
-    ) -> std::result::Result<Vec<NotionComment>, NotionApiError> {
-        let url = format!("{NOTION_API_BASE}/comments?block_id={block_id}");
-        let req = self.notion_request(reqwest::Method::GET, &url).await?;
-        let resp = req.send().await.map_err(NotionApiError::Network)?;
-
-        check_response_status(&resp)?;
-
-        let json: serde_json::Value = resp.json().await.map_err(NotionApiError::Network)?;
-        let results = json
-            .get("results")
-            .and_then(|r| r.as_array())
-            .cloned()
-            .unwrap_or_default();
-
-        Ok(results.into_iter().filter_map(parse_comment).collect())
-    }
-
-    /// Query a database for pages assigned to the configured user.
-    async fn query_database_assignments(
-        &self,
-        database_id: &str,
-    ) -> std::result::Result<Vec<NotionPage>, NotionApiError> {
-        let url = format!("{NOTION_API_BASE}/databases/{database_id}/query");
-
-        // Try common property names for assignee
-        for prop_name in ASSIGNEE_PROPERTY_NAMES {
-            let body = serde_json::json!({
-                "filter": {
-                    "property": prop_name,
-                    "people": {"contains": self.config.user_id}
-                }
-            });
-
-            let req = self.notion_request(reqwest::Method::POST, &url).await?;
+            let req = self.notion_request(reqwest::Method::POST, &url);
             let resp = req
-                .json(&body)
+                .json(&req_body)
                 .send()
                 .await
                 .map_err(NotionApiError::Network)?;
-
-            // If we get a validation error (400), try next property name
-            if resp.status() == reqwest::StatusCode::BAD_REQUEST {
-                continue;
-            }
 
             check_response_status(&resp)?;
 
@@ -177,7 +125,160 @@ impl NotionWatcher {
                 .cloned()
                 .unwrap_or_default();
 
-            return Ok(results.into_iter().filter_map(parse_page).collect());
+            let has_more = json
+                .get("has_more")
+                .and_then(|h| h.as_bool())
+                .unwrap_or(false);
+            let next_cursor = json
+                .get("next_cursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+
+            for val in results {
+                // Client-side cutoff: skip pages older than last poll
+                if let Some(ref lp) = self.last_poll_time {
+                    if let Some(edited) = val.get("last_edited_time").and_then(|t| t.as_str()) {
+                        if edited <= lp.as_str() {
+                            // Results are sorted descending by last_edited_time,
+                            // so all remaining pages are older — stop here.
+                            return Ok(all_pages);
+                        }
+                    }
+                }
+
+                if let Some(page) = parse_page(val) {
+                    all_pages.push(page);
+                }
+
+                if all_pages.len() >= MAX_PAGES_PER_POLL {
+                    return Ok(all_pages);
+                }
+            }
+
+            if !has_more || next_cursor.is_none() {
+                break;
+            }
+            start_cursor = next_cursor;
+        }
+
+        Ok(all_pages)
+    }
+
+    /// Fetch comments for a page/block, with pagination.
+    async fn fetch_comments(
+        &self,
+        block_id: &str,
+    ) -> std::result::Result<Vec<NotionComment>, NotionApiError> {
+        let mut all_comments = Vec::new();
+        let mut start_cursor: Option<String> = None;
+
+        loop {
+            let mut url = format!("{NOTION_API_BASE}/comments?block_id={block_id}");
+            if let Some(ref cursor) = start_cursor {
+                url.push_str(&format!("&start_cursor={cursor}"));
+            }
+
+            let req = self.notion_request(reqwest::Method::GET, &url);
+            let resp = req.send().await.map_err(NotionApiError::Network)?;
+
+            check_response_status(&resp)?;
+
+            let json: serde_json::Value = resp.json().await.map_err(NotionApiError::Network)?;
+            let results = json
+                .get("results")
+                .and_then(|r| r.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let has_more = json
+                .get("has_more")
+                .and_then(|h| h.as_bool())
+                .unwrap_or(false);
+            let next_cursor = json
+                .get("next_cursor")
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+
+            for val in results {
+                if let Some(comment) = parse_comment(val) {
+                    all_comments.push(comment);
+                }
+            }
+
+            if !has_more || next_cursor.is_none() {
+                break;
+            }
+            start_cursor = next_cursor;
+        }
+
+        Ok(all_comments)
+    }
+
+    /// Query a database for pages assigned to the configured user, with pagination.
+    async fn query_database_assignments(
+        &self,
+        database_id: &str,
+    ) -> std::result::Result<Vec<NotionPage>, NotionApiError> {
+        let url = format!("{NOTION_API_BASE}/databases/{database_id}/query");
+
+        // Try common property names for assignee
+        for prop_name in ASSIGNEE_PROPERTY_NAMES {
+            let filter = serde_json::json!({
+                "property": prop_name,
+                "people": {"contains": self.config.user_id}
+            });
+
+            let mut all_pages = Vec::new();
+            let mut start_cursor: Option<String> = None;
+
+            loop {
+                let mut body = serde_json::json!({"filter": filter});
+                if let Some(ref cursor) = start_cursor {
+                    body["start_cursor"] = serde_json::json!(cursor);
+                }
+
+                let req = self.notion_request(reqwest::Method::POST, &url);
+                let resp = req
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(NotionApiError::Network)?;
+
+                // If we get a validation error (400), try next property name
+                if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+                    break;
+                }
+
+                check_response_status(&resp)?;
+
+                let json: serde_json::Value = resp.json().await.map_err(NotionApiError::Network)?;
+                let results = json
+                    .get("results")
+                    .and_then(|r| r.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let has_more = json
+                    .get("has_more")
+                    .and_then(|h| h.as_bool())
+                    .unwrap_or(false);
+                let next_cursor_val = json
+                    .get("next_cursor")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string());
+
+                for val in results {
+                    if let Some(page) = parse_page(val) {
+                        all_pages.push(page);
+                    }
+                }
+
+                if !has_more || next_cursor_val.is_none() {
+                    return Ok(all_pages);
+                }
+                start_cursor = next_cursor_val;
+            }
+            // 400 on this property name — try the next one
         }
 
         // None of the property names worked — skip this database
@@ -185,20 +286,17 @@ impl NotionWatcher {
     }
 
     /// Poll for comment mentions and build signals.
-    async fn poll_mentions(&self) -> Vec<SignalUpdate> {
-        let pages = match self.search_pages().await {
-            Ok(p) => p,
-            Err(e) => {
-                log_api_error(&self.watcher_name, "search", e);
-                return Vec::new();
-            }
-        };
+    /// Returns Err on search API failure to prevent false reconciliation.
+    async fn poll_mentions(&self) -> std::result::Result<Vec<SignalUpdate>, NotionApiError> {
+        let pages = self.search_pages().await?;
 
         let mut signals = Vec::new();
         for page in &pages {
             let comments = match self.fetch_comments(&page.id).await {
                 Ok(c) => c,
                 Err(e) => {
+                    // Log but continue with other pages — individual comment
+                    // fetch failures shouldn't block the entire mention poll.
                     log_api_error(&self.watcher_name, "comments", e);
                     continue;
                 }
@@ -223,32 +321,27 @@ impl NotionWatcher {
             }
         }
 
-        signals
+        Ok(signals)
     }
 
     /// Poll for database assignments and build signals.
-    async fn poll_assignments(&self) -> Vec<SignalUpdate> {
+    /// Returns Err on API failure to prevent false reconciliation.
+    async fn poll_assignments(&self) -> std::result::Result<Vec<SignalUpdate>, NotionApiError> {
         let db_ids = match &self.config.poll_database_ids {
             Some(ids) if !ids.is_empty() => ids.clone(),
-            _ => return Vec::new(),
+            _ => return Ok(Vec::new()),
         };
 
         let mut signals = Vec::new();
         for db_id in &db_ids {
-            let pages = match self.query_database_assignments(db_id).await {
-                Ok(p) => p,
-                Err(e) => {
-                    log_api_error(&self.watcher_name, "database query", e);
-                    continue;
-                }
-            };
+            let pages = self.query_database_assignments(db_id).await?;
 
             for page in &pages {
                 signals.push(build_assignment_signal(&self.source, page, db_id));
             }
         }
 
-        signals
+        Ok(signals)
     }
 }
 
@@ -263,15 +356,26 @@ impl Watcher for NotionWatcher {
     }
 
     async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
+        self.poll_had_errors = false;
         let mut all_signals = Vec::new();
 
         // 1. Comment mentions
-        let mention_signals = self.poll_mentions().await;
-        all_signals.extend(mention_signals);
+        match self.poll_mentions().await {
+            Ok(signals) => all_signals.extend(signals),
+            Err(e) => {
+                log_api_error(&self.watcher_name, "mentions", e);
+                self.poll_had_errors = true;
+            }
+        }
 
         // 2. Database assignments
-        let assignment_signals = self.poll_assignments().await;
-        all_signals.extend(assignment_signals);
+        match self.poll_assignments().await {
+            Ok(signals) => all_signals.extend(signals),
+            Err(e) => {
+                log_api_error(&self.watcher_name, "assignments", e);
+                self.poll_had_errors = true;
+            }
+        }
 
         if !all_signals.is_empty() {
             info!(
@@ -281,9 +385,11 @@ impl Watcher for NotionWatcher {
             );
         }
 
-        // Update last poll time
-        let now = chrono::Utc::now().to_rfc3339();
-        self.last_poll_time = Some(now);
+        // Only advance cursor if the poll was fully successful
+        if !self.poll_had_errors {
+            let now = chrono::Utc::now().to_rfc3339();
+            self.last_poll_time = Some(now);
+        }
 
         Ok(all_signals)
     }
@@ -298,11 +404,12 @@ impl Watcher for NotionWatcher {
                 self.watcher_name
             );
         }
-        // Return 0 — let the framework auto-reconcile assignment signals.
-        // Comment signals are additive (like email), but assignment signals
-        // should be resolved when the user is unassigned (auto-reconcile
-        // handles this since we emit all current assignments each poll).
-        Ok(0)
+        // Return 1 to signal custom reconciliation was handled, preventing
+        // framework auto-reconcile. Comment signals are additive (like email)
+        // and should not be auto-resolved based on partial poll ID lists.
+        // Assignment signals are resolved by the Notion API filter itself
+        // (unassigned pages simply stop appearing).
+        Ok(1)
     }
 }
 
@@ -589,14 +696,27 @@ repos = ["org/repo"]
         assert!(config.notion.is_empty());
     }
 
+    #[test]
+    fn test_config_parsing_buzz_config() {
+        let toml_str = r#"
+[[watchers.notion]]
+name = "work"
+token = "secret_yyyy"
+user_id = "user-456"
+poll_database_ids = ["db-x"]
+"#;
+        let config: crate::buzz::config::BuzzConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.watchers.notion.len(), 1);
+        assert_eq!(config.watchers.notion[0].name, "work");
+        assert_eq!(config.watchers.notion[0].token, "secret_yyyy");
+        assert_eq!(config.watchers.notion[0].user_id, "user-456");
+        assert_eq!(config.watchers.notion[0].interval_secs, 120); // default
+    }
+
     // --- Cursor key naming ---
 
     #[test]
     fn test_cursor_key_naming() {
-        assert_eq!(
-            NotionWatcher::search_cursor_key_for("work"),
-            "notion_work_search_cursor"
-        );
         assert_eq!(
             NotionWatcher::last_poll_key_for("work"),
             "notion_work_last_poll"

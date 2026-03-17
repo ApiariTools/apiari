@@ -123,7 +123,7 @@ pub struct WatchersConfig {
     /// Email watchers (multiple mailboxes via `[[watchers.email]]`).
     #[serde(default)]
     pub email: Vec<EmailMailboxConfig>,
-    /// Notion watchers.
+    /// Notion watchers via `[[watchers.notion]]`.
     #[serde(default)]
     pub notion: Vec<NotionWatcherConfig>,
 }
