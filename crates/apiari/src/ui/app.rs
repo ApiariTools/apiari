@@ -63,6 +63,7 @@ pub enum ChatLine {
 pub enum PendingAction {
     CloseWorker(String), // worktree id
     ResolveSignal(i64),  // signal db id
+    ApproveReview { repo: String, pr_number: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +208,11 @@ pub struct App {
     // Worker detail
     pub worker_input: String,
     pub worker_input_active: bool,
+    // Review comment input
+    pub review_comment_active: bool,
+    pub review_comment_input: String,
+    pub review_comment_repo: String,
+    pub review_comment_pr: u64,
     // Detail/list views
     pub content_scroll: u16,
     pub signal_list_selection: usize,
@@ -318,6 +324,10 @@ impl App {
             chat_focused: false,
             worker_input: String::new(),
             worker_input_active: false,
+            review_comment_active: false,
+            review_comment_input: String::new(),
+            review_comment_repo: String::new(),
+            review_comment_pr: 0,
             content_scroll: 0,
             signal_list_selection: 0,
             review_list_selection: 0,
@@ -1481,6 +1491,33 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Extract (repo, pr_number) from a review queue signal.
+/// Prefers metadata fields; falls back to parsing `external_id` (`rq-{repo}-{number}`).
+/// Returns `None` for non-GitHub review signals (e.g. Linear).
+pub fn review_signal_target(signal: &SignalRecord) -> Option<(String, u64)> {
+    if signal.source != "github_review_queue" {
+        return None;
+    }
+
+    // Try metadata first
+    if let Some(ref meta) = signal.metadata
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(meta)
+        && let (Some(repo), Some(pr)) = (
+            val.get("repo").and_then(|v| v.as_str()),
+            val.get("pr_number").and_then(|v| v.as_u64()),
+        )
+    {
+        return Some((repo.to_string(), pr));
+    }
+
+    // Fallback: parse from external_id (format: rq-{owner/repo}-{number})
+    let rest = signal.external_id.strip_prefix("rq-")?;
+    let last_dash = rest.rfind('-')?;
+    let repo = &rest[..last_dash];
+    let number: u64 = rest[last_dash + 1..].parse().ok()?;
+    Some((repo.to_string(), number))
+}
+
 /// Severity icon for display.
 pub fn severity_icon(severity: &Severity) -> &'static str {
     match severity {
@@ -1520,5 +1557,76 @@ pub fn elapsed_display(created_at: &Option<DateTime<Local>>) -> String {
             }
         }
         None => "?".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::buzz::signal::{Severity, SignalRecord, SignalStatus};
+    use chrono::Utc;
+
+    fn make_signal(source: &str, external_id: &str, metadata: Option<&str>) -> SignalRecord {
+        SignalRecord {
+            id: 1,
+            source: source.to_string(),
+            external_id: external_id.to_string(),
+            title: "Test PR".to_string(),
+            body: None,
+            severity: Severity::Info,
+            status: SignalStatus::Open,
+            url: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            resolved_at: None,
+            metadata: metadata.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_review_signal_target_from_metadata() {
+        let signal = make_signal(
+            "github_review_queue",
+            "rq-ApiariTools/apiari-42",
+            Some(r#"{"repo":"ApiariTools/apiari","pr_number":42,"author":"user1"}"#),
+        );
+        let result = review_signal_target(&signal);
+        assert_eq!(result, Some(("ApiariTools/apiari".to_string(), 42)));
+    }
+
+    #[test]
+    fn test_review_signal_target_fallback_from_external_id() {
+        let signal = make_signal(
+            "github_review_queue",
+            "rq-ApiariTools/apiari-42",
+            Some(r#"{"repo":"ApiariTools/apiari","author":"user1"}"#), // no pr_number
+        );
+        let result = review_signal_target(&signal);
+        assert_eq!(result, Some(("ApiariTools/apiari".to_string(), 42)));
+    }
+
+    #[test]
+    fn test_review_signal_target_no_metadata() {
+        let signal = make_signal("github_review_queue", "rq-org/repo-99", None);
+        let result = review_signal_target(&signal);
+        assert_eq!(result, Some(("org/repo".to_string(), 99)));
+    }
+
+    #[test]
+    fn test_review_signal_target_linear_returns_none() {
+        let signal = make_signal(
+            "linear_review_queue",
+            "linear-123",
+            Some(r#"{"repo":"org/repo","pr_number":123}"#),
+        );
+        let result = review_signal_target(&signal);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_review_signal_target_non_review_source_returns_none() {
+        let signal = make_signal("sentry", "sentry-42", None);
+        let result = review_signal_target(&signal);
+        assert_eq!(result, None);
     }
 }

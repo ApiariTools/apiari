@@ -6,7 +6,7 @@ pub mod history;
 pub mod render;
 pub mod theme;
 
-use app::{App, Mode, Panel, PendingAction, View};
+use app::{App, Mode, Panel, PendingAction, View, review_signal_target};
 use color_eyre::Result;
 use crossterm::ExecutableCommand;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
@@ -58,10 +58,22 @@ enum KeyAction {
     None,
     Quit,
     SendChat(String),
-    SendWorkerMessage { worker_id: String, text: String },
+    SendWorkerMessage {
+        worker_id: String,
+        text: String,
+    },
     OpenUrl(String),
     CloseWorker(String),
     ResolveSignal(i64),
+    ApproveReview {
+        repo: String,
+        pr_number: u64,
+    },
+    CommentReview {
+        repo: String,
+        pr_number: u64,
+        body: String,
+    },
     Redraw,
 }
 
@@ -300,6 +312,9 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
                     match action {
                         PendingAction::CloseWorker(id) => return KeyAction::CloseWorker(id),
                         PendingAction::ResolveSignal(id) => return KeyAction::ResolveSignal(id),
+                        PendingAction::ApproveReview { repo, pr_number } => {
+                            return KeyAction::ApproveReview { repo, pr_number };
+                        }
                     }
                 }
             }
@@ -311,6 +326,11 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
             _ => {}
         }
         return KeyAction::Redraw;
+    }
+
+    // ── Review comment input ──
+    if app.review_comment_active {
+        return handle_review_comment_key(app, key);
     }
 
     // ── Help overlay ──
@@ -390,13 +410,39 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         KeyCode::Char('j') | KeyCode::Down => app.select_next_in_panel(),
         KeyCode::Char('k') | KeyCode::Up => app.select_prev_in_panel(),
         KeyCode::Enter => app.drill_in(),
-        KeyCode::Char('c') => {
-            app.focused_panel = Panel::Chat;
-            app.chat_focused = true;
-            if let Some(ws) = app.current_ws_mut() {
-                ws.has_unread_response = false;
+        KeyCode::Char('a') => {
+            if app.focused_panel == Panel::Reviews
+                && let Some(signal) = app.selected_signal()
+            {
+                if let Some((repo, pr_number)) = review_signal_target(signal) {
+                    app.pending_action = Some(PendingAction::ApproveReview { repo, pr_number });
+                    app.mode = Mode::Confirm;
+                } else {
+                    app.flash("Linear reviews are read-only");
+                }
             }
-            app.needs_redraw = true;
+        }
+        KeyCode::Char('c') => {
+            if app.focused_panel == Panel::Reviews {
+                if let Some(signal) = app.selected_signal() {
+                    if let Some((repo, pr_number)) = review_signal_target(signal) {
+                        app.review_comment_active = true;
+                        app.review_comment_input.clear();
+                        app.review_comment_repo = repo;
+                        app.review_comment_pr = pr_number;
+                        app.needs_redraw = true;
+                    } else {
+                        app.flash("Linear reviews are read-only");
+                    }
+                }
+            } else {
+                app.focused_panel = Panel::Chat;
+                app.chat_focused = true;
+                if let Some(ws) = app.current_ws_mut() {
+                    ws.has_unread_response = false;
+                }
+                app.needs_redraw = true;
+            }
         }
         KeyCode::Char('z') => app.toggle_zoom(),
         KeyCode::Char('h') | KeyCode::Left => {
@@ -584,6 +630,42 @@ fn handle_worker_input_key(
     KeyAction::Redraw
 }
 
+// ── Review comment input keys ────────────────────────────
+
+fn handle_review_comment_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
+    match key.code {
+        KeyCode::Enter => {
+            let text = std::mem::take(&mut app.review_comment_input);
+            let repo = std::mem::take(&mut app.review_comment_repo);
+            let pr = app.review_comment_pr;
+            app.review_comment_active = false;
+            app.needs_redraw = true;
+            if !text.trim().is_empty() {
+                return KeyAction::CommentReview {
+                    repo,
+                    pr_number: pr,
+                    body: text,
+                };
+            }
+        }
+        KeyCode::Esc => {
+            app.review_comment_input.clear();
+            app.review_comment_active = false;
+            app.needs_redraw = true;
+        }
+        KeyCode::Backspace => {
+            app.review_comment_input.pop();
+            app.needs_redraw = true;
+        }
+        KeyCode::Char(c) => {
+            app.review_comment_input.push(c);
+            app.needs_redraw = true;
+        }
+        _ => {}
+    }
+    KeyAction::Redraw
+}
+
 // ── Signal detail keys ───────────────────────────────────
 
 fn handle_signal_detail_key(
@@ -717,6 +799,29 @@ fn handle_review_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
                         .nth(app.review_list_selection)
                 }) {
                     app.enter_signal_detail(orig_idx);
+                }
+            }
+        }
+        KeyCode::Char('a') => {
+            if let Some(signal) = app.selected_signal() {
+                if let Some((repo, pr_number)) = review_signal_target(signal) {
+                    app.pending_action = Some(PendingAction::ApproveReview { repo, pr_number });
+                    app.mode = Mode::Confirm;
+                } else {
+                    app.flash("Linear reviews are read-only");
+                }
+            }
+        }
+        KeyCode::Char('c') => {
+            if let Some(signal) = app.selected_signal() {
+                if let Some((repo, pr_number)) = review_signal_target(signal) {
+                    app.review_comment_active = true;
+                    app.review_comment_input.clear();
+                    app.review_comment_repo = repo;
+                    app.review_comment_pr = pr_number;
+                    app.needs_redraw = true;
+                } else {
+                    app.flash("Linear reviews are read-only");
                 }
             }
         }
@@ -918,6 +1023,42 @@ async fn handle_action(
                 });
                 app.flash(format!("Closing worker {id}..."));
             }
+        }
+        KeyAction::ApproveReview { repo, pr_number } => {
+            let r = repo.clone();
+            let pr = pr_number;
+            tokio::spawn(async move {
+                let _ = tokio::process::Command::new("gh")
+                    .args(["pr", "review", &pr.to_string(), "--approve", "--repo", &r])
+                    .output()
+                    .await;
+            });
+            app.flash(format!("Approving PR #{pr_number} in {repo}..."));
+        }
+        KeyAction::CommentReview {
+            repo,
+            pr_number,
+            body,
+        } => {
+            let r = repo.clone();
+            let pr = pr_number;
+            let b = body.clone();
+            tokio::spawn(async move {
+                let _ = tokio::process::Command::new("gh")
+                    .args([
+                        "pr",
+                        "review",
+                        &pr.to_string(),
+                        "--comment",
+                        "--body",
+                        &b,
+                        "--repo",
+                        &r,
+                    ])
+                    .output()
+                    .await;
+            });
+            app.flash(format!("Sending comment on PR #{pr_number} in {repo}..."));
         }
         KeyAction::ResolveSignal(id) => {
             let db = config::db_path();

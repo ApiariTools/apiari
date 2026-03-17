@@ -199,6 +199,7 @@ impl Watcher for ReviewQueueWatcher {
                     "priority": priority,
                     "author": pr.author,
                     "repo": pr.repo,
+                    "pr_number": pr.number,
                 });
 
                 // First query (priority 0) = Warning, others = Info

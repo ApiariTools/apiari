@@ -55,6 +55,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         _ => {}
     }
+
+    // Review comment input overlay
+    if app.review_comment_active {
+        draw_review_comment_input(frame, size, app);
+    }
 }
 
 // ── Tab bar ──────────────────────────────────────────────
@@ -1861,6 +1866,10 @@ fn draw_review_list(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(":nav  ", theme::key_desc()),
         Span::styled("enter", theme::key_hint()),
         Span::styled(":detail  ", theme::key_desc()),
+        Span::styled("a", theme::key_hint()),
+        Span::styled(":approve  ", theme::key_desc()),
+        Span::styled("c", theme::key_hint()),
+        Span::styled(":comment  ", theme::key_desc()),
         Span::styled("o", theme::key_hint()),
         Span::styled(":open  ", theme::key_desc()),
         Span::styled("esc", theme::key_hint()),
@@ -1993,7 +2002,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 app.zoomed_panel
             };
-            if app.chat_focused {
+            if app.review_comment_active {
+                vec![
+                    Span::raw(" "),
+                    Span::styled("enter", theme::key_hint()),
+                    Span::styled(":send  ", theme::key_desc()),
+                    Span::styled("esc", theme::key_hint()),
+                    Span::styled(":cancel", theme::key_desc()),
+                ]
+            } else if app.chat_focused {
                 vec![
                     Span::raw(" "),
                     Span::styled("enter", theme::key_hint()),
@@ -2039,6 +2056,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                         .iter()
                         .any(|s| s.source.ends_with("_review_queue"))
                 });
+                let on_reviews_panel = app.focused_panel == Panel::Reviews;
+                let github_review = on_reviews_panel
+                    && app
+                        .selected_signal()
+                        .is_some_and(|s| s.source == "github_review_queue");
                 let mut h = vec![
                     Span::raw(" "),
                     Span::styled("tab", theme::key_hint()),
@@ -2047,13 +2069,20 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(":nav  ", theme::key_desc()),
                     Span::styled("enter", theme::key_hint()),
                     Span::styled(":detail  ", theme::key_desc()),
-                    Span::styled("c", theme::key_hint()),
-                    Span::styled(":chat  ", theme::key_desc()),
-                    Span::styled("z", theme::key_hint()),
-                    Span::styled(":zoom  ", theme::key_desc()),
-                    Span::styled("p", theme::key_hint()),
-                    Span::styled(":prs  ", theme::key_desc()),
                 ];
+                if github_review {
+                    h.push(Span::styled("a", theme::key_hint()));
+                    h.push(Span::styled(":approve  ", theme::key_desc()));
+                    h.push(Span::styled("c", theme::key_hint()));
+                    h.push(Span::styled(":comment  ", theme::key_desc()));
+                } else if !on_reviews_panel {
+                    h.push(Span::styled("c", theme::key_hint()));
+                    h.push(Span::styled(":chat  ", theme::key_desc()));
+                }
+                h.push(Span::styled("z", theme::key_hint()));
+                h.push(Span::styled(":zoom  ", theme::key_desc()));
+                h.push(Span::styled("p", theme::key_hint()));
+                h.push(Span::styled(":prs  ", theme::key_desc()));
                 if has_reviews {
                     h.push(Span::styled("r", theme::key_hint()));
                     h.push(Span::styled(":reviews  ", theme::key_desc()));
@@ -2125,17 +2154,39 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("esc", theme::key_hint()),
             Span::styled(":back", theme::key_desc()),
         ],
-        View::ReviewList => vec![
-            Span::raw(" "),
-            Span::styled("j/k", theme::key_hint()),
-            Span::styled(":nav  ", theme::key_desc()),
-            Span::styled("enter", theme::key_hint()),
-            Span::styled(":detail  ", theme::key_desc()),
-            Span::styled("o", theme::key_hint()),
-            Span::styled(":open  ", theme::key_desc()),
-            Span::styled("esc", theme::key_hint()),
-            Span::styled(":back", theme::key_desc()),
-        ],
+        View::ReviewList => {
+            if app.review_comment_active {
+                vec![
+                    Span::raw(" "),
+                    Span::styled("enter", theme::key_hint()),
+                    Span::styled(":send  ", theme::key_desc()),
+                    Span::styled("esc", theme::key_hint()),
+                    Span::styled(":cancel", theme::key_desc()),
+                ]
+            } else {
+                let is_github = app
+                    .selected_signal()
+                    .is_some_and(|s| s.source == "github_review_queue");
+                let mut h = vec![
+                    Span::raw(" "),
+                    Span::styled("j/k", theme::key_hint()),
+                    Span::styled(":nav  ", theme::key_desc()),
+                    Span::styled("enter", theme::key_hint()),
+                    Span::styled(":detail  ", theme::key_desc()),
+                ];
+                if is_github {
+                    h.push(Span::styled("a", theme::key_hint()));
+                    h.push(Span::styled(":approve  ", theme::key_desc()));
+                    h.push(Span::styled("c", theme::key_hint()));
+                    h.push(Span::styled(":comment  ", theme::key_desc()));
+                }
+                h.push(Span::styled("o", theme::key_hint()));
+                h.push(Span::styled(":open  ", theme::key_desc()));
+                h.push(Span::styled("esc", theme::key_hint()));
+                h.push(Span::styled(":back", theme::key_desc()));
+                h
+            }
+        }
     };
 
     // Right-aligned daemon status with ECG heartbeat trace
@@ -2369,6 +2420,9 @@ fn draw_confirm_overlay(frame: &mut Frame, area: Rect, action: &PendingAction) {
     let message = match action {
         PendingAction::CloseWorker(id) => format!("Close worker '{id}'?"),
         PendingAction::ResolveSignal(id) => format!("Resolve signal #{id}?"),
+        PendingAction::ApproveReview { repo, pr_number } => {
+            format!("Approve PR #{pr_number} in {repo}?")
+        }
     };
 
     let w = (message.len() as u16 + 8).min(area.width.saturating_sub(4));
@@ -2399,6 +2453,43 @@ fn draw_confirm_overlay(frame: &mut Frame, area: Rect, action: &PendingAction) {
     ];
 
     let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+fn draw_review_comment_input(frame: &mut Frame, area: Rect, app: &App) {
+    let title = format!(
+        " Comment on PR #{} in {} ",
+        app.review_comment_pr, app.review_comment_repo
+    );
+    let w = (area.width.saturating_sub(4)).min(60);
+    let h = 5u16;
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border_active())
+        .title(Span::styled(title, theme::accent()));
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let input_text = format!(" {}_", app.review_comment_input);
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(input_text, theme::text())]),
+        Line::from(vec![
+            Span::styled("  enter", theme::key_hint()),
+            Span::styled(":send  ", theme::key_desc()),
+            Span::styled("esc", theme::key_hint()),
+            Span::styled(":cancel", theme::key_desc()),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
 
