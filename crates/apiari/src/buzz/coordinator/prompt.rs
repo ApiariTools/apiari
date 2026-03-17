@@ -66,12 +66,20 @@ pub fn build_system_prompt(
          When signals arrive, you proactively notify the user about important events.\n\n",
     );
 
-    // Open signals section
-    if signals.is_empty() {
+    // Separate CI signals from other signals for dedicated section
+    let (ci_signals, other_signals): (Vec<&SignalRecord>, Vec<&SignalRecord>) =
+        signals.iter().partition(|s| {
+            s.source == "github"
+                && (s.external_id.starts_with("ci-pass-")
+                    || s.external_id.starts_with("ci-failure-"))
+        });
+
+    // Open signals section (non-CI)
+    if other_signals.is_empty() {
         prompt.push_str("## Current Signals\nNo open signals.\n\n");
     } else {
         prompt.push_str("## Current Signals\n");
-        for signal in signals {
+        for signal in &other_signals {
             prompt.push_str(&format!(
                 "- [{severity}] [{source}] {title}",
                 severity = signal.severity,
@@ -90,6 +98,22 @@ pub fn build_system_prompt(
                 };
                 prompt.push_str(&format!("  {truncated}\n"));
             }
+        }
+        prompt.push('\n');
+    }
+
+    // Dedicated CI activity section
+    if !ci_signals.is_empty() {
+        prompt.push_str("## Recent CI Activity\n");
+        prompt.push_str(
+            "Proactively mention CI results to the user when relevant to PRs they are watching.\n",
+        );
+        for signal in &ci_signals {
+            prompt.push_str(&format!("- {title}", title = signal.title));
+            if let Some(ref url) = signal.url {
+                prompt.push_str(&format!(" ({url})"));
+            }
+            prompt.push('\n');
         }
         prompt.push('\n');
     }
@@ -306,6 +330,59 @@ mod tests {
             !prompt.contains("use the Edit tool"),
             "prompt must not instruct to use Edit tool"
         );
+    }
+
+    #[test]
+    fn test_ci_signals_in_dedicated_section() {
+        let ci_pass = SignalRecord {
+            id: 1,
+            source: "github".to_string(),
+            external_id: "ci-pass-30-12345".to_string(),
+            title: "CI passed: add snooze (#30)".to_string(),
+            body: None,
+            severity: Severity::Info,
+            status: SignalStatus::Open,
+            url: Some("https://github.com/org/repo/actions/runs/12345".to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            resolved_at: None,
+            metadata: None,
+        };
+        let ci_fail = SignalRecord {
+            id: 2,
+            source: "github".to_string(),
+            external_id: "ci-failure-29-12346".to_string(),
+            title: "CI failed: add morning brief (#29)".to_string(),
+            body: None,
+            severity: Severity::Error,
+            status: SignalStatus::Open,
+            url: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            resolved_at: None,
+            metadata: None,
+        };
+        let other = make_signal("sentry", "Server error spike", Severity::Warning);
+
+        let prompt = build_system_prompt(&[ci_pass, ci_fail, other], &[], None, None, None);
+
+        // CI signals appear in dedicated section with titles as-is (no redundant prefix)
+        assert!(prompt.contains("## Recent CI Activity"));
+        assert!(prompt.contains("- CI passed: add snooze (#30)"));
+        assert!(prompt.contains("- CI failed: add morning brief (#29)"));
+
+        // Non-CI signal appears in Current Signals, not in CI section
+        assert!(prompt.contains("## Current Signals"));
+        assert!(prompt.contains("Server error spike"));
+    }
+
+    #[test]
+    fn test_no_ci_section_when_no_ci_signals() {
+        let signals = vec![make_signal("sentry", "Bug", Severity::Error)];
+        let prompt = build_system_prompt(&signals, &[], None, None, None);
+        assert!(!prompt.contains("## Recent CI Activity"));
+        assert!(prompt.contains("## Current Signals"));
+        assert!(prompt.contains("Bug"));
     }
 
     #[test]

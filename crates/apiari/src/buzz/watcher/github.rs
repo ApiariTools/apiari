@@ -254,7 +254,7 @@ impl Watcher for GithubWatcher {
                     match conclusion {
                         Some("failure") => {
                             if let Some(run_id) = run_id {
-                                let key = format!("ci-failure-{run_id}");
+                                let key = format!("ci-failure-{pr_number}-{run_id}");
                                 let mut signal = SignalUpdate::new(
                                     "github",
                                     &key,
@@ -269,7 +269,7 @@ impl Watcher for GithubWatcher {
                         }
                         Some("success") => {
                             if let Some(run_id) = run_id {
-                                let key = format!("ci-pass-{run_id}");
+                                let key = format!("ci-pass-{pr_number}-{run_id}");
                                 let mut signal = SignalUpdate::new(
                                     "github",
                                     &key,
@@ -468,7 +468,7 @@ mod tests {
         let pr_number = 42u64;
         let run_url = "https://github.com/org/repo/actions/runs/456";
 
-        let key = format!("ci-failure-{run_id}");
+        let key = format!("ci-failure-{pr_number}-{run_id}");
         let signal = SignalUpdate::new(
             "github",
             &key,
@@ -478,7 +478,7 @@ mod tests {
         .with_body(run_url)
         .with_url(run_url);
 
-        assert_eq!(signal.external_id, "ci-failure-456");
+        assert_eq!(signal.external_id, "ci-failure-42-456");
         assert_eq!(signal.severity, Severity::Error);
         assert!(signal.title.contains("CI failed"));
         assert!(signal.title.contains("#42"));
@@ -493,7 +493,7 @@ mod tests {
         let pr_number = 42u64;
         let run_url = "https://github.com/org/repo/actions/runs/789";
 
-        let key = format!("ci-pass-{run_id}");
+        let key = format!("ci-pass-{pr_number}-{run_id}");
         let signal = SignalUpdate::new(
             "github",
             &key,
@@ -502,7 +502,7 @@ mod tests {
         )
         .with_url(run_url);
 
-        assert_eq!(signal.external_id, "ci-pass-789");
+        assert_eq!(signal.external_id, "ci-pass-42-789");
         assert_eq!(signal.severity, Severity::Info);
         assert!(signal.title.contains("CI passed"));
         assert!(signal.title.contains("#42"));

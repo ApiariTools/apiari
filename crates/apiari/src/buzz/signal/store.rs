@@ -949,6 +949,86 @@ mod tests {
     }
 
     #[test]
+    fn test_ci_pass_different_run_ids_are_new() {
+        let store = test_store();
+        // Same PR, different run IDs — each should be a new signal
+        let u1 = make_update(
+            "github",
+            "ci-pass-42-1000",
+            "CI passed: feat (#42)",
+            Severity::Info,
+        );
+        let u2 = make_update(
+            "github",
+            "ci-pass-42-1001",
+            "CI passed: feat (#42)",
+            Severity::Info,
+        );
+
+        let (id1, new1) = store.upsert_signal(&u1).unwrap();
+        let (id2, new2) = store.upsert_signal(&u2).unwrap();
+
+        assert!(new1, "first CI pass signal should be new");
+        assert!(new2, "re-run CI pass signal should also be new");
+        assert_ne!(
+            id1, id2,
+            "different run IDs should produce different signals"
+        );
+    }
+
+    #[test]
+    fn test_ci_pass_same_run_id_is_update() {
+        let store = test_store();
+        let u1 = make_update(
+            "github",
+            "ci-pass-42-1000",
+            "CI passed: feat (#42)",
+            Severity::Info,
+        );
+        let u2 = make_update(
+            "github",
+            "ci-pass-42-1000",
+            "CI passed: feat (#42)",
+            Severity::Info,
+        );
+
+        let (id1, new1) = store.upsert_signal(&u1).unwrap();
+        let (id2, new2) = store.upsert_signal(&u2).unwrap();
+
+        assert!(new1);
+        assert!(!new2, "same run ID should be an update, not new");
+        assert_eq!(id1, id2);
+    }
+
+    #[test]
+    fn test_resolve_missing_signals_ci_run_transition() {
+        let store = test_store();
+
+        // Old CI run signal
+        store
+            .upsert_signal(&make_update(
+                "github",
+                "ci-pass-42-1000",
+                "CI passed: feat (#42)",
+                Severity::Info,
+            ))
+            .unwrap();
+
+        // New CI run replaces old — reconciliation should resolve the old one
+        let current_ids = vec!["ci-pass-42-1001".to_string()];
+        let resolved = store
+            .resolve_missing_signals("github", &current_ids)
+            .unwrap();
+        assert_eq!(resolved, 1, "old CI run signal should be resolved");
+
+        let open = store.get_open_signals().unwrap();
+        assert!(
+            !open.iter().any(|s| s.external_id == "ci-pass-42-1000"),
+            "old CI run should no longer be open"
+        );
+    }
+
+    #[test]
     fn test_metadata_preserved_on_update() {
         let store = test_store();
 
