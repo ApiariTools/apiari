@@ -440,6 +440,12 @@ async fn run_coordinator_task(
 
 /// Run the daemon in the foreground with auto-restart on errors.
 pub async fn run_foreground() -> Result<()> {
+    if let Some(pid) = read_pid()
+        && is_process_alive(pid)
+    {
+        eprintln!("daemon already running (pid: {pid})");
+        return Ok(());
+    }
     write_pid()?;
 
     loop {
@@ -466,7 +472,9 @@ pub async fn run_foreground() -> Result<()> {
                 info!("exec'ing new binary...");
                 remove_pid();
                 let exe = std::env::current_exe()?;
-                let err = std::process::Command::new(&exe).arg("daemon").exec();
+                let err = std::process::Command::new(&exe)
+                    .args(["daemon", "start", "--foreground"])
+                    .exec();
                 // exec only returns on error
                 error!("exec failed: {err}");
                 break;
@@ -485,6 +493,13 @@ pub async fn run_foreground() -> Result<()> {
 
 /// Spawn the daemon in the background.
 pub fn spawn_background() -> Result<()> {
+    if let Some(pid) = read_pid()
+        && is_process_alive(pid)
+    {
+        eprintln!("daemon already running (pid: {pid})");
+        return Ok(());
+    }
+
     let exe = std::env::current_exe()?;
     let log = log_path();
     std::fs::create_dir_all(config::config_dir())?;
@@ -493,7 +508,7 @@ pub fn spawn_background() -> Result<()> {
     let stderr_file = log_file.try_clone()?;
 
     let child = std::process::Command::new(exe)
-        .args(["daemon"])
+        .args(["daemon", "start", "--foreground"])
         .stdout(log_file)
         .stderr(stderr_file)
         .stdin(std::process::Stdio::null())
@@ -501,6 +516,31 @@ pub fn spawn_background() -> Result<()> {
 
     eprintln!("apiari daemon started (pid {})", child.id());
     eprintln!("log: {}", log.display());
+    Ok(())
+}
+
+/// Stop the running daemon via PID file.
+pub fn stop_daemon() -> Result<()> {
+    if let Some(pid) = read_pid() {
+        if is_process_alive(pid) {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            // Wait briefly for the process to exit
+            for _ in 0..20 {
+                if !is_process_alive(pid) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            eprintln!("daemon stopped (pid: {pid})");
+        } else {
+            eprintln!("daemon not running (stale pid file)");
+        }
+        remove_pid();
+    } else {
+        eprintln!("daemon not running");
+    }
     Ok(())
 }
 
