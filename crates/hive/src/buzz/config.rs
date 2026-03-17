@@ -61,6 +61,10 @@ pub struct BuzzConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github: Option<GithubConfig>,
 
+    /// Linear watcher configuration (optional — omit to disable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear: Option<LinearConfig>,
+
     /// Webhook receiver configuration (optional — omit to disable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook: Option<WebhookConfig>,
@@ -124,6 +128,32 @@ pub struct GithubConfig {
     pub watch_labels: Vec<String>,
 }
 
+/// Linear watcher configuration.
+///
+/// Polls the Linear GraphQL API for issues matching configured review queue queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearConfig {
+    /// Linear personal API key (e.g. `lin_api_...`). Required.
+    pub api_key: String,
+
+    /// How often to poll Linear, in seconds (default: 60).
+    #[serde(default = "default_poll_interval")]
+    pub poll_interval_secs: u64,
+
+    /// Review queue queries — each entry defines a named filter.
+    #[serde(default)]
+    pub review_queue: Vec<LinearReviewQueueEntry>,
+}
+
+/// A single review queue query for Linear.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearReviewQueueEntry {
+    /// Human-readable name for this query (e.g. "Assigned to me").
+    pub name: String,
+    /// Query predicate string (e.g. "assignee:me state:active").
+    pub query: String,
+}
+
 /// Webhook receiver configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookConfig {
@@ -170,6 +200,7 @@ impl Default for BuzzConfig {
             output: OutputConfig::default(),
             sentry: None,
             github: None,
+            linear: None,
             webhook: None,
             reminders: Vec::new(),
         }
@@ -253,6 +284,15 @@ impl BuzzConfig {
             tracing::warn!("github.repos is empty — no repositories to watch");
         }
 
+        if let Some(linear) = &self.linear {
+            if linear.api_key.is_empty() {
+                tracing::warn!("linear.api_key is empty — Linear API calls will fail");
+            }
+            if linear.review_queue.is_empty() {
+                tracing::warn!("linear.review_queue is empty — no queries to poll");
+            }
+        }
+
         if self.output.mode == "webhook" && self.output.url.is_none() {
             tracing::warn!("output.mode is 'webhook' but output.url is not set");
         }
@@ -269,6 +309,7 @@ impl BuzzConfig {
 
         let num_sources = self.sentry.is_some() as u8
             + self.github.is_some() as u8
+            + self.linear.is_some() as u8
             + self.webhook.is_some() as u8
             + (!self.reminders.is_empty()) as u8;
 
