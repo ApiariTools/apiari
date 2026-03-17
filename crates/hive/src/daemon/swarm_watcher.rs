@@ -977,10 +977,7 @@ impl SwarmWatcher {
     ) -> Option<SwarmNotification> {
         const FAST_FAIL_THRESHOLD_SECS: u64 = 300; // 5 minutes
 
-        let spawned_at = self
-            .known
-            .get(worktree_id)
-            .and_then(|t| t.spawned_at)?;
+        let spawned_at = self.known.get(worktree_id).and_then(|t| t.spawned_at)?;
 
         let elapsed = (Utc::now() - spawned_at).num_seconds().max(0) as u64;
         if elapsed < FAST_FAIL_THRESHOLD_SECS {
@@ -2301,7 +2298,11 @@ mod tests {
             r#"{"event":"phase_changed","worktree":"w1","from":"starting","to":"running","timestamp":"2026-02-26T10:00:05-08:00"}"#,
         );
         let notes = watcher.poll();
-        assert!(notes.iter().any(|n| matches!(n, SwarmNotification::AgentSpawned { .. })));
+        assert!(
+            notes
+                .iter()
+                .any(|n| matches!(n, SwarmNotification::AgentSpawned { .. }))
+        );
 
         // Worker closes immediately (no PR, < 5 min from spawned_at).
         update_state(&dir, r#"{"worktrees":[]}"#);
@@ -2315,12 +2316,22 @@ mod tests {
             .iter()
             .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
             .collect();
-        assert_eq!(fast_fails.len(), 1, "should emit FastFail for short-lived worker without PR");
+        assert_eq!(
+            fast_fails.len(),
+            1,
+            "should emit FastFail for short-lived worker without PR"
+        );
 
         let msg = fast_fails[0].format_telegram();
-        assert!(msg.contains("Fast fail"), "message should mention fast fail");
+        assert!(
+            msg.contains("Fast fail"),
+            "message should mention fast fail"
+        );
         assert!(msg.contains("Fix bug"), "message should include summary");
-        assert!(msg.contains("without opening a PR"), "message should mention no PR");
+        assert!(
+            msg.contains("without opening a PR"),
+            "message should mention no PR"
+        );
     }
 
     #[test]
@@ -2347,7 +2358,11 @@ mod tests {
             .iter()
             .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
             .collect();
-        assert_eq!(fast_fails.len(), 1, "should emit FastFail for failed worker without PR");
+        assert_eq!(
+            fast_fails.len(),
+            1,
+            "should emit FastFail for failed worker without PR"
+        );
     }
 
     #[test]
@@ -2375,7 +2390,10 @@ mod tests {
             .iter()
             .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
             .collect();
-        assert!(fast_fails.is_empty(), "should NOT emit FastFail when worker has a PR");
+        assert!(
+            fast_fails.is_empty(),
+            "should NOT emit FastFail when worker has a PR"
+        );
     }
 
     #[test]
@@ -2401,7 +2419,10 @@ mod tests {
             .iter()
             .filter(|n| matches!(n, SwarmNotification::FastFail { .. }))
             .collect();
-        assert!(fast_fails.is_empty(), "should NOT emit FastFail when worker was never spawned");
+        assert!(
+            fast_fails.is_empty(),
+            "should NOT emit FastFail when worker was never spawned"
+        );
     }
 
     #[test]

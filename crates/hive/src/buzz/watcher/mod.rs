@@ -5,6 +5,7 @@
 //! `.buzz/state.json` so that buzz does not replay old signals between runs.
 
 pub mod github;
+pub mod linear;
 pub mod sentry;
 pub mod webhook;
 
@@ -68,6 +69,9 @@ pub struct WatcherState {
     /// Dedup keys of currently-active GitHub signals (cross-poll dedup).
     #[serde(default)]
     pub seen_github: HashSet<String>,
+    /// Dedup keys of currently-active Linear signals (cross-poll dedup).
+    #[serde(default)]
+    pub seen_linear: HashSet<String>,
 }
 
 /// Create all enabled watchers based on the configuration.
@@ -81,6 +85,10 @@ pub fn create_watchers(config: &BuzzConfig, base: &Path) -> Vec<Box<dyn Watcher>
 
     if let Some(github_config) = &config.github {
         watchers.push(Box::new(github::GithubWatcher::new(github_config.clone())));
+    }
+
+    if let Some(linear_config) = &config.linear {
+        watchers.push(Box::new(linear::LinearWatcher::new(linear_config.clone())));
     }
 
     if let Some(webhook_config) = &config.webhook {
@@ -138,6 +146,17 @@ fn load_cursors(watchers: &mut [Box<dyn Watcher>], base: &Path) {
         );
         github_watcher.restore_seen(state.seen_github);
     }
+
+    // Restore seen_linear into the linear watcher (if present).
+    if !state.seen_linear.is_empty()
+        && let Some(linear_watcher) = find_linear_watcher_mut(watchers)
+    {
+        tracing::debug!(
+            count = state.seen_linear.len(),
+            "restored seen linear signal(s)"
+        );
+        linear_watcher.restore_seen(state.seen_linear);
+    }
 }
 
 /// Save all watcher cursors + seen issues to `<base>/.buzz/state.json`.
@@ -158,6 +177,11 @@ pub fn save_cursors(watchers: &[Box<dyn Watcher>], base: &Path) {
     // Persist seen_github from the github watcher (if present).
     if let Some(gw) = find_github_watcher(watchers) {
         state.seen_github = gw.seen().clone();
+    }
+
+    // Persist seen_linear from the linear watcher (if present).
+    if let Some(lw) = find_linear_watcher(watchers) {
+        state.seen_linear = lw.seen().clone();
     }
 
     let state_path = base.join(STATE_REL);
@@ -200,6 +224,24 @@ fn find_github_watcher_mut(
         .iter_mut()
         .find(|w| w.name() == "github")
         .and_then(|w| w.as_any_mut().downcast_mut::<github::GithubWatcher>())
+}
+
+/// Find the LinearWatcher in a slice of boxed watchers (immutable).
+fn find_linear_watcher(watchers: &[Box<dyn Watcher>]) -> Option<&linear::LinearWatcher> {
+    watchers
+        .iter()
+        .find(|w| w.name() == "linear")
+        .and_then(|w| w.as_any().downcast_ref::<linear::LinearWatcher>())
+}
+
+/// Find the LinearWatcher in a mutable slice of boxed watchers.
+fn find_linear_watcher_mut(
+    watchers: &mut [Box<dyn Watcher>],
+) -> Option<&mut linear::LinearWatcher> {
+    watchers
+        .iter_mut()
+        .find(|w| w.name() == "linear")
+        .and_then(|w| w.as_any_mut().downcast_mut::<linear::LinearWatcher>())
 }
 
 #[cfg(test)]
