@@ -56,6 +56,9 @@ pub struct WatchersConfig {
     /// Email watchers (multiple mailboxes).
     #[serde(default)]
     pub email: Vec<EmailMailboxConfig>,
+    /// Notion watchers.
+    #[serde(default)]
+    pub notion: Vec<NotionWatcherConfig>,
 }
 
 /// GitHub watcher configuration.
@@ -146,6 +149,27 @@ pub struct EmailSummarizerConfig {
     pub base_url: String,
     /// Model name (e.g. "llama3.2:3b").
     pub model: String,
+}
+
+/// Notion watcher configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotionWatcherConfig {
+    /// Name used in source: "{name}_review_queue".
+    pub name: String,
+    /// Notion internal integration token (Bearer token).
+    pub token: String,
+    /// Notion user ID to filter mentions/assignments.
+    pub user_id: String,
+    /// Optional database IDs to scan for assignments.
+    #[serde(default)]
+    pub poll_database_ids: Option<Vec<String>>,
+    /// Poll interval in seconds.
+    #[serde(default = "default_notion_interval")]
+    pub interval_secs: u64,
+}
+
+fn default_notion_interval() -> u64 {
+    120
 }
 
 fn default_imap_port() -> u16 {

@@ -10,6 +10,7 @@
 
 pub mod email;
 pub mod github;
+pub mod notion;
 pub mod review_queue;
 pub mod sentry;
 pub mod swarm;

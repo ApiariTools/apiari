@@ -123,6 +123,9 @@ pub struct WatchersConfig {
     /// Email watchers (multiple mailboxes via `[[watchers.email]]`).
     #[serde(default)]
     pub email: Vec<EmailMailboxConfig>,
+    /// Notion watchers via `[[watchers.notion]]`.
+    #[serde(default)]
+    pub notion: Vec<NotionWatcherConfig>,
 }
 
 /// Email mailbox configuration.
@@ -155,6 +158,22 @@ pub struct EmailMailboxConfig {
 pub struct EmailSummarizerConfig {
     pub base_url: String,
     pub model: String,
+}
+
+/// Notion watcher configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotionWatcherConfig {
+    pub name: String,
+    pub token: String,
+    pub user_id: String,
+    #[serde(default)]
+    pub poll_database_ids: Option<Vec<String>>,
+    #[serde(default = "default_notion_interval")]
+    pub interval_secs: u64,
+}
+
+fn default_notion_interval() -> u64 {
+    120
 }
 
 fn default_true() -> bool {
@@ -475,6 +494,18 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                             model: s.model.clone(),
                         }
                     }),
+                })
+                .collect(),
+            notion: ws
+                .watchers
+                .notion
+                .iter()
+                .map(|n| crate::buzz::config::NotionWatcherConfig {
+                    name: n.name.clone(),
+                    token: n.token.clone(),
+                    user_id: n.user_id.clone(),
+                    poll_database_ids: n.poll_database_ids.clone(),
+                    interval_secs: n.interval_secs,
                 })
                 .collect(),
         },

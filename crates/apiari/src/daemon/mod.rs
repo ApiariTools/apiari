@@ -30,6 +30,7 @@ use crate::buzz::signal::store::SignalStore;
 use crate::buzz::watcher::WatcherRegistry;
 use crate::buzz::watcher::email::EmailWatcher;
 use crate::buzz::watcher::github::GithubWatcher;
+use crate::buzz::watcher::notion::NotionWatcher;
 use crate::buzz::watcher::review_queue::ReviewQueueWatcher;
 use crate::buzz::watcher::sentry::SentryWatcher;
 use crate::buzz::watcher::swarm::SwarmWatcher;
@@ -608,6 +609,23 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 ws.name, email_config.name, email_config.host
             );
             registry.add_with_interval(Box::new(watcher), email_config.interval_secs);
+        }
+
+        for notion_config in &buzz_config.watchers.notion {
+            let mut watcher = NotionWatcher::new(notion_config.clone());
+            // Pre-load cursor from store so first poll skips already-seen data
+            if let Ok(Some(val)) = store.get_cursor(watcher.last_poll_key()) {
+                watcher.set_initial_last_poll(val.clone());
+                info!(
+                    "[{}] notion watcher '{}' resuming from {}",
+                    ws.name, notion_config.name, val
+                );
+            }
+            info!(
+                "[{}] enabling notion watcher '{}'",
+                ws.name, notion_config.name
+            );
+            registry.add_with_interval(Box::new(watcher), notion_config.interval_secs);
         }
 
         let mut coordinator = Coordinator::new(
