@@ -102,9 +102,43 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
     if swarm_installed {
         println!("  \u{2713} swarm already installed\n");
     } else {
-        println!("  swarm is not installed. Installing apiari-swarm...\n");
+        println!("  swarm is not installed. Installing via cargo binstall...\n");
+
+        // Ensure cargo-binstall is available
+        let has_binstall = std::process::Command::new("cargo")
+            .args(["binstall", "--help"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !has_binstall {
+            println!("  Installing cargo-binstall first...\n");
+            let bs_status = std::process::Command::new("cargo")
+                .args(["install", "cargo-binstall"])
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status();
+            match bs_status {
+                Ok(s) if s.success() => {
+                    println!("\n  \u{2713} cargo-binstall installed\n");
+                }
+                Ok(_) => {
+                    eprintln!("\n  Failed to install cargo-binstall. You can retry manually:");
+                    eprintln!("  cargo install cargo-binstall\n");
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("\n  Could not run cargo install: {e}");
+                    eprintln!("  Install manually: cargo install cargo-binstall\n");
+                    return Ok(());
+                }
+            }
+        }
+
         let install_status = std::process::Command::new("cargo")
-            .args(["install", "apiari-swarm"])
+            .args(["binstall", "-y", "apiari-swarm"])
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .status();
@@ -114,14 +148,13 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
             }
             Ok(_) => {
                 eprintln!("\n  Failed to install apiari-swarm. You can retry manually:");
-                eprintln!("  cargo install apiari-swarm\n");
+                eprintln!("  cargo binstall -y apiari-swarm\n");
             }
             Err(e) => {
-                eprintln!("\n  Could not run cargo install: {e}");
-                eprintln!("  Install manually: cargo install apiari-swarm\n");
+                eprintln!("\n  Could not run cargo binstall: {e}");
+                eprintln!("  Install manually: cargo binstall -y apiari-swarm\n");
             }
         }
-        println!("  Note: if swarm fails to launch, run: codesign -f -s - ~/.cargo/bin/swarm\n");
     }
     println!("  Next steps:\n");
     println!("  1. Get a Telegram bot token from @BotFather (https://t.me/BotFather)");
