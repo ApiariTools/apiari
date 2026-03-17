@@ -3,6 +3,7 @@
 //! Discovers workspace configs, builds per-workspace watcher registries,
 //! shares Telegram connections by bot_token, and routes messages by (chat_id, topic_id).
 
+pub mod morning_brief;
 pub mod socket;
 
 use color_eyre::eyre::{Result, WrapErr};
@@ -55,6 +56,7 @@ struct WorkspaceSlot {
     coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
     store: SignalStore,
     pipeline: Pipeline,
+    morning_brief: Option<morning_brief::MorningBriefScheduler>,
 }
 
 /// Key for routing Telegram messages to workspaces.
@@ -653,6 +655,28 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
         tokio::spawn(run_coordinator_task(coordinator, coord_store, coord_rx));
 
+        // Morning brief scheduler
+        let morning_brief_scheduler = ws
+            .config
+            .morning_brief
+            .as_ref()
+            .filter(|mb| mb.enabled)
+            .and_then(
+                |mb| match morning_brief::MorningBriefScheduler::new(mb, &ws.name) {
+                    Ok(s) => {
+                        info!(
+                            "[{}] morning brief enabled at {} {}",
+                            ws.name, mb.time, mb.timezone
+                        );
+                        Some(s)
+                    }
+                    Err(e) => {
+                        warn!("[{}] morning brief config error: {e}", ws.name);
+                        None
+                    }
+                },
+            );
+
         name_map.insert(ws.name.clone(), slots.len());
         info!("[{}] {} watcher(s) enabled", ws.name, registry.len());
         slots.push(WorkspaceSlot {
@@ -662,6 +686,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             coord_tx,
             store,
             pipeline,
+            morning_brief: morning_brief_scheduler,
         });
     }
 
@@ -872,6 +897,43 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             slot_name: slot.name.clone(),
                         });
                     }
+
+                    // Morning brief check
+                    if let Some(ref mut scheduler) = slot.morning_brief {
+                        let now = chrono::Utc::now();
+                        if scheduler.should_fire(now) {
+                            let signals = slot.store.get_open_signals().unwrap_or_default();
+                            let swarm_path = slot.config.watchers.swarm.as_ref()
+                                .map(|s| s.state_path.clone());
+                            let model = slot.config.coordinator.model.clone();
+                            let ws_name = slot.name.clone();
+                            let server = socket_server.clone();
+
+                            if let Some(tg) = &slot.config.telegram
+                                && let Some(channel) = telegram_channels.get(&tg.bot_token)
+                            {
+                                let channel = channel.clone();
+                                let chat_id = tg.chat_id;
+                                let topic_id = tg.topic_id;
+
+                                tokio::spawn(async move {
+                                    morning_brief::execute_brief(
+                                        &model,
+                                        signals,
+                                        swarm_path.as_deref(),
+                                        &ws_name,
+                                        channel,
+                                        chat_id,
+                                        topic_id,
+                                        server,
+                                    )
+                                    .await;
+                                });
+                            }
+
+                            scheduler.mark_sent(now);
+                        }
+                    }
                 }
             }
 
@@ -1054,8 +1116,33 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
                                         }
                                     }
+                                    "brief" => {
+                                        let signals = slot.store.get_open_signals().unwrap_or_default();
+                                        let swarm_path = slot.config.watchers.swarm.as_ref()
+                                            .map(|s| s.state_path.clone());
+                                        let model = slot.config.coordinator.model.clone();
+                                        let ws_name = slot.name.clone();
+                                        let server = socket_server.clone();
+                                        let channel = channel.clone();
+
+                                        channel.send_typing(chat_id, topic_id).await;
+
+                                        tokio::spawn(async move {
+                                            morning_brief::execute_brief(
+                                                &model,
+                                                signals,
+                                                swarm_path.as_deref(),
+                                                &ws_name,
+                                                channel,
+                                                chat_id,
+                                                topic_id,
+                                                server,
+                                            )
+                                            .await;
+                                        });
+                                    }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/reset — reset coordinator session\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
