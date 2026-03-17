@@ -92,7 +92,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
         eprintln!();
         eprintln!("Get a Telegram bot token from @BotFather (https://t.me/BotFather)");
         eprintln!("and your chat ID from @userinfobot (https://t.me/userinfobot).");
-        eprintln!("Then edit the config and run: apiari daemon --background");
+        eprintln!("Then edit the config and run: apiari daemon start");
         return Ok(());
     }
 
@@ -101,6 +101,22 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     // Coordinator channels
     let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
     let (coord_tx, coord_rx) = mpsc::channel::<CoordResponse>(64);
+
+    // Auto-start daemon if not running
+    if !crate::daemon::is_daemon_running() {
+        eprintln!("Starting daemon in the background...");
+        if let Err(e) = crate::daemon::spawn_background() {
+            eprintln!("Warning: failed to start daemon: {e}");
+        } else {
+            // Wait for the daemon to create the socket
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                if daemon_client::socket_exists() && crate::daemon::is_daemon_running() {
+                    break;
+                }
+            }
+        }
+    }
 
     // Choose daemon client (shared session) or local coordinator (standalone)
     let use_daemon = daemon_client::socket_exists() && crate::daemon::is_daemon_running();

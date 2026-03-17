@@ -17,6 +17,24 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum DaemonCommand {
+    /// Start the daemon (background by default)
+    Start {
+        /// Run in foreground (for debugging)
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Stop the running daemon
+    Stop,
+    /// Restart the daemon
+    Restart {
+        /// Run in foreground (for debugging)
+        #[arg(long)]
+        foreground: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Initialize a workspace config from the current directory
     Init {
@@ -25,10 +43,13 @@ enum Command {
         name: Option<String>,
     },
 
-    /// Start the daemon (watches all workspaces)
+    /// Manage the daemon (watches all workspaces)
     Daemon {
-        /// Run in background
-        #[arg(long)]
+        #[command(subcommand)]
+        command: Option<DaemonCommand>,
+
+        /// Deprecated: use `apiari daemon start` instead
+        #[arg(long, hide = true)]
         background: bool,
     },
 
@@ -76,13 +97,39 @@ async fn main() -> Result<()> {
         Command::Init { name } => {
             init::run_init(name.as_deref())?;
         }
-        Command::Daemon { background } => {
-            if background {
-                daemon::spawn_background()?;
-            } else {
-                daemon::run_foreground().await?;
+        Command::Daemon {
+            command,
+            background,
+        } => match command {
+            Some(DaemonCommand::Start { foreground }) => {
+                if foreground {
+                    daemon::run_foreground().await?;
+                } else {
+                    daemon::spawn_background()?;
+                }
             }
-        }
+            Some(DaemonCommand::Stop) => {
+                daemon::stop_daemon()?;
+            }
+            Some(DaemonCommand::Restart { foreground }) => {
+                daemon::stop_daemon()?;
+                if foreground {
+                    daemon::run_foreground().await?;
+                } else {
+                    daemon::spawn_background()?;
+                }
+            }
+            None => {
+                if background {
+                    eprintln!(
+                        "Note: `--background` is deprecated. Use `apiari daemon start` instead."
+                    );
+                    daemon::spawn_background()?;
+                } else {
+                    daemon::run_foreground().await?;
+                }
+            }
+        },
         Command::Status { workspace } => {
             daemon::ensure_daemon()?;
             daemon::show_status(workspace.as_deref())?;
