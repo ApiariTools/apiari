@@ -50,7 +50,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Help => draw_help_overlay(frame, size),
         Mode::Confirm => {
             if let Some(ref action) = app.pending_action {
-                draw_confirm_overlay(frame, size, action);
+                draw_confirm_overlay(frame, size, action, app);
             }
         }
         _ => {}
@@ -1469,19 +1469,33 @@ fn render_signal_line(
     };
 
     let ago = time_ago(&signal.updated_at);
-    let meta = format!(" {:>8} {:>4}", signal.source, ago);
+    let is_snoozed = signal.snoozed_until.is_some_and(|t| t > chrono::Utc::now());
+    let snooze_tag = if is_snoozed { " zz" } else { "" };
+    let meta = format!("{snooze_tag} {:>8} {:>4}", signal.source, ago);
     let clean_title = strip_repo_prefix(&signal.title);
     let title_max = width.saturating_sub(meta.len() + 8);
     let title = trunc(clean_title, title_max);
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled("\u{258c}", Style::default().fg(sev_color)),
         Span::styled(if selected { "\u{25b8}" } else { " " }, line_style),
         Span::styled(format!(" {icon} "), sev_style),
         Span::styled(title, line_style),
-        Span::styled(meta, theme::muted()),
-    ])
-    .style(bg)
+    ];
+    if is_snoozed {
+        spans.push(Span::styled(
+            snooze_tag.to_string(),
+            Style::default()
+                .fg(theme::SMOKE)
+                .add_modifier(Modifier::DIM),
+        ));
+        let rest_meta = format!(" {:>8} {:>4}", signal.source, ago);
+        spans.push(Span::styled(rest_meta, theme::muted()));
+    } else {
+        spans.push(Span::styled(meta, theme::muted()));
+    }
+
+    Line::from(spans).style(bg)
 }
 
 // ── Worker detail (full-screen) ──────────────────────────
@@ -1675,6 +1689,8 @@ fn draw_signal_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
         Span::styled(":open  ", theme::key_desc()),
         Span::styled("R", theme::key_hint()),
         Span::styled(":resolve  ", theme::key_desc()),
+        Span::styled("z", theme::key_hint()),
+        Span::styled(":snooze  ", theme::key_desc()),
         Span::styled("esc", theme::key_hint()),
         Span::styled(":back", theme::key_desc()),
     ]));
@@ -1728,6 +1744,8 @@ fn draw_signal_list(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(":open  ", theme::key_desc()),
         Span::styled("R", theme::key_hint()),
         Span::styled(":resolve  ", theme::key_desc()),
+        Span::styled("z", theme::key_hint()),
+        Span::styled(":snooze  ", theme::key_desc()),
         Span::styled("esc", theme::key_hint()),
         Span::styled(":back", theme::key_desc()),
     ]));
@@ -1872,6 +1890,8 @@ fn draw_review_list(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(":comment  ", theme::key_desc()),
         Span::styled("o", theme::key_hint()),
         Span::styled(":open  ", theme::key_desc()),
+        Span::styled("z", theme::key_hint()),
+        Span::styled(":snooze  ", theme::key_desc()),
         Span::styled("esc", theme::key_hint()),
         Span::styled(":back", theme::key_desc()),
     ]));
@@ -2416,17 +2436,57 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
 
 // ── Confirm overlay ──────────────────────────────────────
 
-fn draw_confirm_overlay(frame: &mut Frame, area: Rect, action: &PendingAction) {
-    let message = match action {
-        PendingAction::CloseWorker(id) => format!("Close worker '{id}'?"),
-        PendingAction::ResolveSignal(id) => format!("Resolve signal #{id}?"),
-        PendingAction::ApproveReview { repo, pr_number } => {
-            format!("Approve PR #{pr_number} in {repo}?")
+fn draw_confirm_overlay(frame: &mut Frame, area: Rect, action: &PendingAction, app: &App) {
+    match action {
+        PendingAction::SnoozeSignal(_) => {
+            draw_snooze_overlay(frame, area, app);
         }
-    };
+        _ => {
+            let message = match action {
+                PendingAction::CloseWorker(id) => format!("Close worker '{id}'?"),
+                PendingAction::ResolveSignal(id) => format!("Resolve signal #{id}?"),
+                PendingAction::ApproveReview { repo, pr_number } => {
+                    format!("Approve PR #{pr_number} in {repo}?")
+                }
+                PendingAction::SnoozeSignal(_) => unreachable!(),
+            };
 
-    let w = (message.len() as u16 + 8).min(area.width.saturating_sub(4));
-    let h = 5u16;
+            let w = (message.len() as u16 + 8).min(area.width.saturating_sub(4));
+            let h = 5u16;
+            let x = (area.width.saturating_sub(w)) / 2;
+            let y = (area.height.saturating_sub(h)) / 2;
+            let popup = Rect::new(x, y, w, h);
+
+            frame.render_widget(Clear, popup);
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(theme::border_active())
+                .title(Span::styled(" Confirm ", theme::title()));
+
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+
+            let lines = vec![
+                Line::from(""),
+                Line::from(vec![Span::styled(format!("  {message}"), theme::text())]),
+                Line::from(vec![
+                    Span::styled("  y", theme::key_hint()),
+                    Span::styled(":yes  ", theme::key_desc()),
+                    Span::styled("n", theme::key_hint()),
+                    Span::styled(":no", theme::key_desc()),
+                ]),
+            ];
+
+            let paragraph = Paragraph::new(lines);
+            frame.render_widget(paragraph, inner);
+        }
+    }
+}
+
+fn draw_snooze_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let w = 32u16.min(area.width.saturating_sub(4));
+    let h = (app::SNOOZE_OPTIONS.len() as u16 + 5).min(area.height.saturating_sub(2));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -2436,21 +2496,45 @@ fn draw_confirm_overlay(frame: &mut Frame, area: Rect, action: &PendingAction) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(theme::border_active())
-        .title(Span::styled(" Confirm ", theme::title()));
+        .title(Span::styled(" Snooze until... ", theme::title()));
 
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(format!("  {message}"), theme::text())]),
-        Line::from(vec![
-            Span::styled("  y", theme::key_hint()),
-            Span::styled(":yes  ", theme::key_desc()),
-            Span::styled("n", theme::key_hint()),
-            Span::styled(":no", theme::key_desc()),
-        ]),
-    ];
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (i, option) in app::SNOOZE_OPTIONS.iter().enumerate() {
+        let selected = i == app.snooze_selection;
+        let marker = if selected { "\u{25b8} " } else { "  " };
+        let style = if selected {
+            theme::selected()
+        } else {
+            theme::text()
+        };
+        let bg = if selected {
+            Style::default().bg(theme::FOCUS_BG)
+        } else {
+            Style::default()
+        };
+        lines.push(
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{marker}{option}"), style),
+            ])
+            .style(bg),
+        );
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  j/k", theme::key_hint()),
+        Span::styled(":select  ", theme::key_desc()),
+        Span::styled("enter", theme::key_hint()),
+        Span::styled(":snooze  ", theme::key_desc()),
+        Span::styled("esc", theme::key_hint()),
+        Span::styled(":cancel", theme::key_desc()),
+    ]));
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);

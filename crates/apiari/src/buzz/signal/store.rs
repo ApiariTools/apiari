@@ -98,6 +98,12 @@ impl SignalStore {
                 ON conversations(workspace, created_at);
             ",
         )?;
+
+        // Migration: add snoozed_until column if missing
+        let _ = self
+            .conn
+            .execute_batch("ALTER TABLE signals ADD COLUMN snoozed_until TEXT;");
+
         Ok(())
     }
 
@@ -167,11 +173,13 @@ impl SignalStore {
 
     /// Get all signals with non-resolved/stale status for this workspace.
     pub fn get_open_signals(&self) -> Result<Vec<SignalRecord>> {
+        let now = Utc::now().to_rfc3339();
         let mut stmt = self.conn.prepare(
             "SELECT id, source, external_id, title, body, severity, status,
-                    url, created_at, updated_at, resolved_at, metadata
+                    url, created_at, updated_at, resolved_at, metadata, snoozed_until
              FROM signals
              WHERE workspace = ?1 AND status IN ('open', 'updated')
+               AND (snoozed_until IS NULL OR snoozed_until <= ?2)
              ORDER BY
                 CASE severity
                     WHEN 'critical' THEN 0
@@ -183,7 +191,7 @@ impl SignalStore {
         )?;
 
         let records = stmt
-            .query_map(params![self.workspace], |row| {
+            .query_map(params![self.workspace, now], |row| {
                 Ok(SignalRecord {
                     id: row.get(0)?,
                     source: row.get(1)?,
@@ -199,6 +207,9 @@ impl SignalStore {
                         .get::<_, Option<String>>(10)?
                         .map(|s| parse_datetime(&s)),
                     metadata: row.get(11)?,
+                    snoozed_until: row
+                        .get::<_, Option<String>>(12)?
+                        .map(|s| parse_datetime(&s)),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -210,7 +221,7 @@ impl SignalStore {
     pub fn get_signal(&self, id: i64) -> Result<Option<SignalRecord>> {
         let result = self.conn.query_row(
             "SELECT id, source, external_id, title, body, severity, status,
-                    url, created_at, updated_at, resolved_at, metadata
+                    url, created_at, updated_at, resolved_at, metadata, snoozed_until
              FROM signals WHERE id = ?1 AND workspace = ?2",
             params![id, self.workspace],
             |row| {
@@ -229,6 +240,9 @@ impl SignalStore {
                         .get::<_, Option<String>>(10)?
                         .map(|s| parse_datetime(&s)),
                     metadata: row.get(11)?,
+                    snoozed_until: row
+                        .get::<_, Option<String>>(12)?
+                        .map(|s| parse_datetime(&s)),
                 })
             },
         );
@@ -247,6 +261,17 @@ impl SignalStore {
             "UPDATE signals SET status = 'resolved', resolved_at = ?1, updated_at = ?1
              WHERE id = ?2 AND workspace = ?3",
             params![now, id, self.workspace],
+        )?;
+        Ok(())
+    }
+
+    /// Snooze a signal until the given timestamp.
+    pub fn snooze_signal(&self, id: i64, until: DateTime<Utc>) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE signals SET snoozed_until = ?1, updated_at = ?2
+             WHERE id = ?3 AND workspace = ?4",
+            params![until.to_rfc3339(), now, id, self.workspace],
         )?;
         Ok(())
     }
@@ -331,7 +356,7 @@ impl SignalStore {
     pub fn get_all_signals(&self) -> Result<Vec<SignalRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source, external_id, title, body, severity, status,
-                    url, created_at, updated_at, resolved_at, metadata
+                    url, created_at, updated_at, resolved_at, metadata, snoozed_until
              FROM signals WHERE workspace = ?1 ORDER BY updated_at DESC",
         )?;
 
@@ -352,6 +377,9 @@ impl SignalStore {
                         .get::<_, Option<String>>(10)?
                         .map(|s| parse_datetime(&s)),
                     metadata: row.get(11)?,
+                    snoozed_until: row
+                        .get::<_, Option<String>>(12)?
+                        .map(|s| parse_datetime(&s)),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -397,7 +425,7 @@ impl SignalStore {
     pub fn get_recent_signals(&self, n: usize) -> Result<Vec<SignalRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, source, external_id, title, body, severity, status,
-                    url, created_at, updated_at, resolved_at, metadata
+                    url, created_at, updated_at, resolved_at, metadata, snoozed_until
              FROM signals WHERE workspace = ?1 ORDER BY updated_at DESC LIMIT ?2",
         )?;
         let records = stmt
@@ -417,6 +445,9 @@ impl SignalStore {
                         .get::<_, Option<String>>(10)?
                         .map(|s| parse_datetime(&s)),
                     metadata: row.get(11)?,
+                    snoozed_until: row
+                        .get::<_, Option<String>>(12)?
+                        .map(|s| parse_datetime(&s)),
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -926,5 +957,94 @@ mod tests {
         let record = store.get_signal(id).unwrap().unwrap();
         assert_eq!(record.title, "Bug (updated)");
         assert_eq!(record.metadata.as_deref(), Some(r#"{"count": 5}"#));
+    }
+
+    #[test]
+    fn test_snooze_signal_hides_from_open() {
+        let store = test_store();
+        let (id, _) = store
+            .upsert_signal(&make_update("sentry", "s1", "Bug", Severity::Error))
+            .unwrap();
+
+        // Snooze 1 hour into the future
+        let until = Utc::now() + chrono::Duration::hours(1);
+        store.snooze_signal(id, until).unwrap();
+
+        // Should not appear in open signals
+        let open = store.get_open_signals().unwrap();
+        assert!(open.is_empty());
+
+        // But should still be retrievable by ID
+        let record = store.get_signal(id).unwrap().unwrap();
+        assert!(record.snoozed_until.is_some());
+    }
+
+    #[test]
+    fn test_snooze_expired_reappears() {
+        let store = test_store();
+        let (id, _) = store
+            .upsert_signal(&make_update("sentry", "s1", "Bug", Severity::Error))
+            .unwrap();
+
+        // Snooze to the past — should reappear immediately
+        let past = Utc::now() - chrono::Duration::hours(1);
+        store.snooze_signal(id, past).unwrap();
+
+        let open = store.get_open_signals().unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, id);
+    }
+
+    #[test]
+    fn test_upsert_preserves_snooze() {
+        let store = test_store();
+        let (id, _) = store
+            .upsert_signal(&make_update("sentry", "s1", "Bug", Severity::Error))
+            .unwrap();
+
+        // Snooze the signal
+        let until = Utc::now() + chrono::Duration::hours(2);
+        store.snooze_signal(id, until).unwrap();
+
+        // Re-upsert the same signal (as a watcher would)
+        store
+            .upsert_signal(&make_update(
+                "sentry",
+                "s1",
+                "Bug (updated)",
+                Severity::Error,
+            ))
+            .unwrap();
+
+        // Snooze should be preserved
+        let record = store.get_signal(id).unwrap().unwrap();
+        assert!(record.snoozed_until.is_some());
+        assert_eq!(record.title, "Bug (updated)");
+
+        // Still hidden from open signals
+        let open = store.get_open_signals().unwrap();
+        assert!(open.is_empty());
+    }
+
+    #[test]
+    fn test_snooze_replaces_existing() {
+        let store = test_store();
+        let (id, _) = store
+            .upsert_signal(&make_update("sentry", "s1", "Bug", Severity::Error))
+            .unwrap();
+
+        // First snooze
+        let until1 = Utc::now() + chrono::Duration::hours(1);
+        store.snooze_signal(id, until1).unwrap();
+
+        // Second snooze with different time
+        let until2 = Utc::now() + chrono::Duration::hours(4);
+        store.snooze_signal(id, until2).unwrap();
+
+        let record = store.get_signal(id).unwrap().unwrap();
+        let snoozed = record.snoozed_until.unwrap();
+        // The second snooze should have replaced the first
+        let diff = (snoozed - until2).num_seconds().abs();
+        assert!(diff < 2, "snooze should be close to until2");
     }
 }

@@ -4,7 +4,7 @@ use crate::buzz::coordinator::memory::MemoryStore;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalRecord};
 use apiari_tui::conversation::ConversationEntry;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
 use serde::Deserialize;
 use std::io::{BufRead, Seek, SeekFrom};
 use std::path::Path;
@@ -64,7 +64,11 @@ pub enum PendingAction {
     CloseWorker(String), // worktree id
     ResolveSignal(i64),  // signal db id
     ApproveReview { repo: String, pr_number: u64 },
+    SnoozeSignal(i64), // signal db id
 }
+
+/// Snooze duration options for the duration picker.
+pub const SNOOZE_OPTIONS: &[&str] = &["1 hour", "4 hours", "Tomorrow 9am", "Next Monday 9am"];
 
 #[derive(Debug, Clone)]
 pub struct FlashMessage {
@@ -227,6 +231,8 @@ pub struct App {
     pub terminal_width: u16,
     // Activity graph (network-style throughput chart in status bar)
     pub activity_buf: Vec<u8>, // fixed array, each value = bar height 0-7
+    // Snooze
+    pub snooze_selection: usize,
     // Common
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashMessage>,
@@ -338,6 +344,7 @@ impl App {
             last_extras_refresh: Instant::now(),
             terminal_width: 80,
             activity_buf: vec![0; 18],
+            snooze_selection: 0,
             pending_action: None,
             flash: None,
             needs_redraw: true,
@@ -952,6 +959,46 @@ impl App {
             expires: Instant::now() + std::time::Duration::from_secs(3),
         });
         self.needs_redraw = true;
+    }
+
+    /// Compute snooze-until timestamp from the selected duration index.
+    pub fn compute_snooze_until(selection: usize) -> DateTime<Utc> {
+        let now = Utc::now();
+        let local_now = Local::now();
+        match selection {
+            0 => now + chrono::Duration::hours(1),
+            1 => now + chrono::Duration::hours(4),
+            2 => {
+                // Tomorrow 9am local time
+                let tomorrow = local_now.date_naive() + chrono::Duration::days(1);
+                let nine_am = tomorrow.and_hms_opt(9, 0, 0).unwrap();
+                local_now
+                    .timezone()
+                    .from_local_datetime(&nine_am)
+                    .single()
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or(now + chrono::Duration::hours(12))
+            }
+            3 => {
+                // Next Monday 9am local time
+                let today = local_now.date_naive();
+                let days_until_monday = (8 - today.weekday().num_days_from_monday()) % 7;
+                let days_until_monday = if days_until_monday == 0 {
+                    7
+                } else {
+                    days_until_monday
+                };
+                let next_monday = today + chrono::Duration::days(days_until_monday as i64);
+                let nine_am = next_monday.and_hms_opt(9, 0, 0).unwrap();
+                local_now
+                    .timezone()
+                    .from_local_datetime(&nine_am)
+                    .single()
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or(now + chrono::Duration::hours(24))
+            }
+            _ => now + chrono::Duration::hours(1),
+        }
     }
 
     pub fn tick_flash(&mut self) {
@@ -1580,6 +1627,7 @@ mod tests {
             updated_at: Utc::now(),
             resolved_at: None,
             metadata: metadata.map(String::from),
+            snoozed_until: None,
         }
     }
 

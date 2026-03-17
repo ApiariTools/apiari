@@ -128,6 +128,7 @@ mod tests {
             updated_at: Utc::now(),
             resolved_at: None,
             metadata: None,
+            snoozed_until: None,
         }
     }
 
