@@ -982,7 +982,7 @@ impl App {
             3 => {
                 // Next Monday 9am local time
                 let today = local_now.date_naive();
-                let days_until_monday = (8 - today.weekday().num_days_from_monday()) % 7;
+                let days_until_monday = (7 - today.weekday().num_days_from_monday()) % 7;
                 let days_until_monday = if days_until_monday == 0 {
                     7
                 } else {

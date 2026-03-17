@@ -99,10 +99,17 @@ impl SignalStore {
             ",
         )?;
 
-        // Migration: add snoozed_until column if missing
-        let _ = self
+        // Migration: add snoozed_until column if missing.
+        // Ignore "duplicate column" errors (column already exists), propagate others.
+        if let Err(e) = self
             .conn
-            .execute_batch("ALTER TABLE signals ADD COLUMN snoozed_until TEXT;");
+            .execute_batch("ALTER TABLE signals ADD COLUMN snoozed_until TEXT;")
+        {
+            let msg = e.to_string();
+            if !msg.contains("duplicate column") {
+                return Err(e).wrap_err("failed to add snoozed_until column");
+            }
+        }
 
         Ok(())
     }

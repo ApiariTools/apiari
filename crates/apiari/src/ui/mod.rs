@@ -523,6 +523,8 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                     app.snooze_selection = 0;
                     app.pending_action = Some(PendingAction::SnoozeSignal(id));
                     app.mode = Mode::Confirm;
+                } else {
+                    app.toggle_zoom();
                 }
             } else {
                 app.toggle_zoom();
