@@ -136,14 +136,13 @@ impl NotionWatcher {
 
             for val in results {
                 // Client-side cutoff: skip pages older than last poll
-                if let Some(ref lp) = self.last_poll_time {
-                    if let Some(edited) = val.get("last_edited_time").and_then(|t| t.as_str()) {
-                        if edited <= lp.as_str() {
-                            // Results are sorted descending by last_edited_time,
-                            // so all remaining pages are older — stop here.
-                            return Ok(all_pages);
-                        }
-                    }
+                if let Some(ref lp) = self.last_poll_time
+                    && let Some(edited) = val.get("last_edited_time").and_then(|t| t.as_str())
+                    && edited <= lp.as_str()
+                {
+                    // Results are sorted descending by last_edited_time,
+                    // so all remaining pages are older — stop here.
+                    return Ok(all_pages);
                 }
 
                 if let Some(page) = parse_page(val) {
@@ -313,7 +312,7 @@ impl NotionWatcher {
                     .as_ref()
                     .is_none_or(|lp| comment.created_time.as_str() > lp.as_str());
 
-                if !mentions_user && !(is_other_user_comment && is_new) {
+                if !(mentions_user || is_other_user_comment && is_new) {
                     continue;
                 }
 
@@ -485,15 +484,15 @@ pub fn extract_page_title(page: &serde_json::Value) -> Option<String> {
 
     // Try "Name" and "title" property names (most common)
     for key in &["Name", "title", "Title"] {
-        if let Some(prop) = props.get(*key) {
-            if let Some(title_arr) = prop.get("title").and_then(|t| t.as_array()) {
-                let text: String = title_arr
-                    .iter()
-                    .filter_map(|t| t.get("plain_text").and_then(|p| p.as_str()))
-                    .collect();
-                if !text.is_empty() {
-                    return Some(text);
-                }
+        if let Some(prop) = props.get(*key)
+            && let Some(title_arr) = prop.get("title").and_then(|t| t.as_array())
+        {
+            let text: String = title_arr
+                .iter()
+                .filter_map(|t| t.get("plain_text").and_then(|p| p.as_str()))
+                .collect();
+            if !text.is_empty() {
+                return Some(text);
             }
         }
     }
