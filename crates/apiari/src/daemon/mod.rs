@@ -902,33 +902,21 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     if let Some(ref mut scheduler) = slot.morning_brief {
                         let now = chrono::Utc::now();
                         if scheduler.should_fire(now) {
-                            let signals = slot.store.get_open_signals().unwrap_or_default();
-                            let swarm_path = slot.config.watchers.swarm.as_ref()
-                                .map(|s| s.state_path.clone());
-                            let model = slot.config.coordinator.model.clone();
-                            let ws_name = slot.name.clone();
-                            let server = socket_server.clone();
-
                             if let Some(tg) = &slot.config.telegram
                                 && let Some(channel) = telegram_channels.get(&tg.bot_token)
                             {
-                                let channel = channel.clone();
-                                let chat_id = tg.chat_id;
-                                let topic_id = tg.topic_id;
-
-                                tokio::spawn(async move {
-                                    morning_brief::execute_brief(
-                                        &model,
-                                        signals,
-                                        swarm_path.as_deref(),
-                                        &ws_name,
-                                        channel,
-                                        chat_id,
-                                        topic_id,
-                                        server,
-                                    )
-                                    .await;
-                                });
+                                let params = morning_brief::BriefParams {
+                                    model: slot.config.coordinator.model.clone(),
+                                    signals: slot.store.get_open_signals().unwrap_or_default(),
+                                    swarm_state_path: slot.config.watchers.swarm.as_ref()
+                                        .map(|s| s.state_path.clone()),
+                                    workspace: slot.name.clone(),
+                                    channel: channel.clone(),
+                                    chat_id: tg.chat_id,
+                                    topic_id: tg.topic_id,
+                                    socket_server: socket_server.clone(),
+                                };
+                                tokio::spawn(morning_brief::execute_brief(params));
                             }
 
                             scheduler.mark_sent(now);
@@ -1117,29 +1105,20 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         }
                                     }
                                     "brief" => {
-                                        let signals = slot.store.get_open_signals().unwrap_or_default();
-                                        let swarm_path = slot.config.watchers.swarm.as_ref()
-                                            .map(|s| s.state_path.clone());
-                                        let model = slot.config.coordinator.model.clone();
-                                        let ws_name = slot.name.clone();
-                                        let server = socket_server.clone();
-                                        let channel = channel.clone();
-
                                         channel.send_typing(chat_id, topic_id).await;
 
-                                        tokio::spawn(async move {
-                                            morning_brief::execute_brief(
-                                                &model,
-                                                signals,
-                                                swarm_path.as_deref(),
-                                                &ws_name,
-                                                channel,
-                                                chat_id,
-                                                topic_id,
-                                                server,
-                                            )
-                                            .await;
-                                        });
+                                        let params = morning_brief::BriefParams {
+                                            model: slot.config.coordinator.model.clone(),
+                                            signals: slot.store.get_open_signals().unwrap_or_default(),
+                                            swarm_state_path: slot.config.watchers.swarm.as_ref()
+                                                .map(|s| s.state_path.clone()),
+                                            workspace: slot.name.clone(),
+                                            channel: channel.clone(),
+                                            chat_id,
+                                            topic_id,
+                                            socket_server: socket_server.clone(),
+                                        };
+                                        tokio::spawn(morning_brief::execute_brief(params));
                                     }
                                     "help" => {
                                         let mut text = "Built-in commands:\n/status — show open signals\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();

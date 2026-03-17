@@ -260,28 +260,36 @@ pub fn load_workers(state_path: &Path) -> Vec<WorktreeEntry> {
 
 // ── Executor ──
 
+/// Parameters for executing a morning brief.
+pub struct BriefParams {
+    pub model: String,
+    pub signals: Vec<SignalRecord>,
+    pub swarm_state_path: Option<PathBuf>,
+    pub workspace: String,
+    pub channel: TelegramChannel,
+    pub chat_id: i64,
+    pub topic_id: Option<i64>,
+    pub socket_server: Option<Arc<socket::DaemonSocketServer>>,
+}
+
 /// Run the morning brief: invoke a fresh coordinator and send result via Telegram.
-pub async fn execute_brief(
-    model: &str,
-    signals: Vec<SignalRecord>,
-    swarm_state_path: Option<&Path>,
-    workspace: &str,
-    channel: TelegramChannel,
-    chat_id: i64,
-    topic_id: Option<i64>,
-    socket_server: Option<Arc<socket::DaemonSocketServer>>,
-) {
-    let workers = swarm_state_path.map(load_workers).unwrap_or_default();
-    let prompt = build_brief_prompt(&signals, &workers, workspace);
+pub async fn execute_brief(params: BriefParams) {
+    let workers = params
+        .swarm_state_path
+        .as_deref()
+        .map(load_workers)
+        .unwrap_or_default();
+    let prompt = build_brief_prompt(&params.signals, &workers, &params.workspace);
+    let workspace = &params.workspace;
 
     info!("[{workspace}] generating morning brief");
 
-    let mut coordinator = Coordinator::new(model, 5);
+    let mut coordinator = Coordinator::new(&params.model, 5);
 
     let opts = SessionOptions {
         system_prompt: Some(prompt),
         max_turns: Some(5),
-        model: Some(model.to_string()),
+        model: Some(params.model.clone()),
         ..Default::default()
     };
 
@@ -292,15 +300,15 @@ pub async fn execute_brief(
         Ok(response) => {
             let text = format!("\u{1f305} Morning Brief\n\n{response}");
             let msg = OutboundMessage {
-                chat_id,
+                chat_id: params.chat_id,
                 text: text.clone(),
                 buttons: vec![],
-                topic_id,
+                topic_id: params.topic_id,
             };
-            if let Err(e) = channel.send_message(&msg).await {
+            if let Err(e) = params.channel.send_message(&msg).await {
                 error!("[{workspace}] failed to send morning brief: {e}");
             }
-            if let Some(ref server) = socket_server {
+            if let Some(ref server) = params.socket_server {
                 server.broadcast_activity("system", workspace, "morning_brief", &text);
             }
             info!("[{workspace}] morning brief sent");
@@ -308,12 +316,12 @@ pub async fn execute_brief(
         Err(e) => {
             error!("[{workspace}] morning brief failed: {e}");
             let msg = OutboundMessage {
-                chat_id,
+                chat_id: params.chat_id,
                 text: format!("Morning brief generation failed: {e}"),
                 buttons: vec![],
-                topic_id,
+                topic_id: params.topic_id,
             };
-            let _ = channel.send_message(&msg).await;
+            let _ = params.channel.send_message(&msg).await;
         }
     }
 }
