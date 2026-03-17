@@ -3,6 +3,7 @@ name = "apiari"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/ApiariTools/apiari"
 
 [[bin]]
 name = "apiari"
@@ -33,6 +34,11 @@ chrono-tz.workspace = true
 async-imap = "0.10"
 async-native-tls = "0.5"
 mail-parser = "0.9"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ binary-ext }"
+bin-dir = "{ name }{ binary-ext }"
+pkg-fmt = "bin"
 
 [dev-dependencies]
 tempfile = "3"
