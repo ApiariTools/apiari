@@ -23,6 +23,7 @@ pub enum View {
     WorkerDetail(usize),
     SignalDetail(usize),
     SignalList,
+    ReviewList,
     PrList,
 }
 
@@ -209,6 +210,7 @@ pub struct App {
     // Detail/list views
     pub content_scroll: u16,
     pub signal_list_selection: usize,
+    pub review_list_selection: usize,
     pub pr_list_selection: usize,
     // Daemon / extras
     pub daemon_alive: bool,
@@ -318,6 +320,7 @@ impl App {
             worker_input_active: false,
             content_scroll: 0,
             signal_list_selection: 0,
+            review_list_selection: 0,
             pr_list_selection: 0,
             daemon_alive: false,
             daemon_connected: false,
@@ -590,6 +593,13 @@ impl App {
         self.needs_redraw = true;
     }
 
+    pub fn enter_review_list(&mut self) {
+        self.view = View::ReviewList;
+        self.review_list_selection = 0;
+        self.content_scroll = 0;
+        self.needs_redraw = true;
+    }
+
     /// Whether the current workspace has review queue configured.
     pub fn has_review_queue(&self) -> bool {
         self.current_ws().is_some_and(|ws| {
@@ -610,6 +620,7 @@ impl App {
                     self.focused_panel = Panel::Signals;
                 }
             }
+            View::ReviewList => self.focused_panel = Panel::Reviews,
             _ => {
                 // Preserve current focused_panel
             }
@@ -1306,6 +1317,12 @@ impl App {
             }
             View::SignalDetail(i) => self.current_ws()?.signals.get(*i),
             View::SignalList => self.current_ws()?.signals.get(self.signal_list_selection),
+            View::ReviewList => self
+                .current_ws()?
+                .signals
+                .iter()
+                .filter(|s| s.source.ends_with("_review_queue"))
+                .nth(self.review_list_selection),
             _ => None,
         }
     }
