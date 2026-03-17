@@ -20,6 +20,10 @@ pub struct BuzzConfig {
     /// Coordinator configuration.
     #[serde(default)]
     pub coordinator: CoordinatorConfig,
+
+    /// Morning brief configuration.
+    #[serde(default)]
+    pub morning_brief: Option<MorningBriefConfig>,
 }
 
 /// Telegram configuration.
@@ -93,6 +97,17 @@ pub struct SwarmWatcherConfig {
     #[serde(default = "default_swarm_interval")]
     pub interval_secs: u64,
     pub state_path: std::path::PathBuf,
+}
+
+/// Morning brief configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MorningBriefConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Time to send the brief in HH:MM format (24h).
+    pub time: String,
+    /// IANA timezone name (e.g. "America/Chicago").
+    pub timezone: String,
 }
 
 /// Coordinator configuration.

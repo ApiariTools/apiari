@@ -29,6 +29,7 @@ futures = "0.3"
 reqwest.workspace = true
 async-trait.workspace = true
 tokio-util = { version = "0.7", features = ["rt"] }
+chrono-tz.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

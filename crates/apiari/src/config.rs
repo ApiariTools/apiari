@@ -68,6 +68,10 @@ pub struct WorkspaceConfig {
     /// Custom slash commands.
     #[serde(default)]
     pub commands: Vec<CommandConfig>,
+
+    /// Morning brief configuration.
+    #[serde(default)]
+    pub morning_brief: Option<MorningBriefConfig>,
 }
 
 /// Telegram bot configuration.
@@ -156,6 +160,22 @@ pub struct SwarmWatcherConfig {
     pub state_path: PathBuf,
     #[serde(default = "default_swarm_interval")]
     pub interval_secs: u64,
+}
+
+/// Morning brief configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MorningBriefConfig {
+    /// Whether the morning brief is enabled.
+    #[serde(default = "default_morning_brief_enabled")]
+    pub enabled: bool,
+    /// Time to send the brief in HH:MM format (24h).
+    pub time: String,
+    /// IANA timezone name (e.g. "America/Chicago").
+    pub timezone: String,
+}
+
+fn default_morning_brief_enabled() -> bool {
+    true
 }
 
 /// A loaded workspace with its name.
@@ -379,6 +399,13 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
             model: ws.coordinator.model.clone(),
             max_turns: ws.coordinator.max_turns,
         },
+        morning_brief: ws.morning_brief.as_ref().map(|mb| {
+            crate::buzz::config::MorningBriefConfig {
+                enabled: mb.enabled,
+                time: mb.time.clone(),
+                timezone: mb.timezone.clone(),
+            }
+        }),
     }
 }
 
@@ -600,6 +627,7 @@ root = "/tmp/test"
             watchers: WatchersConfig::default(),
             pipeline: PipelineConfig::default(),
             commands: vec![],
+            morning_brief: None,
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -615,6 +643,7 @@ root = "/tmp/test"
             watchers: WatchersConfig::default(),
             pipeline: PipelineConfig::default(),
             commands: vec![],
+            morning_brief: None,
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -634,6 +663,7 @@ root = "/tmp/test"
             watchers: WatchersConfig::default(),
             pipeline: PipelineConfig::default(),
             commands: vec![],
+            morning_brief: None,
         };
 
         let buzz = to_buzz_config(&ws);
