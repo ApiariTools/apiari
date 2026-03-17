@@ -34,5 +34,10 @@ async-imap = "0.10"
 async-native-tls = "0.5"
 mail-parser = "0.9"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ binary-ext }"
+bin-dir = "{ name }{ binary-ext }"
+pkg-fmt = "bin"
+
 [dev-dependencies]
 tempfile = "3"
