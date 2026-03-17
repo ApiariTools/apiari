@@ -39,6 +39,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::WorkerDetail(i) => draw_worker_detail(frame, app, outer[2], *i),
         View::SignalDetail(i) => draw_signal_detail(frame, app, outer[2], *i),
         View::SignalList => draw_signal_list(frame, app, outer[2]),
+        View::ReviewList => draw_review_list(frame, app, outer[2]),
         View::PrList => draw_pr_list(frame, app, outer[2]),
     }
 
@@ -1732,6 +1733,146 @@ fn draw_signal_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+// ── Review list (full-screen) ─────────────────────────
+
+fn draw_review_list(frame: &mut Frame, app: &App, area: Rect) {
+    let ws = match app.current_ws() {
+        Some(ws) => ws,
+        None => return,
+    };
+
+    let width = area.width as usize;
+
+    // Collect review queue signals (any source ending with _review_queue)
+    let reviews: Vec<&crate::buzz::signal::SignalRecord> = ws
+        .signals
+        .iter()
+        .filter(|s| s.source.ends_with("_review_queue"))
+        .collect();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header
+    lines.push(Line::from(""));
+    let header = format!(" Reviews ({}) ", reviews.len());
+    let ruler_len = width.saturating_sub(header.len());
+    lines.push(Line::from(vec![
+        Span::styled(header, theme::subtitle()),
+        Span::styled("\u{2500}".repeat(ruler_len), theme::border()),
+    ]));
+    lines.push(Line::from(""));
+
+    if reviews.is_empty() {
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled("No review queue items", theme::muted()),
+        ]));
+    } else {
+        // Group by source when multiple sources are present
+        let mut sources: Vec<String> = reviews.iter().map(|s| s.source.clone()).collect();
+        sources.sort();
+        sources.dedup();
+        let multi_source = sources.len() > 1;
+
+        let mut flat_idx = 0usize;
+        for source in &sources {
+            if multi_source {
+                // Source header: extract short name (e.g. "github" from "github_review_queue")
+                let short = source.strip_suffix("_review_queue").unwrap_or(source);
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        format!("\u{2500}\u{2500} {short} \u{2500}\u{2500}"),
+                        theme::muted(),
+                    ),
+                ]));
+            }
+
+            for signal in reviews.iter().filter(|s| &s.source == source) {
+                let is_sel = flat_idx == app.review_list_selection;
+
+                // Build line with query_name prefix
+                let qname = signal
+                    .metadata
+                    .as_ref()
+                    .and_then(|meta| serde_json::from_str::<serde_json::Value>(meta).ok())
+                    .and_then(|v| {
+                        v.get("query_name")
+                            .and_then(|q| q.as_str())
+                            .map(String::from)
+                    });
+
+                let icon = app::severity_icon(&signal.severity);
+                let sev_style = severity_style(&signal.severity);
+                let sev_color = match signal.severity {
+                    crate::buzz::signal::Severity::Critical
+                    | crate::buzz::signal::Severity::Error => theme::EMBER,
+                    crate::buzz::signal::Severity::Warning => theme::NECTAR,
+                    crate::buzz::signal::Severity::Info => theme::SMOKE,
+                };
+                let line_style = if is_sel {
+                    theme::selected()
+                } else {
+                    theme::text()
+                };
+                let bg = if is_sel {
+                    Style::default().bg(theme::FOCUS_BG)
+                } else {
+                    Style::default()
+                };
+
+                let ago = time_ago(&signal.updated_at);
+                let clean_title = strip_repo_prefix(&signal.title);
+
+                let mut spans: Vec<Span> = vec![
+                    Span::styled("\u{258c}", Style::default().fg(sev_color)),
+                    Span::styled(if is_sel { "\u{25b8}" } else { " " }, line_style),
+                    Span::styled(format!(" {icon} "), sev_style),
+                ];
+
+                // Add query_name as dim prefix before title
+                if let Some(ref qn) = qname {
+                    spans.push(Span::styled(
+                        format!("{qn} "),
+                        Style::default()
+                            .fg(theme::POLLEN)
+                            .add_modifier(Modifier::DIM),
+                    ));
+                }
+
+                let meta_str = format!(" {:>4}", ago);
+                let prefix_len: usize = spans.iter().map(|s| s.content.len()).sum();
+                let title_max = width.saturating_sub(prefix_len + meta_str.len());
+                let title = trunc(clean_title, title_max);
+
+                spans.push(Span::styled(title, line_style));
+                spans.push(Span::styled(meta_str, theme::muted()));
+
+                lines.push(Line::from(spans).style(bg));
+                flat_idx += 1;
+            }
+        }
+    }
+
+    // Hints
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  j/k", theme::key_hint()),
+        Span::styled(":nav  ", theme::key_desc()),
+        Span::styled("enter", theme::key_hint()),
+        Span::styled(":detail  ", theme::key_desc()),
+        Span::styled("o", theme::key_hint()),
+        Span::styled(":open  ", theme::key_desc()),
+        Span::styled("esc", theme::key_hint()),
+        Span::styled(":back", theme::key_desc()),
+    ]));
+
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.content_scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
 // ── PR list (full-screen) ─────────────────────────────
 
 fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -1893,7 +2034,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(":quit", theme::key_desc()),
                 ]
             } else {
-                vec![
+                let has_reviews = app.current_ws().is_some_and(|ws| {
+                    ws.signals
+                        .iter()
+                        .any(|s| s.source.ends_with("_review_queue"))
+                });
+                let mut h = vec![
                     Span::raw(" "),
                     Span::styled("tab", theme::key_hint()),
                     Span::styled(":panel  ", theme::key_desc()),
@@ -1907,11 +2053,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(":zoom  ", theme::key_desc()),
                     Span::styled("p", theme::key_hint()),
                     Span::styled(":prs  ", theme::key_desc()),
-                    Span::styled("?", theme::key_hint()),
-                    Span::styled(":help  ", theme::key_desc()),
-                    Span::styled("q", theme::key_hint()),
-                    Span::styled(":quit", theme::key_desc()),
-                ]
+                ];
+                if has_reviews {
+                    h.push(Span::styled("r", theme::key_hint()));
+                    h.push(Span::styled(":reviews  ", theme::key_desc()));
+                }
+                h.push(Span::styled("?", theme::key_hint()));
+                h.push(Span::styled(":help  ", theme::key_desc()));
+                h.push(Span::styled("q", theme::key_hint()));
+                h.push(Span::styled(":quit", theme::key_desc()));
+                h
             }
         }
         View::WorkerDetail(_) => {
@@ -1971,6 +2122,17 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(":open  ", theme::key_desc()),
             Span::styled("R", theme::key_hint()),
             Span::styled(":resolve  ", theme::key_desc()),
+            Span::styled("esc", theme::key_hint()),
+            Span::styled(":back", theme::key_desc()),
+        ],
+        View::ReviewList => vec![
+            Span::raw(" "),
+            Span::styled("j/k", theme::key_hint()),
+            Span::styled(":nav  ", theme::key_desc()),
+            Span::styled("enter", theme::key_hint()),
+            Span::styled(":detail  ", theme::key_desc()),
+            Span::styled("o", theme::key_hint()),
+            Span::styled(":open  ", theme::key_desc()),
             Span::styled("esc", theme::key_hint()),
             Span::styled(":back", theme::key_desc()),
         ],
@@ -2075,7 +2237,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     let w = 54u16.min(area.width.saturating_sub(4));
-    let h = 30u16.min(area.height.saturating_sub(4));
+    let h = 31u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -2123,6 +2285,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  p             ", theme::key_hint()),
             Span::styled("Pull requests list", theme::key_desc()),
+        ]),
+        Line::from(vec![
+            Span::styled("  r             ", theme::key_hint()),
+            Span::styled("Review list", theme::key_desc()),
         ]),
         Line::from(vec![
             Span::styled("  o             ", theme::key_hint()),

@@ -326,6 +326,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
         View::WorkerDetail(i) => handle_worker_detail_key(app, key, *i),
         View::SignalDetail(i) => handle_signal_detail_key(app, key, *i),
         View::SignalList => handle_signal_list_key(app, key),
+        View::ReviewList => handle_review_list_key(app, key),
         View::PrList => handle_pr_list_key(app, key),
     }
 }
@@ -416,6 +417,11 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         }
         KeyCode::Char('p') => app.enter_pr_list(),
         KeyCode::Char('S') => app.enter_signal_list(),
+        KeyCode::Char('r') => {
+            if app.has_review_queue() {
+                app.enter_review_list();
+            }
+        }
         KeyCode::Char('o') => {
             if let Some(url) = app.selected_url() {
                 return KeyAction::OpenUrl(url);
@@ -661,6 +667,62 @@ fn handle_signal_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
                 let id = signal.id;
                 app.pending_action = Some(PendingAction::ResolveSignal(id));
                 app.mode = Mode::Confirm;
+            }
+        }
+        KeyCode::Char('q') => return KeyAction::Quit,
+        _ => {}
+    }
+    KeyAction::Redraw
+}
+
+// ── Review list keys ─────────────────────────────────────
+
+fn handle_review_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
+    let review_count = app.current_ws().map_or(0, |ws| {
+        ws.signals
+            .iter()
+            .filter(|s| s.source.ends_with("_review_queue"))
+            .count()
+    });
+
+    match key.code {
+        KeyCode::Esc => app.back_to_dashboard(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            if app.review_list_selection + 1 < review_count {
+                app.review_list_selection += 1;
+                app.needs_redraw = true;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.review_list_selection = app.review_list_selection.saturating_sub(1);
+            app.needs_redraw = true;
+        }
+        KeyCode::Char('g') => {
+            app.review_list_selection = 0;
+            app.needs_redraw = true;
+        }
+        KeyCode::Char('G') => {
+            app.review_list_selection = review_count.saturating_sub(1);
+            app.needs_redraw = true;
+        }
+        KeyCode::Enter => {
+            if app.review_list_selection < review_count {
+                // Find the original index in ws.signals for the nth review signal
+                if let Some(orig_idx) = app.current_ws().and_then(|ws| {
+                    ws.signals
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| s.source.ends_with("_review_queue"))
+                        .map(|(i, _)| i)
+                        .nth(app.review_list_selection)
+                }) {
+                    app.enter_signal_detail(orig_idx);
+                }
+            }
+        }
+        KeyCode::Char('o') => {
+            if let Some(url) = app.selected_url() {
+                return KeyAction::OpenUrl(url);
             }
         }
         KeyCode::Char('q') => return KeyAction::Quit,
