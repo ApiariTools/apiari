@@ -89,6 +89,40 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
     let config_display = config_path.display();
 
     println!("\n  \u{2713} Created {config_display}\n");
+
+    // Check if swarm is available in PATH
+    let swarm_installed = std::process::Command::new("which")
+        .arg("swarm")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if swarm_installed {
+        println!("  \u{2713} swarm already installed\n");
+    } else {
+        println!("  swarm is not installed. Installing apiari-swarm...\n");
+        let install_status = std::process::Command::new("cargo")
+            .args(["install", "apiari-swarm"])
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+        match install_status {
+            Ok(s) if s.success() => {
+                println!("\n  \u{2713} apiari-swarm installed successfully\n");
+            }
+            Ok(_) => {
+                eprintln!("\n  Failed to install apiari-swarm. You can retry manually:");
+                eprintln!("  cargo install apiari-swarm\n");
+            }
+            Err(e) => {
+                eprintln!("\n  Could not run cargo install: {e}");
+                eprintln!("  Install manually: cargo install apiari-swarm\n");
+            }
+        }
+        println!("  Note: if swarm fails to launch, run: codesign -f -s - ~/.cargo/bin/swarm\n");
+    }
     println!("  Next steps:\n");
     println!("  1. Get a Telegram bot token from @BotFather (https://t.me/BotFather)");
     println!("     Send /newbot, follow the prompts, copy the token.\n");
