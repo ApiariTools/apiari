@@ -789,6 +789,30 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
             _ = poll_timer.tick() => {
                 for slot in &mut slots {
+                    // Morning brief check (independent of watchers — runs even
+                    // for workspaces with no watcher registry entries).
+                    if let Some(ref mut scheduler) = slot.morning_brief {
+                        let now = chrono::Utc::now();
+                        if scheduler.should_fire(now)
+                            && let Some(tg) = &slot.config.telegram
+                            && let Some(channel) = telegram_channels.get(&tg.bot_token)
+                        {
+                            let params = morning_brief::BriefParams {
+                                model: slot.config.coordinator.model.clone(),
+                                signals: slot.store.get_open_signals().unwrap_or_default(),
+                                swarm_state_path: slot.config.watchers.swarm.as_ref()
+                                    .map(|s| s.state_path.clone()),
+                                workspace: slot.name.clone(),
+                                channel: channel.clone(),
+                                chat_id: tg.chat_id,
+                                topic_id: tg.topic_id,
+                                socket_server: socket_server.clone(),
+                            };
+                            tokio::spawn(morning_brief::execute_brief(params));
+                            scheduler.mark_sent(now);
+                        }
+                    }
+
                     if slot.registry.is_empty() {
                         continue;
                     }
@@ -898,30 +922,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         });
                     }
 
-                    // Morning brief check
-                    if let Some(ref mut scheduler) = slot.morning_brief {
-                        let now = chrono::Utc::now();
-                        if scheduler.should_fire(now) {
-                            if let Some(tg) = &slot.config.telegram
-                                && let Some(channel) = telegram_channels.get(&tg.bot_token)
-                            {
-                                let params = morning_brief::BriefParams {
-                                    model: slot.config.coordinator.model.clone(),
-                                    signals: slot.store.get_open_signals().unwrap_or_default(),
-                                    swarm_state_path: slot.config.watchers.swarm.as_ref()
-                                        .map(|s| s.state_path.clone()),
-                                    workspace: slot.name.clone(),
-                                    channel: channel.clone(),
-                                    chat_id: tg.chat_id,
-                                    topic_id: tg.topic_id,
-                                    socket_server: socket_server.clone(),
-                                };
-                                tokio::spawn(morning_brief::execute_brief(params));
-                            }
-
-                            scheduler.mark_sent(now);
-                        }
-                    }
                 }
             }
 

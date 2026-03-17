@@ -9,9 +9,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use chrono_tz::Tz;
-use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use apiari_claude_sdk::SessionOptions;
 
@@ -136,8 +135,15 @@ fn save_persisted_date(path: &Path, date: NaiveDate) {
     let state = PersistedState {
         last_sent_date: Some(date.format("%Y-%m-%d").to_string()),
     };
-    if let Ok(json) = serde_json::to_string_pretty(&state) {
-        let _ = std::fs::write(path, json);
+    match serde_json::to_string_pretty(&state) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(path, json) {
+                warn!("failed to persist morning brief state to {}: {e}", path.display());
+            }
+        }
+        Err(e) => {
+            warn!("failed to serialize morning brief state: {e}");
+        }
     }
 }
 
@@ -260,6 +266,9 @@ pub fn load_workers(state_path: &Path) -> Vec<WorktreeEntry> {
 
 // ── Executor ──
 
+/// Maximum coordinator turns for morning brief generation (synthesis only, no tools).
+const BRIEF_MAX_TURNS: u64 = 5;
+
 /// Parameters for executing a morning brief.
 pub struct BriefParams {
     pub model: String,
@@ -284,11 +293,11 @@ pub async fn execute_brief(params: BriefParams) {
 
     info!("[{workspace}] generating morning brief");
 
-    let mut coordinator = Coordinator::new(&params.model, 5);
+    let mut coordinator = Coordinator::new(&params.model, BRIEF_MAX_TURNS as u32);
 
     let opts = SessionOptions {
         system_prompt: Some(prompt),
-        max_turns: Some(5),
+        max_turns: Some(BRIEF_MAX_TURNS),
         model: Some(params.model.clone()),
         ..Default::default()
     };
@@ -372,6 +381,9 @@ mod tests {
         };
         let mut scheduler = MorningBriefScheduler::new(&config, "test").unwrap();
         scheduler.state_path = dir.path().join("morning_brief_state.json");
+        // Reset after overriding state_path so we don't inherit persisted state
+        // from the real config dir (avoids flaky tests).
+        scheduler.last_sent_date = None;
         (scheduler, dir)
     }
 
