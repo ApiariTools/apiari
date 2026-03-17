@@ -786,9 +786,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 );
                                 for update in &updates {
                                     match slot.store.upsert_signal(update) {
-                                        Ok((id, true)) => {
+                                        Ok((id, is_new)) => {
+                                            // CI pass signals always notify (even on updates)
+                                            // to guard against dedup collisions swallowing notifications
+                                            let force_notify = update.source == "github"
+                                                && update.external_id.starts_with("ci-pass-");
+                                            let should_notify = is_new || force_notify;
+
                                             // Collect new swarm signals for coordinator follow-through
-                                            if watcher_name == "swarm"
+                                            if is_new
+                                                && watcher_name == "swarm"
                                                 && let Ok(Some(record)) = slot.store.get_signal(id)
                                             {
                                                 let desc = if let Some(ref url) = record.url {
@@ -801,7 +808,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 new_swarm_events.push(desc);
                                             }
 
-                                            if let Ok(Some(record)) = slot.store.get_signal(id)
+                                            if should_notify
+                                                && let Ok(Some(record)) = slot.store.get_signal(id)
                                                 && let Some(text) = slot.pipeline.process(&record)
                                                 && let Some(tg) = &slot.config.telegram
                                                 && let Some(channel) = telegram_channels.get(&tg.bot_token)
@@ -817,7 +825,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 }
                                             }
                                         }
-                                        Ok((_, false)) => {} // existing signal updated, no notification
                                         Err(e) => {
                                             error!("[{}] failed to upsert signal: {e}", slot.name);
                                         }
