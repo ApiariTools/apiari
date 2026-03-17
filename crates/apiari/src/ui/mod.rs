@@ -1452,6 +1452,7 @@ mod tests {
             spinner_tick: 0,
             last_worker_refresh: std::time::Instant::now(),
             last_signal_refresh: std::time::Instant::now(),
+            snooze_selection: 0,
         }
     }
 
