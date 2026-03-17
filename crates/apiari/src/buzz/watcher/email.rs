@@ -106,7 +106,14 @@ impl EmailWatcher {
         let body = if include_body {
             let preview = email.body_preview.as_deref().unwrap_or("[no body]");
             let truncated = if preview.len() > 500 {
-                format!("{}...", &preview[..500])
+                // Truncate at a char boundary to avoid panics on multi-byte UTF-8
+                let end = preview
+                    .char_indices()
+                    .take_while(|(i, _)| *i < 500)
+                    .last()
+                    .map(|(i, c)| i + c.len_utf8())
+                    .unwrap_or(0);
+                format!("{}...", &preview[..end])
             } else {
                 preview.to_string()
             };
@@ -391,11 +398,21 @@ impl Watcher for EmailWatcher {
     async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
         let last_uid = self.last_uid;
 
-        let emails = match self.fetch_emails(last_uid).await {
-            Ok(emails) => emails,
-            Err(e) => {
+        // Timeout the entire IMAP fetch to avoid blocking the daemon poll loop
+        let fetch_result =
+            tokio::time::timeout(Duration::from_secs(60), self.fetch_emails(last_uid)).await;
+        let emails = match fetch_result {
+            Ok(Ok(emails)) => emails,
+            Ok(Err(e)) => {
                 warn!(
                     "[{}] IMAP fetch failed for {}: {e}",
+                    self.watcher_name, self.config.host
+                );
+                return Ok(Vec::new());
+            }
+            Err(_) => {
+                warn!(
+                    "[{}] IMAP fetch timed out for {}",
                     self.watcher_name, self.config.host
                 );
                 return Ok(Vec::new());
@@ -413,12 +430,13 @@ impl Watcher for EmailWatcher {
         for email in &emails {
             let mut signal = Self::build_signal(&self.source, email, self.config.include_body);
 
-            // Try summarization if configured and body is available
-            if self.config.summarizer.is_some() {
-                let body_text = email.body_preview.as_deref().unwrap_or("");
-                if let Some(summary) = self.summarize(&email.subject, body_text).await {
-                    signal.body = Some(format!("From: {}\n\n{summary}", email.from));
-                }
+            // Try summarization if configured and body content is available
+            if self.config.summarizer.is_some()
+                && let Some(body_text) = email.body_preview.as_deref()
+                && !body_text.is_empty()
+                && let Some(summary) = self.summarize(&email.subject, body_text).await
+            {
+                signal.body = Some(format!("From: {}\n\n{summary}", email.from));
             }
 
             signals.push(signal);
@@ -441,13 +459,22 @@ impl Watcher for EmailWatcher {
         Ok(signals)
     }
 
-    fn reconcile(&self, source: &str, poll_ids: &[String], store: &SignalStore) -> Result<usize> {
+    fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
         // Persist IMAP cursor
-        if self.last_uid > 0 {
-            let _ = store.set_cursor(&self.cursor_key, &self.last_uid.to_string());
+        if self.last_uid > 0
+            && let Err(e) = store.set_cursor(&self.cursor_key, &self.last_uid.to_string())
+        {
+            warn!("[{}] failed to persist IMAP cursor: {e}", self.watcher_name);
         }
-        // Auto-reconcile: resolve signals no longer in latest poll
-        store.resolve_missing_signals(source, poll_ids)
+        // Email signals are NOT auto-reconciled: poll() only fetches NEW emails
+        // (UID > cursor), so poll_ids would only contain new message IDs, not the
+        // full set of active emails. Auto-reconcile with partial IDs would
+        // incorrectly resolve still-relevant signals. Emails are resolved when
+        // they no longer appear in the IMAP search results on a future poll.
+        //
+        // Return 1 to signal custom reconciliation was handled (prevents the
+        // framework from falling back to auto-reconcile with poll_ids).
+        Ok(1)
     }
 }
 

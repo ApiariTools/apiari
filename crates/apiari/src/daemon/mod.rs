@@ -594,14 +594,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         for email_config in &buzz_config.watchers.email {
             let mut watcher = EmailWatcher::new(email_config.clone());
             // Pre-load cursor from store so first poll skips already-seen UIDs
-            if let Ok(Some(val)) = store.get_cursor(watcher.cursor_key()) {
-                if let Ok(uid) = val.parse::<u32>() {
-                    watcher.set_initial_uid(uid);
-                    info!(
-                        "[{}] email watcher '{}' resuming from UID {}",
-                        ws.name, email_config.name, uid
-                    );
-                }
+            if let Ok(Some(val)) = store.get_cursor(watcher.cursor_key())
+                && let Ok(uid) = val.parse::<u32>()
+            {
+                watcher.set_initial_uid(uid);
+                info!(
+                    "[{}] email watcher '{}' resuming from UID {}",
+                    ws.name, email_config.name, uid
+                );
             }
             info!(
                 "[{}] enabling email watcher '{}' ({})",
