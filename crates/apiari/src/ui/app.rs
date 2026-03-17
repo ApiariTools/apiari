@@ -1500,15 +1500,14 @@ pub fn review_signal_target(signal: &SignalRecord) -> Option<(String, u64)> {
     }
 
     // Try metadata first
-    if let Some(ref meta) = signal.metadata {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(meta) {
-            if let (Some(repo), Some(pr)) = (
-                val.get("repo").and_then(|v| v.as_str()),
-                val.get("pr_number").and_then(|v| v.as_u64()),
-            ) {
-                return Some((repo.to_string(), pr));
-            }
-        }
+    if let Some(ref meta) = signal.metadata
+        && let Ok(val) = serde_json::from_str::<serde_json::Value>(meta)
+        && let (Some(repo), Some(pr)) = (
+            val.get("repo").and_then(|v| v.as_str()),
+            val.get("pr_number").and_then(|v| v.as_u64()),
+        )
+    {
+        return Some((repo.to_string(), pr));
     }
 
     // Fallback: parse from external_id (format: rq-{owner/repo}-{number})

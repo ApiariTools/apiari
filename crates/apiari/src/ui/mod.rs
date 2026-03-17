@@ -411,14 +411,14 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         KeyCode::Char('k') | KeyCode::Up => app.select_prev_in_panel(),
         KeyCode::Enter => app.drill_in(),
         KeyCode::Char('a') => {
-            if app.focused_panel == Panel::Reviews {
-                if let Some(signal) = app.selected_signal() {
-                    if let Some((repo, pr_number)) = review_signal_target(signal) {
-                        app.pending_action = Some(PendingAction::ApproveReview { repo, pr_number });
-                        app.mode = Mode::Confirm;
-                    } else {
-                        app.flash("Linear reviews are read-only");
-                    }
+            if app.focused_panel == Panel::Reviews
+                && let Some(signal) = app.selected_signal()
+            {
+                if let Some((repo, pr_number)) = review_signal_target(signal) {
+                    app.pending_action = Some(PendingAction::ApproveReview { repo, pr_number });
+                    app.mode = Mode::Confirm;
+                } else {
+                    app.flash("Linear reviews are read-only");
                 }
             }
         }
@@ -1028,11 +1028,10 @@ async fn handle_action(
             let r = repo.clone();
             let pr = pr_number;
             tokio::spawn(async move {
-                let output = tokio::process::Command::new("gh")
+                let _ = tokio::process::Command::new("gh")
                     .args(["pr", "review", &pr.to_string(), "--approve", "--repo", &r])
                     .output()
                     .await;
-                output
             });
             app.flash(format!("Approving PR #{pr_number} in {repo}..."));
         }
@@ -1045,7 +1044,7 @@ async fn handle_action(
             let pr = pr_number;
             let b = body.clone();
             tokio::spawn(async move {
-                let output = tokio::process::Command::new("gh")
+                let _ = tokio::process::Command::new("gh")
                     .args([
                         "pr",
                         "review",
@@ -1058,7 +1057,6 @@ async fn handle_action(
                     ])
                     .output()
                     .await;
-                output
             });
             app.flash(format!("Comment sent on PR #{pr_number} in {repo}"));
         }
