@@ -53,6 +53,9 @@ pub struct WatchersConfig {
     /// Swarm watcher.
     #[serde(default)]
     pub swarm: Option<SwarmWatcherConfig>,
+    /// Email watchers (multiple mailboxes).
+    #[serde(default)]
+    pub email: Vec<EmailMailboxConfig>,
 }
 
 /// GitHub watcher configuration.
@@ -97,6 +100,72 @@ pub struct SwarmWatcherConfig {
     #[serde(default = "default_swarm_interval")]
     pub interval_secs: u64,
     pub state_path: std::path::PathBuf,
+}
+
+/// Email mailbox configuration (one per IMAP account).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailMailboxConfig {
+    /// Name used in source: "{name}_email_review_queue".
+    pub name: String,
+    /// IMAP server hostname.
+    pub host: String,
+    /// IMAP server port (typically 993 for TLS).
+    #[serde(default = "default_imap_port")]
+    pub port: u16,
+    /// Use TLS.
+    #[serde(default = "default_true")]
+    pub tls: bool,
+    /// IMAP username.
+    pub username: String,
+    /// IMAP password (app-specific password).
+    pub password: String,
+    /// IMAP folder to watch.
+    #[serde(default = "default_folder")]
+    pub folder: String,
+    /// IMAP search criteria.
+    #[serde(default = "default_filter")]
+    pub filter: String,
+    /// Include body preview in signal (default false for privacy).
+    #[serde(default)]
+    pub include_body: bool,
+    /// Max emails per poll.
+    #[serde(default = "default_max_fetch")]
+    pub max_fetch: u32,
+    /// Poll interval in seconds.
+    #[serde(default = "default_email_interval")]
+    pub interval_secs: u64,
+    /// Optional Ollama/OpenAI-compatible summarizer.
+    #[serde(default)]
+    pub summarizer: Option<EmailSummarizerConfig>,
+}
+
+/// Ollama/OpenAI-compatible summarizer configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailSummarizerConfig {
+    /// Base URL (e.g. "http://localhost:11434").
+    pub base_url: String,
+    /// Model name (e.g. "llama3.2:3b").
+    pub model: String,
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+
+fn default_folder() -> String {
+    "INBOX".to_string()
+}
+
+fn default_filter() -> String {
+    "UNSEEN".to_string()
+}
+
+fn default_max_fetch() -> u32 {
+    20
+}
+
+fn default_email_interval() -> u64 {
+    300
 }
 
 /// Morning brief configuration.

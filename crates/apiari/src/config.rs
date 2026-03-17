@@ -120,6 +120,65 @@ pub struct WatchersConfig {
     pub sentry: Option<SentryWatcherConfig>,
     #[serde(default)]
     pub swarm: Option<SwarmWatcherConfig>,
+    /// Email watchers (multiple mailboxes via `[[watchers.email]]`).
+    #[serde(default)]
+    pub email: Vec<EmailMailboxConfig>,
+}
+
+/// Email mailbox configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailMailboxConfig {
+    pub name: String,
+    pub host: String,
+    #[serde(default = "default_imap_port")]
+    pub port: u16,
+    #[serde(default = "default_true")]
+    pub tls: bool,
+    pub username: String,
+    pub password: String,
+    #[serde(default = "default_folder")]
+    pub folder: String,
+    #[serde(default = "default_filter")]
+    pub filter: String,
+    #[serde(default)]
+    pub include_body: bool,
+    #[serde(default = "default_max_fetch")]
+    pub max_fetch: u32,
+    #[serde(default = "default_email_interval")]
+    pub interval_secs: u64,
+    #[serde(default)]
+    pub summarizer: Option<EmailSummarizerConfig>,
+}
+
+/// Ollama/OpenAI-compatible summarizer configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailSummarizerConfig {
+    pub base_url: String,
+    pub model: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_imap_port() -> u16 {
+    993
+}
+
+fn default_folder() -> String {
+    "INBOX".to_string()
+}
+
+fn default_filter() -> String {
+    "UNSEEN".to_string()
+}
+
+fn default_max_fetch() -> u32 {
+    20
+}
+
+fn default_email_interval() -> u64 {
+    300
 }
 
 /// GitHub watcher configuration.
@@ -394,6 +453,30 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                     interval_secs: s.interval_secs,
                     state_path: s.state_path.clone(),
                 }),
+            email: ws
+                .watchers
+                .email
+                .iter()
+                .map(|e| crate::buzz::config::EmailMailboxConfig {
+                    name: e.name.clone(),
+                    host: e.host.clone(),
+                    port: e.port,
+                    tls: e.tls,
+                    username: e.username.clone(),
+                    password: e.password.clone(),
+                    folder: e.folder.clone(),
+                    filter: e.filter.clone(),
+                    include_body: e.include_body,
+                    max_fetch: e.max_fetch,
+                    interval_secs: e.interval_secs,
+                    summarizer: e.summarizer.as_ref().map(|s| {
+                        crate::buzz::config::EmailSummarizerConfig {
+                            base_url: s.base_url.clone(),
+                            model: s.model.clone(),
+                        }
+                    }),
+                })
+                .collect(),
         },
         coordinator: crate::buzz::config::CoordinatorConfig {
             model: ws.coordinator.model.clone(),
