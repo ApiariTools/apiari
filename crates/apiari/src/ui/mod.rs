@@ -1058,7 +1058,7 @@ async fn handle_action(
                     .output()
                     .await;
             });
-            app.flash(format!("Comment sent on PR #{pr_number} in {repo}"));
+            app.flash(format!("Sending comment on PR #{pr_number} in {repo}..."));
         }
         KeyAction::ResolveSignal(id) => {
             let db = config::db_path();

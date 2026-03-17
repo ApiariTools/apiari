@@ -2002,7 +2002,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 app.zoomed_panel
             };
-            if app.chat_focused {
+            if app.review_comment_active {
+                vec![
+                    Span::raw(" "),
+                    Span::styled("enter", theme::key_hint()),
+                    Span::styled(":send  ", theme::key_desc()),
+                    Span::styled("esc", theme::key_hint()),
+                    Span::styled(":cancel", theme::key_desc()),
+                ]
+            } else if app.chat_focused {
                 vec![
                     Span::raw(" "),
                     Span::styled("enter", theme::key_hint()),
@@ -2042,21 +2050,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("q", theme::key_hint()),
                     Span::styled(":quit", theme::key_desc()),
                 ]
-            } else if app.review_comment_active {
-                vec![
-                    Span::raw(" "),
-                    Span::styled("enter", theme::key_hint()),
-                    Span::styled(":send  ", theme::key_desc()),
-                    Span::styled("esc", theme::key_hint()),
-                    Span::styled(":cancel", theme::key_desc()),
-                ]
             } else {
                 let has_reviews = app.current_ws().is_some_and(|ws| {
                     ws.signals
                         .iter()
                         .any(|s| s.source.ends_with("_review_queue"))
                 });
-                let review_focused = app.focused_panel == Panel::Reviews
+                let on_reviews_panel = app.focused_panel == Panel::Reviews;
+                let github_review = on_reviews_panel
                     && app
                         .selected_signal()
                         .is_some_and(|s| s.source == "github_review_queue");
@@ -2069,12 +2070,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("enter", theme::key_hint()),
                     Span::styled(":detail  ", theme::key_desc()),
                 ];
-                if review_focused {
+                if github_review {
                     h.push(Span::styled("a", theme::key_hint()));
                     h.push(Span::styled(":approve  ", theme::key_desc()));
                     h.push(Span::styled("c", theme::key_hint()));
                     h.push(Span::styled(":comment  ", theme::key_desc()));
-                } else {
+                } else if !on_reviews_panel {
                     h.push(Span::styled("c", theme::key_hint()));
                     h.push(Span::styled(":chat  ", theme::key_desc()));
                 }
