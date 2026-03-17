@@ -498,6 +498,31 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         KeyCode::Char('q') => {
             return KeyAction::Quit;
         }
+        // Number keys 1-5: jump directly to a panel
+        KeyCode::Char(c @ '1'..='5') => {
+            app.zoomed_panel = None;
+            match c {
+                '1' => app.focused_panel = Panel::Workers,
+                '2' => app.focused_panel = Panel::Signals,
+                '3' => {
+                    if app.has_review_queue() {
+                        app.focused_panel = Panel::Reviews;
+                    } else {
+                        app.focused_panel = Panel::Signals;
+                    }
+                }
+                '4' => app.focused_panel = Panel::Feed,
+                '5' => {
+                    app.focused_panel = Panel::Chat;
+                    app.chat_focused = true;
+                    if let Some(ws) = app.current_ws_mut() {
+                        ws.has_unread_response = false;
+                    }
+                }
+                _ => unreachable!(),
+            }
+            app.needs_redraw = true;
+        }
         _ => {}
     }
     KeyAction::Redraw
@@ -1273,4 +1298,122 @@ fn build_coordinator(workspace_name: &str) -> Option<Coordinator> {
     }));
 
     Some(coordinator)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    /// Build a minimal App for key-handling tests (no file I/O).
+    fn test_app() -> App {
+        let ws_config: config::WorkspaceConfig =
+            serde_json::from_str(r#"{"root":"/tmp"}"#).unwrap();
+        let ws = app::WorkspaceState {
+            name: "test".into(),
+            config: ws_config,
+            signals: Vec::new(),
+            workers: Vec::new(),
+            chat_history: Vec::new(),
+            input: String::new(),
+            chat_scroll: apiari_tui::scroll::ScrollState::new(),
+            streaming: false,
+            coordinator_preview: None,
+            has_unread_response: false,
+            prev_worker_phases: Default::default(),
+            prev_signal_ids: Default::default(),
+            prev_pr_workers: Default::default(),
+            sparkline_data: vec![0; 24],
+            watcher_health: Vec::new(),
+            feed: Vec::new(),
+            feed_scroll: apiari_tui::scroll::ScrollState::new(),
+            thoughts: Vec::new(),
+        };
+        App {
+            workspaces: vec![ws],
+            active_tab: 0,
+            prefix_active: false,
+            view: View::Dashboard,
+            mode: Mode::Normal,
+            focused_panel: Panel::Home,
+            zoomed_panel: None,
+            worker_selection: 0,
+            signal_selection: 0,
+            review_selection: 0,
+            feed_selection: 0,
+            chat_focused: false,
+            worker_input: String::new(),
+            worker_input_active: false,
+            review_comment_active: false,
+            review_comment_input: String::new(),
+            review_comment_repo: String::new(),
+            review_comment_pr: 0,
+            content_scroll: 0,
+            signal_list_selection: 0,
+            review_list_selection: 0,
+            pr_list_selection: 0,
+            daemon_alive: false,
+            daemon_connected: false,
+            daemon_uptime_secs: None,
+            last_extras_refresh: std::time::Instant::now(),
+            terminal_width: 120,
+            activity_buf: vec![0; 18],
+            pending_action: None,
+            flash: None,
+            needs_redraw: false,
+            spinner_tick: 0,
+            last_worker_refresh: std::time::Instant::now(),
+            last_signal_refresh: std::time::Instant::now(),
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn test_key_1_jumps_to_workers() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        app.zoomed_panel = Some(Panel::Home);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('1')));
+
+        assert_eq!(app.focused_panel, Panel::Workers);
+        assert!(app.zoomed_panel.is_none(), "zoom should be cleared");
+    }
+
+    #[test]
+    fn test_key_5_jumps_to_chat_and_focuses() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        assert!(!app.chat_focused);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('5')));
+
+        assert_eq!(app.focused_panel, Panel::Chat);
+        assert!(app.chat_focused, "chat should be focused for input");
+    }
+
+    #[test]
+    fn test_number_keys_no_effect_when_chat_focused() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+
+        // When chat is focused, handle_dashboard_key delegates to
+        // handle_dashboard_chat_key which inserts the char into input.
+        handle_dashboard_key(&mut app, key(KeyCode::Char('1')));
+
+        // Panel should NOT have changed — the '1' went to chat input
+        assert_eq!(app.focused_panel, Panel::Chat);
+        // The character should have been inserted into the chat input
+        let input = &app.workspaces[0].input;
+        assert_eq!(input, "1");
+    }
 }

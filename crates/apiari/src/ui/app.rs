@@ -178,9 +178,9 @@ pub struct WorkspaceState {
     pub coordinator_preview: Option<String>,
     pub has_unread_response: bool,
     // State tracking for proactive notifications
-    prev_worker_phases: std::collections::HashMap<String, String>,
-    prev_signal_ids: std::collections::HashSet<i64>,
-    prev_pr_workers: std::collections::HashSet<String>,
+    pub(super) prev_worker_phases: std::collections::HashMap<String, String>,
+    pub(super) prev_signal_ids: std::collections::HashSet<i64>,
+    pub(super) prev_pr_workers: std::collections::HashSet<String>,
     // Dashboard extras
     pub sparkline_data: Vec<u64>,
     pub watcher_health: Vec<WatcherHealth>,

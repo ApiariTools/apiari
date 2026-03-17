@@ -2063,6 +2063,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                         .is_some_and(|s| s.source == "github_review_queue");
                 let mut h = vec![
                     Span::raw(" "),
+                    Span::styled("1-5", theme::key_hint()),
+                    Span::styled(":jump  ", theme::key_desc()),
                     Span::styled("tab", theme::key_hint()),
                     Span::styled(":panel  ", theme::key_desc()),
                     Span::styled("j/k", theme::key_hint()),
@@ -2288,7 +2290,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
     let w = 54u16.min(area.width.saturating_sub(4));
-    let h = 31u16.min(area.height.saturating_sub(4));
+    let h = 32u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(w)) / 2;
     let y = (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
@@ -2324,6 +2326,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  c             ", theme::key_hint()),
             Span::styled("Focus chat input", theme::key_desc()),
+        ]),
+        Line::from(vec![
+            Span::styled("  1-5           ", theme::key_hint()),
+            Span::styled("Jump to panel", theme::key_desc()),
         ]),
         Line::from(vec![
             Span::styled("  z             ", theme::key_hint()),
