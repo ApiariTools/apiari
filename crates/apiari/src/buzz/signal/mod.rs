@@ -100,6 +100,7 @@ pub struct SignalRecord {
     pub updated_at: DateTime<Utc>,
     pub resolved_at: Option<DateTime<Utc>>,
     pub metadata: Option<String>,
+    pub snoozed_until: Option<DateTime<Utc>>,
 }
 
 /// An update from a watcher — upserted into the store by (source, external_id).

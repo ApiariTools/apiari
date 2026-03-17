@@ -138,7 +138,10 @@ fn save_persisted_date(path: &Path, date: NaiveDate) {
     match serde_json::to_string_pretty(&state) {
         Ok(json) => {
             if let Err(e) = std::fs::write(path, json) {
-                warn!("failed to persist morning brief state to {}: {e}", path.display());
+                warn!(
+                    "failed to persist morning brief state to {}: {e}",
+                    path.display()
+                );
             }
         }
         Err(e) => {
@@ -357,6 +360,7 @@ mod tests {
             updated_at: Utc::now(),
             resolved_at: None,
             metadata: None,
+            snoozed_until: None,
         }
     }
 

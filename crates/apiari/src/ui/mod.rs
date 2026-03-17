@@ -74,6 +74,7 @@ enum KeyAction {
         pr_number: u64,
         body: String,
     },
+    SnoozeSignal(i64, chrono::DateTime<chrono::Utc>),
     Redraw,
 }
 
@@ -305,6 +306,34 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
 
     // ── Confirm overlay ──
     if app.mode == Mode::Confirm {
+        // Snooze has its own key handling (j/k/enter/esc)
+        if matches!(app.pending_action, Some(PendingAction::SnoozeSignal(_))) {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if app.snooze_selection + 1 < app::SNOOZE_OPTIONS.len() {
+                        app.snooze_selection += 1;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.snooze_selection = app.snooze_selection.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some(PendingAction::SnoozeSignal(id)) = app.pending_action.take() {
+                        app.mode = Mode::Normal;
+                        let until = app::App::compute_snooze_until(app.snooze_selection);
+                        return KeyAction::SnoozeSignal(id, until);
+                    }
+                }
+                KeyCode::Esc => {
+                    app.pending_action = None;
+                    app.mode = Mode::Normal;
+                    app.flash("Cancelled");
+                }
+                _ => {}
+            }
+            return KeyAction::Redraw;
+        }
+
         match key.code {
             KeyCode::Char('y') => {
                 if let Some(action) = app.pending_action.take() {
@@ -315,6 +344,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
                         PendingAction::ApproveReview { repo, pr_number } => {
                             return KeyAction::ApproveReview { repo, pr_number };
                         }
+                        PendingAction::SnoozeSignal(_) => unreachable!(),
                     }
                 }
             }
@@ -444,7 +474,6 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 app.needs_redraw = true;
             }
         }
-        KeyCode::Char('z') => app.toggle_zoom(),
         KeyCode::Char('h') | KeyCode::Left => {
             if app.zoomed_panel.is_some() || app.terminal_width < 50 {
                 app.prev_panel();
@@ -485,6 +514,20 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 let id = signal.id;
                 app.pending_action = Some(PendingAction::ResolveSignal(id));
                 app.mode = Mode::Confirm;
+            }
+        }
+        KeyCode::Char('z') => {
+            if matches!(app.focused_panel, Panel::Signals | Panel::Reviews) {
+                if let Some(signal) = app.selected_signal() {
+                    let id = signal.id;
+                    app.snooze_selection = 0;
+                    app.pending_action = Some(PendingAction::SnoozeSignal(id));
+                    app.mode = Mode::Confirm;
+                } else {
+                    app.toggle_zoom();
+                }
+            } else {
+                app.toggle_zoom();
             }
         }
         KeyCode::Char('G') => {
@@ -703,6 +746,16 @@ fn handle_signal_detail_key(
                 app.mode = Mode::Confirm;
             }
         }
+        KeyCode::Char('z') => {
+            if let Some(ws) = app.current_ws()
+                && let Some(signal) = ws.signals.get(idx)
+            {
+                let id = signal.id;
+                app.snooze_selection = 0;
+                app.pending_action = Some(PendingAction::SnoozeSignal(id));
+                app.mode = Mode::Confirm;
+            }
+        }
         KeyCode::Char('q') => return KeyAction::Quit,
         _ => {}
     }
@@ -748,6 +801,14 @@ fn handle_signal_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
             if let Some(signal) = app.selected_signal() {
                 let id = signal.id;
                 app.pending_action = Some(PendingAction::ResolveSignal(id));
+                app.mode = Mode::Confirm;
+            }
+        }
+        KeyCode::Char('z') => {
+            if let Some(signal) = app.selected_signal() {
+                let id = signal.id;
+                app.snooze_selection = 0;
+                app.pending_action = Some(PendingAction::SnoozeSignal(id));
                 app.mode = Mode::Confirm;
             }
         }
@@ -828,6 +889,14 @@ fn handle_review_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
         KeyCode::Char('o') => {
             if let Some(url) = app.selected_url() {
                 return KeyAction::OpenUrl(url);
+            }
+        }
+        KeyCode::Char('z') => {
+            if let Some(signal) = app.selected_signal() {
+                let id = signal.id;
+                app.snooze_selection = 0;
+                app.pending_action = Some(PendingAction::SnoozeSignal(id));
+                app.mode = Mode::Confirm;
             }
         }
         KeyCode::Char('q') => return KeyAction::Quit,
@@ -1072,6 +1141,25 @@ async fn handle_action(
                     }
                     Err(e) => {
                         app.flash(format!("Failed to resolve: {e}"));
+                    }
+                }
+            }
+        }
+        KeyAction::SnoozeSignal(id, until) => {
+            let db = config::db_path();
+            if let Some(ws) = app.current_ws()
+                && let Ok(store) = SignalStore::open(&db, &ws.name)
+            {
+                match store.snooze_signal(id, until) {
+                    Ok(()) => {
+                        let label = app::SNOOZE_OPTIONS
+                            .get(app.snooze_selection)
+                            .unwrap_or(&"snoozed");
+                        app.flash(format!("Signal #{id} snoozed until {label}"));
+                        app.refresh_signals();
+                    }
+                    Err(e) => {
+                        app.flash(format!("Failed to snooze: {e}"));
                     }
                 }
             }
