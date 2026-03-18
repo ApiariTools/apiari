@@ -180,11 +180,17 @@ pub struct NotionWatcherConfig {
 pub struct LinearWatcherConfig {
     pub name: String,
     pub api_key: String,
-    pub user_id: String,
-    #[serde(default)]
-    pub query: Option<String>,
     #[serde(default = "default_linear_interval")]
-    pub interval_secs: u64,
+    pub poll_interval_secs: u64,
+    #[serde(default)]
+    pub review_queue: Vec<LinearReviewQueueEntry>,
+}
+
+/// A single review queue query for Linear.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearReviewQueueEntry {
+    pub name: String,
+    pub query: String,
 }
 
 fn default_linear_interval() -> u64 {
@@ -549,6 +555,24 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                     user_id: n.user_id.clone(),
                     poll_database_ids: n.poll_database_ids.clone(),
                     interval_secs: n.interval_secs,
+                })
+                .collect(),
+            linear: ws
+                .watchers
+                .linear
+                .iter()
+                .map(|l| crate::buzz::config::LinearWatcherConfig {
+                    name: l.name.clone(),
+                    api_key: l.api_key.clone(),
+                    poll_interval_secs: l.poll_interval_secs,
+                    review_queue: l
+                        .review_queue
+                        .iter()
+                        .map(|e| crate::buzz::config::LinearReviewQueueEntry {
+                            name: e.name.clone(),
+                            query: e.query.clone(),
+                        })
+                        .collect(),
                 })
                 .collect(),
         },

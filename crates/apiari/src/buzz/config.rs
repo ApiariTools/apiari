@@ -59,6 +59,9 @@ pub struct WatchersConfig {
     /// Notion watchers.
     #[serde(default)]
     pub notion: Vec<NotionWatcherConfig>,
+    /// Linear watchers.
+    #[serde(default)]
+    pub linear: Vec<LinearWatcherConfig>,
 }
 
 /// GitHub watcher configuration.
@@ -166,6 +169,36 @@ pub struct NotionWatcherConfig {
     /// Poll interval in seconds.
     #[serde(default = "default_notion_interval")]
     pub interval_secs: u64,
+}
+
+/// Linear watcher configuration.
+///
+/// Polls the Linear GraphQL API for issues matching configured review queue queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearWatcherConfig {
+    /// Name used in logging and skill context.
+    pub name: String,
+    /// Linear personal API key (e.g. `lin_api_...`).
+    pub api_key: String,
+    /// Poll interval in seconds.
+    #[serde(default = "default_linear_interval")]
+    pub poll_interval_secs: u64,
+    /// Review queue queries — each entry defines a named filter.
+    #[serde(default)]
+    pub review_queue: Vec<LinearReviewQueueEntry>,
+}
+
+/// A single review queue query for Linear.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearReviewQueueEntry {
+    /// Human-readable name for this query (e.g. "Assigned to me").
+    pub name: String,
+    /// Query predicate string (e.g. "assignee:me state:active").
+    pub query: String,
+}
+
+fn default_linear_interval() -> u64 {
+    60
 }
 
 fn default_notion_interval() -> u64 {
