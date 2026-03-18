@@ -410,8 +410,9 @@ impl Watcher for GithubWatcher {
         }
 
         let mut all_signals = Vec::new();
+        let repos = self.config.repos.clone();
 
-        for repo in &self.config.repos.clone() {
+        for repo in &repos {
             let signals = self.poll_repo(repo).await;
             for (_key, signal) in signals {
                 all_signals.push(signal);
@@ -419,7 +420,7 @@ impl Watcher for GithubWatcher {
         }
 
         // Release workflow completion signals
-        for repo in &self.config.repos.clone() {
+        for repo in &repos {
             let last_seen_id = self.release_cursors.get(repo).copied().unwrap_or(0);
             let (signals, new_cursor) = self.poll_release_runs(repo, last_seen_id).await;
             all_signals.extend(signals);
@@ -429,7 +430,7 @@ impl Watcher for GithubWatcher {
         }
 
         // Merged PR signals
-        for repo in &self.config.repos.clone() {
+        for repo in &repos {
             let empty = HashSet::new();
             let seen_prs = self.merged_pr_cursors.get(repo).unwrap_or(&empty).clone();
             let (signals, updated_seen) = self.poll_merged_prs(repo, &seen_prs).await;
@@ -446,7 +447,7 @@ impl Watcher for GithubWatcher {
         }
 
         // PR CI failure and CI pass signals
-        for repo in &self.config.repos.clone() {
+        for repo in &repos {
             let mut ci_pass_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
 
             let prs = self.fetch_open_prs(repo).await;
@@ -478,10 +479,13 @@ impl Watcher for GithubWatcher {
                             }
                         }
                         Some("success") => {
-                            // Only emit when CI transitions to passing
+                            // Only emit when CI transitions to passing.
+                            // Include run_id in external_id so a fresh DB row is
+                            // inserted if CI regresses then passes again on a new run.
                             if !ci_pass_prs.contains(&pr_number) {
                                 ci_pass_prs.insert(pr_number);
-                                let key = format!("ci-pass-{repo}-{pr_number}");
+                                let rid = run_id.unwrap_or(0);
+                                let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
                                 let mut signal = SignalUpdate::new(
                                     "github_ci_pass",
                                     &key,
@@ -512,10 +516,14 @@ impl Watcher for GithubWatcher {
     }
 
     /// Persist cursor state to the signal store (called synchronously after poll).
+    /// Returns 0 so the framework still runs auto-reconcile for source "github"
+    /// (stateless issue/label/check signals need stale resolution).
     fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
         for (repo, last_id) in &self.release_cursors {
             let key = format!("github_release:{repo}");
-            let _ = store.set_cursor(&key, &last_id.to_string());
+            if let Err(e) = store.set_cursor(&key, &last_id.to_string()) {
+                warn!("failed to persist release cursor for {repo}: {e}");
+            }
         }
         for (repo, seen) in &self.merged_pr_cursors {
             let key = format!("github_merged_pr:{repo}");
@@ -524,7 +532,9 @@ impl Watcher for GithubWatcher {
                 .map(|n| n.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            let _ = store.set_cursor(&key, &val);
+            if let Err(e) = store.set_cursor(&key, &val) {
+                warn!("failed to persist merged PR cursor for {repo}: {e}");
+            }
         }
         for (repo, state) in &self.ci_pass_state {
             let key = format!("github_ci_pass:{repo}");
@@ -533,11 +543,13 @@ impl Watcher for GithubWatcher {
                 .map(|n| n.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            let _ = store.set_cursor(&key, &val);
+            if let Err(e) = store.set_cursor(&key, &val) {
+                warn!("failed to persist CI pass cursor for {repo}: {e}");
+            }
         }
-        // Return 1 to indicate custom reconciliation handled
-        // (prevents framework from auto-reconciling github_release/merged_pr/ci_pass signals)
-        Ok(1)
+        // Return 0: cursor persistence is done, but let the framework
+        // auto-reconcile source "github" signals (issues/labels/checks).
+        Ok(0)
     }
 }
 
@@ -735,10 +747,11 @@ mod tests {
     fn test_ci_pass_signal() {
         let pr_title = "Add feature X";
         let pr_number = 42u64;
+        let run_id = 789u64;
         let repo = "org/repo";
         let run_url = "https://github.com/org/repo/actions/runs/789";
 
-        let key = format!("ci-pass-{repo}-{pr_number}");
+        let key = format!("ci-pass-{repo}-{pr_number}-{run_id}");
         let signal = SignalUpdate::new(
             "github_ci_pass",
             &key,
@@ -748,7 +761,7 @@ mod tests {
         .with_url(run_url);
 
         assert_eq!(signal.source, "github_ci_pass");
-        assert_eq!(signal.external_id, "ci-pass-org/repo-42");
+        assert_eq!(signal.external_id, "ci-pass-org/repo-42-789");
         assert_eq!(signal.severity, Severity::Info);
         assert!(signal.title.contains("CI passed on PR #42"));
         assert!(signal.title.contains("Add feature X"));
