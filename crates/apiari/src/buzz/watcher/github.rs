@@ -322,6 +322,26 @@ impl GithubWatcher {
                 continue;
             }
 
+            // Always mark as seen to prevent future re-emission
+            new_seen.insert(number);
+
+            // On first run (empty cursor), only emit for recently merged PRs
+            // to avoid flooding with old already-merged PRs.
+            if seen_prs.is_empty() {
+                let is_recent = pr
+                    .get("mergedAt")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .is_some_and(|merged_at| {
+                        let cutoff = chrono::Utc::now()
+                            - chrono::Duration::seconds((self.config.interval_secs * 2) as i64);
+                        merged_at >= cutoff
+                    });
+                if !is_recent {
+                    continue;
+                }
+            }
+
             let title = pr.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let url = pr.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -332,8 +352,6 @@ impl GithubWatcher {
                 signal = signal.with_url(url);
             }
             signals.push(signal);
-
-            new_seen.insert(number);
         }
 
         if new_seen != *seen_prs {
