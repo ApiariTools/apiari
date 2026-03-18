@@ -157,6 +157,10 @@ pub struct CoordinatorConfig {
     /// Signals, repos, and skills are still auto-appended.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Clear the coordinator session after this many turns (default: 50).
+    /// Set to 0 to disable auto-compaction.
+    #[serde(default = "default_max_session_turns")]
+    pub max_session_turns: u32,
 }
 
 impl Default for CoordinatorConfig {
@@ -166,6 +170,7 @@ impl Default for CoordinatorConfig {
             model: default_model(),
             max_turns: default_max_turns(),
             prompt: None,
+            max_session_turns: default_max_session_turns(),
         }
     }
 }
@@ -762,6 +767,10 @@ fn default_model() -> String {
 
 fn default_max_turns() -> u32 {
     20
+}
+
+fn default_max_session_turns() -> u32 {
+    50
 }
 
 fn default_watcher_interval() -> u64 {

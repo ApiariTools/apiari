@@ -90,6 +90,15 @@ enum CoordinatorJob {
     },
     /// Reset the coordinator session.
     ResetSession,
+    /// Compact the coordinator session (reset + respond with confirmation).
+    Compact {
+        /// If Some, send confirmation via Telegram.
+        telegram: Option<(TelegramChannel, i64, Option<i64>)>,
+        /// If Some, send confirmation via TUI responder.
+        tui_responder: Option<mpsc::UnboundedSender<socket::DaemonResponse>>,
+        socket_server: Option<Arc<socket::DaemonSocketServer>>,
+        slot_name: String,
+    },
     /// Coordinator follow-through for swarm events.
     SwarmFollowThrough {
         events: Vec<String>,
@@ -115,7 +124,10 @@ async fn run_coordinator_task(
     mut coordinator: Coordinator,
     store: SignalStore,
     mut job_rx: mpsc::UnboundedReceiver<CoordinatorJob>,
+    max_session_turns: u32,
 ) {
+    let mut turn_count: u32 = 0;
+
     while let Some(job) = job_rx.recv().await {
         match job {
             CoordinatorJob::TelegramMessage {
@@ -215,6 +227,8 @@ async fn run_coordinator_task(
 
                 match result {
                     Ok(response) => {
+                        turn_count += 1;
+
                         if let Some(ref server) = socket_server {
                             server.broadcast_activity(
                                 "telegram",
@@ -251,6 +265,13 @@ async fn run_coordinator_task(
                         if let Err(e) = channel.send_message(&msg).await {
                             error!("[{slot_name}] failed to send response: {e}");
                         }
+
+                        // Auto-compact if turn limit exceeded
+                        if max_session_turns > 0 && turn_count >= max_session_turns {
+                            info!("[coordinator] session compacted after {turn_count} turns");
+                            coordinator.reset_session();
+                            turn_count = 0;
+                        }
                     }
                     Err(e) => {
                         error!("[{slot_name}] coordinator error: {e}");
@@ -260,6 +281,7 @@ async fn run_coordinator_task(
                                 "[{slot_name}] resetting session after error (possible expired resume token)"
                             );
                             coordinator.reset_session();
+                            turn_count = 0;
                         }
                         let msg = OutboundMessage {
                             chat_id,
@@ -341,6 +363,7 @@ async fn run_coordinator_task(
 
                 match result {
                     Ok(response) => {
+                        turn_count += 1;
                         let _ = responder.send(socket::DaemonResponse::Done);
                         if let Some(ref server) = socket_server {
                             server.broadcast_activity(
@@ -350,6 +373,13 @@ async fn run_coordinator_task(
                                 &response,
                             );
                         }
+
+                        // Auto-compact if turn limit exceeded
+                        if max_session_turns > 0 && turn_count >= max_session_turns {
+                            info!("[coordinator] session compacted after {turn_count} turns");
+                            coordinator.reset_session();
+                            turn_count = 0;
+                        }
                     }
                     Err(e) => {
                         // If session resume failed, reset and try fresh next time
@@ -358,6 +388,7 @@ async fn run_coordinator_task(
                                 "[{ws_name}] resetting session after error (possible expired resume token)"
                             );
                             coordinator.reset_session();
+                            turn_count = 0;
                         }
                         let _ = responder.send(socket::DaemonResponse::Error {
                             text: format!("{e}"),
@@ -368,6 +399,38 @@ async fn run_coordinator_task(
 
             CoordinatorJob::ResetSession => {
                 coordinator.reset_session();
+                turn_count = 0;
+            }
+
+            CoordinatorJob::Compact {
+                telegram,
+                tui_responder,
+                socket_server,
+                slot_name,
+            } => {
+                coordinator.reset_session();
+                turn_count = 0;
+                info!("[{slot_name}] session compacted via /compact command");
+
+                let msg_text = "\u{1f5dc}\u{fe0f} Session compacted. Starting fresh.";
+                if let Some(ref server) = socket_server {
+                    server.broadcast_activity("system", &slot_name, "assistant_message", msg_text);
+                }
+                if let Some((channel, chat_id, topic_id)) = telegram {
+                    let msg = OutboundMessage {
+                        chat_id,
+                        text: msg_text.to_string(),
+                        buttons: vec![],
+                        topic_id,
+                    };
+                    let _ = channel.send_message(&msg).await;
+                }
+                if let Some(responder) = tui_responder {
+                    let _ = responder.send(socket::DaemonResponse::Token {
+                        text: msg_text.to_string(),
+                    });
+                    let _ = responder.send(socket::DaemonResponse::Done);
+                }
             }
 
             CoordinatorJob::SwarmFollowThrough {
@@ -766,7 +829,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             Err(e) => return ExitReason::Error(e),
         };
         let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
-        tokio::spawn(run_coordinator_task(coordinator, coord_store, coord_rx));
+        let max_session_turns = ws.config.coordinator.max_session_turns;
+        tokio::spawn(run_coordinator_task(
+            coordinator,
+            coord_store,
+            coord_rx,
+            max_session_turns,
+        ));
 
         // Morning brief scheduler
         let morning_brief_scheduler = ws
@@ -1092,11 +1161,30 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         let user_text = text.clone();
 
                         if let Some(&idx) = name_map.get(&ws_name) {
-                            let slot = &slots[idx];
+                            let slot = &mut slots[idx];
                             info!("[{}] TUI chat: {user_text}", slot.name);
 
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("tui", &ws_name, "user_message", &user_text);
+                            }
+
+                            // Check for slash commands in TUI chat
+                            if let Some(rest) = user_text.strip_prefix('/') {
+                                let (command, _args) = match rest.split_once(' ') {
+                                    Some((cmd, args)) => (cmd, args.trim()),
+                                    None => (rest, ""),
+                                };
+                                let handled = handle_tui_command(
+                                    command,
+                                    slot,
+                                    &client_req.responder,
+                                    &socket_server,
+                                    &telegram_channels,
+                                ).await;
+                                if handled {
+                                    continue;
+                                }
+                                // Not a built-in command — fall through to coordinator
                             }
 
                             let job = CoordinatorJob::TuiChat {
@@ -1196,6 +1284,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         };
                                         let _ = channel.send_message(&msg).await;
                                     }
+                                    "compact" => {
+                                        let _ = slot.coord_tx.send(CoordinatorJob::Compact {
+                                            telegram: Some((channel.clone(), chat_id, topic_id)),
+                                            tui_responder: None,
+                                            socket_server: socket_server.clone(),
+                                            slot_name: slot.name.clone(),
+                                        });
+                                    }
                                     "update" => {
                                         info!("[{}] running /update", slot.name);
                                         let updating_msg = OutboundMessage {
@@ -1280,7 +1376,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         tokio::spawn(morning_brief::execute_brief(params));
                                     }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -1598,6 +1694,217 @@ fn write_pid() -> Result<()> {
 
 fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
+}
+
+/// Handle a TUI slash command. Returns `true` if the command was handled.
+async fn handle_tui_command(
+    command: &str,
+    slot: &mut WorkspaceSlot,
+    responder: &mpsc::UnboundedSender<socket::DaemonResponse>,
+    socket_server: &Option<Arc<socket::DaemonSocketServer>>,
+    telegram_channels: &HashMap<String, TelegramChannel>,
+) -> bool {
+    /// Send a text response back to the TUI client.
+    fn reply(
+        responder: &mpsc::UnboundedSender<socket::DaemonResponse>,
+        socket_server: &Option<Arc<socket::DaemonSocketServer>>,
+        ws_name: &str,
+        text: &str,
+    ) {
+        let _ = responder.send(socket::DaemonResponse::Token {
+            text: text.to_string(),
+        });
+        let _ = responder.send(socket::DaemonResponse::Done);
+        if let Some(server) = socket_server {
+            server.broadcast_activity("tui", ws_name, "assistant_message", text);
+        }
+    }
+
+    match command {
+        "status" => {
+            let signals = slot.store.get_open_signals().unwrap_or_default();
+            let summary = format_signal_summary(&signals);
+            reply(responder, socket_server, &slot.name, &summary);
+            true
+        }
+        "reset" => {
+            let _ = slot.coord_tx.send(CoordinatorJob::ResetSession);
+            reply(responder, socket_server, &slot.name, "Session reset.");
+            true
+        }
+        "compact" => {
+            let _ = slot.coord_tx.send(CoordinatorJob::Compact {
+                telegram: None,
+                tui_responder: Some(responder.clone()),
+                socket_server: socket_server.clone(),
+                slot_name: slot.name.clone(),
+            });
+            true
+        }
+        "brief" => {
+            let channel = slot
+                .config
+                .telegram
+                .as_ref()
+                .and_then(|tg| telegram_channels.get(&tg.bot_token));
+            if let Some(channel) = channel {
+                if let Some(tg) = &slot.config.telegram {
+                    let params = morning_brief::BriefParams {
+                        model: slot.config.coordinator.model.clone(),
+                        signals: slot.store.get_open_signals().unwrap_or_default(),
+                        swarm_state_path: slot
+                            .config
+                            .watchers
+                            .swarm
+                            .as_ref()
+                            .map(|s| s.state_path.clone()),
+                        workspace: slot.name.clone(),
+                        channel: channel.clone(),
+                        chat_id: tg.chat_id,
+                        topic_id: tg.topic_id,
+                        socket_server: socket_server.clone(),
+                    };
+                    tokio::spawn(morning_brief::execute_brief(params));
+                    reply(
+                        responder,
+                        socket_server,
+                        &slot.name,
+                        "Generating morning brief...",
+                    );
+                } else {
+                    reply(
+                        responder,
+                        socket_server,
+                        &slot.name,
+                        "No Telegram channel configured for briefs.",
+                    );
+                }
+            } else {
+                reply(
+                    responder,
+                    socket_server,
+                    &slot.name,
+                    "No Telegram channel configured for briefs.",
+                );
+            }
+            true
+        }
+        "help" => {
+            let mut text = "Built-in commands:\n/status — show open signals\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+                .to_string();
+            if !slot.config.commands.is_empty() {
+                text.push_str("\n\nCustom commands:");
+                for cmd in &slot.config.commands {
+                    let desc = cmd.description.as_deref().unwrap_or("(no description)");
+                    text.push_str(&format!("\n/{} — {}", cmd.name, desc));
+                }
+            }
+            reply(responder, socket_server, &slot.name, &text);
+            true
+        }
+        "update" => {
+            reply(
+                responder,
+                socket_server,
+                &slot.name,
+                "Updating apiari + swarm from crates.io...",
+            );
+
+            let script = "source /Users/josh/.cargo/env 2>/dev/null; \
+                /Users/josh/.cargo/bin/cargo install --force apiari 2>&1 && \
+                codesign -f -s - /Users/josh/.cargo/bin/apiari 2>&1 && \
+                /Users/josh/.cargo/bin/cargo install --force swarm 2>&1 && \
+                codesign -f -s - /Users/josh/.cargo/bin/swarm 2>&1";
+
+            let output = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .output()
+                .await;
+
+            match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let status_icon = if out.status.success() { "✅" } else { "❌" };
+                    let mut text = format!("{status_icon} /update");
+                    let combined = format!("{stdout}{stderr}");
+                    let tail: String = combined
+                        .lines()
+                        .rev()
+                        .take(20)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !tail.is_empty() {
+                        text.push_str(&format!("\n```\n{tail}\n```"));
+                    }
+                    if let Some(server) = socket_server {
+                        server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
+                    }
+                }
+                Err(e) => {
+                    if let Some(server) = socket_server {
+                        server.broadcast_activity(
+                            "tui",
+                            &slot.name,
+                            "assistant_message",
+                            &format!("❌ /update failed: {e}"),
+                        );
+                    }
+                }
+            }
+            true
+        }
+        _ => {
+            // Check custom commands
+            if let Some(cmd_cfg) = slot.config.commands.iter().find(|c| c.name == command) {
+                info!("[{}] running custom command: /{}", slot.name, command);
+                let output = tokio::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd_cfg.script)
+                    .output()
+                    .await;
+
+                match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        let status_icon = if out.status.success() { "✅" } else { "❌" };
+                        let mut text = format!("{status_icon} /{command}");
+                        let combined = format!("{stdout}{stderr}");
+                        let tail: String = combined
+                            .lines()
+                            .rev()
+                            .take(20)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !tail.is_empty() {
+                            text.push_str(&format!("\n```\n{tail}\n```"));
+                        }
+                        reply(responder, socket_server, &slot.name, &text);
+                    }
+                    Err(e) => {
+                        reply(
+                            responder,
+                            socket_server,
+                            &slot.name,
+                            &format!("❌ /{command} failed: {e}"),
+                        );
+                    }
+                }
+                true
+            } else {
+                // Not a known command — let the coordinator handle it
+                false
+            }
+        }
+    }
 }
 
 /// Format swarm events into a system notification for the coordinator.
