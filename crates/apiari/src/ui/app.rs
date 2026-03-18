@@ -225,6 +225,7 @@ pub struct App {
     // Daemon / extras
     pub daemon_alive: bool,
     pub daemon_connected: bool, // true if TUI is connected to daemon via socket
+    pub daemon_remote: bool,    // true if connected via TCP (remote)
     pub daemon_uptime_secs: Option<u64>,
     pub last_extras_refresh: Instant,
     // Terminal size (updated each frame)
@@ -340,6 +341,7 @@ impl App {
             pr_list_selection: 0,
             daemon_alive: false,
             daemon_connected: false,
+            daemon_remote: false,
             daemon_uptime_secs: None,
             last_extras_refresh: Instant::now(),
             terminal_width: 80,

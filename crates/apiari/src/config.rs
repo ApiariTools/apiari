@@ -72,6 +72,25 @@ pub struct WorkspaceConfig {
     /// Morning brief configuration.
     #[serde(default)]
     pub morning_brief: Option<MorningBriefConfig>,
+
+    /// Enable TCP listener for the daemon on this port (e.g. 7474).
+    /// Disabled if not set.
+    #[serde(default)]
+    pub daemon_tcp_port: Option<u16>,
+
+    /// Bind address for the TCP listener (default: "127.0.0.1").
+    /// Set to "0.0.0.0" to listen on all interfaces.
+    #[serde(default)]
+    pub daemon_tcp_bind: Option<String>,
+
+    /// Remote daemon host (Tailscale/LAN IP). When set with `daemon_port`,
+    /// the TUI connects to this workspace via TCP instead of Unix socket.
+    #[serde(default)]
+    pub daemon_host: Option<String>,
+
+    /// Remote daemon TCP port. Used with `daemon_host`.
+    #[serde(default)]
+    pub daemon_port: Option<u16>,
 }
 
 /// Telegram bot configuration.
@@ -809,6 +828,10 @@ root = "/tmp/test"
             pipeline: PipelineConfig::default(),
             commands: vec![],
             morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -825,6 +848,10 @@ root = "/tmp/test"
             pipeline: PipelineConfig::default(),
             commands: vec![],
             morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -845,11 +872,125 @@ root = "/tmp/test"
             pipeline: PipelineConfig::default(),
             commands: vec![],
             morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
         };
 
         let buzz = to_buzz_config(&ws);
         assert!(buzz.telegram.is_some());
         assert_eq!(buzz.telegram.unwrap().chat_id, 123);
         assert_eq!(buzz.coordinator.model, "sonnet");
+    }
+
+    #[test]
+    fn test_tcp_config_defaults_to_none() {
+        let toml_str = r#"
+            root = "/tmp/test"
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.daemon_tcp_port.is_none());
+        assert!(config.daemon_tcp_bind.is_none());
+        assert!(config.daemon_host.is_none());
+        assert!(config.daemon_port.is_none());
+    }
+
+    #[test]
+    fn test_tcp_config_daemon_tcp_port() {
+        let toml_str = r#"
+            root = "/tmp/test"
+            daemon_tcp_port = 7474
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon_tcp_port, Some(7474));
+        // bind defaults to None (resolved to 127.0.0.1 at runtime)
+        assert!(config.daemon_tcp_bind.is_none());
+        assert!(config.daemon_host.is_none());
+        assert!(config.daemon_port.is_none());
+    }
+
+    #[test]
+    fn test_tcp_config_custom_bind_address() {
+        let toml_str = r#"
+            root = "/tmp/test"
+            daemon_tcp_port = 7474
+            daemon_tcp_bind = "0.0.0.0"
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon_tcp_port, Some(7474));
+        assert_eq!(config.daemon_tcp_bind.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn test_tcp_config_remote_connection() {
+        let toml_str = r#"
+            root = "/tmp/test"
+            daemon_host = "100.64.0.1"
+            daemon_port = 7474
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.daemon_tcp_port.is_none());
+        assert_eq!(config.daemon_host.as_deref(), Some("100.64.0.1"));
+        assert_eq!(config.daemon_port, Some(7474));
+    }
+
+    #[test]
+    fn test_tcp_config_full() {
+        let toml_str = r#"
+            root = "/tmp/test"
+            daemon_tcp_port = 7474
+            daemon_host = "myserver.ts.net"
+            daemon_port = 7474
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon_tcp_port, Some(7474));
+        assert_eq!(config.daemon_host.as_deref(), Some("myserver.ts.net"));
+        assert_eq!(config.daemon_port, Some(7474));
+    }
+
+    #[test]
+    fn test_tcp_remote_target_detection() {
+        // Simulates the TUI logic for choosing Unix vs TCP
+        let config_local: WorkspaceConfig = toml::from_str(r#"root = "/tmp""#).unwrap();
+        let config_remote: WorkspaceConfig = toml::from_str(
+            r#"
+            root = "/tmp"
+            daemon_host = "10.0.0.1"
+            daemon_port = 7474
+            "#,
+        )
+        .unwrap();
+
+        // Local: no remote target
+        let target = config_local
+            .daemon_host
+            .as_ref()
+            .zip(config_local.daemon_port);
+        assert!(target.is_none());
+
+        // Remote: has target
+        let target = config_remote
+            .daemon_host
+            .as_ref()
+            .zip(config_remote.daemon_port);
+        assert!(target.is_some());
+        let (host, port) = target.unwrap();
+        assert_eq!(host, "10.0.0.1");
+        assert_eq!(port, 7474);
+    }
+
+    #[test]
+    fn test_tcp_config_host_without_port_not_remote() {
+        let config: WorkspaceConfig = toml::from_str(
+            r#"
+            root = "/tmp"
+            daemon_host = "10.0.0.1"
+            "#,
+        )
+        .unwrap();
+        // Both host AND port needed for remote
+        let target = config.daemon_host.as_ref().zip(config.daemon_port);
+        assert!(target.is_none());
     }
 }

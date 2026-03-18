@@ -102,8 +102,17 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
     let (coord_tx, coord_rx) = mpsc::channel::<CoordResponse>(64);
 
-    // Auto-start daemon if not running
-    if !crate::daemon::is_daemon_running() {
+    // Detect remote workspace before auto-start so we skip local daemon spawn.
+    let focused = app.current_ws();
+    let remote_target = focused.and_then(|ws| {
+        let host = ws.config.daemon_host.as_deref()?;
+        let port = ws.config.daemon_port?;
+        Some((host.to_string(), port))
+    });
+
+    // Auto-start daemon if not running (skip for remote workspaces — they
+    // connect to a daemon running on the remote host).
+    if remote_target.is_none() && !crate::daemon::is_daemon_running() {
         eprintln!("Starting daemon in the background...");
         if let Err(e) = crate::daemon::spawn_background() {
             eprintln!("Warning: failed to start daemon: {e}");
@@ -118,11 +127,20 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
         }
     }
 
-    // Choose daemon client (shared session) or local coordinator (standalone)
-    let use_daemon = daemon_client::socket_exists() && crate::daemon::is_daemon_running();
+    // Choose daemon client (shared session) or local coordinator (standalone).
+    let use_daemon = if remote_target.is_some() {
+        true // remote always uses daemon client
+    } else {
+        daemon_client::socket_exists() && crate::daemon::is_daemon_running()
+    };
     app.daemon_connected = use_daemon;
+    app.daemon_remote = remote_target.is_some();
 
-    if use_daemon {
+    if let Some((host, port)) = remote_target {
+        // Remote daemon — connect via TCP
+        let coord_tx_clone = coord_tx.clone();
+        tokio::spawn(daemon_client_task_tcp(host, port, user_rx, coord_tx_clone));
+    } else if use_daemon {
         // Spawn daemon client task (tokio task — the daemon handles coordinator)
         let coord_tx_clone = coord_tx.clone();
         tokio::spawn(daemon_client_task(user_rx, coord_tx_clone));
@@ -1286,6 +1304,76 @@ async fn daemon_client_task(
     }
 }
 
+/// Daemon client task connecting via TCP (remote workspace).
+async fn daemon_client_task_tcp(
+    host: String,
+    port: u16,
+    mut user_rx: mpsc::Receiver<UserMessage>,
+    coord_tx: mpsc::Sender<CoordResponse>,
+) {
+    let mut client = match daemon_client::DaemonClient::connect_tcp(&host, port).await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = coord_tx
+                .send(CoordResponse::Error(format!(
+                    "Failed to connect to remote daemon at {host}:{port}: {e}"
+                )))
+                .await;
+            return;
+        }
+    };
+
+    loop {
+        tokio::select! {
+            Some(msg) = user_rx.recv() => {
+                match msg {
+                    UserMessage::Chat { workspace_name, text } => {
+                        if let Err(e) = client.send_chat(&workspace_name, &text).await {
+                            let _ = coord_tx
+                                .send(CoordResponse::Error(format!("TCP send error: {e}")))
+                                .await;
+                        }
+                    }
+                }
+            }
+
+            resp = client.next_response() => {
+                match resp {
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { text })) => {
+                        let _ = coord_tx.send(CoordResponse::Token(text)).await;
+                    }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Done)) => {
+                        let _ = coord_tx.send(CoordResponse::Done).await;
+                    }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { text })) => {
+                        let _ = coord_tx.send(CoordResponse::Error(text)).await;
+                    }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Activity { source, workspace, kind, text })) => {
+                        if source == "tui" {
+                            continue;
+                        }
+                        let _ = coord_tx
+                            .send(CoordResponse::Activity { source, workspace, kind, text })
+                            .await;
+                    }
+                    Ok(None) => {
+                        let _ = coord_tx
+                            .send(CoordResponse::Error("Remote daemon disconnected".into()))
+                            .await;
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = coord_tx
+                            .send(CoordResponse::Error(format!("TCP read error: {e}")))
+                            .await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── Coordinator task ─────────────────────────────────────
 
 async fn coordinator_task(
@@ -1458,6 +1546,7 @@ mod tests {
             pr_list_selection: 0,
             daemon_alive: false,
             daemon_connected: false,
+            daemon_remote: false,
             daemon_uptime_secs: None,
             last_extras_refresh: std::time::Instant::now(),
             terminal_width: 120,
