@@ -686,6 +686,7 @@ fn write_workspace_config(state: &WizardState) -> Result<String> {
             max_turns: 20,
             prompt: Some(default_prompt),
             max_session_turns: 50,
+            ..config::CoordinatorConfig::default()
         },
         watchers,
         pipeline: config::PipelineConfig::default(),
