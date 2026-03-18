@@ -157,6 +157,10 @@ pub struct CoordinatorConfig {
     /// Signals, repos, and skills are still auto-appended.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Clear the coordinator session after this many turns (default: 50).
+    /// Set to 0 to disable auto-compaction.
+    #[serde(default = "default_max_session_turns")]
+    pub max_session_turns: u32,
 }
 
 impl Default for CoordinatorConfig {
@@ -166,6 +170,7 @@ impl Default for CoordinatorConfig {
             model: default_model(),
             max_turns: default_max_turns(),
             prompt: None,
+            max_session_turns: default_max_session_turns(),
         }
     }
 }
@@ -764,6 +769,10 @@ fn default_max_turns() -> u32 {
     20
 }
 
+fn default_max_session_turns() -> u32 {
+    50
+}
+
 fn default_watcher_interval() -> u64 {
     120
 }
@@ -819,6 +828,29 @@ root = "/tmp/test"
         assert!(config.telegram.is_none());
         assert_eq!(config.coordinator.model, "sonnet");
         assert_eq!(config.coordinator.max_turns, 20);
+        assert_eq!(config.coordinator.max_session_turns, 50);
+    }
+
+    #[test]
+    fn test_max_session_turns_explicit() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+max_session_turns = 100
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.max_session_turns, 100);
+    }
+
+    #[test]
+    fn test_max_session_turns_zero_disables() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+max_session_turns = 0
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.max_session_turns, 0);
     }
 
     #[test]
