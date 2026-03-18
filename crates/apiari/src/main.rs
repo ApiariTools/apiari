@@ -95,6 +95,23 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Init { name } => {
+            // Launch TUI wizard when stdin is a TTY and no workspace exists yet
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                let cwd = std::env::current_dir()?;
+                let ws_name = name.as_deref().unwrap_or_else(|| {
+                    cwd.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("workspace")
+                });
+                let config_path = config::workspaces_dir().join(format!("{ws_name}.toml"));
+                if !config_path.exists() {
+                    let result = ui::wizard::run_wizard().await?;
+                    if result.launch_ui {
+                        ui::run(result.workspace_name.as_deref()).await?;
+                    }
+                    return Ok(());
+                }
+            }
             init::run_init(name.as_deref())?;
         }
         Command::Daemon {
