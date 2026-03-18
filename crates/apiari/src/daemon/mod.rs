@@ -450,7 +450,7 @@ async fn run_coordinator_task(
                 slot_name,
             } => {
                 let elapsed = queued_at.elapsed().as_secs();
-                if elapsed > ttl_secs {
+                if elapsed >= ttl_secs {
                     info!(
                         "[{slot_name}] dropping stale signal follow-through ({source}, queued {elapsed}s ago)"
                     );
@@ -505,8 +505,8 @@ async fn run_coordinator_task(
                                 server.broadcast_activity(
                                     "signal",
                                     &slot_name,
-                                    "signal_follow_through",
-                                    &format!("[{source}] {response}"),
+                                    "assistant_message",
+                                    &response,
                                 );
                             }
                         } else {
@@ -2031,14 +2031,16 @@ fn format_system_notification(source: &str, events: &[String]) -> String {
 }
 
 /// Format a hook notification using a custom prompt template.
-/// Supports {title}, {url}, {body} placeholders.
+/// Supports {source} and {events} placeholders.
 fn format_hook_notification(source: &str, events: &[String], template: &str) -> String {
-    let titles = events.join(", ");
+    let event_list = events
+        .iter()
+        .map(|e| format!("- {e}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let result = template
         .replace("{source}", source)
-        .replace("{title}", &titles)
-        .replace("{url}", "")
-        .replace("{body}", "");
+        .replace("{events}", &event_list);
     if result.is_empty() {
         format_system_notification(source, events)
     } else {

@@ -185,7 +185,7 @@ impl Default for CoordinatorConfig {
 pub struct SignalHookConfig {
     /// Signal source to match (e.g. "swarm", "github_bot_review", "github_ci_failure").
     pub source: String,
-    /// Prompt template sent to coordinator. Supports {title}, {url}, {body} placeholders.
+    /// Prompt template sent to coordinator. Supports {source} and {events} placeholders.
     /// Empty string = use default formatting.
     #[serde(default)]
     pub prompt: String,
