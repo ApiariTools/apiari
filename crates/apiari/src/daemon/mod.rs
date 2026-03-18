@@ -670,6 +670,20 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         }
 
         for linear_config in &buzz_config.watchers.linear {
+            let mut watcher = LinearWatcher::new(linear_config.clone());
+            // Pre-load seen map from cursor store so first poll skips unchanged issues
+            if let Ok(Some(json)) = store.get_cursor(watcher.cursor_key())
+                && let Ok(map) =
+                    serde_json::from_str::<std::collections::HashMap<String, String>>(&json)
+            {
+                info!(
+                    "[{}] linear watcher '{}' restored {} seen issue(s)",
+                    ws.name,
+                    linear_config.name,
+                    map.len()
+                );
+                watcher.set_initial_seen(map);
+            }
             let query_names: Vec<&str> = linear_config
                 .review_queue
                 .iter()
@@ -687,10 +701,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 },
                 query_names.join(", ")
             );
-            registry.add_with_interval(
-                Box::new(LinearWatcher::new(linear_config.clone())),
-                linear_config.poll_interval_secs,
-            );
+            registry.add_with_interval(Box::new(watcher), linear_config.poll_interval_secs);
         }
 
         let mut coordinator = Coordinator::new(
