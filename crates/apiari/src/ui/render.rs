@@ -2247,12 +2247,19 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "\u{25cb}" // ○ local fallback
     };
-    let conn_label = if app.daemon_connected {
+    let conn_label = if app.daemon_remote {
+        "remote"
+    } else if app.daemon_connected {
         "daemon"
     } else {
         "local"
     };
-    let daemon_spans: Vec<Span> = if app.daemon_alive {
+    let conn_style = if app.daemon_remote {
+        Style::default().fg(theme::FROST) // cyan for remote
+    } else {
+        theme::muted()
+    };
+    let daemon_spans: Vec<Span> = if app.daemon_alive || app.daemon_remote {
         let uptime_str = match app.daemon_uptime_secs {
             Some(s) if s >= 3600 => format!("{}h{}m", s / 3600, (s % 3600) / 60),
             Some(s) if s >= 60 => format!("{}m", s / 60),
@@ -2268,7 +2275,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(ecg, Style::default().fg(ecg_color)),
             Span::styled(
                 format!(" {conn_indicator} {conn_label} {uptime_str}{watcher_str} "),
-                theme::muted(),
+                conn_style,
             ),
         ]
     } else {
@@ -2276,7 +2283,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(ecg, Style::default().fg(ecg_color)),
             Span::styled(
                 format!(" {conn_indicator} {conn_label} offline "),
-                theme::muted(),
+                conn_style,
             ),
         ]
     };

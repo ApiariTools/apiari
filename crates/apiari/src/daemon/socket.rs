@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 
@@ -57,9 +57,15 @@ pub struct DaemonSocketServer {
 
 impl DaemonSocketServer {
     /// Start the socket server, returning a receiver for client requests.
+    ///
+    /// Also returns the request sender so callers can pass it to `start_tcp()`.
     pub fn start(
         socket_path: &Path,
-    ) -> std::io::Result<(mpsc::UnboundedReceiver<ClientRequest>, Arc<Self>)> {
+    ) -> std::io::Result<(
+        mpsc::UnboundedReceiver<ClientRequest>,
+        mpsc::UnboundedSender<ClientRequest>,
+        Arc<Self>,
+    )> {
         // Clean up stale socket
         let _ = std::fs::remove_file(socket_path);
         if let Some(parent) = socket_path.parent() {
@@ -81,8 +87,11 @@ impl DaemonSocketServer {
             server_clone.accept_loop(listener, req_tx_clone).await;
         });
 
-        info!("socket server listening on {}", socket_path.display());
-        Ok((req_rx, server))
+        info!(
+            "[daemon] Unix socket listening on {}",
+            socket_path.display()
+        );
+        Ok((req_rx, req_tx, server))
     }
 
     /// Accept loop — spawns a task per client.
@@ -94,11 +103,12 @@ impl DaemonSocketServer {
         loop {
             match listener.accept().await {
                 Ok((stream, _addr)) => {
-                    info!("TUI client connected");
+                    info!("TUI client connected (unix)");
                     let req_tx = req_tx.clone();
                     let activity_rx = self.activity_tx.subscribe();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_client(stream, req_tx, activity_rx).await {
+                        let (reader, writer) = stream.into_split();
+                        if let Err(e) = handle_client(reader, writer, req_tx, activity_rx).await {
                             warn!("TUI client disconnected: {e}");
                         } else {
                             info!("TUI client disconnected");
@@ -107,6 +117,57 @@ impl DaemonSocketServer {
                 }
                 Err(e) => {
                     error!("socket accept error: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    /// Start a TCP listener on the given port, reusing the same protocol and request channel.
+    ///
+    /// Each TCP client gets the same per-client handler as Unix socket clients.
+    pub fn start_tcp(
+        self: &Arc<Self>,
+        port: u16,
+        req_tx: mpsc::UnboundedSender<ClientRequest>,
+    ) -> std::io::Result<()> {
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+        let listener = std::net::TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        let listener = TcpListener::from_std(listener)?;
+
+        let server = self.clone();
+        tokio::spawn(async move {
+            server.accept_tcp_loop(listener, req_tx).await;
+        });
+
+        info!("[daemon] TCP listener bound on 0.0.0.0:{port}");
+        Ok(())
+    }
+
+    /// Accept loop for TCP clients.
+    async fn accept_tcp_loop(
+        &self,
+        listener: TcpListener,
+        req_tx: mpsc::UnboundedSender<ClientRequest>,
+    ) {
+        loop {
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    info!("TUI client connected (tcp: {addr})");
+                    let req_tx = req_tx.clone();
+                    let activity_rx = self.activity_tx.subscribe();
+                    tokio::spawn(async move {
+                        let (reader, writer) = stream.into_split();
+                        if let Err(e) = handle_client(reader, writer, req_tx, activity_rx).await {
+                            warn!("TUI TCP client disconnected ({addr}): {e}");
+                        } else {
+                            info!("TUI TCP client disconnected ({addr})");
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("TCP accept error: {e}");
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
@@ -138,13 +199,17 @@ impl Drop for DaemonSocketServer {
     }
 }
 
-/// Handle a single TUI client connection.
-async fn handle_client(
-    stream: UnixStream,
+/// Handle a single TUI client connection (Unix or TCP).
+async fn handle_client<R, W>(
+    reader: R,
+    mut writer: W,
     req_tx: mpsc::UnboundedSender<ClientRequest>,
     mut activity_rx: broadcast::Receiver<DaemonResponse>,
-) -> std::io::Result<()> {
-    let (reader, mut writer) = stream.into_split();
+) -> std::io::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut lines = BufReader::new(reader).lines();
 
     // Per-client unicast channel (daemon sends Token/Done/Error here)
@@ -259,6 +324,138 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, DaemonResponse::Error { text } if text == "oops"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_request_response() {
+        // Simulate a client connection with in-memory pipes
+        let (client_reader, mut server_writer) = tokio::io::duplex(1024);
+        let (mut server_reader, client_writer) = tokio::io::duplex(1024);
+
+        let (req_tx, mut req_rx) = mpsc::unbounded_channel::<ClientRequest>();
+        let (_activity_tx, activity_rx) = broadcast::channel::<DaemonResponse>(16);
+
+        // Spawn the client handler
+        let handle = tokio::spawn(async move {
+            handle_client(client_reader, client_writer, req_tx, activity_rx).await
+        });
+
+        // Write a chat request from the "client" side
+        let req = DaemonRequest::Chat {
+            workspace: "test".into(),
+            text: "hello".into(),
+        };
+        let mut json = serde_json::to_string(&req).unwrap();
+        json.push('\n');
+        tokio::io::AsyncWriteExt::write_all(&mut server_writer, json.as_bytes())
+            .await
+            .unwrap();
+
+        // Read it from the request channel
+        let client_req = req_rx.recv().await.unwrap();
+        match &client_req.request {
+            DaemonRequest::Chat { workspace, text } => {
+                assert_eq!(workspace, "test");
+                assert_eq!(text, "hello");
+            }
+        }
+
+        // Send a response back via the responder
+        client_req
+            .responder
+            .send(DaemonResponse::Token {
+                text: "world".into(),
+            })
+            .unwrap();
+
+        // Read the response from the "client" side
+        let mut buf = String::new();
+        let mut reader = tokio::io::BufReader::new(&mut server_reader);
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut buf)
+            .await
+            .unwrap();
+        let resp: DaemonResponse = serde_json::from_str(buf.trim()).unwrap();
+        assert!(matches!(resp, DaemonResponse::Token { text } if text == "world"));
+
+        // Drop the writer to close the connection
+        drop(server_writer);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_invalid_json() {
+        let (client_reader, mut server_writer) = tokio::io::duplex(1024);
+        let (mut server_reader, client_writer) = tokio::io::duplex(1024);
+
+        let (req_tx, _req_rx) = mpsc::unbounded_channel::<ClientRequest>();
+        let (_activity_tx, activity_rx) = broadcast::channel::<DaemonResponse>(16);
+
+        let handle = tokio::spawn(async move {
+            handle_client(client_reader, client_writer, req_tx, activity_rx).await
+        });
+
+        // Send invalid JSON
+        tokio::io::AsyncWriteExt::write_all(&mut server_writer, b"not json\n")
+            .await
+            .unwrap();
+
+        // Should get an error response back
+        let mut buf = String::new();
+        let mut reader = tokio::io::BufReader::new(&mut server_reader);
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut buf)
+            .await
+            .unwrap();
+        let resp: DaemonResponse = serde_json::from_str(buf.trim()).unwrap();
+        match resp {
+            DaemonResponse::Error { text } => {
+                assert!(text.contains("invalid request"));
+            }
+            _ => panic!("expected Error response"),
+        }
+
+        drop(server_writer);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_client_broadcast_activity() {
+        let (client_reader, server_writer) = tokio::io::duplex(1024);
+        let (mut server_reader, client_writer) = tokio::io::duplex(1024);
+
+        let (req_tx, _req_rx) = mpsc::unbounded_channel::<ClientRequest>();
+        let (activity_tx, activity_rx) = broadcast::channel::<DaemonResponse>(16);
+
+        let handle = tokio::spawn(async move {
+            handle_client(client_reader, client_writer, req_tx, activity_rx).await
+        });
+
+        // Broadcast an activity event
+        let _ = activity_tx.send(DaemonResponse::Activity {
+            source: "telegram".into(),
+            workspace: "ws".into(),
+            kind: "user_message".into(),
+            text: "hello from tg".into(),
+        });
+
+        // Read it from the client side
+        let mut buf = String::new();
+        let mut reader = tokio::io::BufReader::new(&mut server_reader);
+        tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut buf)
+            .await
+            .unwrap();
+        let resp: DaemonResponse = serde_json::from_str(buf.trim()).unwrap();
+        match resp {
+            DaemonResponse::Activity {
+                source, workspace, ..
+            } => {
+                assert_eq!(source, "telegram");
+                assert_eq!(workspace, "ws");
+            }
+            _ => panic!("expected Activity"),
+        }
+
+        drop(server_writer);
+        let _ = handle.await;
     }
 
     #[test]

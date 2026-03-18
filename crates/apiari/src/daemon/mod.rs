@@ -796,7 +796,21 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
     // Start TUI socket server (optional — warn on failure)
     let socket_path = config::socket_path();
     let (mut tui_rx, socket_server) = match socket::DaemonSocketServer::start(&socket_path) {
-        Ok((rx, server)) => (Some(rx), Some(server)),
+        Ok((rx, req_tx, server)) => {
+            // Start TCP listener if any workspace has daemon_tcp_port configured
+            for slot in &slots {
+                if let Some(port) = slot.config.daemon_tcp_port {
+                    match server.start_tcp(port, req_tx.clone()) {
+                        Ok(()) => info!("[daemon] TCP listener started on port {port}"),
+                        Err(e) => {
+                            warn!("[daemon] failed to start TCP listener on port {port}: {e}")
+                        }
+                    }
+                    break; // only one TCP listener needed
+                }
+            }
+            (Some(rx), Some(server))
+        }
         Err(e) => {
             warn!("failed to start TUI socket server: {e}");
             (None, None)
