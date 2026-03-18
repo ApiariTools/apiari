@@ -545,10 +545,10 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                 .map(|g| crate::buzz::config::GithubWatcherConfig {
                     enabled: true,
                     interval_secs: g.interval_secs,
-                    repos: if g.repos.is_empty() {
-                        discover_repos(&ws.root)
-                    } else {
+                    repos: if !g.repos.is_empty() {
                         g.repos.clone()
+                    } else {
+                        resolve_repos(ws)
                     },
                     watch_labels: vec![],
                     review_queue: g
@@ -1144,5 +1144,53 @@ root = "/tmp/test"
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         // Legacy requires both host AND port
         assert!(config.resolved_daemon_endpoints().is_empty());
+    }
+
+    /// Helper to build a minimal WorkspaceConfig with a GitHub watcher for repo resolution tests.
+    fn ws_with_github(ws_repos: Vec<String>, gh_repos: Vec<String>) -> WorkspaceConfig {
+        WorkspaceConfig {
+            root: "/nonexistent".into(),
+            repos: ws_repos,
+            telegram: None,
+            coordinator: CoordinatorConfig::default(),
+            watchers: WatchersConfig {
+                github: Some(GithubWatcherConfig {
+                    repos: gh_repos,
+                    interval_secs: default_watcher_interval(),
+                    review_queue: vec![],
+                }),
+                ..Default::default()
+            },
+            pipeline: PipelineConfig::default(),
+            commands: vec![],
+            morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_endpoints: vec![],
+        }
+    }
+
+    #[test]
+    fn test_buzz_github_repos_watcher_override() {
+        let ws = ws_with_github(vec!["Org/Workspace".into()], vec!["Org/Override".into()]);
+        let gh = to_buzz_config(&ws).watchers.github.unwrap();
+        assert_eq!(gh.repos, vec!["Org/Override"]);
+    }
+
+    #[test]
+    fn test_buzz_github_repos_workspace_fallback() {
+        let ws = ws_with_github(vec!["Org/Workspace".into()], vec![]);
+        let gh = to_buzz_config(&ws).watchers.github.unwrap();
+        assert_eq!(gh.repos, vec!["Org/Workspace"]);
+    }
+
+    #[test]
+    fn test_buzz_github_repos_discovery_fallback() {
+        let ws = ws_with_github(vec![], vec![]);
+        let gh = to_buzz_config(&ws).watchers.github.unwrap();
+        // Nonexistent root means discover_repos returns empty
+        assert!(gh.repos.is_empty());
     }
 }
