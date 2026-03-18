@@ -4,7 +4,9 @@ pub mod app;
 pub mod daemon_client;
 pub mod history;
 pub mod render;
+pub mod settings;
 pub mod theme;
+pub mod wizard;
 
 use app::{App, Mode, Panel, PendingAction, View, review_signal_target};
 use color_eyre::Result;
@@ -15,6 +17,7 @@ use crossterm::terminal::{
 };
 use futures::StreamExt;
 use ratatui::prelude::*;
+use settings::SettingsState;
 use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -75,6 +78,7 @@ enum KeyAction {
         body: String,
     },
     SnoozeSignal(i64, chrono::DateTime<chrono::Utc>),
+    OpenSettings,
     Redraw,
 }
 
@@ -82,18 +86,19 @@ enum KeyAction {
 
 /// Launch the TUI.
 pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
-    let workspaces = config::discover_workspaces()?;
+    let mut workspaces = config::discover_workspaces()?;
     if workspaces.is_empty() {
-        eprintln!(
-            "No workspace configs found in {}",
-            config::workspaces_dir().display()
-        );
-        eprintln!("Run `apiari init` in a project directory to get started.");
-        eprintln!();
-        eprintln!("Get a Telegram bot token from @BotFather (https://t.me/BotFather)");
-        eprintln!("and your chat ID from @userinfobot (https://t.me/userinfobot).");
-        eprintln!("Then edit the config and run: apiari daemon start");
-        return Ok(());
+        // Launch the onboarding wizard instead of printing instructions
+        let result = wizard::run_wizard(None).await?;
+        if !result.launch_ui {
+            return Ok(());
+        }
+        // Re-discover workspaces after wizard wrote the config
+        workspaces = config::discover_workspaces()?;
+        if workspaces.is_empty() {
+            eprintln!("No workspace configs found after setup.");
+            return Ok(());
+        }
     }
 
     let mut app = App::new(workspaces, focus_workspace);
@@ -216,13 +221,19 @@ async fn event_loop(
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut settings_state: Option<SettingsState> = None;
 
     loop {
         if app.needs_redraw {
             if let Ok(size) = crossterm::terminal::size() {
                 app.terminal_width = size.0;
             }
-            terminal.draw(|f| render::draw(f, &app))?;
+            terminal.draw(|f| {
+                render::draw(f, &app);
+                if let Some(ref ss) = settings_state {
+                    settings::draw_settings(f, ss, f.area());
+                }
+            })?;
             app.needs_redraw = false;
         }
 
@@ -230,12 +241,37 @@ async fn event_loop(
             maybe_event = events.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => {
+                        // Settings overlay intercepts all keys when active
+                        if let Some(ref mut ss) = settings_state {
+                            let closed = ss.handle_key(key);
+                            if closed {
+                                settings_state = None;
+                            }
+                            app.needs_redraw = true;
+                            continue;
+                        }
+
                         let action = handle_key(&mut app, key);
+
+                        // Check for settings trigger
+                        if let KeyAction::OpenSettings = action {
+                            if let Some(ws) = app.current_ws() {
+                                settings_state = Some(SettingsState::from_workspace(
+                                    &ws.name, &ws.config,
+                                ));
+                            }
+                            app.needs_redraw = true;
+                            continue;
+                        }
+
                         if let Some(true) = handle_action(&mut app, action, user_tx).await {
                             break;
                         }
                     }
                     Some(Ok(Event::Mouse(mouse))) => {
+                        if settings_state.is_some() {
+                            continue;
+                        }
                         use crossterm::event::MouseEventKind;
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
@@ -592,6 +628,9 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 ws.chat_scroll.scroll_to_bottom();
             }
         }
+        KeyCode::Char('s') => {
+            return KeyAction::OpenSettings;
+        }
         KeyCode::Char('?') => {
             app.mode = Mode::Help;
         }
@@ -635,6 +674,9 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                 app.insert_char('\n');
             } else {
                 let input = app.take_input();
+                if input.trim() == "/settings" {
+                    return KeyAction::OpenSettings;
+                }
                 if !input.trim().is_empty() {
                     return KeyAction::SendChat(input);
                 }
@@ -1246,7 +1288,7 @@ async fn handle_action(
                 }
             }
         }
-        KeyAction::None | KeyAction::Redraw => {}
+        KeyAction::OpenSettings | KeyAction::None | KeyAction::Redraw => {}
     }
     app.needs_redraw = true;
     None
@@ -1621,6 +1663,26 @@ mod tests {
 
         assert_eq!(app.focused_panel, Panel::Chat);
         assert!(app.chat_focused, "chat should be focused for input");
+    }
+
+    #[test]
+    fn test_s_key_opens_settings() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        let action = handle_dashboard_key(&mut app, key(KeyCode::Char('s')));
+        assert!(matches!(action, KeyAction::OpenSettings));
+    }
+
+    #[test]
+    fn test_settings_chat_command() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+        // Type "/settings" into the input
+        app.workspaces[0].input = "/settings".to_string();
+        // Simulate Enter key
+        let action = handle_dashboard_chat_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(action, KeyAction::OpenSettings));
     }
 
     #[test]
