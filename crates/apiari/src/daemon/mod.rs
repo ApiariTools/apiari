@@ -961,6 +961,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     }
 
                     let mut new_swarm_events: Vec<String> = Vec::new();
+                    let mut ci_pass_batch: Vec<(String, String)> = Vec::new(); // (pr_ref, title)
 
                     for throttled in slot.registry.watchers_mut() {
                         if !throttled.should_poll() {
@@ -995,14 +996,28 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Determine notification text:
-                                            // - Proactive GitHub events (release, merged PR, CI pass)
-                                            //   use force-notify to bypass Info batching
-                                            // - Other new signals go through normal pipeline rules
+                                            // - github_merged_pr: DB-only, no Telegram
+                                            // - github_ci_pass: collected for batched message
+                                            // - github_release: immediate real-time
+                                            // - Other new signals go through pipeline rules
                                             let text = if is_new {
                                                 slot.store.get_signal(id).ok().flatten().and_then(|record| {
                                                     match update.source.as_str() {
-                                                        "github_release" | "github_merged_pr" | "github_ci_pass" => {
+                                                        "github_merged_pr" => None,
+                                                        "github_release" => {
                                                             slot.pipeline.process_force_notify(&record)
+                                                        }
+                                                        "github_ci_pass" => {
+                                                            // Extract PR # from external_id (ci-pass-{repo}-{pr}-{run})
+                                                            let pr_ref = record
+                                                                .external_id
+                                                                .rsplit('-')
+                                                                .nth(1)
+                                                                .map(|n| format!("#{n}"))
+                                                                .unwrap_or_default();
+                                                            ci_pass_batch
+                                                                .push((pr_ref, record.title.clone()));
+                                                            None
                                                         }
                                                         _ => slot.pipeline.process(&record),
                                                     }
@@ -1043,6 +1058,34 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 error!("[{}] [{}] poll failed: {e}", slot.name, watcher_name);
                                 // Still mark polled on error to avoid hammering a failing source
                                 throttled.mark_polled();
+                            }
+                        }
+                    }
+
+                    // Send batched CI pass notification
+                    if !ci_pass_batch.is_empty() {
+                        let text = if ci_pass_batch.len() == 1 {
+                            ci_pass_batch[0].1.clone()
+                        } else {
+                            let pr_refs: Vec<&str> =
+                                ci_pass_batch.iter().map(|(r, _)| r.as_str()).collect();
+                            format!(
+                                "\u{2705} CI passed on {} PRs: {}",
+                                ci_pass_batch.len(),
+                                pr_refs.join(", ")
+                            )
+                        };
+                        if let Some(tg) = &slot.config.telegram
+                            && let Some(channel) = telegram_channels.get(&tg.bot_token)
+                        {
+                            let msg = OutboundMessage {
+                                chat_id: tg.chat_id,
+                                text,
+                                buttons: vec![],
+                                topic_id: tg.topic_id,
+                            };
+                            if let Err(e) = channel.send_message(&msg).await {
+                                error!("[{}] failed to send CI pass notification: {e}", slot.name);
                             }
                         }
                     }

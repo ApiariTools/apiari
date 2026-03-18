@@ -322,6 +322,20 @@ impl GithubWatcher {
                 continue;
             }
 
+            // Always mark as seen to prevent future re-emission
+            new_seen.insert(number);
+
+            // On first run (empty cursor), only emit for recently merged PRs
+            // to avoid flooding with old already-merged PRs.
+            if seen_prs.is_empty()
+                && !is_recent_merge(
+                    pr.get("mergedAt").and_then(|v| v.as_str()).unwrap_or(""),
+                    self.config.interval_secs,
+                )
+            {
+                continue;
+            }
+
             let title = pr.get("title").and_then(|v| v.as_str()).unwrap_or("");
             let url = pr.get("url").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -332,8 +346,6 @@ impl GithubWatcher {
                 signal = signal.with_url(url);
             }
             signals.push(signal);
-
-            new_seen.insert(number);
         }
 
         if new_seen != *seen_prs {
@@ -653,9 +665,33 @@ fn check_run_to_signal(repo: &str, run: &serde_json::Value) -> Option<(String, S
     Some((key, signal))
 }
 
+/// Check if a merged PR is recent enough to emit a signal on first run.
+fn is_recent_merge(merged_at_str: &str, interval_secs: u64) -> bool {
+    chrono::DateTime::parse_from_rfc3339(merged_at_str)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .is_some_and(|merged_at| {
+            let cutoff = chrono::Utc::now() - chrono::Duration::seconds((interval_secs * 2) as i64);
+            merged_at >= cutoff
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_first_run_filters_old_merged_prs() {
+        // A PR merged long ago should not be recent
+        assert!(!is_recent_merge("2020-01-01T00:00:00Z", 300));
+
+        // A PR merged just now should be recent
+        let now = chrono::Utc::now().to_rfc3339();
+        assert!(is_recent_merge(&now, 300));
+
+        // Invalid date should not be recent
+        assert!(!is_recent_merge("not-a-date", 300));
+    }
 
     #[test]
     fn test_issue_to_signal() {
