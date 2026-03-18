@@ -577,10 +577,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 gh_config.repos.len(),
                 gh_config.repos.join(", ")
             );
-            registry.add_with_interval(
-                Box::new(GithubWatcher::new(gh_config.clone())),
-                gh_config.interval_secs,
-            );
+            let mut gh_watcher = GithubWatcher::new(gh_config.clone());
+            gh_watcher.load_cursors(&store);
+            registry.add_with_interval(Box::new(gh_watcher), gh_config.interval_secs);
 
             if !gh_config.review_queue.is_empty() {
                 let query_names: Vec<&str> = gh_config
@@ -996,18 +995,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Determine notification text:
-                                            // - New signals go through normal pipeline rules
-                                            // - CI pass re-polls use rate-limited force-notify
-                                            //   (bypasses Batch to prevent duplicate accumulation)
+                                            // - Proactive GitHub events (release, merged PR, CI pass)
+                                            //   use force-notify to bypass Info batching
+                                            // - Other new signals go through normal pipeline rules
                                             let text = if is_new {
                                                 slot.store.get_signal(id).ok().flatten().and_then(|record| {
-                                                    slot.pipeline.process(&record)
-                                                })
-                                            } else if update.source == "github"
-                                                && update.external_id.starts_with("ci-pass-")
-                                            {
-                                                slot.store.get_signal(id).ok().flatten().and_then(|record| {
-                                                    slot.pipeline.process_force_notify(&record)
+                                                    match update.source.as_str() {
+                                                        "github_release" | "github_merged_pr" | "github_ci_pass" => {
+                                                            slot.pipeline.process_force_notify(&record)
+                                                        }
+                                                        _ => slot.pipeline.process(&record),
+                                                    }
                                                 })
                                             } else {
                                                 None

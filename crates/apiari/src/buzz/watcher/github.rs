@@ -3,6 +3,8 @@
 //! Queries open issues, PR review requests, watched labels, and CI status.
 //! Stateless — emits all signals every poll; the DB handles dedup via UNIQUE constraints.
 
+use std::collections::{HashMap, HashSet};
+
 use async_trait::async_trait;
 use color_eyre::Result;
 use tracing::{info, warn};
@@ -17,6 +19,12 @@ pub struct GithubWatcher {
     config: GithubWatcherConfig,
     gh_available: Option<bool>,
     username: Option<String>,
+    /// Last-seen release run ID per repo (cursor: github_release:{repo}).
+    release_cursors: HashMap<String, u64>,
+    /// Seen merged PR numbers per repo (cursor: github_merged_pr:{repo}).
+    merged_pr_cursors: HashMap<String, HashSet<u64>>,
+    /// PRs with passing CI per repo (cursor: github_ci_pass:{repo}).
+    ci_pass_state: HashMap<String, HashSet<u64>>,
 }
 
 impl GithubWatcher {
@@ -25,6 +33,37 @@ impl GithubWatcher {
             config,
             gh_available: None,
             username: None,
+            release_cursors: HashMap::new(),
+            merged_pr_cursors: HashMap::new(),
+            ci_pass_state: HashMap::new(),
+        }
+    }
+
+    /// Pre-load cursor state from the signal store (called during daemon setup).
+    pub fn load_cursors(&mut self, store: &SignalStore) {
+        for repo in &self.config.repos {
+            let rk = format!("github_release:{repo}");
+            if let Ok(Some(val)) = store.get_cursor(&rk) {
+                if let Ok(id) = val.parse::<u64>() {
+                    self.release_cursors.insert(repo.clone(), id);
+                }
+            }
+
+            let mk = format!("github_merged_pr:{repo}");
+            if let Ok(Some(val)) = store.get_cursor(&mk) {
+                let seen: HashSet<u64> = val.split(',').filter_map(|n| n.parse().ok()).collect();
+                if !seen.is_empty() {
+                    self.merged_pr_cursors.insert(repo.clone(), seen);
+                }
+            }
+
+            let ck = format!("github_ci_pass:{repo}");
+            if let Ok(Some(val)) = store.get_cursor(&ck) {
+                let state: HashSet<u64> = val.split(',').filter_map(|n| n.parse().ok()).collect();
+                if !state.is_empty() {
+                    self.ci_pass_state.insert(repo.clone(), state);
+                }
+            }
         }
     }
 
@@ -167,6 +206,143 @@ impl GithubWatcher {
         runs.into_iter().next()
     }
 
+    /// Poll for completed Release workflow runs on a repo.
+    /// Returns (signals, optional new max run ID for cursor update).
+    async fn poll_release_runs(
+        &self,
+        repo: &str,
+        last_seen_id: u64,
+    ) -> (Vec<SignalUpdate>, Option<u64>) {
+        let mut signals = Vec::new();
+
+        let endpoint = format!("repos/{repo}/actions/runs?per_page=10&status=completed");
+        let Some(response) = self.gh_api(&endpoint).await else {
+            return (signals, None);
+        };
+        let Some(runs) = response.get("workflow_runs").and_then(|v| v.as_array()) else {
+            return (signals, None);
+        };
+
+        let mut max_id = last_seen_id;
+
+        for run in runs {
+            let name = run.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let event = run.get("event").and_then(|v| v.as_str()).unwrap_or("");
+
+            if name != "Release" || event != "push" {
+                continue;
+            }
+
+            let run_id = run.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            if run_id <= last_seen_id {
+                continue;
+            }
+
+            let conclusion = run.get("conclusion").and_then(|v| v.as_str()).unwrap_or("");
+            let head_branch = run
+                .get("head_branch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let html_url = run.get("html_url").and_then(|v| v.as_str()).unwrap_or("");
+
+            let (severity, title) = match conclusion {
+                "success" => (
+                    Severity::Info,
+                    format!("\u{1f680} {head_branch} release succeeded"),
+                ),
+                "failure" => (
+                    Severity::Critical,
+                    format!("\u{1f4a5} {head_branch} release failed"),
+                ),
+                _ => continue,
+            };
+
+            let key = format!("release-{repo}-{run_id}");
+            let mut signal = SignalUpdate::new("github_release", &key, &title, severity);
+            if !html_url.is_empty() {
+                signal = signal.with_url(html_url);
+            }
+            signals.push(signal);
+
+            if run_id > max_id {
+                max_id = run_id;
+            }
+        }
+
+        let new_cursor = if max_id > last_seen_id {
+            Some(max_id)
+        } else {
+            None
+        };
+
+        (signals, new_cursor)
+    }
+
+    /// Poll for recently merged PRs on a repo.
+    /// Returns (signals, optional updated seen set for cursor update).
+    async fn poll_merged_prs(
+        &self,
+        repo: &str,
+        seen_prs: &HashSet<u64>,
+    ) -> (Vec<SignalUpdate>, Option<HashSet<u64>>) {
+        let mut signals = Vec::new();
+
+        let output = tokio::process::Command::new("gh")
+            .args([
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--state",
+                "merged",
+                "--limit",
+                "10",
+                "--json",
+                "number,title,mergedAt,url",
+            ])
+            .output()
+            .await;
+
+        let output = match output {
+            Ok(o) if o.status.success() => o,
+            _ => return (signals, None),
+        };
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        let prs: Vec<serde_json::Value> = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(_) => return (signals, None),
+        };
+
+        let mut new_seen = seen_prs.clone();
+
+        for pr in &prs {
+            let number = pr.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+            if number == 0 || seen_prs.contains(&number) {
+                continue;
+            }
+
+            let title = pr.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let url = pr.get("url").and_then(|v| v.as_str()).unwrap_or("");
+
+            let key = format!("merged-{repo}-{number}");
+            let msg = format!("\u{2705} Merged: {title} #{number}");
+            let mut signal = SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info);
+            if !url.is_empty() {
+                signal = signal.with_url(url);
+            }
+            signals.push(signal);
+
+            new_seen.insert(number);
+        }
+
+        if new_seen != *seen_prs {
+            (signals, Some(new_seen))
+        } else {
+            (signals, None)
+        }
+    }
+
     async fn poll_repo(&self, repo: &str) -> Vec<(String, SignalUpdate)> {
         let mut signals = Vec::new();
 
@@ -242,9 +418,40 @@ impl Watcher for GithubWatcher {
             }
         }
 
-        // PR CI failure and pass signals
+        // Release workflow completion signals
         for repo in &self.config.repos.clone() {
+            let last_seen_id = self.release_cursors.get(repo).copied().unwrap_or(0);
+            let (signals, new_cursor) = self.poll_release_runs(repo, last_seen_id).await;
+            all_signals.extend(signals);
+            if let Some(max_id) = new_cursor {
+                self.release_cursors.insert(repo.clone(), max_id);
+            }
+        }
+
+        // Merged PR signals
+        for repo in &self.config.repos.clone() {
+            let empty = HashSet::new();
+            let seen_prs = self.merged_pr_cursors.get(repo).unwrap_or(&empty).clone();
+            let (signals, updated_seen) = self.poll_merged_prs(repo, &seen_prs).await;
+            all_signals.extend(signals);
+            if let Some(mut new_seen) = updated_seen {
+                // Keep only the last 100 to prevent unbounded growth
+                if new_seen.len() > 100 {
+                    let mut sorted: Vec<u64> = new_seen.into_iter().collect();
+                    sorted.sort_unstable();
+                    new_seen = sorted[sorted.len() - 100..].iter().copied().collect();
+                }
+                self.merged_pr_cursors.insert(repo.clone(), new_seen);
+            }
+        }
+
+        // PR CI failure and CI pass signals
+        for repo in &self.config.repos.clone() {
+            let mut ci_pass_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
+
             let prs = self.fetch_open_prs(repo).await;
+            let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _)| *n).collect();
+
             for (pr_number, pr_title, head_branch) in prs {
                 if let Some(run) = self.fetch_latest_run(repo, &head_branch).await {
                     let conclusion = run.get("conclusion").and_then(|v| v.as_str());
@@ -253,6 +460,9 @@ impl Watcher for GithubWatcher {
 
                     match conclusion {
                         Some("failure") => {
+                            // CI regressed — remove from pass tracking
+                            ci_pass_prs.remove(&pr_number);
+
                             if let Some(run_id) = run_id {
                                 let key = format!("ci-failure-{pr_number}-{run_id}");
                                 let mut signal = SignalUpdate::new(
@@ -268,12 +478,14 @@ impl Watcher for GithubWatcher {
                             }
                         }
                         Some("success") => {
-                            if let Some(run_id) = run_id {
-                                let key = format!("ci-pass-{pr_number}-{run_id}");
+                            // Only emit when CI transitions to passing
+                            if !ci_pass_prs.contains(&pr_number) {
+                                ci_pass_prs.insert(pr_number);
+                                let key = format!("ci-pass-{repo}-{pr_number}");
                                 let mut signal = SignalUpdate::new(
-                                    "github",
+                                    "github_ci_pass",
                                     &key,
-                                    format!("CI passed: {pr_title} (#{pr_number})"),
+                                    format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
                                     Severity::Info,
                                 );
                                 if let Some(url) = run_url {
@@ -286,6 +498,10 @@ impl Watcher for GithubWatcher {
                     }
                 }
             }
+
+            // Clean up closed PRs from tracking
+            ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
+            self.ci_pass_state.insert(repo.clone(), ci_pass_prs);
         }
 
         if !all_signals.is_empty() {
@@ -293,6 +509,35 @@ impl Watcher for GithubWatcher {
         }
 
         Ok(all_signals)
+    }
+
+    /// Persist cursor state to the signal store (called synchronously after poll).
+    fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
+        for (repo, last_id) in &self.release_cursors {
+            let key = format!("github_release:{repo}");
+            let _ = store.set_cursor(&key, &last_id.to_string());
+        }
+        for (repo, seen) in &self.merged_pr_cursors {
+            let key = format!("github_merged_pr:{repo}");
+            let val: String = seen
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let _ = store.set_cursor(&key, &val);
+        }
+        for (repo, state) in &self.ci_pass_state {
+            let key = format!("github_ci_pass:{repo}");
+            let val: String = state
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let _ = store.set_cursor(&key, &val);
+        }
+        // Return 1 to indicate custom reconciliation handled
+        // (prevents framework from auto-reconciling github_release/merged_pr/ci_pass signals)
+        Ok(1)
     }
 }
 
@@ -488,24 +733,87 @@ mod tests {
 
     #[test]
     fn test_ci_pass_signal() {
-        let run_id = 789u64;
         let pr_title = "Add feature X";
         let pr_number = 42u64;
+        let repo = "org/repo";
         let run_url = "https://github.com/org/repo/actions/runs/789";
 
-        let key = format!("ci-pass-{pr_number}-{run_id}");
+        let key = format!("ci-pass-{repo}-{pr_number}");
         let signal = SignalUpdate::new(
-            "github",
+            "github_ci_pass",
             &key,
-            format!("CI passed: {pr_title} (#{pr_number})"),
+            format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
             Severity::Info,
         )
         .with_url(run_url);
 
-        assert_eq!(signal.external_id, "ci-pass-42-789");
+        assert_eq!(signal.source, "github_ci_pass");
+        assert_eq!(signal.external_id, "ci-pass-org/repo-42");
         assert_eq!(signal.severity, Severity::Info);
-        assert!(signal.title.contains("CI passed"));
-        assert!(signal.title.contains("#42"));
+        assert!(signal.title.contains("CI passed on PR #42"));
+        assert!(signal.title.contains("Add feature X"));
+    }
+
+    #[test]
+    fn test_release_success_signal() {
+        let head_branch = "v0.1.4";
+        let run_id = 12345u64;
+        let repo = "org/repo";
+        let html_url = "https://github.com/org/repo/actions/runs/12345";
+
+        let key = format!("release-{repo}-{run_id}");
+        let signal = SignalUpdate::new(
+            "github_release",
+            &key,
+            format!("\u{1f680} {head_branch} release succeeded"),
+            Severity::Info,
+        )
+        .with_url(html_url);
+
+        assert_eq!(signal.source, "github_release");
+        assert_eq!(signal.external_id, "release-org/repo-12345");
+        assert_eq!(signal.severity, Severity::Info);
+        assert!(signal.title.contains("v0.1.4"));
+        assert!(signal.title.contains("release succeeded"));
+    }
+
+    #[test]
+    fn test_release_failure_signal() {
+        let head_branch = "v0.1.4";
+        let run_id = 12345u64;
+        let repo = "org/repo";
+
+        let key = format!("release-{repo}-{run_id}");
+        let signal = SignalUpdate::new(
+            "github_release",
+            &key,
+            format!("\u{1f4a5} {head_branch} release failed"),
+            Severity::Critical,
+        );
+
+        assert_eq!(signal.source, "github_release");
+        assert_eq!(signal.severity, Severity::Critical);
+        assert!(signal.title.contains("release failed"));
+    }
+
+    #[test]
+    fn test_merged_pr_signal() {
+        let pr_number = 53u64;
+        let title = "Add fallback endpoint support";
+        let repo = "org/repo";
+        let url = "https://github.com/org/repo/pull/53";
+
+        let key = format!("merged-{repo}-{pr_number}");
+        let msg = format!("\u{2705} Merged: {title} #{pr_number}");
+        let signal =
+            SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info).with_url(url);
+
+        assert_eq!(signal.source, "github_merged_pr");
+        assert_eq!(signal.external_id, "merged-org/repo-53");
+        assert_eq!(signal.severity, Severity::Info);
+        assert!(signal.title.contains("Merged:"));
+        assert!(signal.title.contains("#53"));
+        assert_eq!(signal.url.as_deref(), Some(url));
     }
 
     #[test]
