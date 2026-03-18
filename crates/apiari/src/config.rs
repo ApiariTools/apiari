@@ -417,6 +417,12 @@ fn discover_repos_recursive(dir: &Path, depth: u32, repos: &mut Vec<String>) {
         return;
     }
 
+    // If a non-root dir is itself a git repo, don't descend into it.
+    // (The caller already added this dir as a discovered repo.)
+    if depth > 0 && dir.join(".git").exists() {
+        return;
+    }
+
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,
@@ -1286,6 +1292,34 @@ max_session_turns = 0
 
         // Should only find "outer", not "inner"
         assert_eq!(repos, vec!["outer".to_string()]);
+    }
+
+    #[test]
+    fn test_discover_repos_max_depth_boundary() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Repo at exactly MAX_DISCOVER_DEPTH (4 levels of dirs before .git):
+        // root/a/b/c/d/repo_at_max/.git — depth counted as: a=0, b=1, c=2, d=3 → repo found at scan depth 3
+        // That's within the limit (depth < 4).
+        fs::create_dir_all(root.join("a/b/c/repo_at_limit/.git")).unwrap();
+
+        // Repo beyond MAX_DISCOVER_DEPTH:
+        // root/a/b/c/d/repo_too_deep/.git — would require depth=4 scan, which is >= MAX_DISCOVER_DEPTH
+        fs::create_dir_all(root.join("a/b/c/d/repo_too_deep/.git")).unwrap();
+
+        let repos = discover_repos(root);
+
+        assert!(
+            repos.contains(&"repo_at_limit".to_string()),
+            "should find repo at depth 3: {repos:?}"
+        );
+        assert!(
+            !repos.contains(&"repo_too_deep".to_string()),
+            "should NOT find repo beyond max depth: {repos:?}"
+        );
     }
 
     #[test]
