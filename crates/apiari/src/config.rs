@@ -161,6 +161,9 @@ pub struct CoordinatorConfig {
     /// Set to 0 to disable auto-compaction.
     #[serde(default = "default_max_session_turns")]
     pub max_session_turns: u32,
+    /// Signal sources that trigger a coordinator follow-through.
+    #[serde(default = "default_signal_hooks")]
+    pub signal_hooks: Vec<SignalHookConfig>,
 }
 
 impl Default for CoordinatorConfig {
@@ -171,8 +174,39 @@ impl Default for CoordinatorConfig {
             max_turns: default_max_turns(),
             prompt: None,
             max_session_turns: default_max_session_turns(),
+            signal_hooks: default_signal_hooks(),
         }
     }
+}
+
+/// Configuration for a signal hook — triggers coordinator follow-through when
+/// signals from the specified source arrive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalHookConfig {
+    /// Signal source to match (e.g. "swarm", "github_bot_review", "github_ci_failure").
+    /// Matches exactly, or as a prefix with `_` separator (e.g. "github" matches
+    /// "github_ci_failure", "github_bot_review", etc.).
+    /// The first matching hook wins when multiple hooks could match a signal.
+    pub source: String,
+    /// Prompt template sent to coordinator. Supports {source} and {events} placeholders.
+    /// Empty string = use default formatting.
+    #[serde(default)]
+    pub prompt: String,
+    /// Max seconds to wait in queue before dropping. Default: 120.
+    #[serde(default = "default_hook_ttl")]
+    pub ttl_secs: u64,
+}
+
+fn default_hook_ttl() -> u64 {
+    120
+}
+
+fn default_signal_hooks() -> Vec<SignalHookConfig> {
+    vec![SignalHookConfig {
+        source: "swarm".into(),
+        prompt: String::new(),
+        ttl_secs: default_hook_ttl(),
+    }]
 }
 
 /// Watcher configurations (all optional).
@@ -852,6 +886,8 @@ root = "/tmp/test"
         assert_eq!(config.coordinator.model, "sonnet");
         assert_eq!(config.coordinator.max_turns, 20);
         assert_eq!(config.coordinator.max_session_turns, 50);
+        assert_eq!(config.coordinator.signal_hooks.len(), 1);
+        assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
     }
 
     #[test]
@@ -1347,5 +1383,55 @@ max_session_turns = 0
         let gh = to_buzz_config(&ws).watchers.github.unwrap();
         // Nonexistent root means discover_repos returns empty
         assert!(gh.repos.is_empty());
+    }
+
+    #[test]
+    fn test_signal_hooks_default() {
+        let toml_str = r#"root = "/tmp/test""#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.signal_hooks.len(), 1);
+        assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
+        assert!(config.coordinator.signal_hooks[0].prompt.is_empty());
+        assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 120);
+    }
+
+    #[test]
+    fn test_signal_hooks_explicit() {
+        let toml_str = r#"
+root = "/tmp/test"
+
+[[coordinator.signal_hooks]]
+source = "swarm"
+ttl_secs = 60
+
+[[coordinator.signal_hooks]]
+source = "github_ci_failure"
+prompt = "CI failed: {title}"
+ttl_secs = 300
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.signal_hooks.len(), 2);
+        assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
+        assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 60);
+        assert_eq!(
+            config.coordinator.signal_hooks[1].source,
+            "github_ci_failure"
+        );
+        assert_eq!(
+            config.coordinator.signal_hooks[1].prompt,
+            "CI failed: {title}"
+        );
+        assert_eq!(config.coordinator.signal_hooks[1].ttl_secs, 300);
+    }
+
+    #[test]
+    fn test_signal_hooks_empty_array() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+signal_hooks = []
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.coordinator.signal_hooks.is_empty());
     }
 }
