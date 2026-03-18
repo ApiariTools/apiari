@@ -962,6 +962,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                     let mut new_swarm_events: Vec<String> = Vec::new();
 
+                    // NOTE: Watchers are polled sequentially within each slot because
+                    // ThrottledWatcher::poll takes &mut self and SignalStore (rusqlite)
+                    // is !Send, so tokio::spawn per-watcher isn't possible without
+                    // restructuring to Arc<Mutex<Connection>>. Each poll IS async and
+                    // yields at await points so it doesn't block the OS thread.
+                    // The GitHub watcher fans out repo polling concurrently internally.
                     for throttled in slot.registry.watchers_mut() {
                         if !throttled.should_poll() {
                             continue;

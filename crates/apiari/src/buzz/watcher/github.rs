@@ -4,15 +4,26 @@
 //! Stateless — emits all signals every poll; the DB handles dedup via UNIQUE constraints.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use color_eyre::Result;
+use futures::future::join_all;
 use tracing::{info, warn};
 
 use super::Watcher;
 use crate::buzz::config::GithubWatcherConfig;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalUpdate};
+
+/// Per-repo poll results collected concurrently, then merged into watcher state.
+struct RepoPollResult {
+    repo: String,
+    signals: Vec<SignalUpdate>,
+    new_release_cursor: Option<u64>,
+    updated_merged_prs: Option<HashSet<u64>>,
+    updated_ci_pass: HashSet<u64>,
+}
 
 /// Watches GitHub repositories via the `gh` CLI.
 pub struct GithubWatcher {
@@ -25,6 +36,8 @@ pub struct GithubWatcher {
     merged_pr_cursors: HashMap<String, HashSet<u64>>,
     /// PRs with passing CI per repo (cursor: github_ci_pass:{repo}).
     ci_pass_state: HashMap<String, HashSet<u64>>,
+    /// Cached rate-limit remaining count and when it was fetched.
+    last_rate_check: Option<(Instant, u32)>,
 }
 
 impl GithubWatcher {
@@ -36,6 +49,7 @@ impl GithubWatcher {
             release_cursors: HashMap::new(),
             merged_pr_cursors: HashMap::new(),
             ci_pass_state: HashMap::new(),
+            last_rate_check: None,
         }
     }
 
@@ -396,6 +410,136 @@ impl GithubWatcher {
 
         signals
     }
+
+    /// Check GitHub API rate limit. Returns false if remaining < 50 (skip poll).
+    /// Caches the result for 60 seconds to avoid extra API calls.
+    async fn check_rate_limit(&mut self) -> bool {
+        if let Some((checked_at, remaining)) = self.last_rate_check
+            && checked_at.elapsed().as_secs() < 60
+        {
+            return remaining >= 50;
+        }
+
+        let output = tokio::process::Command::new("gh")
+            .args(["api", "rate_limit", "--jq", ".resources.core.remaining"])
+            .output()
+            .await;
+
+        match output {
+            Ok(o) if o.status.success() => {
+                let remaining: u32 = String::from_utf8_lossy(&o.stdout)
+                    .trim()
+                    .parse()
+                    .unwrap_or(5000);
+                self.last_rate_check = Some((Instant::now(), remaining));
+
+                if remaining < 50 {
+                    warn!("GitHub rate limit critical ({remaining} remaining) — skipping poll");
+                    return false;
+                }
+                if remaining < 200 {
+                    warn!("GitHub rate limit low ({remaining} remaining) — proceeding cautiously");
+                }
+                true
+            }
+            _ => {
+                warn!("Failed to check GitHub rate limit — proceeding anyway");
+                true
+            }
+        }
+    }
+
+    /// Poll everything for a single repo concurrently: issues, labels, CI checks,
+    /// release runs, merged PRs, and PR CI status. Returns a self-contained result
+    /// that the caller merges back into watcher state.
+    async fn poll_repo_full(
+        &self,
+        repo: &str,
+        last_seen_release_id: u64,
+        seen_merged_prs: HashSet<u64>,
+        mut ci_pass_prs: HashSet<u64>,
+    ) -> RepoPollResult {
+        // Run independent poll types concurrently within this repo.
+        let (
+            repo_signals,
+            (release_signals, new_release_cursor),
+            (merged_signals, updated_merged_prs),
+            prs,
+        ) = tokio::join!(
+            self.poll_repo(repo),
+            self.poll_release_runs(repo, last_seen_release_id),
+            self.poll_merged_prs(repo, &seen_merged_prs),
+            self.fetch_open_prs(repo),
+        );
+
+        let mut signals: Vec<SignalUpdate> = repo_signals.into_iter().map(|(_, s)| s).collect();
+        signals.extend(release_signals);
+        signals.extend(merged_signals);
+
+        // Fetch latest CI run for each open PR concurrently.
+        let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _)| *n).collect();
+
+        let run_futures: Vec<_> = prs
+            .iter()
+            .map(|(_, _, branch)| self.fetch_latest_run(repo, branch))
+            .collect();
+        let runs = join_all(run_futures).await;
+
+        for ((pr_number, pr_title, _), run) in prs.iter().zip(runs) {
+            if let Some(run) = run {
+                let conclusion = run.get("conclusion").and_then(|v| v.as_str());
+                let run_id = run.get("databaseId").and_then(|v| v.as_u64());
+                let run_url = run.get("url").and_then(|v| v.as_str());
+
+                match conclusion {
+                    Some("failure") => {
+                        ci_pass_prs.remove(pr_number);
+                        if let Some(run_id) = run_id {
+                            let key = format!("ci-failure-{pr_number}-{run_id}");
+                            let mut signal = SignalUpdate::new(
+                                "github",
+                                &key,
+                                format!("CI failed: {pr_title} (#{pr_number})"),
+                                Severity::Error,
+                            );
+                            if let Some(url) = run_url {
+                                signal = signal.with_body(url).with_url(url);
+                            }
+                            signals.push(signal);
+                        }
+                    }
+                    Some("success") => {
+                        if !ci_pass_prs.contains(pr_number) {
+                            ci_pass_prs.insert(*pr_number);
+                            let rid = run_id.unwrap_or(0);
+                            let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
+                            let mut signal = SignalUpdate::new(
+                                "github_ci_pass",
+                                &key,
+                                format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
+                                Severity::Info,
+                            );
+                            if let Some(url) = run_url {
+                                signal = signal.with_url(url);
+                            }
+                            signals.push(signal);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
+
+        RepoPollResult {
+            repo: repo.to_string(),
+            signals,
+            new_release_cursor,
+            updated_merged_prs,
+            updated_ci_pass: ci_pass_prs,
+        }
+    }
 }
 
 #[async_trait]
@@ -409,103 +553,50 @@ impl Watcher for GithubWatcher {
             return Ok(Vec::new());
         }
 
-        let mut all_signals = Vec::new();
+        if !self.check_rate_limit().await {
+            return Ok(Vec::new());
+        }
+
         let repos = self.config.repos.clone();
 
-        for repo in &repos {
-            let signals = self.poll_repo(repo).await;
-            for (_key, signal) in signals {
-                all_signals.push(signal);
-            }
-        }
+        // Snapshot cursor state, then fan out per-repo work concurrently.
+        let repo_futures: Vec<_> = repos
+            .iter()
+            .map(|repo| {
+                let last_seen = self.release_cursors.get(repo).copied().unwrap_or(0);
+                let seen_prs = self
+                    .merged_pr_cursors
+                    .get(repo)
+                    .cloned()
+                    .unwrap_or_default();
+                let ci_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
+                self.poll_repo_full(repo, last_seen, seen_prs, ci_prs)
+            })
+            .collect();
 
-        // Release workflow completion signals
-        for repo in &repos {
-            let last_seen_id = self.release_cursors.get(repo).copied().unwrap_or(0);
-            let (signals, new_cursor) = self.poll_release_runs(repo, last_seen_id).await;
-            all_signals.extend(signals);
-            if let Some(max_id) = new_cursor {
-                self.release_cursors.insert(repo.clone(), max_id);
-            }
-        }
+        let results = join_all(repo_futures).await;
 
-        // Merged PR signals
-        for repo in &repos {
-            let empty = HashSet::new();
-            let seen_prs = self.merged_pr_cursors.get(repo).unwrap_or(&empty).clone();
-            let (signals, updated_seen) = self.poll_merged_prs(repo, &seen_prs).await;
-            all_signals.extend(signals);
-            if let Some(mut new_seen) = updated_seen {
+        // Merge results back into watcher state.
+        let mut all_signals = Vec::new();
+        for result in results {
+            all_signals.extend(result.signals);
+
+            if let Some(max_id) = result.new_release_cursor {
+                self.release_cursors.insert(result.repo.clone(), max_id);
+            }
+
+            if let Some(mut new_seen) = result.updated_merged_prs {
                 // Keep only the last 100 to prevent unbounded growth
                 if new_seen.len() > 100 {
                     let mut sorted: Vec<u64> = new_seen.into_iter().collect();
                     sorted.sort_unstable();
                     new_seen = sorted[sorted.len() - 100..].iter().copied().collect();
                 }
-                self.merged_pr_cursors.insert(repo.clone(), new_seen);
-            }
-        }
-
-        // PR CI failure and CI pass signals
-        for repo in &repos {
-            let mut ci_pass_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
-
-            let prs = self.fetch_open_prs(repo).await;
-            let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _)| *n).collect();
-
-            for (pr_number, pr_title, head_branch) in prs {
-                if let Some(run) = self.fetch_latest_run(repo, &head_branch).await {
-                    let conclusion = run.get("conclusion").and_then(|v| v.as_str());
-                    let run_id = run.get("databaseId").and_then(|v| v.as_u64());
-                    let run_url = run.get("url").and_then(|v| v.as_str());
-
-                    match conclusion {
-                        Some("failure") => {
-                            // CI regressed — remove from pass tracking
-                            ci_pass_prs.remove(&pr_number);
-
-                            if let Some(run_id) = run_id {
-                                let key = format!("ci-failure-{pr_number}-{run_id}");
-                                let mut signal = SignalUpdate::new(
-                                    "github",
-                                    &key,
-                                    format!("CI failed: {pr_title} (#{pr_number})"),
-                                    Severity::Error,
-                                );
-                                if let Some(url) = run_url {
-                                    signal = signal.with_body(url).with_url(url);
-                                }
-                                all_signals.push(signal);
-                            }
-                        }
-                        Some("success") => {
-                            // Only emit when CI transitions to passing.
-                            // Include run_id in external_id so a fresh DB row is
-                            // inserted if CI regresses then passes again on a new run.
-                            if !ci_pass_prs.contains(&pr_number) {
-                                ci_pass_prs.insert(pr_number);
-                                let rid = run_id.unwrap_or(0);
-                                let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
-                                let mut signal = SignalUpdate::new(
-                                    "github_ci_pass",
-                                    &key,
-                                    format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
-                                    Severity::Info,
-                                );
-                                if let Some(url) = run_url {
-                                    signal = signal.with_url(url);
-                                }
-                                all_signals.push(signal);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                self.merged_pr_cursors.insert(result.repo.clone(), new_seen);
             }
 
-            // Clean up closed PRs from tracking
-            ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
-            self.ci_pass_state.insert(repo.clone(), ci_pass_prs);
+            self.ci_pass_state
+                .insert(result.repo.clone(), result.updated_ci_pass);
         }
 
         if !all_signals.is_empty() {
