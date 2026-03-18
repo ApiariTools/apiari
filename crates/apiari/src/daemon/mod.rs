@@ -268,7 +268,7 @@ async fn run_coordinator_task(
 
                         // Auto-compact if turn limit exceeded
                         if max_session_turns > 0 && turn_count >= max_session_turns {
-                            info!("[coordinator] session compacted after {turn_count} turns");
+                            info!("[{slot_name}] session compacted after {turn_count} turns");
                             coordinator.reset_session();
                             turn_count = 0;
                         }
@@ -376,7 +376,7 @@ async fn run_coordinator_task(
 
                         // Auto-compact if turn limit exceeded
                         if max_session_turns > 0 && turn_count >= max_session_turns {
-                            info!("[coordinator] session compacted after {turn_count} turns");
+                            info!("[{ws_name}] session compacted after {turn_count} turns");
                             coordinator.reset_session();
                             turn_count = 0;
                         }
@@ -423,7 +423,9 @@ async fn run_coordinator_task(
                         buttons: vec![],
                         topic_id,
                     };
-                    let _ = channel.send_message(&msg).await;
+                    if let Err(e) = channel.send_message(&msg).await {
+                        error!("[{slot_name}] failed to send /compact confirmation: {e}");
+                    }
                 }
                 if let Some(responder) = tui_responder {
                     let _ = responder.send(socket::DaemonResponse::Token {
@@ -1285,12 +1287,20 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&msg).await;
                                     }
                                     "compact" => {
-                                        let _ = slot.coord_tx.send(CoordinatorJob::Compact {
+                                        if slot.coord_tx.send(CoordinatorJob::Compact {
                                             telegram: Some((channel.clone(), chat_id, topic_id)),
                                             tui_responder: None,
                                             socket_server: socket_server.clone(),
                                             slot_name: slot.name.clone(),
-                                        });
+                                        }).is_err() {
+                                            let msg = OutboundMessage {
+                                                chat_id,
+                                                text: "Error: coordinator task shut down".to_string(),
+                                                buttons: vec![],
+                                                topic_id,
+                                            };
+                                            let _ = channel.send_message(&msg).await;
+                                        }
                                     }
                                     "update" => {
                                         info!("[{}] running /update", slot.name);
@@ -1733,12 +1743,23 @@ async fn handle_tui_command(
             true
         }
         "compact" => {
-            let _ = slot.coord_tx.send(CoordinatorJob::Compact {
-                telegram: None,
-                tui_responder: Some(responder.clone()),
-                socket_server: socket_server.clone(),
-                slot_name: slot.name.clone(),
-            });
+            if slot
+                .coord_tx
+                .send(CoordinatorJob::Compact {
+                    telegram: None,
+                    tui_responder: Some(responder.clone()),
+                    socket_server: socket_server.clone(),
+                    slot_name: slot.name.clone(),
+                })
+                .is_err()
+            {
+                reply(
+                    responder,
+                    socket_server,
+                    &slot.name,
+                    "Error: coordinator task shut down",
+                );
+            }
             true
         }
         "brief" => {
@@ -1803,12 +1824,10 @@ async fn handle_tui_command(
             true
         }
         "update" => {
-            reply(
-                responder,
-                socket_server,
-                &slot.name,
-                "Updating apiari + swarm from crates.io...",
-            );
+            // Send initial status as a streaming token (Done sent after completion)
+            let _ = responder.send(socket::DaemonResponse::Token {
+                text: "Updating apiari + swarm from crates.io...\n".to_string(),
+            });
 
             let script = "source /Users/josh/.cargo/env 2>/dev/null; \
                 /Users/josh/.cargo/bin/cargo install --force apiari 2>&1 && \
@@ -1841,18 +1860,18 @@ async fn handle_tui_command(
                     if !tail.is_empty() {
                         text.push_str(&format!("\n```\n{tail}\n```"));
                     }
+                    let _ = responder.send(socket::DaemonResponse::Token { text: text.clone() });
+                    let _ = responder.send(socket::DaemonResponse::Done);
                     if let Some(server) = socket_server {
                         server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
                     }
                 }
                 Err(e) => {
+                    let text = format!("❌ /update failed: {e}");
+                    let _ = responder.send(socket::DaemonResponse::Token { text: text.clone() });
+                    let _ = responder.send(socket::DaemonResponse::Done);
                     if let Some(server) = socket_server {
-                        server.broadcast_activity(
-                            "tui",
-                            &slot.name,
-                            "assistant_message",
-                            &format!("❌ /update failed: {e}"),
-                        );
+                        server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
                     }
                 }
             }

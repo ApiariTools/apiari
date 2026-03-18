@@ -828,6 +828,29 @@ root = "/tmp/test"
         assert!(config.telegram.is_none());
         assert_eq!(config.coordinator.model, "sonnet");
         assert_eq!(config.coordinator.max_turns, 20);
+        assert_eq!(config.coordinator.max_session_turns, 50);
+    }
+
+    #[test]
+    fn test_max_session_turns_explicit() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+max_session_turns = 100
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.max_session_turns, 100);
+    }
+
+    #[test]
+    fn test_max_session_turns_zero_disables() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+max_session_turns = 0
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.max_session_turns, 0);
     }
 
     #[test]
