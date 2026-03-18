@@ -99,9 +99,13 @@ enum CoordinatorJob {
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         slot_name: String,
     },
-    /// Coordinator follow-through for swarm events.
-    SwarmFollowThrough {
-        events: Vec<String>,
+    /// Coordinator follow-through triggered by a signal hook.
+    SignalFollowThrough {
+        signals: Vec<String>,
+        source: String,
+        prompt_override: Option<String>,
+        queued_at: std::time::Instant,
+        ttl_secs: u64,
         telegram: Option<(TelegramChannel, i64, Option<i64>)>,
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         slot_name: String,
@@ -435,20 +439,36 @@ async fn run_coordinator_task(
                 }
             }
 
-            CoordinatorJob::SwarmFollowThrough {
-                events,
+            CoordinatorJob::SignalFollowThrough {
+                signals,
+                source,
+                prompt_override,
+                queued_at,
+                ttl_secs,
                 telegram,
                 socket_server,
                 slot_name,
             } => {
+                let elapsed = queued_at.elapsed().as_secs();
+                if elapsed > ttl_secs {
+                    info!(
+                        "[{slot_name}] dropping stale signal follow-through ({source}, queued {elapsed}s ago)"
+                    );
+                    continue;
+                }
+
                 if !coordinator.has_session() {
                     continue;
                 }
 
-                let notification = format_system_notification(&events);
+                let notification = if let Some(ref tpl) = prompt_override {
+                    format_hook_notification(&source, &signals, tpl)
+                } else {
+                    format_system_notification(&source, &signals)
+                };
                 info!(
-                    "[{slot_name}] triggering coordinator follow-through ({} swarm event(s))",
-                    events.len()
+                    "[{slot_name}] triggering coordinator follow-through ({source}, {} event(s))",
+                    signals.len()
                 );
 
                 let saved_turns = coordinator.max_turns();
@@ -483,14 +503,16 @@ async fn run_coordinator_task(
                             }
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity(
-                                    "system",
+                                    "signal",
                                     &slot_name,
-                                    "assistant_message",
-                                    &response,
+                                    "signal_follow_through",
+                                    &format!("[{source}] {response}"),
                                 );
                             }
                         } else {
-                            info!("[{slot_name}] coordinator ack'd swarm events (no message sent)");
+                            info!(
+                                "[{slot_name}] coordinator ack'd {source} events (no message sent)"
+                            );
                         }
                     }
                     Err(e) => {
@@ -1031,7 +1053,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         continue;
                     }
 
-                    let mut new_swarm_events: Vec<String> = Vec::new();
+                    // signal source → (descriptions, hook config)
+                    let mut hook_events: HashMap<String, (Vec<String>, config::SignalHookConfig)> = HashMap::new();
                     let mut ci_pass_batch: Vec<(String, String)> = Vec::new(); // (pr_ref, title)
 
                     // NOTE: Watchers are polled sequentially within each slot because
@@ -1057,19 +1080,26 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 for update in &updates {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, is_new)) => {
-                                            // Collect new swarm signals for coordinator follow-through
-                                            if is_new
-                                                && watcher_name == "swarm"
-                                                && let Ok(Some(record)) = slot.store.get_signal(id)
-                                            {
-                                                let desc = if let Some(ref url) = record.url {
-                                                    format!("{} ({})", record.title, url)
-                                                } else if let Some(ref body) = record.body {
-                                                    format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
-                                                } else {
-                                                    record.title.clone()
-                                                };
-                                                new_swarm_events.push(desc);
+                                            // Collect new signals matching a hook for coordinator follow-through
+                                            if is_new {
+                                                if let Some(hook) = slot.config.coordinator.signal_hooks
+                                                    .iter()
+                                                    .find(|h| update.source == h.source || update.source.starts_with(&format!("{}_", h.source)))
+                                                {
+                                                    if let Ok(Some(record)) = slot.store.get_signal(id) {
+                                                        let desc = if let Some(ref url) = record.url {
+                                                            format!("{} ({})", record.title, url)
+                                                        } else if let Some(ref body) = record.body {
+                                                            format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
+                                                        } else {
+                                                            record.title.clone()
+                                                        };
+                                                        let entry = hook_events
+                                                            .entry(hook.source.clone())
+                                                            .or_insert_with(|| (Vec::new(), hook.clone()));
+                                                        entry.0.push(desc);
+                                                    }
+                                                }
                                             }
 
                                             // Determine notification text:
@@ -1186,15 +1216,24 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     // Periodically evict old notification log entries
                     slot.pipeline.evict_old_log_entries();
 
-                    // Coordinator follow-through for swarm events (non-blocking)
-                    if !new_swarm_events.is_empty() {
+                    // Coordinator follow-through for signal hook events (non-blocking)
+                    for (source, (signals, hook)) in hook_events {
                         let telegram_info = slot.config.telegram.as_ref().and_then(|tg| {
                             telegram_channels.get(&tg.bot_token).map(|ch| {
                                 (ch.clone(), tg.chat_id, tg.topic_id)
                             })
                         });
-                        let _ = slot.coord_tx.send(CoordinatorJob::SwarmFollowThrough {
-                            events: new_swarm_events,
+                        let prompt_override = if hook.prompt.is_empty() {
+                            None
+                        } else {
+                            Some(hook.prompt.clone())
+                        };
+                        let _ = slot.coord_tx.send(CoordinatorJob::SignalFollowThrough {
+                            signals,
+                            source,
+                            prompt_override,
+                            queued_at: std::time::Instant::now(),
+                            ttl_secs: hook.ttl_secs,
                             telegram: telegram_info,
                             socket_server: socket_server.clone(),
                             slot_name: slot.name.clone(),
@@ -1975,11 +2014,11 @@ async fn handle_tui_command(
     }
 }
 
-/// Format swarm events into a system notification for the coordinator.
-fn format_system_notification(events: &[String]) -> String {
-    let mut msg = String::from(
-        "[System notification — swarm activity]\n\
-         The following worker events just occurred:\n",
+/// Format signal events into a system notification for the coordinator.
+fn format_system_notification(source: &str, events: &[String]) -> String {
+    let mut msg = format!(
+        "[System notification — {source} activity]\n\
+         The following events just occurred:\n",
     );
     for e in events {
         msg.push_str(&format!("- {e}\n"));
@@ -1989,4 +2028,20 @@ fn format_system_notification(events: &[String]) -> String {
          provide a brief contextual update. Otherwise respond with just \"ack\".",
     );
     msg
+}
+
+/// Format a hook notification using a custom prompt template.
+/// Supports {title}, {url}, {body} placeholders.
+fn format_hook_notification(source: &str, events: &[String], template: &str) -> String {
+    let titles = events.join(", ");
+    let result = template
+        .replace("{source}", source)
+        .replace("{title}", &titles)
+        .replace("{url}", "")
+        .replace("{body}", "");
+    if result.is_empty() {
+        format_system_notification(source, events)
+    } else {
+        result
+    }
 }
