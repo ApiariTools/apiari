@@ -62,8 +62,11 @@ pub fn build_system_prompt(
 
     prompt.push_str(
         "## Signals\n\
-         You have access to real-time signals from GitHub, Sentry, and swarm workers. \
-         When signals arrive, you proactively notify the user about important events.\n\n",
+         You have access to real-time signals from GitHub, Sentry, swarm workers, \
+         Linear, email (IMAP), and Notion. \
+         When signals arrive, you proactively notify the user about important events.\n\
+         All review-queue sources (GitHub, Linear, email, Notion) produce signals \
+         ending with `_review_queue` that auto-appear in the Reviews panel.\n\n",
     );
 
     // Separate CI signals from other signals for dedicated section
