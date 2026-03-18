@@ -142,6 +142,11 @@ pub struct App {
     pub input_cursor: usize,
     pub streaming: bool,
 
+    // Input history (last 50 entries, navigated with Up/Down)
+    pub input_history: Vec<String>,
+    pub history_index: Option<usize>,
+    pub history_draft: String,
+
     // Panel focus
     pub focus: Panel,
 
@@ -225,6 +230,9 @@ impl App {
             input: String::new(),
             input_cursor: 0,
             streaming: false,
+            input_history: Vec::new(),
+            history_index: None,
+            history_draft: String::new(),
             focus: Panel::Workers,
             chat_scroll: 0,
             pane_content: String::new(),
@@ -434,6 +442,8 @@ impl App {
             self.sidebar_selection = item;
             self.input.clear();
             self.input_cursor = 0;
+            self.history_index = None;
+            self.history_draft.clear();
             self.refresh_pane_content();
         }
     }
@@ -515,12 +525,112 @@ impl App {
         }
     }
 
-    /// Take the current input, clearing the buffer.
+    /// Move cursor one character to the left.
+    pub fn move_cursor_left(&mut self) {
+        if self.input_cursor > 0 {
+            let prev = self.input[..self.input_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.input_cursor = prev;
+        }
+    }
+
+    /// Move cursor one character to the right.
+    pub fn move_cursor_right(&mut self) {
+        if self.input_cursor < self.input.len() {
+            let next = self.input[self.input_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| self.input_cursor + i)
+                .unwrap_or(self.input.len());
+            self.input_cursor = next;
+        }
+    }
+
+    /// Move cursor to start of input.
+    pub fn cursor_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    /// Move cursor to end of input.
+    pub fn cursor_end(&mut self) {
+        self.input_cursor = self.input.len();
+    }
+
+    /// Delete the character after the cursor.
+    pub fn delete_char(&mut self) {
+        if self.input_cursor < self.input.len() {
+            let next = self.input[self.input_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| self.input_cursor + i)
+                .unwrap_or(self.input.len());
+            self.input.drain(self.input_cursor..next);
+        }
+    }
+
+    /// Insert a string at the cursor position (used for paste).
+    pub fn insert_str(&mut self, s: &str) {
+        self.input
+            .insert_str(self.input.len().min(self.input_cursor), s);
+        self.input_cursor += s.len();
+    }
+
+    /// Navigate to the previous input history entry.
+    pub fn history_up(&mut self) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        match self.history_index {
+            None => {
+                self.history_draft = self.input.clone();
+                self.history_index = Some(self.input_history.len() - 1);
+            }
+            Some(0) => return,
+            Some(i) => {
+                self.history_index = Some(i - 1);
+            }
+        }
+        if let Some(i) = self.history_index {
+            self.input = self.input_history[i].clone();
+            self.input_cursor = self.input.len();
+        }
+    }
+
+    /// Navigate to the next input history entry, or back to the draft.
+    pub fn history_down(&mut self) {
+        match self.history_index {
+            None => (),
+            Some(i) if i + 1 >= self.input_history.len() => {
+                self.history_index = None;
+                self.input = std::mem::take(&mut self.history_draft);
+                self.input_cursor = self.input.len();
+            }
+            Some(i) => {
+                self.history_index = Some(i + 1);
+                self.input = self.input_history[i + 1].clone();
+                self.input_cursor = self.input.len();
+            }
+        }
+    }
+
+    /// Take the current input, clearing the buffer and pushing to history.
     pub fn take_input(&mut self) -> String {
         let text = self.input.clone();
         self.input.clear();
         self.input_cursor = 0;
         self.chat_scroll = 0;
+        // Push to input history (max 50 entries).
+        if !text.trim().is_empty() {
+            self.input_history.push(text.clone());
+            if self.input_history.len() > 50 {
+                self.input_history.remove(0);
+            }
+        }
+        self.history_index = None;
+        self.history_draft.clear();
         text
     }
 
