@@ -1479,12 +1479,25 @@ pub fn is_daemon_running() -> bool {
 }
 
 /// Ensure the daemon is running, starting it in the background if needed.
+/// If the daemon isn't running, starts it and waits up to ~3 seconds for the
+/// socket to become available.
 pub fn ensure_daemon() -> Result<()> {
     if is_daemon_running() {
         return Ok(());
     }
-    eprintln!("Starting daemon in the background...");
-    spawn_background()
+    eprintln!("Starting daemon...");
+    spawn_background()?;
+
+    // Wait for the daemon socket to appear (up to ~3 seconds)
+    let socket = config::socket_path();
+    for _ in 0..30 {
+        if socket.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Ok(())
 }
 
 fn read_pid() -> Option<u32> {
