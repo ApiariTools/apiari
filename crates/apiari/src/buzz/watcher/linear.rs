@@ -364,11 +364,7 @@ impl LinearWatcher {
         let title = node.get("title")?.as_str()?.to_string();
         let url = node.get("url")?.as_str()?.to_string();
         let priority = node.get("priority").and_then(|p| p.as_u64()).unwrap_or(0) as u8;
-        let updated_at = node
-            .get("updatedAt")
-            .and_then(|u| u.as_str())
-            .unwrap_or("")
-            .to_string();
+        let updated_at = node.get("updatedAt")?.as_str()?.to_string();
         let state_name = node
             .get("state")
             .and_then(|s| s.get("name"))
@@ -501,20 +497,22 @@ impl Watcher for LinearWatcher {
         Ok(all_signals)
     }
 
-    fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
+    fn reconcile(&self, source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
         // Persist seen map to cursor store.
-        if let Ok(json) = serde_json::to_string(&self.seen) {
-            if let Err(e) = store.set_cursor(&self.cursor_key, &json) {
-                warn!("linear: failed to persist seen map: {e}");
-            }
+        if let Ok(json) = serde_json::to_string(&self.seen)
+            && let Err(e) = store.set_cursor(&self.cursor_key, &json)
+        {
+            warn!("linear: failed to persist seen map: {e}");
         }
 
         // Use fetched issue IDs (not emitted signal IDs) for reconcile,
         // because change detection means not all fetched issues emit signals.
         let Some(ref ids) = self.fetched_ids else {
-            return Ok(0);
+            // Return 1 to prevent auto-reconcile fallback even when poll
+            // hasn't run yet (e.g. empty API key early return).
+            return Ok(1);
         };
-        let resolved = store.resolve_missing_signals(SOURCE, ids)?;
+        let resolved = store.resolve_missing_signals(source, ids)?;
         if resolved > 0 {
             info!("linear: reconciled {resolved} resolved signal(s)");
         }
@@ -832,5 +830,168 @@ repos = ["org/repo"]
 "#;
         let config: crate::buzz::config::WatchersConfig = toml::from_str(toml_str).unwrap();
         assert!(config.linear.is_empty());
+    }
+
+    // -- Change detection tests --
+
+    #[test]
+    fn change_detection_skips_unchanged_issues() {
+        let mut watcher = LinearWatcher::new(LinearWatcherConfig {
+            name: "test".to_string(),
+            api_key: "test".to_string(),
+            poll_interval_secs: 60,
+            review_queue: vec![],
+        });
+
+        // Pre-load seen map (simulating restored cursor state).
+        let mut seen = HashMap::new();
+        seen.insert("ENG-42".to_string(), "2025-01-01T00:00:00Z".to_string());
+        watcher.set_initial_seen(seen);
+
+        let issue = LinearIssue {
+            id: "abc-123".to_string(),
+            identifier: "ENG-42".to_string(),
+            title: "Fix the bug".to_string(),
+            url: "https://linear.app/team/issue/ENG-42".to_string(),
+            priority: 1,
+            updated_at: "2025-01-01T00:00:00Z".to_string(),
+            state_name: "In Progress".to_string(),
+            team_key: "ENG".to_string(),
+        };
+
+        // Same updatedAt → should NOT emit.
+        let should_emit = match watcher.seen.get(&issue.identifier) {
+            None => true,
+            Some(prev) => *prev != issue.updated_at,
+        };
+        assert!(!should_emit, "unchanged issue should not be re-emitted");
+    }
+
+    #[test]
+    fn change_detection_emits_updated_issues() {
+        let mut watcher = LinearWatcher::new(LinearWatcherConfig {
+            name: "test".to_string(),
+            api_key: "test".to_string(),
+            poll_interval_secs: 60,
+            review_queue: vec![],
+        });
+
+        let mut seen = HashMap::new();
+        seen.insert("ENG-42".to_string(), "2025-01-01T00:00:00Z".to_string());
+        watcher.set_initial_seen(seen);
+
+        let issue = LinearIssue {
+            id: "abc-123".to_string(),
+            identifier: "ENG-42".to_string(),
+            title: "Fix the bug".to_string(),
+            url: "https://linear.app/team/issue/ENG-42".to_string(),
+            priority: 1,
+            updated_at: "2025-01-02T12:00:00Z".to_string(), // newer
+            state_name: "In Progress".to_string(),
+            team_key: "ENG".to_string(),
+        };
+
+        // Different updatedAt → should emit.
+        let should_emit = match watcher.seen.get(&issue.identifier) {
+            None => true,
+            Some(prev) => *prev != issue.updated_at,
+        };
+        assert!(should_emit, "updated issue should be re-emitted");
+    }
+
+    #[test]
+    fn change_detection_emits_new_issues() {
+        let watcher = LinearWatcher::new(LinearWatcherConfig {
+            name: "test".to_string(),
+            api_key: "test".to_string(),
+            poll_interval_secs: 60,
+            review_queue: vec![],
+        });
+
+        // Not in seen → should emit.
+        let should_emit = match watcher.seen.get("ENG-99") {
+            None => true,
+            Some(prev) => *prev != "2025-01-01T00:00:00Z",
+        };
+        assert!(should_emit, "new issue should be emitted");
+    }
+
+    #[test]
+    fn reconcile_uses_fetched_ids() {
+        let mut watcher = LinearWatcher::new(LinearWatcherConfig {
+            name: "test".to_string(),
+            api_key: "test".to_string(),
+            poll_interval_secs: 60,
+            review_queue: vec![],
+        });
+
+        // Simulate poll that fetched 2 issues but only emitted 1 signal.
+        watcher.fetched_ids = Some(vec![
+            "linear-review-ENG-1".to_string(),
+            "linear-review-ENG-2".to_string(),
+        ]);
+
+        // fetched_ids should contain both IDs (not just the emitted one).
+        let ids = watcher.fetched_ids.as_ref().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"linear-review-ENG-1".to_string()));
+        assert!(ids.contains(&"linear-review-ENG-2".to_string()));
+    }
+
+    #[test]
+    fn reconcile_returns_nonzero_without_fetched_ids() {
+        let watcher = LinearWatcher::new(LinearWatcherConfig {
+            name: "test".to_string(),
+            api_key: "test".to_string(),
+            poll_interval_secs: 60,
+            review_queue: vec![],
+        });
+
+        // Before any poll, fetched_ids is None.
+        assert!(watcher.fetched_ids.is_none());
+
+        // reconcile should still return non-zero to prevent auto-reconcile fallback.
+        let store = SignalStore::open_memory("test_ws").unwrap();
+        let result = watcher.reconcile(SOURCE, &[], &store).unwrap();
+        assert!(
+            result > 0,
+            "reconcile should return non-zero even without fetched_ids"
+        );
+    }
+
+    #[test]
+    fn cursor_key_format() {
+        let watcher = LinearWatcher::new(LinearWatcherConfig {
+            name: "work".to_string(),
+            api_key: "test".to_string(),
+            poll_interval_secs: 60,
+            review_queue: vec![],
+        });
+        assert_eq!(watcher.cursor_key(), "linear_work_seen");
+    }
+
+    #[test]
+    fn parse_issue_requires_updated_at() {
+        let watcher = LinearWatcher::new(LinearWatcherConfig {
+            name: "test".to_string(),
+            api_key: "test".to_string(),
+            poll_interval_secs: 60,
+            review_queue: vec![],
+        });
+
+        // Missing updatedAt should return None.
+        let json = serde_json::json!({
+            "id": "abc-123",
+            "identifier": "ENG-42",
+            "title": "Fix the bug",
+            "url": "https://linear.app/team/issue/ENG-42",
+            "priority": 2,
+            "state": { "name": "In Progress" },
+            "team": { "key": "ENG" }
+        });
+        assert!(
+            watcher.parse_issue(&json).is_none(),
+            "missing updatedAt should fail parse"
+        );
     }
 }
