@@ -89,7 +89,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let mut workspaces = config::discover_workspaces()?;
     if workspaces.is_empty() {
         // Launch the onboarding wizard instead of printing instructions
-        let result = wizard::run_wizard().await?;
+        let result = wizard::run_wizard(None).await?;
         if !result.launch_ui {
             return Ok(());
         }
@@ -269,6 +269,9 @@ async fn event_loop(
                         }
                     }
                     Some(Ok(Event::Mouse(mouse))) => {
+                        if settings_state.is_some() {
+                            continue;
+                        }
                         use crossterm::event::MouseEventKind;
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
@@ -1660,6 +1663,26 @@ mod tests {
 
         assert_eq!(app.focused_panel, Panel::Chat);
         assert!(app.chat_focused, "chat should be focused for input");
+    }
+
+    #[test]
+    fn test_s_key_opens_settings() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        let action = handle_dashboard_key(&mut app, key(KeyCode::Char('s')));
+        assert!(matches!(action, KeyAction::OpenSettings));
+    }
+
+    #[test]
+    fn test_settings_chat_command() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+        // Type "/settings" into the input
+        app.workspaces[0].input = "/settings".to_string();
+        // Simulate Enter key
+        let action = handle_dashboard_chat_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(action, KeyAction::OpenSettings));
     }
 
     #[test]

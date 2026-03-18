@@ -16,6 +16,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::io::stdout;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use super::theme;
 use crate::config;
@@ -89,6 +90,7 @@ struct WizardState {
     telegram_field: usize, // 0 = token, 1 = chat_id, 2 = topic_id
     token_status: TokenStatus,
     token_status_msg: String,
+    last_token_change: Option<Instant>,
     // Integrations
     integrations: Vec<Integration>,
     integration_selection: usize,
@@ -101,13 +103,14 @@ struct WizardState {
 }
 
 impl WizardState {
-    fn new() -> Self {
+    fn new(initial_name: Option<&str>) -> Self {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let name = cwd
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workspace")
-            .to_string();
+        let name = initial_name.map(|s| s.to_string()).unwrap_or_else(|| {
+            cwd.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace")
+                .to_string()
+        });
         let root = cwd.to_string_lossy().to_string();
 
         // Detect available tools
@@ -138,6 +141,7 @@ impl WizardState {
             telegram_field: 0,
             token_status: TokenStatus::Empty,
             token_status_msg: String::new(),
+            last_token_change: None,
             integrations: vec![
                 Integration {
                     name: "GitHub",
@@ -187,7 +191,8 @@ pub struct WizardResult {
 }
 
 /// Run the onboarding wizard TUI. Returns the workspace name if config was created.
-pub async fn run_wizard() -> Result<WizardResult> {
+/// `initial_name` is an optional override for the workspace name (from `--name` flag).
+pub async fn run_wizard(initial_name: Option<&str>) -> Result<WizardResult> {
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(crossterm::event::EnableMouseCapture)?;
     enable_raw_mode()?;
@@ -203,7 +208,7 @@ pub async fn run_wizard() -> Result<WizardResult> {
         original_hook(info);
     }));
 
-    let result = wizard_loop(&mut terminal).await;
+    let result = wizard_loop(&mut terminal, initial_name).await;
 
     disable_raw_mode()?;
     stdout().execute(crossterm::event::DisableMouseCapture)?;
@@ -214,9 +219,12 @@ pub async fn run_wizard() -> Result<WizardResult> {
 
 async fn wizard_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    initial_name: Option<&str>,
 ) -> Result<WizardResult> {
-    let mut state = WizardState::new();
+    let mut state = WizardState::new(initial_name);
     let mut events = EventStream::new();
+    let mut debounce_interval = tokio::time::interval(std::time::Duration::from_millis(200));
+    debounce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         if state.needs_redraw {
@@ -244,12 +252,23 @@ async fn wizard_loop(
             maybe_event = events.next() => {
                 match maybe_event {
                     Some(Ok(Event::Key(key))) => {
-                        handle_wizard_key(&mut state, key).await;
+                        handle_wizard_key(&mut state, key);
                     }
                     Some(Ok(Event::Resize(_, _))) => {
                         state.needs_redraw = true;
                     }
                     _ => {}
+                }
+            }
+            _ = debounce_interval.tick() => {
+                // Check if we need to fire a debounced token validation
+                if let Some(changed_at) = state.last_token_change
+                    && changed_at.elapsed() >= std::time::Duration::from_millis(500)
+                    && state.token_status == TokenStatus::Validating
+                {
+                    state.last_token_change = None;
+                    validate_bot_token(&mut state).await;
+                    state.needs_redraw = true;
                 }
             }
         }
@@ -258,17 +277,7 @@ async fn wizard_loop(
 
 // ── Key handling ─────────────────────────────────────────
 
-async fn handle_wizard_key(state: &mut WizardState, key: crossterm::event::KeyEvent) {
-    // Global: q to quit (when not editing text)
-    if key.code == KeyCode::Char('q')
-        && !is_text_input_active(state)
-        && state.step != WizardStep::Done
-    {
-        state.quit = true;
-        state.needs_redraw = true;
-        return;
-    }
-
+fn handle_wizard_key(state: &mut WizardState, key: crossterm::event::KeyEvent) {
     // Ctrl+C always quits
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         state.quit = true;
@@ -278,21 +287,12 @@ async fn handle_wizard_key(state: &mut WizardState, key: crossterm::event::KeyEv
 
     match state.step {
         WizardStep::Welcome => handle_welcome_key(state, key),
-        WizardStep::Telegram => handle_telegram_key(state, key).await,
+        WizardStep::Telegram => handle_telegram_key(state, key),
         WizardStep::Integrations => handle_integrations_key(state, key),
         WizardStep::Done => handle_done_key(state, key),
     }
 
     state.needs_redraw = true;
-}
-
-fn is_text_input_active(state: &WizardState) -> bool {
-    match state.step {
-        WizardStep::Welcome => true, // fields always editable
-        WizardStep::Telegram => true,
-        WizardStep::Integrations => state.integration_editing,
-        WizardStep::Done => false,
-    }
 }
 
 fn handle_welcome_key(state: &mut WizardState, key: crossterm::event::KeyEvent) {
@@ -302,6 +302,9 @@ fn handle_welcome_key(state: &mut WizardState, key: crossterm::event::KeyEvent) 
         }
         KeyCode::BackTab | KeyCode::Up => {
             state.welcome_field = if state.welcome_field == 0 { 1 } else { 0 };
+        }
+        KeyCode::Esc => {
+            state.quit = true;
         }
         KeyCode::Enter | KeyCode::Right => {
             if !state.workspace_name.trim().is_empty() {
@@ -327,7 +330,7 @@ fn current_welcome_field(state: &mut WizardState) -> &mut String {
     }
 }
 
-async fn handle_telegram_key(state: &mut WizardState, key: crossterm::event::KeyEvent) {
+fn handle_telegram_key(state: &mut WizardState, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Tab | KeyCode::Down => {
             state.telegram_field = (state.telegram_field + 1) % 3;
@@ -360,9 +363,11 @@ async fn handle_telegram_key(state: &mut WizardState, key: crossterm::event::Key
         KeyCode::Char(c) => {
             let field = current_telegram_field(state);
             field.push(c);
-            // Trigger validation after bot_token changes
+            // Debounce token validation: mark pending, actual call fires after 500ms idle
             if state.telegram_field == 0 && state.bot_token.len() > 10 {
-                validate_bot_token(state).await;
+                state.token_status = TokenStatus::Validating;
+                state.token_status_msg = "validating...".into();
+                state.last_token_change = Some(Instant::now());
             }
         }
         _ => {}
@@ -382,20 +387,32 @@ async fn validate_bot_token(state: &mut WizardState) {
     state.token_status = TokenStatus::Validating;
     state.token_status_msg = "validating...".into();
 
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            state.token_status = TokenStatus::Invalid;
+            state.token_status_msg = format!("error: {e}");
+            return;
+        }
+    };
+
     let url = format!("https://api.telegram.org/bot{token}/getMe");
-    match reqwest::get(&url).await {
+    match client.get(&url).send().await {
         Ok(resp) if resp.status().is_success() => {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                if body.get("ok").and_then(|v| v.as_bool()) == Some(true) {
-                    let bot_name = body
-                        .get("result")
-                        .and_then(|r| r.get("username"))
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("bot");
-                    state.token_status = TokenStatus::Valid;
-                    state.token_status_msg = format!("@{bot_name}");
-                    return;
-                }
+            if let Ok(body) = resp.json::<serde_json::Value>().await
+                && body.get("ok").and_then(|v| v.as_bool()) == Some(true)
+            {
+                let bot_name = body
+                    .get("result")
+                    .and_then(|r| r.get("username"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("bot");
+                state.token_status = TokenStatus::Valid;
+                state.token_status_msg = format!("@{bot_name}");
+                return;
             }
             state.token_status = TokenStatus::Invalid;
             state.token_status_msg = "invalid response".into();
@@ -517,10 +534,35 @@ fn handle_done_key(state: &mut WizardState, key: crossterm::event::KeyEvent) {
     }
 }
 
+// ── Validation helpers ───────────────────────────────────
+
+/// Sanitize workspace name: reject path separators and dots-only names.
+fn sanitize_workspace_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return None;
+    }
+    // Reject names that are only dots (e.g. ".", "..")
+    if name.chars().all(|c| c == '.') {
+        return None;
+    }
+    Some(name)
+}
+
 // ── Config writing ───────────────────────────────────────
 
 fn write_workspace_config(state: &WizardState) -> Result<String> {
-    let name = state.workspace_name.trim();
+    let name = match sanitize_workspace_name(&state.workspace_name) {
+        Some(n) => n,
+        None => {
+            return Err(color_eyre::eyre::eyre!(
+                "Invalid workspace name: must not contain path separators"
+            ));
+        }
+    };
     let root = state.root_dir.trim();
 
     let dir = config::workspaces_dir();
@@ -528,66 +570,74 @@ fn write_workspace_config(state: &WizardState) -> Result<String> {
 
     let config_path = dir.join(format!("{name}.toml"));
 
-    let mut toml = String::new();
-    toml.push_str(&format!("root = \"{root}\"\n"));
-    toml.push_str("repos = []  # empty = auto-discover from workspace root\n\n");
+    // Build a WorkspaceConfig struct and serialize with toml
+    let telegram = if !state.bot_token.trim().is_empty() && !state.chat_id.trim().is_empty() {
+        let chat_id: i64 = state
+            .chat_id
+            .trim()
+            .parse()
+            .map_err(|_| color_eyre::eyre::eyre!("chat_id must be a number"))?;
+        let topic_id = if state.topic_id.trim().is_empty() {
+            None
+        } else {
+            Some(
+                state
+                    .topic_id
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|_| color_eyre::eyre::eyre!("topic_id must be a number"))?,
+            )
+        };
+        Some(config::TelegramConfig {
+            bot_token: state.bot_token.trim().to_string(),
+            chat_id,
+            topic_id,
+            allowed_user_ids: vec![],
+        })
+    } else {
+        None
+    };
 
-    // Telegram
-    if !state.bot_token.trim().is_empty() && !state.chat_id.trim().is_empty() {
-        toml.push_str("[telegram]\n");
-        toml.push_str(&format!("bot_token = \"{}\"\n", state.bot_token.trim()));
-        toml.push_str(&format!("chat_id = {}\n", state.chat_id.trim()));
-        if !state.topic_id.trim().is_empty() {
-            toml.push_str(&format!("topic_id = {}\n", state.topic_id.trim()));
-        }
-        toml.push('\n');
-    }
-
-    // Coordinator defaults
-    let coordinator_name = "Bee";
-    let default_prompt = crate::buzz::coordinator::prompt::default_preamble(coordinator_name);
-    toml.push_str("[coordinator]\n");
-    toml.push_str("model = \"sonnet\"\n");
-    toml.push_str("max_turns = 20\n");
-    toml.push_str(&format!("prompt = \"\"\"\n{default_prompt}\"\"\"\n\n"));
-
-    // Integrations
+    // Build watchers from integrations
+    let mut watchers = config::WatchersConfig::default();
     for int in &state.integrations {
         if !int.enabled {
             continue;
         }
         match int.name {
             "GitHub" => {
-                toml.push_str("[watchers.github]\n");
-                toml.push_str("repos = []  # auto-discover from workspace root\n");
-                toml.push_str("interval_secs = 120\n\n");
+                watchers.github = Some(config::GithubWatcherConfig {
+                    repos: vec![],
+                    interval_secs: 120,
+                    review_queue: vec![],
+                });
             }
             "Sentry" => {
                 let org = int
                     .fields
                     .iter()
                     .find(|f| f.0 == "org")
-                    .map(|f| f.1.as_str())
-                    .unwrap_or("");
+                    .map(|f| f.1.trim().to_string())
+                    .unwrap_or_default();
                 let project = int
                     .fields
                     .iter()
                     .find(|f| f.0 == "project")
-                    .map(|f| f.1.as_str())
-                    .unwrap_or("");
+                    .map(|f| f.1.trim().to_string())
+                    .unwrap_or_default();
                 let token = int
                     .fields
                     .iter()
                     .find(|f| f.0 == "token")
-                    .map(|f| f.1.as_str())
-                    .unwrap_or("");
-                if !org.trim().is_empty() && !project.trim().is_empty() && !token.trim().is_empty()
-                {
-                    toml.push_str("[watchers.sentry]\n");
-                    toml.push_str(&format!("org = \"{}\"\n", org.trim()));
-                    toml.push_str(&format!("project = \"{}\"\n", project.trim()));
-                    toml.push_str(&format!("token = \"{}\"\n", token.trim()));
-                    toml.push_str("interval_secs = 120\n\n");
+                    .map(|f| f.1.trim().to_string())
+                    .unwrap_or_default();
+                if !org.is_empty() && !project.is_empty() && !token.is_empty() {
+                    watchers.sentry = Some(config::SentryWatcherConfig {
+                        org,
+                        project,
+                        token,
+                        interval_secs: 120,
+                    });
                 }
             }
             "Linear" => {
@@ -595,32 +645,61 @@ fn write_workspace_config(state: &WizardState) -> Result<String> {
                     .fields
                     .iter()
                     .find(|f| f.0 == "api_key")
-                    .map(|f| f.1.as_str())
-                    .unwrap_or("");
+                    .map(|f| f.1.trim().to_string())
+                    .unwrap_or_default();
                 let lname = int
                     .fields
                     .iter()
                     .find(|f| f.0 == "name")
-                    .map(|f| f.1.as_str())
-                    .unwrap_or("");
-                if !api_key.trim().is_empty() {
-                    toml.push_str("[[watchers.linear]]\n");
-                    toml.push_str(&format!("name = \"{}\"\n", lname.trim()));
-                    toml.push_str(&format!("api_key = \"{}\"\n", api_key.trim()));
-                    toml.push_str("poll_interval_secs = 60\n\n");
+                    .map(|f| f.1.trim().to_string())
+                    .unwrap_or_default();
+                if !api_key.is_empty() {
+                    watchers.linear = vec![config::LinearWatcherConfig {
+                        name: lname,
+                        api_key,
+                        poll_interval_secs: 60,
+                        review_queue: vec![],
+                    }];
                 }
             }
             "Swarm" => {
                 let state_path = format!("{root}/.swarm/state.json");
-                toml.push_str("[watchers.swarm]\n");
-                toml.push_str(&format!("state_path = \"{state_path}\"\n"));
-                toml.push_str("interval_secs = 15\n\n");
+                watchers.swarm = Some(config::SwarmWatcherConfig {
+                    state_path: state_path.into(),
+                    interval_secs: 15,
+                });
             }
             _ => {}
         }
     }
 
-    std::fs::write(&config_path, &toml)?;
+    let coordinator_name = "Bee";
+    let default_prompt = crate::buzz::coordinator::prompt::default_preamble(coordinator_name);
+
+    let ws_config = config::WorkspaceConfig {
+        root: root.into(),
+        repos: vec![],
+        telegram,
+        coordinator: config::CoordinatorConfig {
+            name: coordinator_name.to_string(),
+            model: "sonnet".to_string(),
+            max_turns: 20,
+            prompt: Some(default_prompt),
+            max_session_turns: 50,
+        },
+        watchers,
+        pipeline: config::PipelineConfig::default(),
+        commands: vec![],
+        morning_brief: None,
+        daemon_tcp_port: None,
+        daemon_tcp_bind: None,
+        daemon_host: None,
+        daemon_port: None,
+        daemon_endpoints: vec![],
+    };
+
+    let toml_str = toml::to_string_pretty(&ws_config)?;
+    std::fs::write(&config_path, toml_str)?;
     Ok(name.to_string())
 }
 
@@ -681,7 +760,7 @@ fn draw_wizard_header(frame: &mut Frame, state: &WizardState, area: Rect) {
 
 fn draw_wizard_footer(frame: &mut Frame, state: &WizardState, area: Rect) {
     let hints = match state.step {
-        WizardStep::Welcome => "[Tab] next field  [Enter/\u{2192}] continue  [q] quit",
+        WizardStep::Welcome => "[Tab] next field  [Enter/\u{2192}] continue  [Esc] quit",
         WizardStep::Telegram => {
             "[Tab] next field  [Enter/\u{2192}] continue  [\u{2190}/Esc] back  [^S] skip"
         }
@@ -738,12 +817,20 @@ fn draw_welcome(frame: &mut Frame, state: &WizardState, area: Rect) {
     frame.render_widget(desc, chunks[1]);
 
     // Workspace name field
-    draw_text_field(
+    let name_valid = sanitize_workspace_name(&state.workspace_name).is_some();
+    let name_suffix = if !name_valid && !state.workspace_name.trim().is_empty() {
+        " \u{2717} invalid name"
+    } else {
+        ""
+    };
+    draw_text_field_with_suffix(
         frame,
         chunks[3],
         "Workspace name",
         &state.workspace_name,
         state.welcome_field == 0,
+        name_suffix,
+        theme::error(),
     );
 
     // Root directory field
@@ -828,20 +915,40 @@ fn draw_telegram(frame: &mut Frame, state: &WizardState, area: Rect) {
         token_style,
     );
 
-    draw_text_field(
+    // Chat ID with inline validation
+    let chat_id_valid =
+        state.chat_id.trim().is_empty() || state.chat_id.trim().parse::<i64>().is_ok();
+    let chat_suffix = if !chat_id_valid {
+        " \u{2717} must be a number"
+    } else {
+        ""
+    };
+    draw_text_field_with_suffix(
         frame,
         chunks[7],
         "Chat ID",
         &state.chat_id,
         state.telegram_field == 1,
+        chat_suffix,
+        theme::error(),
     );
 
-    draw_text_field(
+    // Topic ID with inline validation
+    let topic_id_valid =
+        state.topic_id.trim().is_empty() || state.topic_id.trim().parse::<i64>().is_ok();
+    let topic_suffix = if !topic_id_valid {
+        " \u{2717} must be a number"
+    } else {
+        ""
+    };
+    draw_text_field_with_suffix(
         frame,
         chunks[9],
         "Topic ID (optional)",
         &state.topic_id,
         state.telegram_field == 2,
+        topic_suffix,
+        theme::error(),
     );
 }
 

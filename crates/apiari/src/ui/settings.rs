@@ -18,6 +18,7 @@ pub struct SettingsState {
     pub dirty: bool,
     pub focused_field: usize,
     pub confirm_save: bool,
+    pub save_error: Option<String>,
     // Fields
     pub workspace_name: String,
     pub root: String,
@@ -47,7 +48,7 @@ pub struct SettingsState {
     pub swarm_state_path: String,
 }
 
-const FIELD_COUNT: usize = 17;
+const FIELD_COUNT: usize = 13;
 
 impl SettingsState {
     /// Create settings from current workspace config.
@@ -57,6 +58,7 @@ impl SettingsState {
             dirty: false,
             focused_field: 0,
             confirm_save: false,
+            save_error: None,
             workspace_name: name.to_string(),
             root: config.root.to_string_lossy().to_string(),
             bot_token: config
@@ -131,13 +133,16 @@ impl SettingsState {
 
         if self.confirm_save {
             match key.code {
-                KeyCode::Char('y') => {
-                    if let Err(e) = self.save() {
-                        tracing::error!("failed to save settings: {e}");
+                KeyCode::Char('y') => match self.save() {
+                    Ok(()) => {
+                        self.active = false;
+                        return true;
                     }
-                    self.active = false;
-                    return true;
-                }
+                    Err(e) => {
+                        self.save_error = Some(format!("{e}"));
+                        self.confirm_save = false;
+                    }
+                },
                 KeyCode::Char('n') => {
                     self.active = false;
                     return true;
@@ -218,14 +223,25 @@ impl SettingsState {
 
         // Telegram
         if !self.bot_token.trim().is_empty() && !self.chat_id.trim().is_empty() {
+            let chat_id: i64 = self
+                .chat_id
+                .trim()
+                .parse()
+                .map_err(|_| color_eyre::eyre::eyre!("chat_id must be a number"))?;
+            let topic_id = if self.topic_id.trim().is_empty() {
+                None
+            } else {
+                Some(
+                    self.topic_id
+                        .trim()
+                        .parse::<i64>()
+                        .map_err(|_| color_eyre::eyre::eyre!("topic_id must be a number"))?,
+                )
+            };
             config.telegram = Some(config::TelegramConfig {
                 bot_token: self.bot_token.trim().to_string(),
-                chat_id: self.chat_id.trim().parse().unwrap_or(0),
-                topic_id: if self.topic_id.trim().is_empty() {
-                    None
-                } else {
-                    self.topic_id.trim().parse().ok()
-                },
+                chat_id,
+                topic_id,
                 allowed_user_ids: config
                     .telegram
                     .as_ref()
@@ -240,6 +256,73 @@ impl SettingsState {
         config.coordinator.model = self.coordinator_model.trim().to_string();
         if let Ok(turns) = self.coordinator_max_turns.trim().parse() {
             config.coordinator.max_turns = turns;
+        }
+
+        // GitHub
+        if !self.github_repos.trim().is_empty() {
+            let repos: Vec<String> = self
+                .github_repos
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let existing = config
+                .watchers
+                .github
+                .take()
+                .unwrap_or(config::GithubWatcherConfig {
+                    repos: vec![],
+                    interval_secs: 120,
+                    review_queue: vec![],
+                });
+            config.watchers.github = Some(config::GithubWatcherConfig { repos, ..existing });
+        } else {
+            config.watchers.github = None;
+        }
+
+        // Sentry
+        if !self.sentry_org.trim().is_empty()
+            && !self.sentry_project.trim().is_empty()
+            && !self.sentry_token.trim().is_empty()
+        {
+            let existing = config.watchers.sentry.take();
+            config.watchers.sentry = Some(config::SentryWatcherConfig {
+                org: self.sentry_org.trim().to_string(),
+                project: self.sentry_project.trim().to_string(),
+                token: self.sentry_token.trim().to_string(),
+                interval_secs: existing.map(|s| s.interval_secs).unwrap_or(120),
+            });
+        } else {
+            config.watchers.sentry = None;
+        }
+
+        // Linear
+        if !self.linear_api_key.trim().is_empty() {
+            let existing = config.watchers.linear.first().cloned();
+            config.watchers.linear = vec![config::LinearWatcherConfig {
+                name: self.linear_name.trim().to_string(),
+                api_key: self.linear_api_key.trim().to_string(),
+                poll_interval_secs: existing.map(|l| l.poll_interval_secs).unwrap_or(60),
+                review_queue: config
+                    .watchers
+                    .linear
+                    .first()
+                    .map(|l| l.review_queue.clone())
+                    .unwrap_or_default(),
+            }];
+        } else {
+            config.watchers.linear = vec![];
+        }
+
+        // Swarm
+        if !self.swarm_state_path.trim().is_empty() {
+            let existing = config.watchers.swarm.take();
+            config.watchers.swarm = Some(config::SwarmWatcherConfig {
+                state_path: self.swarm_state_path.trim().into(),
+                interval_secs: existing.map(|s| s.interval_secs).unwrap_or(15),
+            });
+        } else {
+            config.watchers.swarm = None;
         }
 
         // Serialize with toml
@@ -309,12 +392,21 @@ pub fn draw_settings(frame: &mut Frame, state: &SettingsState, area: Rect) {
     // Hint at bottom
     let hint_idx = fields.len() + 2;
     if hint_idx < chunks.len() {
-        let hint = Paragraph::new(Line::from(Span::styled(
-            "[Tab/\u{2191}\u{2193}] navigate  [Esc] close  Changes save on exit",
-            theme::key_desc(),
-        )))
-        .alignment(Alignment::Center);
-        frame.render_widget(hint, chunks[hint_idx]);
+        if let Some(ref err) = state.save_error {
+            let hint = Paragraph::new(Line::from(Span::styled(
+                format!("Save failed: {err}"),
+                theme::error(),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(hint, chunks[hint_idx]);
+        } else {
+            let hint = Paragraph::new(Line::from(Span::styled(
+                "[Tab/\u{2191}\u{2193}] navigate  [Esc] close  Changes save on exit",
+                theme::key_desc(),
+            )))
+            .alignment(Alignment::Center);
+            frame.render_widget(hint, chunks[hint_idx]);
+        }
     }
 
     // Save confirmation overlay

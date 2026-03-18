@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
                 });
                 let config_path = config::workspaces_dir().join(format!("{ws_name}.toml"));
                 if !config_path.exists() {
-                    let result = ui::wizard::run_wizard().await?;
+                    let result = ui::wizard::run_wizard(name.as_deref()).await?;
                     if result.launch_ui {
                         ui::run(result.workspace_name.as_deref()).await?;
                     }
