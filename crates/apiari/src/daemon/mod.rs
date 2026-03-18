@@ -1081,25 +1081,23 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, is_new)) => {
                                             // Collect new signals matching a hook for coordinator follow-through
-                                            if is_new {
-                                                if let Some(hook) = slot.config.coordinator.signal_hooks
+                                            if is_new
+                                                && let Some(hook) = slot.config.coordinator.signal_hooks
                                                     .iter()
                                                     .find(|h| update.source == h.source || update.source.starts_with(&format!("{}_", h.source)))
-                                                {
-                                                    if let Ok(Some(record)) = slot.store.get_signal(id) {
-                                                        let desc = if let Some(ref url) = record.url {
-                                                            format!("{} ({})", record.title, url)
-                                                        } else if let Some(ref body) = record.body {
-                                                            format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
-                                                        } else {
-                                                            record.title.clone()
-                                                        };
-                                                        let entry = hook_events
-                                                            .entry(hook.source.clone())
-                                                            .or_insert_with(|| (Vec::new(), hook.clone()));
-                                                        entry.0.push(desc);
-                                                    }
-                                                }
+                                                && let Ok(Some(record)) = slot.store.get_signal(id)
+                                            {
+                                                let desc = if let Some(ref url) = record.url {
+                                                    format!("{} ({})", record.title, url)
+                                                } else if let Some(ref body) = record.body {
+                                                    format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
+                                                } else {
+                                                    record.title.clone()
+                                                };
+                                                let entry = hook_events
+                                                    .entry(hook.source.clone())
+                                                    .or_insert_with(|| (Vec::new(), hook.clone()));
+                                                entry.0.push(desc);
                                             }
 
                                             // Determine notification text:
