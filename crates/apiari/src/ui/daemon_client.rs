@@ -3,8 +3,9 @@
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::{TcpStream, UnixStream};
-use tracing::info;
+use tracing::{debug, info};
 
+use crate::config::DaemonEndpoint;
 use crate::daemon::socket::{DaemonRequest, DaemonResponse};
 
 /// Transport-agnostic line reader + writer.
@@ -24,6 +25,8 @@ pub struct DaemonClient {
     /// Whether this client is connected via TCP (remote).
     #[allow(dead_code)]
     pub is_remote: bool,
+    /// The host we connected to (for status bar display).
+    pub connected_host: Option<String>,
 }
 
 impl DaemonClient {
@@ -36,25 +39,50 @@ impl DaemonClient {
         Ok(Self {
             transport: Transport::Unix { lines, writer },
             is_remote: false,
+            connected_host: None,
         })
     }
 
-    /// Connect to a remote daemon via TCP with a 2-second timeout.
-    pub async fn connect_tcp(host: &str, port: u16) -> std::io::Result<Self> {
-        let addr = format!("{host}:{port}");
-        let stream =
-            tokio::time::timeout(std::time::Duration::from_secs(2), TcpStream::connect(&addr))
-                .await
-                .map_err(|_| {
-                    std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP connect timed out")
-                })??;
-        let (reader, writer) = stream.into_split();
-        let lines = BufReader::new(reader).lines();
-        info!("[tui] connected to daemon via TCP at {addr}");
-        Ok(Self {
-            transport: Transport::Tcp { lines, writer },
-            is_remote: true,
-        })
+    /// Try connecting to each endpoint in order with a 500ms timeout per endpoint.
+    /// Returns the first successful connection.
+    pub async fn connect_tcp_fallback(endpoints: &[DaemonEndpoint]) -> std::io::Result<Self> {
+        let mut last_err = std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "no daemon endpoints configured",
+        );
+        for ep in endpoints {
+            debug!("[ui] trying endpoint {}:{}...", ep.host, ep.port);
+            let addr = format!("{}:{}", ep.host, ep.port);
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                TcpStream::connect(&addr),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => {
+                    let (reader, writer) = stream.into_split();
+                    let lines = BufReader::new(reader).lines();
+                    info!("[ui] connected to {}:{}", ep.host, ep.port);
+                    return Ok(Self {
+                        transport: Transport::Tcp { lines, writer },
+                        is_remote: true,
+                        connected_host: Some(ep.host.clone()),
+                    });
+                }
+                Ok(Err(e)) => {
+                    debug!("[ui] endpoint {}:{} failed: {e}", ep.host, ep.port);
+                    last_err = e;
+                }
+                Err(_) => {
+                    debug!("[ui] endpoint {}:{} timed out", ep.host, ep.port);
+                    last_err = std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("{}:{} timed out", ep.host, ep.port),
+                    );
+                }
+            }
+        }
+        Err(last_err)
     }
 
     /// Send a chat message to the daemon.

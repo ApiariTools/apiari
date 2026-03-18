@@ -85,12 +85,52 @@ pub struct WorkspaceConfig {
 
     /// Remote daemon host (Tailscale/LAN IP). When set with `daemon_port`,
     /// the TUI connects to this workspace via TCP instead of Unix socket.
+    /// **Deprecated**: use `daemon_endpoints` instead.
     #[serde(default)]
     pub daemon_host: Option<String>,
 
     /// Remote daemon TCP port. Used with `daemon_host`.
+    /// **Deprecated**: use `daemon_endpoints` instead.
     #[serde(default)]
     pub daemon_port: Option<u16>,
+
+    /// Ordered list of daemon endpoints to try when connecting.
+    /// The TUI tries each in order, using the first that responds.
+    #[serde(default)]
+    pub daemon_endpoints: Vec<DaemonEndpoint>,
+}
+
+/// A single daemon TCP endpoint (host + port).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DaemonEndpoint {
+    pub host: String,
+    #[serde(default = "default_daemon_port")]
+    pub port: u16,
+}
+
+fn default_daemon_port() -> u16 {
+    7474
+}
+
+impl WorkspaceConfig {
+    /// Resolve the ordered list of daemon endpoints.
+    ///
+    /// If `daemon_endpoints` is non-empty, returns it as-is.
+    /// Otherwise, falls back to legacy `daemon_host` + `daemon_port` as a single entry.
+    /// Returns an empty vec if neither is configured (local-only workspace).
+    pub fn resolved_daemon_endpoints(&self) -> Vec<DaemonEndpoint> {
+        if !self.daemon_endpoints.is_empty() {
+            return self.daemon_endpoints.clone();
+        }
+        // Backward compat: legacy single-host config
+        if let (Some(host), Some(port)) = (&self.daemon_host, self.daemon_port) {
+            return vec![DaemonEndpoint {
+                host: host.clone(),
+                port,
+            }];
+        }
+        Vec::new()
+    }
 }
 
 /// Telegram bot configuration.
@@ -832,6 +872,7 @@ root = "/tmp/test"
             daemon_tcp_bind: None,
             daemon_host: None,
             daemon_port: None,
+            daemon_endpoints: vec![],
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -852,6 +893,7 @@ root = "/tmp/test"
             daemon_tcp_bind: None,
             daemon_host: None,
             daemon_port: None,
+            daemon_endpoints: vec![],
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -876,6 +918,7 @@ root = "/tmp/test"
             daemon_tcp_bind: None,
             daemon_host: None,
             daemon_port: None,
+            daemon_endpoints: vec![],
         };
 
         let buzz = to_buzz_config(&ws);
@@ -992,5 +1035,114 @@ root = "/tmp/test"
         // Both host AND port needed for remote
         let target = config.daemon_host.as_ref().zip(config.daemon_port);
         assert!(target.is_none());
+    }
+
+    #[test]
+    fn test_daemon_endpoints_array_parsing() {
+        let toml_str = r#"
+            root = "/tmp/test"
+
+            [[daemon_endpoints]]
+            host = "localhost"
+            port = 7474
+
+            [[daemon_endpoints]]
+            host = "100.64.0.1"
+            port = 7474
+
+            [[daemon_endpoints]]
+            host = "192.168.1.50"
+            port = 7474
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon_endpoints.len(), 3);
+        assert_eq!(config.daemon_endpoints[0].host, "localhost");
+        assert_eq!(config.daemon_endpoints[0].port, 7474);
+        assert_eq!(config.daemon_endpoints[1].host, "100.64.0.1");
+        assert_eq!(config.daemon_endpoints[2].host, "192.168.1.50");
+    }
+
+    #[test]
+    fn test_daemon_endpoints_default_port() {
+        let toml_str = r#"
+            root = "/tmp/test"
+
+            [[daemon_endpoints]]
+            host = "localhost"
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon_endpoints.len(), 1);
+        assert_eq!(config.daemon_endpoints[0].port, 7474);
+    }
+
+    #[test]
+    fn test_resolved_endpoints_from_array() {
+        let toml_str = r#"
+            root = "/tmp/test"
+
+            [[daemon_endpoints]]
+            host = "localhost"
+            port = 7474
+
+            [[daemon_endpoints]]
+            host = "100.64.0.1"
+            port = 7474
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        let eps = config.resolved_daemon_endpoints();
+        assert_eq!(eps.len(), 2);
+        assert_eq!(eps[0].host, "localhost");
+        assert_eq!(eps[1].host, "100.64.0.1");
+    }
+
+    #[test]
+    fn test_resolved_endpoints_backward_compat() {
+        let toml_str = r#"
+            root = "/tmp/test"
+            daemon_host = "10.0.0.1"
+            daemon_port = 7474
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.daemon_endpoints.is_empty());
+        let eps = config.resolved_daemon_endpoints();
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].host, "10.0.0.1");
+        assert_eq!(eps[0].port, 7474);
+    }
+
+    #[test]
+    fn test_resolved_endpoints_array_takes_precedence() {
+        let toml_str = r#"
+            root = "/tmp/test"
+            daemon_host = "10.0.0.1"
+            daemon_port = 7474
+
+            [[daemon_endpoints]]
+            host = "localhost"
+            port = 8080
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        let eps = config.resolved_daemon_endpoints();
+        // daemon_endpoints takes precedence over legacy fields
+        assert_eq!(eps.len(), 1);
+        assert_eq!(eps[0].host, "localhost");
+        assert_eq!(eps[0].port, 8080);
+    }
+
+    #[test]
+    fn test_resolved_endpoints_empty_when_no_remote() {
+        let config: WorkspaceConfig = toml::from_str(r#"root = "/tmp""#).unwrap();
+        assert!(config.resolved_daemon_endpoints().is_empty());
+    }
+
+    #[test]
+    fn test_resolved_endpoints_host_without_port_empty() {
+        let toml_str = r#"
+            root = "/tmp"
+            daemon_host = "10.0.0.1"
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        // Legacy requires both host AND port
+        assert!(config.resolved_daemon_endpoints().is_empty());
     }
 }
