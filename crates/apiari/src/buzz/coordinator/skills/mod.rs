@@ -4,7 +4,10 @@
 //! based on the workspace configuration. Each skill contributes a block
 //! of prompt text; `build_skills_prompt()` aggregates them all.
 
+mod email;
 mod github;
+mod linear;
+mod notion;
 mod sentry;
 mod signals;
 mod swarm;
@@ -21,6 +24,12 @@ pub struct SkillContext {
     pub has_swarm: bool,
     pub has_review_queue: bool,
     pub review_queue_names: Vec<String>,
+    pub has_linear: bool,
+    pub linear_names: Vec<String>,
+    pub has_email: bool,
+    pub email_names: Vec<String>,
+    pub has_notion: bool,
+    pub notion_names: Vec<String>,
     /// Custom prompt preamble loaded from prompt_file.
     /// If set, replaces the default identity/role sections in the system prompt.
     pub prompt_preamble: Option<String>,
@@ -44,6 +53,15 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
         sections.push(s);
     }
     if let Some(s) = swarm::build_prompt(ctx) {
+        sections.push(s);
+    }
+    if let Some(s) = linear::build_prompt(ctx) {
+        sections.push(s);
+    }
+    if let Some(s) = email::build_prompt(ctx) {
+        sections.push(s);
+    }
+    if let Some(s) = notion::build_prompt(ctx) {
         sections.push(s);
     }
 
@@ -112,6 +130,12 @@ mod tests {
             has_swarm: true,
             has_review_queue: false,
             review_queue_names: vec![],
+            has_linear: false,
+            linear_names: vec![],
+            has_email: false,
+            email_names: vec![],
+            has_notion: false,
+            notion_names: vec![],
             prompt_preamble: None,
         }
     }
@@ -150,6 +174,54 @@ mod tests {
         ctx.repos.clear();
         let prompt = build_skills_prompt(&ctx);
         assert!(!prompt.contains("## GitHub"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_with_linear() {
+        let mut ctx = test_ctx();
+        ctx.has_linear = true;
+        ctx.linear_names = vec!["linear".to_string()];
+        let prompt = build_skills_prompt(&ctx);
+        assert!(prompt.contains("## Linear"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_no_linear() {
+        let ctx = test_ctx();
+        let prompt = build_skills_prompt(&ctx);
+        assert!(!prompt.contains("## Linear"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_with_email() {
+        let mut ctx = test_ctx();
+        ctx.has_email = true;
+        ctx.email_names = vec!["fastmail".to_string()];
+        let prompt = build_skills_prompt(&ctx);
+        assert!(prompt.contains("## Email"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_no_email() {
+        let ctx = test_ctx();
+        let prompt = build_skills_prompt(&ctx);
+        assert!(!prompt.contains("## Email"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_with_notion() {
+        let mut ctx = test_ctx();
+        ctx.has_notion = true;
+        ctx.notion_names = vec!["notion".to_string()];
+        let prompt = build_skills_prompt(&ctx);
+        assert!(prompt.contains("## Notion"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_no_notion() {
+        let ctx = test_ctx();
+        let prompt = build_skills_prompt(&ctx);
+        assert!(!prompt.contains("## Notion"));
     }
 
     #[test]

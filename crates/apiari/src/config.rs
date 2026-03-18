@@ -126,6 +126,9 @@ pub struct WatchersConfig {
     /// Notion watchers via `[[watchers.notion]]`.
     #[serde(default)]
     pub notion: Vec<NotionWatcherConfig>,
+    /// Linear watchers via `[[watchers.linear]]`.
+    #[serde(default)]
+    pub linear: Vec<LinearWatcherConfig>,
 }
 
 /// Email mailbox configuration.
@@ -170,6 +173,22 @@ pub struct NotionWatcherConfig {
     pub poll_database_ids: Option<Vec<String>>,
     #[serde(default = "default_notion_interval")]
     pub interval_secs: u64,
+}
+
+/// Linear watcher configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearWatcherConfig {
+    pub name: String,
+    pub api_key: String,
+    pub user_id: String,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default = "default_linear_interval")]
+    pub interval_secs: u64,
+}
+
+fn default_linear_interval() -> u64 {
+    60
 }
 
 fn default_notion_interval() -> u64 {
@@ -404,6 +423,24 @@ pub fn build_skill_context(
         .as_ref()
         .map(|g| g.review_queue.iter().map(|e| e.name.clone()).collect())
         .unwrap_or_default();
+    let linear_names: Vec<String> = config
+        .watchers
+        .linear
+        .iter()
+        .map(|l| l.name.clone())
+        .collect();
+    let email_names: Vec<String> = config
+        .watchers
+        .email
+        .iter()
+        .map(|e| e.name.clone())
+        .collect();
+    let notion_names: Vec<String> = config
+        .watchers
+        .notion
+        .iter()
+        .map(|n| n.name.clone())
+        .collect();
     crate::buzz::coordinator::skills::SkillContext {
         workspace_name: workspace_name.to_string(),
         workspace_root: config.root.clone(),
@@ -413,6 +450,12 @@ pub fn build_skill_context(
         has_swarm: config.watchers.swarm.is_some(),
         has_review_queue: !review_queue_names.is_empty(),
         review_queue_names,
+        has_linear: !linear_names.is_empty(),
+        linear_names,
+        has_email: !email_names.is_empty(),
+        email_names,
+        has_notion: !notion_names.is_empty(),
+        notion_names,
         prompt_preamble: config.coordinator.prompt.clone(),
     }
 }
