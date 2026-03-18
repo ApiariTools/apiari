@@ -961,7 +961,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     }
 
                     let mut new_swarm_events: Vec<String> = Vec::new();
-                    let mut ci_pass_titles: Vec<String> = Vec::new();
+                    let mut ci_pass_batch: Vec<(String, String)> = Vec::new(); // (pr_ref, title)
 
                     for throttled in slot.registry.watchers_mut() {
                         if !throttled.should_poll() {
@@ -1008,7 +1008,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                             slot.pipeline.process_force_notify(&record)
                                                         }
                                                         "github_ci_pass" => {
-                                                            ci_pass_titles.push(record.title.clone());
+                                                            // Extract PR # from external_id (ci-pass-{repo}-{pr}-{run})
+                                                            let pr_ref = record
+                                                                .external_id
+                                                                .rsplit('-')
+                                                                .nth(1)
+                                                                .map(|n| format!("#{n}"))
+                                                                .unwrap_or_default();
+                                                            ci_pass_batch
+                                                                .push((pr_ref, record.title.clone()));
                                                             None
                                                         }
                                                         _ => slot.pipeline.process(&record),
@@ -1055,22 +1063,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     }
 
                     // Send batched CI pass notification
-                    if !ci_pass_titles.is_empty() {
-                        let text = if ci_pass_titles.len() == 1 {
-                            ci_pass_titles[0].clone()
+                    if !ci_pass_batch.is_empty() {
+                        let text = if ci_pass_batch.len() == 1 {
+                            ci_pass_batch[0].1.clone()
                         } else {
-                            let pr_refs: Vec<&str> = ci_pass_titles
-                                .iter()
-                                .filter_map(|t| {
-                                    t.find('#').map(|i| {
-                                        let rest = &t[i..];
-                                        rest.split(':').next().unwrap_or(rest).trim()
-                                    })
-                                })
-                                .collect();
+                            let pr_refs: Vec<&str> =
+                                ci_pass_batch.iter().map(|(r, _)| r.as_str()).collect();
                             format!(
                                 "\u{2705} CI passed on {} PRs: {}",
-                                ci_pass_titles.len(),
+                                ci_pass_batch.len(),
                                 pr_refs.join(", ")
                             )
                         };
