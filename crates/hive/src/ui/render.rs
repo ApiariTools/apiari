@@ -675,16 +675,26 @@ fn draw_content_panel(frame: &mut Frame, area: Rect, app: &App) {
 
     match app.sidebar_selection {
         SidebarItem::Chat => {
+            // Compute dynamic input height based on content wrapping.
+            let prompt_len = 2u16; // "> "
+            let hint_len = 14u16; // "[h: sidebar]" + pad
+            let input_content_width =
+                (area.width.saturating_sub(prompt_len + hint_len + 1)).max(1) as usize;
+            let visual_line_count = count_visual_lines(&app.input, input_content_width);
+            let cursor_row = cursor_row(&app.input, app.input_cursor, input_content_width);
+            let needed_lines = visual_line_count.max(cursor_row + 1);
+            let input_height = (needed_lines as u16).clamp(1, 6) + 1; // +1 for Borders::TOP
+
             let right = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(0),    // chat
-                    Constraint::Length(3), // input bar
+                    Constraint::Min(0),               // chat
+                    Constraint::Length(input_height), // input bar (dynamic)
                 ])
                 .split(area);
 
             draw_chat_panel(frame, right[0], app);
-            draw_input_bar(frame, right[1], app, "> ");
+            draw_input_bar(frame, right[1], app);
         }
         SidebarItem::Dispatch => {
             draw_dispatch_review(frame, area, app);
@@ -1472,7 +1482,7 @@ fn draw_chat_panel(frame: &mut Frame, area: Rect, app: &App) {
 
 // ── Input Bar ────────────────────────────────────────────
 
-fn draw_input_bar(frame: &mut Frame, area: Rect, app: &App, prompt: &str) {
+fn draw_input_bar(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::TOP)
         .border_style(theme::border());
@@ -1480,43 +1490,141 @@ fn draw_input_bar(frame: &mut Frame, area: Rect, app: &App, prompt: &str) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let prompt_spans = vec![
-        Span::styled(prompt, theme::accent()),
-        Span::styled(app.input.as_str(), theme::text()),
-    ];
-
-    // Focus hint on the right.
-    let hint = if app.focus == Panel::Chat {
+    let prompt = "> ";
+    let hint = if app.focus == Panel::Chat && app.is_chat_selected() {
         "[h: sidebar]"
     } else {
         "[l: focus]"
     };
 
-    let input_line = Line::from(prompt_spans);
-    let hint_line = Line::from(Span::styled(hint, theme::subtitle()));
-
-    // Split inner into input area + hint.
+    // Split inner into prompt + input area + hint.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
+            Constraint::Length(prompt.len() as u16),
             Constraint::Min(0),
             Constraint::Length((hint.len() as u16).saturating_add(1)),
         ])
         .split(inner);
 
-    let input_widget = Paragraph::new(input_line);
-    frame.render_widget(input_widget, cols[0]);
+    // Render prompt.
+    frame.render_widget(
+        Paragraph::new(Span::styled(prompt, theme::accent())),
+        cols[0],
+    );
 
-    let hint_widget = Paragraph::new(hint_line);
-    frame.render_widget(hint_widget, cols[1]);
+    // Render hint.
+    frame.render_widget(
+        Paragraph::new(Span::styled(hint, theme::subtitle())),
+        cols[2],
+    );
 
-    // Place the cursor.
-    if app.focus == Panel::Chat {
-        let prompt_width = prompt.len() as u16;
-        let cursor_x = cols[0].x + prompt_width + app.input_cursor as u16;
-        let cursor_y = cols[0].y;
-        frame.set_cursor_position((cursor_x.min(cols[0].right().saturating_sub(1)), cursor_y));
+    // Render input text with character wrapping.
+    let input_width = cols[1].width as usize;
+    let max_visible = cols[1].height as usize;
+    let wrapped = wrap_text(&app.input, input_width);
+
+    // Determine cursor position and scroll offset.
+    let (cur_row, cur_col) = cursor_position(&app.input, app.input_cursor, input_width);
+    let scroll = if cur_row >= max_visible {
+        cur_row - max_visible + 1
+    } else {
+        0
+    };
+
+    // Build visible lines.
+    let visible_lines: Vec<Line> = wrapped
+        .iter()
+        .skip(scroll)
+        .take(max_visible)
+        .map(|line_text| Line::from(Span::styled(line_text.clone(), theme::text())))
+        .collect();
+
+    frame.render_widget(Paragraph::new(visible_lines), cols[1]);
+
+    // Place the terminal cursor.
+    if app.focus == Panel::Chat && app.is_chat_selected() {
+        let visible_row = cur_row.saturating_sub(scroll);
+        let cursor_x = cols[1].x + cur_col as u16;
+        let cursor_y = cols[1].y + visible_row as u16;
+        if cursor_y < cols[1].bottom() && cursor_x < cols[1].right() {
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
     }
+}
+
+// ── Input wrapping helpers ───────────────────────────────
+
+/// Split text into visual lines using character-level wrapping.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut result = Vec::new();
+    for line in text.split('\n') {
+        if line.is_empty() {
+            result.push(String::new());
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        for chunk in chars.chunks(width) {
+            result.push(chunk.iter().collect());
+        }
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+
+/// Count the number of visual lines after character wrapping.
+fn count_visual_lines(text: &str, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let mut lines = 0usize;
+    for line in text.split('\n') {
+        let char_count = line.chars().count();
+        lines += if char_count == 0 {
+            1
+        } else {
+            (char_count + width - 1) / width
+        };
+    }
+    lines.max(1)
+}
+
+/// Calculate the visual row of the cursor in wrapped text.
+fn cursor_row(text: &str, cursor_byte: usize, width: usize) -> usize {
+    cursor_position(text, cursor_byte, width).0
+}
+
+/// Calculate the visual (row, col) of the cursor in wrapped text.
+fn cursor_position(text: &str, cursor_byte: usize, width: usize) -> (usize, usize) {
+    if width == 0 {
+        return (0, 0);
+    }
+    let before = &text[..cursor_byte.min(text.len())];
+    let mut row = 0usize;
+    let mut col = 0usize;
+    for ch in before.chars() {
+        if ch == '\n' {
+            row += 1;
+            col = 0;
+        } else {
+            if col == width {
+                row += 1;
+                col = 0;
+            }
+            col += 1;
+        }
+    }
+    // Cursor exactly at wrap boundary goes to next line.
+    if col == width {
+        row += 1;
+        col = 0;
+    }
+    (row, col)
 }
 
 // ── Worker Output ─────────────────────────────────────────
@@ -1746,7 +1854,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 // ── Help Overlay ─────────────────────────────────────────
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
-    let popup = centered_rect(54, 32, area);
+    let popup = centered_rect(54, 35, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -1790,11 +1898,14 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(""),
         section("Chat"),
         key_line("↵", "Send message"),
+        key_line("alt+↵", "Insert newline"),
+        key_line("←/→", "Move cursor"),
+        key_line("↑/↓", "Input history"),
+        key_line("Home/End", "Start/end of input"),
         key_line("j / k", "Scroll 1 line"),
         key_line("u / d", "Half-page up/down"),
         key_line("PgUp / PgDn", "Full page"),
-        key_line("Home", "Scroll to top"),
-        key_line("G / End", "Scroll to bottom"),
+        key_line("G", "Scroll to bottom"),
         key_line("h / Tab", "Return to sidebar"),
         key_line("z", "Toggle zoom"),
         Line::from(""),

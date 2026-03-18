@@ -13,7 +13,7 @@ use app::{
 use color_eyre::Result;
 use crossterm::{
     ExecutableCommand,
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyModifiers},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use daemon_client::DaemonClient;
@@ -138,6 +138,7 @@ pub async fn run(cwd: &Path) -> Result<()> {
 
     // Terminal setup.
     stdout().execute(EnterAlternateScreen)?;
+    stdout().execute(EnableBracketedPaste)?;
     enable_raw_mode()?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -150,6 +151,7 @@ pub async fn run(cwd: &Path) -> Result<()> {
 
     // Terminal teardown.
     disable_raw_mode()?;
+    stdout().execute(DisableBracketedPaste)?;
     stdout().execute(LeaveAlternateScreen)?;
 
     result
@@ -452,10 +454,32 @@ async fn event_loop(
             }
         }
 
-        // Poll keyboard events with 100ms timeout.
-        if event::poll(Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-        {
+        // Poll keyboard/paste events with 100ms timeout.
+        if event::poll(Duration::from_millis(100))? {
+            let raw_event = event::read()?;
+
+            // Handle paste events (bracketed paste).
+            if let Event::Paste(ref text) = raw_event {
+                if app.focus == Panel::Chat && app.is_chat_selected() && !app.streaming {
+                    app.insert_str(text);
+                }
+                // Also handle paste in dispatch prompt mode.
+                if let Some(ref d) = app.dispatch {
+                    if matches!(d.phase, app::DispatchPhase::EnterPrompt) {
+                        // Insert pasted text into dispatch prompt.
+                        if let Some(ref mut d) = app.dispatch {
+                            d.prompt
+                                .insert_str(d.prompt.len().min(d.prompt_cursor), text);
+                            d.prompt_cursor += text.len();
+                        }
+                    }
+                }
+                continue;
+            }
+
+            let Event::Key(key) = raw_event else {
+                continue;
+            };
             // Ctrl+C always quits.
             if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
                 break;
@@ -738,13 +762,14 @@ async fn event_loop(
                                 }
                             } else {
                                 match key.code {
+                                    // UI navigation
                                     KeyCode::Char('z') => {
                                         app.zoomed = !app.zoomed;
                                     }
                                     KeyCode::Char('?') => {
                                         app.show_help = true;
                                     }
-                                    KeyCode::Char('h') | KeyCode::BackTab | KeyCode::Left => {
+                                    KeyCode::Char('h') | KeyCode::BackTab => {
                                         app.focus = Panel::Workers
                                     }
                                     KeyCode::Tab => app.focus = Panel::Workers,
@@ -755,6 +780,15 @@ async fn event_loop(
                                             app.focus = Panel::Workers;
                                         }
                                     }
+                                    // Alt+Enter inserts a newline.
+                                    KeyCode::Enter
+                                        if key.modifiers.intersects(
+                                            KeyModifiers::ALT | KeyModifiers::SHIFT,
+                                        ) =>
+                                    {
+                                        app.insert_char('\n');
+                                    }
+                                    // Enter sends the message.
                                     KeyCode::Enter => {
                                         if !app.input.is_empty() && !app.streaming {
                                             let text = app.take_input();
@@ -780,27 +814,27 @@ async fn event_loop(
                                                 user_tx.send(UserMessage::Chat(send_text)).await;
                                         }
                                     }
+                                    // Input editing
                                     KeyCode::Backspace => app.backspace(),
-                                    // Vim-style scroll
-                                    KeyCode::Char('j') | KeyCode::Down => {
-                                        app.scroll_chat_lines(1, false)
-                                    }
-                                    KeyCode::Char('k') | KeyCode::Up => {
-                                        app.scroll_chat_lines(1, true)
-                                    }
+                                    KeyCode::Delete => app.delete_char(),
+                                    KeyCode::Left => app.move_cursor_left(),
+                                    KeyCode::Right => app.move_cursor_right(),
+                                    KeyCode::Home => app.cursor_home(),
+                                    KeyCode::End => app.cursor_end(),
+                                    // Input history (Up/Down arrows)
+                                    KeyCode::Up => app.history_up(),
+                                    KeyCode::Down => app.history_down(),
+                                    // Vim-style scroll (letter keys)
+                                    KeyCode::Char('j') => app.scroll_chat_lines(1, false),
+                                    KeyCode::Char('k') => app.scroll_chat_lines(1, true),
                                     KeyCode::Char('u') => app.scroll_chat_half_up(viewport_height),
                                     KeyCode::Char('d') => {
                                         app.scroll_chat_half_down(viewport_height)
                                     }
-                                    KeyCode::Char('G') | KeyCode::End => {
-                                        app.scroll_chat_to_bottom()
-                                    }
-                                    KeyCode::Home => {
-                                        // We use a large value; render will clamp.
-                                        app.scroll_chat_to_top(u16::MAX, viewport_height)
-                                    }
+                                    KeyCode::Char('G') => app.scroll_chat_to_bottom(),
                                     KeyCode::PageUp => app.scroll_chat_page_up(viewport_height),
                                     KeyCode::PageDown => app.scroll_chat_page_down(viewport_height),
+                                    // Text input
                                     KeyCode::Char(c) => app.insert_char(c),
                                     _ => {}
                                 }
