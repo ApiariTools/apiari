@@ -396,37 +396,54 @@ pub fn discover_workspaces() -> Result<Vec<Workspace>> {
     Ok(workspaces)
 }
 
-/// Auto-discover git repos in immediate subdirectories of `root`.
+/// Maximum directory depth for recursive repo discovery.
+const MAX_DISCOVER_DEPTH: u32 = 4;
+
+/// Auto-discover git repos under `root`, recursively up to [`MAX_DISCOVER_DEPTH`] levels.
 ///
 /// Skips hidden dirs, `target/`, and `node_modules/`. For each dir containing `.git/`,
 /// tries to extract a GitHub `org/repo` slug from the origin remote; falls back to the
-/// directory name.
+/// directory name. Does not recurse into directories that are themselves git repos.
 pub fn discover_repos(root: &Path) -> Vec<String> {
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut repos: Vec<String> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            e.file_type().is_ok_and(|ft| ft.is_dir())
-                && !name.starts_with('.')
-                && name != "target"
-                && name != "node_modules"
-        })
-        .filter(|e| e.path().join(".git").exists())
-        .map(|e| {
-            extract_github_slug(&e.path())
-                .unwrap_or_else(|| e.file_name().to_string_lossy().into_owned())
-        })
-        .collect();
-
+    let mut repos = Vec::new();
+    discover_repos_recursive(root, 0, &mut repos);
     repos.sort();
     repos.dedup();
     repos
+}
+
+fn discover_repos_recursive(dir: &Path, depth: u32, repos: &mut Vec<String>) {
+    if depth >= MAX_DISCOVER_DEPTH {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        if !entry.file_type().is_ok_and(|ft| ft.is_dir())
+            || name_str.starts_with('.')
+            || name_str == "target"
+            || name_str == "node_modules"
+        {
+            continue;
+        }
+
+        let path = entry.path();
+        if path.join(".git").exists() {
+            let slug = extract_github_slug(&path)
+                .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
+            repos.push(slug);
+            // Don't recurse into git repos
+        } else {
+            discover_repos_recursive(&path, depth + 1, repos);
+        }
+    }
 }
 
 /// Extract a GitHub `org/repo` slug from a repo's origin remote URL.
@@ -1216,6 +1233,59 @@ max_session_turns = 0
         let ws = ws_with_github(vec!["Org/Workspace".into()], vec![]);
         let gh = to_buzz_config(&ws).watchers.github.unwrap();
         assert_eq!(gh.repos, vec!["Org/Workspace"]);
+    }
+
+    #[test]
+    fn test_discover_repos_recursive() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Depth-1 repo: root/repo_a/.git
+        fs::create_dir_all(root.join("repo_a/.git")).unwrap();
+
+        // Depth-2 repo: root/projects/repo_b/.git
+        fs::create_dir_all(root.join("projects/repo_b/.git")).unwrap();
+
+        // Non-git dir that should be skipped: root/projects/not_a_repo/
+        fs::create_dir_all(root.join("projects/not_a_repo")).unwrap();
+
+        // Hidden dir should be skipped: root/.hidden/repo_c/.git
+        fs::create_dir_all(root.join(".hidden/repo_c/.git")).unwrap();
+
+        // node_modules should be skipped: root/node_modules/pkg/.git
+        fs::create_dir_all(root.join("node_modules/pkg/.git")).unwrap();
+
+        let repos = discover_repos(root);
+
+        // Should find repo_a and repo_b (no git remote, so falls back to dir name)
+        assert!(
+            repos.contains(&"repo_a".to_string()),
+            "missing repo_a: {repos:?}"
+        );
+        assert!(
+            repos.contains(&"repo_b".to_string()),
+            "missing repo_b: {repos:?}"
+        );
+        assert_eq!(repos.len(), 2, "unexpected repos: {repos:?}");
+    }
+
+    #[test]
+    fn test_discover_repos_does_not_recurse_into_git_repos() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // A git repo with a nested git repo inside it
+        fs::create_dir_all(root.join("outer/.git")).unwrap();
+        fs::create_dir_all(root.join("outer/inner/.git")).unwrap();
+
+        let repos = discover_repos(root);
+
+        // Should only find "outer", not "inner"
+        assert_eq!(repos, vec!["outer".to_string()]);
     }
 
     #[test]
