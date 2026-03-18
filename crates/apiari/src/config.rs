@@ -1254,7 +1254,7 @@ max_session_turns = 0
         // Depth-2 repo: root/projects/repo_b/.git
         fs::create_dir_all(root.join("projects/repo_b/.git")).unwrap();
 
-        // Non-git dir that should be skipped: root/projects/not_a_repo/
+        // Non-git dir (traversed but not added as a repo): root/projects/not_a_repo/
         fs::create_dir_all(root.join("projects/not_a_repo")).unwrap();
 
         // Hidden dir should be skipped: root/.hidden/repo_c/.git
@@ -1292,6 +1292,25 @@ max_session_turns = 0
 
         // Should only find "outer", not "inner"
         assert_eq!(repos, vec!["outer".to_string()]);
+    }
+
+    #[test]
+    fn test_discover_repos_root_is_git_repo() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Root itself is a git repo (e.g. monorepo workspace root)
+        fs::create_dir_all(root.join(".git")).unwrap();
+
+        // Child repo inside the root
+        fs::create_dir_all(root.join("child_repo/.git")).unwrap();
+
+        let repos = discover_repos(root);
+
+        // Should still find child repos even when root has .git
+        assert_eq!(repos, vec!["child_repo".to_string()]);
     }
 
     #[test]
