@@ -184,6 +184,9 @@ impl Default for CoordinatorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalHookConfig {
     /// Signal source to match (e.g. "swarm", "github_bot_review", "github_ci_failure").
+    /// Matches exactly, or as a prefix with `_` separator (e.g. "github" matches
+    /// "github_ci_failure", "github_bot_review", etc.).
+    /// The first matching hook wins when multiple hooks could match a signal.
     pub source: String,
     /// Prompt template sent to coordinator. Supports {source} and {events} placeholders.
     /// Empty string = use default formatting.
