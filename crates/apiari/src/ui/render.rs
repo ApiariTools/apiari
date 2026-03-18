@@ -2248,11 +2248,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         "\u{25cb}" // ○ local fallback
     };
     let conn_label = if app.daemon_remote {
-        "remote"
+        match &app.remote_host {
+            Some(host) => format!("remote ({host})"),
+            None => "remote".to_string(),
+        }
     } else if app.daemon_connected {
-        "daemon"
+        "daemon".to_string()
     } else {
-        "local"
+        "local".to_string()
     };
     let conn_style = if app.daemon_remote {
         Style::default().fg(theme::FROST) // cyan for remote

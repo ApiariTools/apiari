@@ -104,15 +104,14 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
 
     // Detect remote workspace before auto-start so we skip local daemon spawn.
     let focused = app.current_ws();
-    let remote_target = focused.and_then(|ws| {
-        let host = ws.config.daemon_host.as_deref()?;
-        let port = ws.config.daemon_port?;
-        Some((host.to_string(), port))
-    });
+    let remote_endpoints = focused
+        .map(|ws| ws.config.resolved_daemon_endpoints())
+        .unwrap_or_default();
+    let is_remote = !remote_endpoints.is_empty();
 
     // Auto-start daemon if not running (skip for remote workspaces — they
     // connect to a daemon running on the remote host).
-    if remote_target.is_none() && !crate::daemon::is_daemon_running() {
+    if !is_remote && !crate::daemon::is_daemon_running() {
         eprintln!("Starting daemon in the background...");
         if let Err(e) = crate::daemon::spawn_background() {
             eprintln!("Warning: failed to start daemon: {e}");
@@ -128,18 +127,28 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     }
 
     // Choose daemon client (shared session) or local coordinator (standalone).
-    let use_daemon = if remote_target.is_some() {
+    let use_daemon = if is_remote {
         true // remote always uses daemon client
     } else {
         daemon_client::socket_exists() && crate::daemon::is_daemon_running()
     };
     app.daemon_connected = use_daemon;
-    app.daemon_remote = remote_target.is_some();
+    app.daemon_remote = is_remote;
 
-    if let Some((host, port)) = remote_target {
-        // Remote daemon — connect via TCP
+    if is_remote {
+        // Remote daemon — connect via TCP with endpoint fallback
         let coord_tx_clone = coord_tx.clone();
-        tokio::spawn(daemon_client_task_tcp(host, port, user_rx, coord_tx_clone));
+        let (host_tx, host_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(daemon_client_task_tcp(
+            remote_endpoints,
+            user_rx,
+            coord_tx_clone,
+            host_tx,
+        ));
+        // Capture connected host for status bar display (non-blocking).
+        if let Ok(host) = host_rx.await {
+            app.remote_host = host;
+        }
     } else if use_daemon {
         // Spawn daemon client task (tokio task — the daemon handles coordinator)
         let coord_tx_clone = coord_tx.clone();
@@ -1304,19 +1313,24 @@ async fn daemon_client_task(
     }
 }
 
-/// Daemon client task connecting via TCP (remote workspace).
+/// Daemon client task connecting via TCP (remote workspace) with endpoint fallback.
 async fn daemon_client_task_tcp(
-    host: String,
-    port: u16,
+    endpoints: Vec<config::DaemonEndpoint>,
     mut user_rx: mpsc::Receiver<UserMessage>,
     coord_tx: mpsc::Sender<CoordResponse>,
+    connected_host_tx: tokio::sync::oneshot::Sender<Option<String>>,
 ) {
-    let mut client = match daemon_client::DaemonClient::connect_tcp(&host, port).await {
-        Ok(c) => c,
+    let mut client = match daemon_client::DaemonClient::connect_tcp_fallback(&endpoints).await {
+        Ok(c) => {
+            let _ = connected_host_tx.send(c.connected_host.clone());
+            c
+        }
         Err(e) => {
+            let _ = connected_host_tx.send(None);
             let _ = coord_tx
                 .send(CoordResponse::Error(format!(
-                    "Failed to connect to remote daemon at {host}:{port}: {e}"
+                    "Failed to connect to remote daemon (tried {} endpoints): {e}",
+                    endpoints.len()
                 )))
                 .await;
             return;
@@ -1547,6 +1561,7 @@ mod tests {
             daemon_alive: false,
             daemon_connected: false,
             daemon_remote: false,
+            remote_host: None,
             daemon_uptime_secs: None,
             last_extras_refresh: std::time::Instant::now(),
             terminal_width: 120,
