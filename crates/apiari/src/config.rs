@@ -545,10 +545,12 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                 .map(|g| crate::buzz::config::GithubWatcherConfig {
                     enabled: true,
                     interval_secs: g.interval_secs,
-                    repos: if g.repos.is_empty() {
-                        discover_repos(&ws.root)
-                    } else {
+                    repos: if !g.repos.is_empty() {
                         g.repos.clone()
+                    } else if !ws.repos.is_empty() {
+                        ws.repos.clone()
+                    } else {
+                        discover_repos(&ws.root)
                     },
                     watch_labels: vec![],
                     review_queue: g
