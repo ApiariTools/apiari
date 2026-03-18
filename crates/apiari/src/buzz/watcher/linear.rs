@@ -7,7 +7,7 @@
 //!
 //! Read-only: no Linear mutation API calls are ever made.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use color_eyre::Result;
@@ -173,6 +173,7 @@ struct LinearIssue {
     title: String,
     url: String,
     priority: u8,
+    updated_at: String,
     state_name: String,
     team_key: String,
 }
@@ -182,16 +183,37 @@ pub struct LinearWatcher {
     config: LinearWatcherConfig,
     client: reqwest::Client,
     watcher_name: String,
+    /// Cursor key for persisting the seen map across restarts.
+    cursor_key: String,
+    /// Map of issue identifier → updatedAt for cross-poll change detection.
+    /// Persisted to the cursor store as JSON after each poll.
+    seen: HashMap<String, String>,
+    /// All fetched issue external_ids from the last poll (for reconciliation).
+    fetched_ids: Option<Vec<String>>,
 }
 
 impl LinearWatcher {
     pub fn new(config: LinearWatcherConfig) -> Self {
         let watcher_name = format!("{}_linear", config.name);
+        let cursor_key = format!("linear_{}_seen", config.name);
         Self {
             config,
             client: reqwest::Client::new(),
             watcher_name,
+            cursor_key,
+            seen: HashMap::new(),
+            fetched_ids: None,
         }
+    }
+
+    /// Get the cursor key (for loading initial seen map from daemon).
+    pub fn cursor_key(&self) -> &str {
+        &self.cursor_key
+    }
+
+    /// Set the initial seen map from a previously persisted cursor.
+    pub fn set_initial_seen(&mut self, seen: HashMap<String, String>) {
+        self.seen = seen;
     }
 
     /// Execute a GraphQL query against the Linear API.
@@ -342,6 +364,11 @@ impl LinearWatcher {
         let title = node.get("title")?.as_str()?.to_string();
         let url = node.get("url")?.as_str()?.to_string();
         let priority = node.get("priority").and_then(|p| p.as_u64()).unwrap_or(0) as u8;
+        let updated_at = node
+            .get("updatedAt")
+            .and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
         let state_name = node
             .get("state")
             .and_then(|s| s.get("name"))
@@ -361,6 +388,7 @@ impl LinearWatcher {
             title,
             url,
             priority,
+            updated_at,
             state_name,
             team_key,
         })
@@ -432,27 +460,67 @@ impl Watcher for LinearWatcher {
         }
 
         let mut all_signals = Vec::new();
-        // Track which issue identifiers have been seen — first query wins (highest priority).
-        let mut seen_identifiers: HashSet<String> = HashSet::new();
+        let mut current_seen: HashMap<String, String> = HashMap::new();
+        let mut fetched_ids = Vec::new();
+        // Dedup across queries within a single poll — first query wins.
+        let mut poll_identifiers: HashSet<String> = HashSet::new();
 
         for entry in &self.config.review_queue.clone() {
             let results = self.poll_query(entry).await;
             for (issue, query_name) in results {
                 // Dedup across queries: if same issue appears in multiple queries,
                 // highest priority (lowest index) wins.
-                if !seen_identifiers.insert(issue.identifier.clone()) {
+                if !poll_identifiers.insert(issue.identifier.clone()) {
                     continue;
                 }
 
-                all_signals.push(self.issue_to_signal(&issue, &query_name));
+                let external_id = format!("linear-review-{}", issue.identifier);
+                fetched_ids.push(external_id);
+                current_seen.insert(issue.identifier.clone(), issue.updated_at.clone());
+
+                // Only emit if the issue is new or has been updated since last seen.
+                let should_emit = match self.seen.get(&issue.identifier) {
+                    None => true,
+                    Some(prev_updated_at) => *prev_updated_at != issue.updated_at,
+                };
+
+                if should_emit {
+                    all_signals.push(self.issue_to_signal(&issue, &query_name));
+                }
             }
         }
+
+        // Update seen map to reflect current poll (drops issues no longer returned).
+        self.seen = current_seen;
+        self.fetched_ids = Some(fetched_ids);
 
         if !all_signals.is_empty() {
             info!("linear: {} signal(s)", all_signals.len());
         }
 
         Ok(all_signals)
+    }
+
+    fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
+        // Persist seen map to cursor store.
+        if let Ok(json) = serde_json::to_string(&self.seen) {
+            if let Err(e) = store.set_cursor(&self.cursor_key, &json) {
+                warn!("linear: failed to persist seen map: {e}");
+            }
+        }
+
+        // Use fetched issue IDs (not emitted signal IDs) for reconcile,
+        // because change detection means not all fetched issues emit signals.
+        let Some(ref ids) = self.fetched_ids else {
+            return Ok(0);
+        };
+        let resolved = store.resolve_missing_signals(SOURCE, ids)?;
+        if resolved > 0 {
+            info!("linear: reconciled {resolved} resolved signal(s)");
+        }
+        // Return at least 1 to signal custom reconciliation was handled,
+        // preventing framework auto-reconcile with partial poll_ids.
+        Ok(resolved.max(1))
     }
 }
 
@@ -670,6 +738,7 @@ mod tests {
         assert_eq!(issue.identifier, "ENG-42");
         assert_eq!(issue.title, "Fix the bug");
         assert_eq!(issue.priority, 2);
+        assert_eq!(issue.updated_at, "2025-01-01T00:00:00Z");
         assert_eq!(issue.state_name, "In Progress");
         assert_eq!(issue.team_key, "ENG");
     }
@@ -689,6 +758,7 @@ mod tests {
             title: "Fix the bug".to_string(),
             url: "https://linear.app/team/issue/ENG-42".to_string(),
             priority: 1, // urgent
+            updated_at: "2025-01-01T00:00:00Z".to_string(),
             state_name: "In Progress".to_string(),
             team_key: "ENG".to_string(),
         };
