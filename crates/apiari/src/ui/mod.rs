@@ -132,11 +132,15 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     } else {
         daemon_client::socket_exists() && crate::daemon::is_daemon_running()
     };
-    app.daemon_connected = use_daemon;
+    // For remote: daemon_connected starts false until TCP actually succeeds.
+    app.daemon_connected = if is_remote { false } else { use_daemon };
     app.daemon_remote = is_remote;
 
     if is_remote {
-        // Remote daemon — connect via TCP with endpoint fallback
+        // Remote daemon — connect via TCP with endpoint fallback.
+        // The oneshot reports the connected host (or None on failure).
+        // We update daemon_connected + remote_host once the result arrives,
+        // but cap the wait so the TUI isn't blocked indefinitely.
         let coord_tx_clone = coord_tx.clone();
         let (host_tx, host_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(daemon_client_task_tcp(
@@ -145,9 +149,19 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
             coord_tx_clone,
             host_tx,
         ));
-        // Capture connected host for status bar display (non-blocking).
-        if let Ok(host) = host_rx.await {
-            app.remote_host = host;
+        // Wait up to 3s for the connection result so the status bar is accurate
+        // on first render, but don't block startup forever.
+        match tokio::time::timeout(Duration::from_secs(3), host_rx).await {
+            Ok(Ok(Some(host))) => {
+                app.daemon_connected = true;
+                app.remote_host = Some(host);
+            }
+            Ok(Ok(None)) => {
+                // All endpoints failed — daemon_connected stays false.
+            }
+            _ => {
+                // Timeout or channel dropped — proceed without host info.
+            }
         }
     } else if use_daemon {
         // Spawn daemon client task (tokio task — the daemon handles coordinator)

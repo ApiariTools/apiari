@@ -3,7 +3,7 @@
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::{TcpStream, UnixStream};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::config::DaemonEndpoint;
 use crate::daemon::socket::{DaemonRequest, DaemonResponse};
@@ -46,8 +46,12 @@ impl DaemonClient {
     /// Try connecting to each endpoint in order with a 500ms timeout per endpoint.
     /// Returns the first successful connection.
     pub async fn connect_tcp_fallback(endpoints: &[DaemonEndpoint]) -> std::io::Result<Self> {
+        let mut last_err = std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "no daemon endpoints configured",
+        );
         for ep in endpoints {
-            info!("[ui] trying endpoint {}:{}...", ep.host, ep.port);
+            debug!("[ui] trying endpoint {}:{}...", ep.host, ep.port);
             let addr = format!("{}:{}", ep.host, ep.port);
             match tokio::time::timeout(
                 std::time::Duration::from_millis(500),
@@ -66,17 +70,19 @@ impl DaemonClient {
                     });
                 }
                 Ok(Err(e)) => {
-                    info!("[ui] endpoint {}:{} failed: {e}", ep.host, ep.port);
+                    debug!("[ui] endpoint {}:{} failed: {e}", ep.host, ep.port);
+                    last_err = e;
                 }
                 Err(_) => {
-                    info!("[ui] endpoint {}:{} timed out", ep.host, ep.port);
+                    debug!("[ui] endpoint {}:{} timed out", ep.host, ep.port);
+                    last_err = std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!("{}:{} timed out", ep.host, ep.port),
+                    );
                 }
             }
         }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "all daemon endpoints failed",
-        ))
+        Err(last_err)
     }
 
     /// Send a chat message to the daemon.

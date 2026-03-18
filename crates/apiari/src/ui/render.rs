@@ -1,5 +1,7 @@
 //! All ratatui rendering for the apiari TUI.
 
+use std::borrow::Cow;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -2247,15 +2249,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "\u{25cb}" // ○ local fallback
     };
-    let conn_label = if app.daemon_remote {
+    let conn_label: Cow<'_, str> = if app.daemon_remote {
         match &app.remote_host {
-            Some(host) => format!("remote ({host})"),
-            None => "remote".to_string(),
+            Some(host) => format!("remote ({host})").into(),
+            None => "remote".into(),
         }
     } else if app.daemon_connected {
-        "daemon".to_string()
+        "daemon".into()
     } else {
-        "local".to_string()
+        "local".into()
     };
     let conn_style = if app.daemon_remote {
         Style::default().fg(theme::FROST) // cyan for remote
