@@ -102,8 +102,17 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
     let (coord_tx, coord_rx) = mpsc::channel::<CoordResponse>(64);
 
-    // Auto-start daemon if not running
-    if !crate::daemon::is_daemon_running() {
+    // Detect remote workspace before auto-start so we skip local daemon spawn.
+    let focused = app.current_ws();
+    let remote_target = focused.and_then(|ws| {
+        let host = ws.config.daemon_host.as_deref()?;
+        let port = ws.config.daemon_port?;
+        Some((host.to_string(), port))
+    });
+
+    // Auto-start daemon if not running (skip for remote workspaces — they
+    // connect to a daemon running on the remote host).
+    if remote_target.is_none() && !crate::daemon::is_daemon_running() {
         eprintln!("Starting daemon in the background...");
         if let Err(e) = crate::daemon::spawn_background() {
             eprintln!("Warning: failed to start daemon: {e}");
@@ -119,14 +128,6 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     }
 
     // Choose daemon client (shared session) or local coordinator (standalone).
-    // Remote workspaces with daemon_host + daemon_port connect via TCP.
-    let focused = app.current_ws();
-    let remote_target = focused.and_then(|ws| {
-        let host = ws.config.daemon_host.as_deref()?;
-        let port = ws.config.daemon_port?;
-        Some((host.to_string(), port))
-    });
-
     let use_daemon = if remote_target.is_some() {
         true // remote always uses daemon client
     } else {

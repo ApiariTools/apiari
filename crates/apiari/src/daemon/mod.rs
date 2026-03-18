@@ -797,16 +797,32 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
     let socket_path = config::socket_path();
     let (mut tui_rx, socket_server) = match socket::DaemonSocketServer::start(&socket_path) {
         Ok((rx, req_tx, server)) => {
-            // Start TCP listener if any workspace has daemon_tcp_port configured
-            for slot in &slots {
-                if let Some(port) = slot.config.daemon_tcp_port {
-                    match server.start_tcp(port, req_tx.clone()) {
-                        Ok(()) => info!("[daemon] TCP listener started on port {port}"),
-                        Err(e) => {
-                            warn!("[daemon] failed to start TCP listener on port {port}: {e}")
-                        }
+            // Start TCP listener if any workspace has daemon_tcp_port configured.
+            // Only one TCP listener is started; warn if multiple differ.
+            let tcp_configs: Vec<_> = slots
+                .iter()
+                .filter_map(|s| {
+                    s.config.daemon_tcp_port.map(|port| {
+                        let bind = s.config.daemon_tcp_bind.as_deref().unwrap_or("127.0.0.1");
+                        (port, bind.to_string())
+                    })
+                })
+                .collect();
+            if tcp_configs.len() > 1 {
+                let ports: Vec<_> = tcp_configs.iter().map(|(p, _)| *p).collect();
+                warn!(
+                    "[daemon] multiple workspaces configure daemon_tcp_port {:?}; using first",
+                    ports
+                );
+            }
+            if let Some((port, bind_addr)) = tcp_configs.into_iter().next() {
+                match server.start_tcp(port, &bind_addr, req_tx.clone()) {
+                    Ok(()) => {
+                        info!("[daemon] TCP listener started on {bind_addr}:{port}")
                     }
-                    break; // only one TCP listener needed
+                    Err(e) => {
+                        warn!("[daemon] failed to start TCP listener on {bind_addr}:{port}: {e}")
+                    }
                 }
             }
             (Some(rx), Some(server))

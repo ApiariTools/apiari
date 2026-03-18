@@ -78,6 +78,11 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub daemon_tcp_port: Option<u16>,
 
+    /// Bind address for the TCP listener (default: "127.0.0.1").
+    /// Set to "0.0.0.0" to listen on all interfaces.
+    #[serde(default)]
+    pub daemon_tcp_bind: Option<String>,
+
     /// Remote daemon host (Tailscale/LAN IP). When set with `daemon_port`,
     /// the TUI connects to this workspace via TCP instead of Unix socket.
     #[serde(default)]
@@ -824,6 +829,7 @@ root = "/tmp/test"
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
+            daemon_tcp_bind: None,
             daemon_host: None,
             daemon_port: None,
         };
@@ -843,6 +849,7 @@ root = "/tmp/test"
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
+            daemon_tcp_bind: None,
             daemon_host: None,
             daemon_port: None,
         };
@@ -866,6 +873,7 @@ root = "/tmp/test"
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
+            daemon_tcp_bind: None,
             daemon_host: None,
             daemon_port: None,
         };
@@ -883,6 +891,7 @@ root = "/tmp/test"
         "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert!(config.daemon_tcp_port.is_none());
+        assert!(config.daemon_tcp_bind.is_none());
         assert!(config.daemon_host.is_none());
         assert!(config.daemon_port.is_none());
     }
@@ -895,8 +904,22 @@ root = "/tmp/test"
         "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.daemon_tcp_port, Some(7474));
+        // bind defaults to None (resolved to 127.0.0.1 at runtime)
+        assert!(config.daemon_tcp_bind.is_none());
         assert!(config.daemon_host.is_none());
         assert!(config.daemon_port.is_none());
+    }
+
+    #[test]
+    fn test_tcp_config_custom_bind_address() {
+        let toml_str = r#"
+            root = "/tmp/test"
+            daemon_tcp_port = 7474
+            daemon_tcp_bind = "0.0.0.0"
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.daemon_tcp_port, Some(7474));
+        assert_eq!(config.daemon_tcp_bind.as_deref(), Some("0.0.0.0"));
     }
 
     #[test]

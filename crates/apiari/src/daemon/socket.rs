@@ -125,13 +125,18 @@ impl DaemonSocketServer {
 
     /// Start a TCP listener on the given port, reusing the same protocol and request channel.
     ///
+    /// `bind_addr` defaults to `127.0.0.1` (loopback only) for safety.
+    /// Set to `0.0.0.0` to listen on all interfaces.
     /// Each TCP client gets the same per-client handler as Unix socket clients.
     pub fn start_tcp(
         self: &Arc<Self>,
         port: u16,
+        bind_addr: &str,
         req_tx: mpsc::UnboundedSender<ClientRequest>,
     ) -> std::io::Result<()> {
-        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+        let addr: std::net::SocketAddr = format!("{bind_addr}:{port}")
+            .parse()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
         let listener = std::net::TcpListener::bind(addr)?;
         listener.set_nonblocking(true)?;
         let listener = TcpListener::from_std(listener)?;
@@ -141,7 +146,7 @@ impl DaemonSocketServer {
             server.accept_tcp_loop(listener, req_tx).await;
         });
 
-        info!("[daemon] TCP listener bound on 0.0.0.0:{port}");
+        info!("[daemon] TCP listener bound on {bind_addr}:{port}");
         Ok(())
     }
 
