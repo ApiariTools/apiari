@@ -43,10 +43,10 @@ impl GithubWatcher {
     pub fn load_cursors(&mut self, store: &SignalStore) {
         for repo in &self.config.repos {
             let rk = format!("github_release:{repo}");
-            if let Ok(Some(val)) = store.get_cursor(&rk) {
-                if let Ok(id) = val.parse::<u64>() {
-                    self.release_cursors.insert(repo.clone(), id);
-                }
+            if let Ok(Some(val)) = store.get_cursor(&rk)
+                && let Ok(id) = val.parse::<u64>()
+            {
+                self.release_cursors.insert(repo.clone(), id);
             }
 
             let mk = format!("github_merged_pr:{repo}");
