@@ -16,6 +16,7 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
          Configuration is in {config} under `[[watchers.linear]]`:\n\
          ```toml\n\
          [[watchers.linear]]\n\
+         name = \"linear\"\n\
          api_key = \"lin_api_xxxx\"\n\
          poll_interval_secs = 60\n\
          \n\
