@@ -16,6 +16,28 @@ use crate::buzz::config::GithubWatcherConfig;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalUpdate};
 
+/// Minimum remaining API calls before we skip the poll entirely.
+const RATE_LIMIT_CRITICAL: u32 = 50;
+/// Threshold below which we log a warning but still proceed.
+const RATE_LIMIT_LOW: u32 = 200;
+
+/// Evaluate rate-limit remaining count. Returns `Some(true)` to proceed,
+/// `Some(false)` to skip, or logs a warning at the low threshold.
+/// Pure function for testability.
+fn rate_limit_decision(remaining: u32) -> (bool, bool) {
+    // Returns (should_proceed, is_low_warning)
+    if remaining < RATE_LIMIT_CRITICAL {
+        (false, false)
+    } else if remaining < RATE_LIMIT_LOW {
+        (true, true)
+    } else {
+        (true, false)
+    }
+}
+
+/// Max concurrent `gh` subprocess calls per poll (per-PR CI lookups, per-repo fanout).
+const MAX_CONCURRENT_GH_CALLS: usize = 8;
+
 /// Per-repo poll results collected concurrently, then merged into watcher state.
 struct RepoPollResult {
     repo: String,
@@ -417,7 +439,8 @@ impl GithubWatcher {
         if let Some((checked_at, remaining)) = self.last_rate_check
             && checked_at.elapsed().as_secs() < 60
         {
-            return remaining >= 50;
+            let (proceed, _) = rate_limit_decision(remaining);
+            return proceed;
         }
 
         let output = tokio::process::Command::new("gh")
@@ -433,17 +456,19 @@ impl GithubWatcher {
                     .unwrap_or(5000);
                 self.last_rate_check = Some((Instant::now(), remaining));
 
-                if remaining < 50 {
+                let (proceed, is_low) = rate_limit_decision(remaining);
+                if !proceed {
                     warn!("GitHub rate limit critical ({remaining} remaining) — skipping poll");
-                    return false;
-                }
-                if remaining < 200 {
+                } else if is_low {
                     warn!("GitHub rate limit low ({remaining} remaining) — proceeding cautiously");
                 }
-                true
+                proceed
             }
             _ => {
                 warn!("Failed to check GitHub rate limit — proceeding anyway");
+                // Cache failure so we don't re-run every poll and spam logs.
+                // Use u32::MAX as a sentinel meaning "unknown but proceed".
+                self.last_rate_check = Some((Instant::now(), u32::MAX));
                 true
             }
         }
@@ -476,56 +501,58 @@ impl GithubWatcher {
         signals.extend(release_signals);
         signals.extend(merged_signals);
 
-        // Fetch latest CI run for each open PR concurrently.
+        // Fetch latest CI run for each open PR concurrently in bounded chunks.
         let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _)| *n).collect();
 
-        let run_futures: Vec<_> = prs
-            .iter()
-            .map(|(_, _, branch)| self.fetch_latest_run(repo, branch))
-            .collect();
-        let runs = join_all(run_futures).await;
+        for chunk in prs.chunks(MAX_CONCURRENT_GH_CALLS) {
+            let run_futures: Vec<_> = chunk
+                .iter()
+                .map(|(_, _, branch)| self.fetch_latest_run(repo, branch))
+                .collect();
+            let runs = join_all(run_futures).await;
 
-        for ((pr_number, pr_title, _), run) in prs.iter().zip(runs) {
-            if let Some(run) = run {
-                let conclusion = run.get("conclusion").and_then(|v| v.as_str());
-                let run_id = run.get("databaseId").and_then(|v| v.as_u64());
-                let run_url = run.get("url").and_then(|v| v.as_str());
+            for ((pr_number, pr_title, _), run) in chunk.iter().zip(runs) {
+                if let Some(run) = run {
+                    let conclusion = run.get("conclusion").and_then(|v| v.as_str());
+                    let run_id = run.get("databaseId").and_then(|v| v.as_u64());
+                    let run_url = run.get("url").and_then(|v| v.as_str());
 
-                match conclusion {
-                    Some("failure") => {
-                        ci_pass_prs.remove(pr_number);
-                        if let Some(run_id) = run_id {
-                            let key = format!("ci-failure-{pr_number}-{run_id}");
-                            let mut signal = SignalUpdate::new(
-                                "github",
-                                &key,
-                                format!("CI failed: {pr_title} (#{pr_number})"),
-                                Severity::Error,
-                            );
-                            if let Some(url) = run_url {
-                                signal = signal.with_body(url).with_url(url);
+                    match conclusion {
+                        Some("failure") => {
+                            ci_pass_prs.remove(pr_number);
+                            if let Some(run_id) = run_id {
+                                let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
+                                let mut signal = SignalUpdate::new(
+                                    "github",
+                                    &key,
+                                    format!("CI failed: {pr_title} (#{pr_number})"),
+                                    Severity::Error,
+                                );
+                                if let Some(url) = run_url {
+                                    signal = signal.with_body(url).with_url(url);
+                                }
+                                signals.push(signal);
                             }
-                            signals.push(signal);
                         }
-                    }
-                    Some("success") => {
-                        if !ci_pass_prs.contains(pr_number) {
-                            ci_pass_prs.insert(*pr_number);
-                            let rid = run_id.unwrap_or(0);
-                            let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
-                            let mut signal = SignalUpdate::new(
-                                "github_ci_pass",
-                                &key,
-                                format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
-                                Severity::Info,
-                            );
-                            if let Some(url) = run_url {
-                                signal = signal.with_url(url);
+                        Some("success") => {
+                            if !ci_pass_prs.contains(pr_number) {
+                                ci_pass_prs.insert(*pr_number);
+                                let rid = run_id.unwrap_or(0);
+                                let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
+                                let mut signal = SignalUpdate::new(
+                                    "github_ci_pass",
+                                    &key,
+                                    format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
+                                    Severity::Info,
+                                );
+                                if let Some(url) = run_url {
+                                    signal = signal.with_url(url);
+                                }
+                                signals.push(signal);
                             }
-                            signals.push(signal);
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
@@ -814,9 +841,10 @@ mod tests {
         let run_id = 456u64;
         let pr_title = "Add feature X";
         let pr_number = 42u64;
+        let repo = "org/repo";
         let run_url = "https://github.com/org/repo/actions/runs/456";
 
-        let key = format!("ci-failure-{pr_number}-{run_id}");
+        let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
         let signal = SignalUpdate::new(
             "github",
             &key,
@@ -826,7 +854,7 @@ mod tests {
         .with_body(run_url)
         .with_url(run_url);
 
-        assert_eq!(signal.external_id, "ci-failure-42-456");
+        assert_eq!(signal.external_id, "ci-failure-org/repo-42-456");
         assert_eq!(signal.severity, Severity::Error);
         assert!(signal.title.contains("CI failed"));
         assert!(signal.title.contains("#42"));
@@ -930,5 +958,36 @@ mod tests {
         });
         let (_, signal) = labeled_issue_to_signal("org/repo", &issue, "critical").unwrap();
         assert_eq!(signal.severity, Severity::Critical);
+    }
+
+    #[test]
+    fn test_rate_limit_decision_critical() {
+        // Below critical threshold — should skip poll
+        let (proceed, _) = rate_limit_decision(0);
+        assert!(!proceed);
+        let (proceed, _) = rate_limit_decision(49);
+        assert!(!proceed);
+    }
+
+    #[test]
+    fn test_rate_limit_decision_low() {
+        // At/above critical but below low threshold — proceed with warning
+        let (proceed, is_low) = rate_limit_decision(50);
+        assert!(proceed);
+        assert!(is_low);
+        let (proceed, is_low) = rate_limit_decision(199);
+        assert!(proceed);
+        assert!(is_low);
+    }
+
+    #[test]
+    fn test_rate_limit_decision_ok() {
+        // At/above low threshold — proceed without warning
+        let (proceed, is_low) = rate_limit_decision(200);
+        assert!(proceed);
+        assert!(!is_low);
+        let (proceed, is_low) = rate_limit_decision(5000);
+        assert!(proceed);
+        assert!(!is_low);
     }
 }
