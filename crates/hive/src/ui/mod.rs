@@ -464,14 +464,14 @@ async fn event_loop(
                     app.insert_str(text);
                 }
                 // Also handle paste in dispatch prompt mode.
-                if let Some(ref d) = app.dispatch {
-                    if matches!(d.phase, app::DispatchPhase::EnterPrompt) {
-                        // Insert pasted text into dispatch prompt.
-                        if let Some(ref mut d) = app.dispatch {
-                            d.prompt
-                                .insert_str(d.prompt.len().min(d.prompt_cursor), text);
-                            d.prompt_cursor += text.len();
-                        }
+                if let Some(ref d) = app.dispatch
+                    && matches!(d.phase, app::DispatchPhase::EnterPrompt)
+                {
+                    // Insert pasted text into dispatch prompt.
+                    if let Some(ref mut d) = app.dispatch {
+                        d.prompt
+                            .insert_str(d.prompt.len().min(d.prompt_cursor), text);
+                        d.prompt_cursor += text.len();
                     }
                 }
                 continue;
@@ -830,6 +830,9 @@ async fn event_loop(
                                     KeyCode::Char('u') => app.scroll_chat_half_up(viewport_height),
                                     KeyCode::Char('d') => {
                                         app.scroll_chat_half_down(viewport_height)
+                                    }
+                                    KeyCode::Char('g') => {
+                                        app.scroll_chat_to_top(u16::MAX, viewport_height)
                                     }
                                     KeyCode::Char('G') => app.scroll_chat_to_bottom(),
                                     KeyCode::PageUp => app.scroll_chat_page_up(viewport_height),

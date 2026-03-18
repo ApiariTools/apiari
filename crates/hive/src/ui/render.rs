@@ -676,12 +676,9 @@ fn draw_content_panel(frame: &mut Frame, area: Rect, app: &App) {
     match app.sidebar_selection {
         SidebarItem::Chat => {
             // Compute dynamic input height based on content wrapping.
-            let prompt_len = 2u16; // "> "
-            let hint_len = 14u16; // "[h: sidebar]" + pad
-            let input_content_width =
-                (area.width.saturating_sub(prompt_len + hint_len + 1)).max(1) as usize;
-            let visual_line_count = count_visual_lines(&app.input, input_content_width);
-            let cursor_row = cursor_row(&app.input, app.input_cursor, input_content_width);
+            let width = input_content_width(area.width, app);
+            let visual_line_count = count_visual_lines(&app.input, width);
+            let cursor_row = cursor_row(&app.input, app.input_cursor, width);
             let needed_lines = visual_line_count.max(cursor_row + 1);
             let input_height = (needed_lines as u16).clamp(1, 6) + 1; // +1 for Borders::TOP
 
@@ -1490,18 +1487,13 @@ fn draw_input_bar(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let prompt = "> ";
-    let hint = if app.focus == Panel::Chat && app.is_chat_selected() {
-        "[h: sidebar]"
-    } else {
-        "[l: focus]"
-    };
+    let hint = input_hint(app);
 
     // Split inner into prompt + input area + hint.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(prompt.len() as u16),
+            Constraint::Length(INPUT_PROMPT.len() as u16),
             Constraint::Min(0),
             Constraint::Length((hint.len() as u16).saturating_add(1)),
         ])
@@ -1509,7 +1501,7 @@ fn draw_input_bar(frame: &mut Frame, area: Rect, app: &App) {
 
     // Render prompt.
     frame.render_widget(
-        Paragraph::new(Span::styled(prompt, theme::accent())),
+        Paragraph::new(Span::styled(INPUT_PROMPT, theme::accent())),
         cols[0],
     );
 
@@ -1553,6 +1545,26 @@ fn draw_input_bar(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
+// ── Input layout helpers ─────────────────────────────────
+
+const INPUT_PROMPT: &str = "> ";
+
+/// Returns the hint text shown in the input bar (varies by focus state).
+fn input_hint(app: &App) -> &'static str {
+    if app.focus == Panel::Chat && app.is_chat_selected() {
+        "[h: sidebar]"
+    } else {
+        "[l: focus]"
+    }
+}
+
+/// Compute the available content width for the input text area.
+fn input_content_width(area_width: u16, app: &App) -> usize {
+    let hint = input_hint(app);
+    // Layout: prompt | input | hint+pad
+    (area_width.saturating_sub(INPUT_PROMPT.len() as u16 + hint.len() as u16 + 2)).max(1) as usize
+}
+
 // ── Input wrapping helpers ───────────────────────────────
 
 /// Split text into visual lines using character-level wrapping.
@@ -1588,7 +1600,7 @@ fn count_visual_lines(text: &str, width: usize) -> usize {
         lines += if char_count == 0 {
             1
         } else {
-            (char_count + width - 1) / width
+            char_count.div_ceil(width)
         };
     }
     lines.max(1)
@@ -1905,7 +1917,7 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         key_line("j / k", "Scroll 1 line"),
         key_line("u / d", "Half-page up/down"),
         key_line("PgUp / PgDn", "Full page"),
-        key_line("G", "Scroll to bottom"),
+        key_line("g / G", "Scroll to top/bottom"),
         key_line("h / Tab", "Return to sidebar"),
         key_line("z", "Toggle zoom"),
         Line::from(""),

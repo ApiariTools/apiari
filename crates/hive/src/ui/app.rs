@@ -602,7 +602,7 @@ impl App {
     /// Navigate to the next input history entry, or back to the draft.
     pub fn history_down(&mut self) {
         match self.history_index {
-            None => return,
+            None => (),
             Some(i) if i + 1 >= self.input_history.len() => {
                 self.history_index = None;
                 self.input = std::mem::take(&mut self.history_draft);
