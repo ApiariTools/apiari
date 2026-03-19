@@ -38,6 +38,7 @@ enum DaemonCommand {
 #[derive(Subcommand)]
 enum Command {
     /// Initialize a workspace config from the current directory
+    #[command(hide = true)]
     Init {
         /// Override the workspace name (default: directory name)
         #[arg(long)]

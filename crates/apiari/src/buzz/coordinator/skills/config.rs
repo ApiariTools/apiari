@@ -276,6 +276,7 @@ mod tests {
             notion_names: vec!["notion".to_string()],
             has_telegram: true,
             prompt_preamble: None,
+            default_agent: "claude".to_string(),
         }
     }
 
@@ -297,6 +298,7 @@ mod tests {
             has_telegram: false,
             notion_names: vec![],
             prompt_preamble: None,
+            default_agent: "claude".to_string(),
         }
     }
 

@@ -21,6 +21,18 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
         format!(" (available repos: {})", names.join(", "))
     };
 
+    let agent_line = match ctx.default_agent.as_str() {
+        "codex" => "Default agent is codex. Use `--agent codex` for autonomous tasks, \
+                    or `--agent codex-tui` for persistent sessions."
+            .to_string(),
+        "auto" => "Agent selection: auto. If `claude` is available, use `--agent claude`; \
+                   otherwise use `--agent codex`. For persistent sessions, append `-tui`."
+            .to_string(),
+        _ => "Default agent is claude-tui (persistent, stays alive). \
+              For autonomous tasks, add `--agent claude`."
+            .to_string(),
+    };
+
     Some(format!(
         "## Swarm Workers\n\
          You dispatch coding tasks to swarm workers. Workers run in their own git worktrees \
@@ -34,7 +46,7 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
            (Write the task prompt to a file first, then pass --prompt-file. Never inline long prompts.){repo_hint}\n\
          - Send message: `swarm --dir {root} send {{worktree_id}} \"message\"`\n\
          - Close worker: `swarm --dir {root} close {{worktree_id}}`\n\n\
-         Default agent is claude-tui (persistent, stays alive). For autonomous tasks, add `--agent claude`.\n\n\
+         {agent_line}\n\n\
          When dispatching, always include in the task prompt:\n\
          'Plan and implement this completely in one session — do not pause mid-task \
          for confirmation. Commit and open a PR when done.'\n\n\
