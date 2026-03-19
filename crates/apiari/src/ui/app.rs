@@ -103,25 +103,25 @@ pub struct WatcherHealth {
 
 /// Info needed by the background refresh task for each workspace.
 #[derive(Clone)]
-pub struct WorkspaceRefreshInfo {
-    pub name: String,
-    pub root: std::path::PathBuf,
-    pub has_github_watcher: bool,
-    pub has_sentry_watcher: bool,
-    pub has_swarm_watcher: bool,
+pub(super) struct WorkspaceRefreshInfo {
+    pub(super) name: String,
+    pub(super) root: std::path::PathBuf,
+    pub(super) has_github_watcher: bool,
+    pub(super) has_sentry_watcher: bool,
+    pub(super) has_swarm_watcher: bool,
 }
 
 /// Data returned from background extras refresh (per workspace).
-pub struct WorkspaceExtrasData {
-    pub sparkline_data: Vec<u64>,
-    pub watcher_health: Vec<WatcherHealth>,
-    pub thoughts: Vec<(String, String)>,
+pub(super) struct WorkspaceExtrasData {
+    pub(super) sparkline_data: Vec<u64>,
+    pub(super) watcher_health: Vec<WatcherHealth>,
+    pub(super) thoughts: Vec<(String, String)>,
     /// Feed items from SQLite (signals + watcher heartbeats). Worker items merged by caller.
-    pub feed_items: Vec<FeedItem>,
+    pub(super) feed_items: Vec<FeedItem>,
 }
 
 /// Messages from background refresh tasks to the TUI event loop.
-pub enum AppUpdate {
+pub(super) enum AppUpdate {
     Workers(Vec<(String, Vec<WorkerInfo>)>),
     Signals(Vec<(String, Vec<SignalRecord>)>),
     Extras {
@@ -136,8 +136,8 @@ pub enum AppUpdate {
         remote_host: Option<String>,
     },
     WorkerConversation {
-        workspace_idx: usize,
-        worker_idx: usize,
+        workspace_name: String,
+        worker_id: String,
         entries: Vec<ConversationEntry>,
     },
 }
@@ -819,7 +819,8 @@ impl App {
             let events_path = ws
                 .config
                 .root
-                .join(".swarm/agents")
+                .join(".swarm")
+                .join("agents")
                 .join(&worker.id)
                 .join("events.jsonl");
             let new_entries = apiari_tui::events_parser::parse_events(&events_path);
@@ -1240,7 +1241,7 @@ impl App {
     }
 
     /// Apply worker data from background refresh.
-    pub fn apply_worker_update(&mut self, data: Vec<(String, Vec<WorkerInfo>)>) {
+    pub(super) fn apply_worker_update(&mut self, data: Vec<(String, Vec<WorkerInfo>)>) {
         for (name, new_workers) in data {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
                 // Detect state changes and inject chat notifications
@@ -1312,7 +1313,7 @@ impl App {
     }
 
     /// Apply signal data from background refresh.
-    pub fn apply_signal_update(&mut self, data: Vec<(String, Vec<SignalRecord>)>) {
+    pub(super) fn apply_signal_update(&mut self, data: Vec<(String, Vec<SignalRecord>)>) {
         for (name, new_signals) in data {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
                 let current_ids: std::collections::HashSet<i64> =
@@ -1358,7 +1359,7 @@ impl App {
     }
 
     /// Apply extras data from background refresh.
-    pub fn apply_extras_update(
+    pub(super) fn apply_extras_update(
         &mut self,
         daemon_alive: bool,
         daemon_uptime_secs: Option<u64>,
@@ -1423,7 +1424,10 @@ impl App {
     }
 
     /// Apply initial chat history loaded in background.
-    pub fn apply_chat_history(&mut self, data: Vec<(String, Vec<ChatLine>, Option<String>)>) {
+    pub(super) fn apply_chat_history(
+        &mut self,
+        data: Vec<(String, Vec<ChatLine>, Option<String>)>,
+    ) {
         for (name, history, preview) in data {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
                 // Only apply if chat history is still empty (or just has onboarding msg)
@@ -1447,7 +1451,7 @@ impl App {
     }
 
     /// Build refresh infos for background task from current workspace state.
-    pub fn build_refresh_infos(&self) -> Vec<WorkspaceRefreshInfo> {
+    pub(super) fn build_refresh_infos(&self) -> Vec<WorkspaceRefreshInfo> {
         self.workspaces
             .iter()
             .map(|ws| WorkspaceRefreshInfo {
@@ -1670,7 +1674,9 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
 // ── Blocking I/O for background tasks ─────────────────────
 
 /// Load workers for all workspaces (blocking filesystem reads).
-pub fn load_all_workers_blocking(infos: &[WorkspaceRefreshInfo]) -> Vec<(String, Vec<WorkerInfo>)> {
+pub(super) fn load_all_workers_blocking(
+    infos: &[WorkspaceRefreshInfo],
+) -> Vec<(String, Vec<WorkerInfo>)> {
     infos
         .iter()
         .map(|info| {
@@ -1685,7 +1691,7 @@ pub fn load_all_workers_blocking(infos: &[WorkspaceRefreshInfo]) -> Vec<(String,
 }
 
 /// Load signals for all workspaces (blocking SQLite queries).
-pub fn load_all_signals_blocking(
+pub(super) fn load_all_signals_blocking(
     db_path: &Path,
     names: &[String],
 ) -> Vec<(String, Vec<SignalRecord>)> {
@@ -1704,7 +1710,7 @@ pub fn load_all_signals_blocking(
 
 /// Load extras (sparkline, thoughts, watcher health, feed) for all workspaces.
 /// Returns (daemon_alive, daemon_uptime_secs, per-workspace extras).
-pub fn load_all_extras_blocking(
+pub(super) fn load_all_extras_blocking(
     db_path: &Path,
     pid_path: &Path,
     infos: &[WorkspaceRefreshInfo],
@@ -1823,7 +1829,7 @@ pub fn load_all_extras_blocking(
 }
 
 /// Load chat history for all workspaces (blocking SQLite/JSONL reads).
-pub fn load_chat_history_blocking(
+pub(super) fn load_chat_history_blocking(
     db_path: &Path,
     workspace_names: &[String],
 ) -> Vec<(String, Vec<ChatLine>, Option<String>)> {
@@ -1870,9 +1876,13 @@ pub fn load_chat_history_blocking(
 }
 
 /// Load worker conversation entries from events.jsonl (blocking).
-pub fn load_worker_conversation_blocking(root: &Path, worker_id: &str) -> Vec<ConversationEntry> {
+pub(super) fn load_worker_conversation_blocking(
+    root: &Path,
+    worker_id: &str,
+) -> Vec<ConversationEntry> {
     let events_path = root
-        .join(".swarm/agents")
+        .join(".swarm")
+        .join("agents")
         .join(worker_id)
         .join("events.jsonl");
     apiari_tui::events_parser::parse_events(&events_path)
@@ -2016,5 +2026,102 @@ mod tests {
         let signal = make_signal("sentry", "sentry-42", None);
         let result = review_signal_target(&signal);
         assert_eq!(result, None);
+    }
+
+    // ── apply_chat_history tests ─────────────────────────────
+
+    fn make_test_workspace(name: &str) -> config::Workspace {
+        let config: config::WorkspaceConfig =
+            toml::from_str(&format!("root = '/tmp/{name}'")).unwrap();
+        config::Workspace {
+            name: name.to_string(),
+            config,
+        }
+    }
+
+    fn make_app(names: &[&str], needs_onboarding: bool) -> App {
+        let workspaces: Vec<config::Workspace> =
+            names.iter().map(|n| make_test_workspace(n)).collect();
+        App::new(workspaces, None, needs_onboarding)
+    }
+
+    #[test]
+    fn test_apply_chat_history_populates_empty_workspace() {
+        let mut app = make_app(&["ws1"], false);
+        assert!(app.workspaces[0].chat_history.is_empty());
+
+        let history = vec![
+            ChatLine::User("hello".into(), "12:00".into(), None),
+            ChatLine::Assistant("hi".into(), "12:01".into(), None),
+        ];
+        app.apply_chat_history(vec![("ws1".into(), history, Some("hi".into()))]);
+
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        assert_eq!(app.workspaces[0].coordinator_preview, Some("hi".into()));
+    }
+
+    #[test]
+    fn test_apply_chat_history_preserves_onboarding_message() {
+        let mut app = make_app(&["ws1"], true);
+        // Onboarding injects one message
+        assert_eq!(app.workspaces[0].chat_history.len(), 1);
+
+        let history = vec![ChatLine::User("old msg".into(), "11:00".into(), None)];
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // Should have loaded history + preserved onboarding msg at end
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        // Last message should be the onboarding assistant message
+        assert!(matches!(
+            &app.workspaces[0].chat_history[1],
+            ChatLine::Assistant(_, _, _)
+        ));
+    }
+
+    #[test]
+    fn test_apply_chat_history_does_not_overwrite_user_chat() {
+        let mut app = make_app(&["ws1"], false);
+        // Simulate user already typing messages before background load completes
+        app.workspaces[0].chat_history.push(ChatLine::User(
+            "user typed this".into(),
+            "12:00".into(),
+            None,
+        ));
+        app.workspaces[0].chat_history.push(ChatLine::Assistant(
+            "bot replied".into(),
+            "12:01".into(),
+            None,
+        ));
+
+        let history = vec![ChatLine::User("old history".into(), "10:00".into(), None)];
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // Should NOT overwrite — still has the 2 user messages
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        if let ChatLine::User(content, _, _) = &app.workspaces[0].chat_history[0] {
+            assert_eq!(content, "user typed this");
+        } else {
+            panic!("expected user message");
+        }
+    }
+
+    #[test]
+    fn test_apply_chat_history_inactive_onboarding_empty_workspace() {
+        let mut app = make_app(&["ws1"], false);
+        assert!(!app.onboarding.active);
+        assert!(app.workspaces[0].chat_history.is_empty());
+
+        let history = vec![ChatLine::Assistant(
+            "welcome back".into(),
+            "09:00".into(),
+            None,
+        )];
+        app.apply_chat_history(vec![("ws1".into(), history, Some("welcome back".into()))]);
+
+        assert_eq!(app.workspaces[0].chat_history.len(), 1);
+        assert_eq!(
+            app.workspaces[0].coordinator_preview,
+            Some("welcome back".into())
+        );
     }
 }

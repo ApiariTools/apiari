@@ -332,13 +332,13 @@ async fn event_loop(
                         {
                             let root = ws.config.root.clone();
                             let worker_id = worker.id.clone();
-                            let ws_idx = app.active_tab;
+                            let ws_name = ws.name.clone();
                             let tx = update_tx.clone();
                             tokio::task::spawn_blocking(move || {
                                 let entries = app::load_worker_conversation_blocking(&root, &worker_id);
                                 let _ = tx.blocking_send(AppUpdate::WorkerConversation {
-                                    workspace_idx: ws_idx,
-                                    worker_idx: idx,
+                                    workspace_name: ws_name,
+                                    worker_id,
                                     entries,
                                 });
                             });
@@ -361,9 +361,9 @@ async fn event_loop(
                         }
                         app.needs_redraw = true;
                     }
-                    AppUpdate::WorkerConversation { workspace_idx, worker_idx, entries } => {
-                        if let Some(ws) = app.workspaces.get_mut(workspace_idx)
-                            && let Some(worker) = ws.workers.get_mut(worker_idx)
+                    AppUpdate::WorkerConversation { workspace_name, worker_id, entries } => {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == workspace_name)
+                            && let Some(worker) = ws.workers.iter_mut().find(|w| w.id == worker_id)
                         {
                             let had = worker.conversation.len();
                             worker.conversation = entries;
@@ -1446,8 +1446,11 @@ async fn background_refresh_task(
     do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
 
     let mut worker_interval = tokio::time::interval(Duration::from_secs(2));
+    worker_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut signal_interval = tokio::time::interval(Duration::from_secs(5));
+    signal_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut extras_interval = tokio::time::interval(Duration::from_secs(10));
+    extras_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Skip first ticks (already did initial refresh above)
     worker_interval.tick().await;
@@ -1455,6 +1458,9 @@ async fn background_refresh_task(
     extras_interval.tick().await;
 
     loop {
+        if update_tx.is_closed() {
+            break;
+        }
         tokio::select! {
             _ = worker_interval.tick() => {
                 do_worker_refresh(&update_tx, &workspace_infos).await;
