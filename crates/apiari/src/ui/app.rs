@@ -500,18 +500,16 @@ impl App {
         };
 
         // Inject first onboarding message into chat
-        if needs_onboarding {
-            if let Some(ws) = app.workspaces.get_mut(app.active_tab) {
-                ws.chat_history.push(ChatLine::Assistant(
-                    "Hey! I'm Bee \u{2014} your dev workspace coordinator. \
-                     I watch your GitHub, manage AI workers, and keep you in the loop.\n\n\
-                     Let me show you around. Press enter to continue."
-                        .to_string(),
-                    now_ts(),
-                    None,
-                ));
-                ws.chat_scroll.scroll_to_bottom();
-            }
+        if needs_onboarding && let Some(ws) = app.workspaces.get_mut(app.active_tab) {
+            ws.chat_history.push(ChatLine::Assistant(
+                "Hey! I'm Bee \u{2014} your dev workspace coordinator. \
+                 I watch your GitHub, manage AI workers, and keep you in the loop.\n\n\
+                 Let me show you around. Press enter to continue."
+                    .to_string(),
+                now_ts(),
+                None,
+            ));
+            ws.chat_scroll.scroll_to_bottom();
         }
 
         app.refresh_workers();

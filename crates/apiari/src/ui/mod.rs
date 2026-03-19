@@ -671,27 +671,9 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                 if app.onboarding.active {
                     if input.trim().is_empty() {
                         // Advance onboarding
-                        if let Some(msg) = app.onboarding.advance() {
-                            if let Some(ws) = app.current_ws_mut() {
-                                ws.chat_history.push(app::ChatLine::Assistant(
-                                    msg.to_string(),
-                                    app::now_ts(),
-                                    None,
-                                ));
-                                ws.chat_scroll.scroll_to_bottom();
-                            }
-                        }
-                        if !app.onboarding.active {
-                            if let Err(e) = onboarding::mark_onboarded() {
-                                app.flash(e);
-                            }
-                        }
-                        return KeyAction::Redraw;
-                    }
-                    // Non-empty input: send the chat, then advance
-                    let send_action = KeyAction::SendChat(input);
-                    if let Some(msg) = app.onboarding.advance() {
-                        if let Some(ws) = app.current_ws_mut() {
+                        if let Some(msg) = app.onboarding.advance()
+                            && let Some(ws) = app.current_ws_mut()
+                        {
                             ws.chat_history.push(app::ChatLine::Assistant(
                                 msg.to_string(),
                                 app::now_ts(),
@@ -699,11 +681,29 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                             ));
                             ws.chat_scroll.scroll_to_bottom();
                         }
-                    }
-                    if !app.onboarding.active {
-                        if let Err(e) = onboarding::mark_onboarded() {
+                        if !app.onboarding.active
+                            && let Err(e) = onboarding::mark_onboarded()
+                        {
                             app.flash(e);
                         }
+                        return KeyAction::Redraw;
+                    }
+                    // Non-empty input: send the chat, then advance
+                    let send_action = KeyAction::SendChat(input);
+                    if let Some(msg) = app.onboarding.advance()
+                        && let Some(ws) = app.current_ws_mut()
+                    {
+                        ws.chat_history.push(app::ChatLine::Assistant(
+                            msg.to_string(),
+                            app::now_ts(),
+                            None,
+                        ));
+                        ws.chat_scroll.scroll_to_bottom();
+                    }
+                    if !app.onboarding.active
+                        && let Err(e) = onboarding::mark_onboarded()
+                    {
+                        app.flash(e);
                     }
                     return send_action;
                 }
