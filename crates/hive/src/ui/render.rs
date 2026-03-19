@@ -391,10 +391,18 @@ fn draw_heartbeat_sidebar_item(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
 
-    // Line 2: "     N events"
+    // Line 2: "     N entries" (filtered count in normal mode)
     if area.height >= 2 {
-        let count = app.heartbeat_entries.len();
-        let status = format!("{count} entr{}", if count == 1 { "y" } else { "ies" });
+        let count = app.visible_heartbeat_count();
+        let total = app.heartbeat_entries.len();
+        let status = if app.heartbeat_debug_mode || count == total {
+            format!("{total} entr{}", if total == 1 { "y" } else { "ies" })
+        } else {
+            format!(
+                "{count} of {total} entr{}",
+                if total == 1 { "y" } else { "ies" }
+            )
+        };
         let line2 = Line::from(vec![
             Span::styled("    ", Style::default()),
             Span::styled(
@@ -703,6 +711,8 @@ fn draw_sidebar_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(" nav  ", theme::key_desc()),
             Span::styled("\u{21b5}", theme::key_hint()),
             Span::styled(" expand  ", theme::key_desc()),
+            Span::styled("d", theme::key_hint()),
+            Span::styled(" debug  ", theme::key_desc()),
             Span::styled("?", theme::key_hint()),
             Span::styled(" help", theme::key_desc()),
         ])
@@ -1733,15 +1743,22 @@ fn cursor_position(text: &str, cursor_byte: usize, width: usize) -> (usize, usiz
 // ── Heartbeat Panel ──────────────────────────────────────
 
 fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
+    use super::app::HeartbeatRow;
+
     let border_style = if app.focus == Panel::Chat {
         theme::border_active()
     } else {
         theme::border()
     };
 
-    let hint = " j/k nav  \u{21b5} expand  h sidebar ";
+    let hint = " j/k nav  \u{21b5} expand  d debug  h sidebar ";
+    let title = if app.heartbeat_debug_mode {
+        " Signals [debug] "
+    } else {
+        " Signals "
+    };
     let block = Block::default()
-        .title(Span::styled(" Heartbeat ", theme::title()))
+        .title(Span::styled(title, theme::title()))
         .title_bottom(Line::from(Span::styled(hint, theme::subtitle())).centered())
         .borders(Borders::ALL)
         .border_style(border_style);
@@ -1755,97 +1772,122 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Build lines for all entries (collapsed + expanded).
+    let rows = app.visible_heartbeat_rows();
+
+    if rows.is_empty() {
+        let line = Line::from(Span::styled(
+            "  No actionable signals. Press d for debug view.",
+            theme::muted(),
+        ));
+        frame.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+
+    // Build lines and track cursor position in one pass over the row model.
     let mut lines: Vec<Line> = Vec::new();
+    let mut cursor_line = 0usize;
     let dim_style = Style::default().fg(ratatui::style::Color::Rgb(100, 97, 90));
 
-    for (i, entry) in app.heartbeat_entries.iter().enumerate() {
-        let is_selected = i == app.heartbeat_cursor;
-        let is_expanded = app.heartbeat_expanded.contains(&i);
-        let has_bee = entry.bee_response.is_some();
+    for (row_idx, row) in rows.iter().enumerate() {
+        let is_selected = row_idx == app.heartbeat_cursor;
 
-        // Build the main row.
-        let arrow = if is_expanded {
-            "\u{25bc}" // ▼
-        } else {
-            "\u{25b6}" // ▶
-        };
+        if is_selected {
+            cursor_line = lines.len();
+        }
 
-        let row_style = if is_selected {
-            Style::default()
-                .fg(theme::HONEY)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            theme::text()
-        };
-
-        let bee_indicator = if has_bee { " \u{1f41d}" } else { "" };
-
-        let event_label = format!(
-            " \u{00b7} {} event{}",
-            entry.event_count,
-            if entry.event_count == 1 { "" } else { "s" }
-        );
-
-        // Pad source to 9 chars for alignment.
-        let source_padded = format!("{:<9}", entry.source);
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("{arrow} "), row_style),
-            Span::styled(&entry.timestamp, dim_style),
-            Span::styled("  ", Style::default()),
-            Span::styled(source_padded, row_style),
-            Span::styled(
-                &entry.summary,
-                if is_selected {
-                    row_style
+        match row {
+            HeartbeatRow::BatchedMergedPrs {
+                entry_indices,
+                total_prs,
+            } => {
+                let row_style = if is_selected {
+                    Style::default()
+                        .fg(theme::HONEY)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     theme::text()
-                },
-            ),
-            Span::styled(event_label, dim_style),
-            Span::styled(bee_indicator.to_string(), Style::default()),
-        ]));
-
-        // Expanded detail lines.
-        if is_expanded {
-            for sig in &entry.signals {
+                };
+                let first_entry = &app.heartbeat_entries[entry_indices[0]];
+                let cycle_count = entry_indices.len();
                 lines.push(Line::from(vec![
-                    Span::styled("  \u{2022} ", dim_style), // bullet
-                    Span::styled(format!("{}: {}", sig.source, sig.title), dim_style),
+                    Span::styled("  ", row_style),
+                    Span::styled(&first_entry.timestamp, dim_style),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(
+                        format!("{total_prs} merged PRs ({cycle_count} cycles)"),
+                        if is_selected { row_style } else { dim_style },
+                    ),
                 ]));
             }
+            HeartbeatRow::Entry(entry_idx) => {
+                let entry = &app.heartbeat_entries[*entry_idx];
+                let is_expanded = app.heartbeat_expanded.contains(&row_idx);
+                let has_bee = entry.bee_response.is_some();
 
-            if let Some(ref bee) = entry.bee_response {
+                let arrow = if is_expanded {
+                    "\u{25bc}" // ▼
+                } else {
+                    "\u{25b6}" // ▶
+                };
+
+                let row_style = if is_selected {
+                    Style::default()
+                        .fg(theme::HONEY)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    theme::text()
+                };
+
+                let bee_indicator = if has_bee { " \u{1f41d}" } else { "" };
+
+                let event_label = format!(
+                    " \u{00b7} {} event{}",
+                    entry.event_count,
+                    if entry.event_count == 1 { "" } else { "s" }
+                );
+
+                let source_padded = format!("{:<9}", entry.source);
+
                 lines.push(Line::from(vec![
-                    Span::styled("  \u{1f41d} Bee: ", Style::default().fg(theme::HONEY)),
-                    Span::styled(bee.clone(), theme::text()),
+                    Span::styled(format!("{arrow} "), row_style),
+                    Span::styled(&entry.timestamp, dim_style),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(source_padded, row_style),
+                    Span::styled(
+                        &entry.summary,
+                        if is_selected {
+                            row_style
+                        } else {
+                            theme::text()
+                        },
+                    ),
+                    Span::styled(event_label, dim_style),
+                    Span::styled(bee_indicator.to_string(), Style::default()),
                 ]));
-            }
 
-            // Blank line after expanded section.
-            lines.push(Line::from(""));
+                if is_expanded {
+                    for sig in &entry.signals {
+                        lines.push(Line::from(vec![
+                            Span::styled("  \u{2022} ", dim_style),
+                            Span::styled(format!("{}: {}", sig.source, sig.title), dim_style),
+                        ]));
+                    }
+
+                    if let Some(ref bee) = entry.bee_response {
+                        lines.push(Line::from(vec![
+                            Span::styled("  \u{1f41d} Bee: ", Style::default().fg(theme::HONEY)),
+                            Span::styled(bee.clone(), theme::text()),
+                        ]));
+                    }
+
+                    lines.push(Line::from(""));
+                }
+            }
         }
     }
 
     // Scroll to keep cursor visible.
     let visible_height = inner.height as usize;
-    let mut cursor_line = 0usize;
-    let mut line_count = 0usize;
-    for (i, entry) in app.heartbeat_entries.iter().enumerate() {
-        if i == app.heartbeat_cursor {
-            cursor_line = line_count;
-        }
-        line_count += 1; // header line
-        if app.heartbeat_expanded.contains(&i) {
-            line_count += entry.signals.len();
-            if entry.bee_response.is_some() {
-                line_count += 1;
-            }
-            line_count += 1; // blank line
-        }
-    }
-
     let scroll = if cursor_line >= visible_height {
         cursor_line.saturating_sub(visible_height / 3)
     } else {
@@ -2089,7 +2131,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 // ── Help Overlay ─────────────────────────────────────────
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
-    let popup = centered_rect(54, 35, area);
+    let popup = centered_rect(54, 40, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -2143,6 +2185,11 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         key_line("g / G", "Scroll to top/bottom"),
         key_line("h / Tab", "Return to sidebar"),
         key_line("z", "Toggle zoom"),
+        Line::from(""),
+        section("Signals"),
+        key_line("j / k", "Navigate entries"),
+        key_line("↵", "Expand / collapse"),
+        key_line("d", "Toggle debug mode"),
         Line::from(""),
         section("Dispatch Review"),
         key_line("j / k", "Navigate sections"),
