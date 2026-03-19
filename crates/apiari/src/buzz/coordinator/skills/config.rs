@@ -80,7 +80,7 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          [telegram]\n\
          bot_token = \"TOKEN_FROM_BOTFATHER\"\n\
          chat_id = 0        # get from @userinfobot\n\
-         topic_id = 0        # optional: forum thread ID\n\
+         # topic_id = 12345   # optional: forum thread ID\n\
          allowed_user_ids = []  # empty = allow all\n\
          ```\n\n\
          **GitHub watcher setup:**\n\
@@ -214,7 +214,17 @@ pub fn build_config_summary(ctx: &SkillContext) -> String {
         text.push_str("✗ Notion — not configured\n");
     }
 
-    text.push_str(&format!("\nConfig file: {}", ctx.config_path.display()));
+    // Show tilde-based path to avoid leaking the home directory in chat outputs
+    let display_path = if let Some(home) = dirs::home_dir() {
+        if let Ok(suffix) = ctx.config_path.strip_prefix(&home) {
+            format!("~/{}", suffix.display())
+        } else {
+            ctx.config_path.display().to_string()
+        }
+    } else {
+        ctx.config_path.display().to_string()
+    };
+    text.push_str(&format!("\nConfig file: {display_path}"));
 
     text
 }
