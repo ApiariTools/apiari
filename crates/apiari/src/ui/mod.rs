@@ -53,6 +53,8 @@ enum CoordResponse {
         kind: String,
         text: String,
     },
+    /// Startup status message shown to the user (e.g. "Starting daemon...").
+    SystemStatus(String),
 }
 
 // ── Key actions ──────────────────────────────────────────
@@ -115,6 +117,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     // Terminal setup FIRST — don't block on daemon before the user sees anything.
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(crossterm::event::EnableMouseCapture)?;
+    stdout().execute(crossterm::event::EnableBracketedPaste)?;
     enable_raw_mode()?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -124,6 +127,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
+        let _ = stdout().execute(crossterm::event::DisableBracketedPaste);
         let _ = stdout().execute(crossterm::event::DisableMouseCapture);
         let _ = stdout().execute(LeaveAlternateScreen);
         original_hook(info);
@@ -159,19 +163,49 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     } else {
         let coord_tx_clone = coord_tx.clone();
         tokio::spawn(async move {
+            let already_running = crate::daemon::is_daemon_running();
+            let mut attempted_start = false;
+
             // Auto-start daemon if not running
-            if !crate::daemon::is_daemon_running()
-                && let Ok(()) = crate::daemon::spawn_background()
-            {
-                for _ in 0..20 {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    if daemon_client::socket_exists() && crate::daemon::is_daemon_running() {
-                        break;
+            if !already_running {
+                match crate::daemon::spawn_background() {
+                    Ok(()) => {
+                        attempted_start = true;
+                        let _ = coord_tx_clone
+                            .send(CoordResponse::SystemStatus("Starting daemon...".into()))
+                            .await;
+
+                        // Wait up to ~8s for daemon to become ready
+                        for _ in 0..31 {
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            if daemon_client::socket_exists() && crate::daemon::is_daemon_running()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        attempted_start = true;
                     }
                 }
             }
 
             let use_daemon = daemon_client::socket_exists() && crate::daemon::is_daemon_running();
+
+            // Send user-visible status message
+            let status_msg = if use_daemon && already_running {
+                "Connected to daemon \u{2713}"
+            } else if use_daemon {
+                "Daemon started \u{2713}"
+            } else if attempted_start {
+                "Could not start daemon \u{2014} run `apiari daemon start` to start it manually"
+            } else {
+                "Using local coordinator (daemon not running)"
+            };
+            let _ = coord_tx_clone
+                .send(CoordResponse::SystemStatus(status_msg.into()))
+                .await;
+
             let _ = startup_update_tx
                 .send(AppUpdate::DaemonStatus {
                     connected: use_daemon,
@@ -210,6 +244,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
 
     // Terminal teardown
     disable_raw_mode()?;
+    stdout().execute(crossterm::event::DisableBracketedPaste)?;
     stdout().execute(crossterm::event::DisableMouseCapture)?;
     stdout().execute(LeaveAlternateScreen)?;
 
@@ -314,6 +349,12 @@ async fn event_loop(
                             _ => {}
                         }
                     }
+                    Some(Ok(Event::Paste(text))) => {
+                        if settings_state.is_some() {
+                            continue;
+                        }
+                        handle_paste(&mut app, &text);
+                    }
                     Some(Ok(Event::Resize(_, _))) => {
                         app.needs_redraw = true;
                     }
@@ -334,6 +375,9 @@ async fn event_loop(
                     }
                     CoordResponse::Activity { source, workspace, kind, text } => {
                         app.push_activity(&workspace, &source, &kind, &text);
+                    }
+                    CoordResponse::SystemStatus(text) => {
+                        app.push_system_message(text);
                     }
                 }
             }
@@ -553,6 +597,22 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
     }
 }
 
+// ── Paste handling ───────────────────────────────────────
+
+/// Handle a bracketed paste event by inserting the text into the active input.
+fn handle_paste(app: &mut App, text: &str) {
+    if app.chat_focused {
+        if let Some(ws) = app.current_ws_mut() {
+            ws.input.push_str(text);
+        }
+    } else if app.worker_input_active {
+        app.worker_input.push_str(text);
+    } else if app.review_comment_active {
+        app.review_comment_input.push_str(text);
+    }
+    app.needs_redraw = true;
+}
+
 // ── Dashboard keys ───────────────────────────────────────
 
 fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
@@ -705,6 +765,13 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         KeyCode::Char('G') => {
             if let Some(ws) = app.current_ws_mut() {
                 ws.chat_scroll.scroll_to_bottom();
+            }
+        }
+        KeyCode::Char('d') => {
+            if app.focused_panel == Panel::Signals {
+                app.signals_debug_mode = !app.signals_debug_mode;
+                app.clamp_selections();
+                app.needs_redraw = true;
             }
         }
         KeyCode::Char('s') => {
@@ -932,21 +999,26 @@ fn handle_worker_input_key(
 ) -> KeyAction {
     match key.code {
         KeyCode::Enter => {
-            let text = std::mem::take(&mut app.worker_input);
-            if !text.trim().is_empty()
-                && let Some(ws) = app.current_ws()
-                && let Some(worker) = ws.workers.get(idx)
-            {
-                let id = worker.id.clone();
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                app.worker_input.push('\n');
+                app.needs_redraw = true;
+            } else {
+                let text = std::mem::take(&mut app.worker_input);
+                if !text.trim().is_empty()
+                    && let Some(ws) = app.current_ws()
+                    && let Some(worker) = ws.workers.get(idx)
+                {
+                    let id = worker.id.clone();
+                    app.worker_input_active = false;
+                    app.needs_redraw = true;
+                    return KeyAction::SendWorkerMessage {
+                        worker_id: id,
+                        text,
+                    };
+                }
                 app.worker_input_active = false;
                 app.needs_redraw = true;
-                return KeyAction::SendWorkerMessage {
-                    worker_id: id,
-                    text,
-                };
             }
-            app.worker_input_active = false;
-            app.needs_redraw = true;
         }
         KeyCode::Esc => {
             app.worker_input.clear();
@@ -1764,8 +1836,8 @@ async fn coordinator_task(
                 };
 
                 let token_tx = coord_tx.clone();
-                match coordinator
-                    .handle_message(&text, &store, move |event| match event {
+                let handle_fut =
+                    coordinator.handle_message(&text, &store, move |event| match event {
                         CoordinatorEvent::Token(t) => {
                             let _ = token_tx.try_send(CoordResponse::Token(t));
                         }
@@ -1792,14 +1864,22 @@ async fn coordinator_task(
                                 "Bash audit ({matched_pattern}): {command}"
                             )));
                         }
-                    })
-                    .await
-                {
-                    Ok(_) => {
+                    });
+
+                match tokio::time::timeout(Duration::from_secs(60), handle_fut).await {
+                    Ok(Ok(_)) => {
                         let _ = coord_tx.send(CoordResponse::Done).await;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         let _ = coord_tx.send(CoordResponse::Error(format!("{e}"))).await;
+                    }
+                    Err(_) => {
+                        let _ = coord_tx
+                            .send(CoordResponse::Error(
+                                "Coordinator timed out \u{2014} is the `claude` CLI installed and working?".to_string(),
+                            ))
+                            .await;
+                        let _ = coord_tx.send(CoordResponse::Done).await;
                     }
                 }
             }
@@ -1905,6 +1985,7 @@ mod tests {
             last_worker_refresh: std::time::Instant::now(),
             last_signal_refresh: std::time::Instant::now(),
             snooze_selection: 0,
+            signals_debug_mode: false,
         }
     }
 
@@ -1959,6 +2040,42 @@ mod tests {
         // Simulate Enter key
         let action = handle_dashboard_chat_key(&mut app, key(KeyCode::Enter));
         assert!(matches!(action, KeyAction::OpenSettings));
+    }
+
+    #[test]
+    fn test_d_key_toggles_debug_on_signals_panel() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Signals;
+        assert!(!app.signals_debug_mode);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(app.signals_debug_mode, "d should enable debug mode");
+        assert!(app.needs_redraw, "should trigger redraw");
+
+        app.needs_redraw = false;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(!app.signals_debug_mode, "d should toggle debug off");
+        assert!(app.needs_redraw, "should trigger redraw on toggle off");
+    }
+
+    #[test]
+    fn test_d_key_no_effect_on_other_panels() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Workers;
+        assert!(!app.signals_debug_mode);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(
+            !app.signals_debug_mode,
+            "d should not toggle debug on Workers panel"
+        );
+
+        app.focused_panel = Panel::Feed;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(
+            !app.signals_debug_mode,
+            "d should not toggle debug on Feed panel"
+        );
     }
 
     #[test]
