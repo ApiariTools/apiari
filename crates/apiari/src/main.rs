@@ -7,7 +7,7 @@ mod init;
 mod ui;
 mod validate_bash;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use color_eyre::eyre::Result;
 
 #[derive(Parser)]
@@ -118,7 +118,11 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => {
-            ui::run(None).await?;
+            if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                ui::run(None).await?;
+            } else {
+                Cli::command().print_help()?;
+            }
         }
         Some(Command::Init { name }) => {
             init::run_init(name.as_deref())?;
