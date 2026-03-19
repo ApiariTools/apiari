@@ -824,15 +824,15 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                 // Setup mode: process input as setup answer
                 if app.setup.is_some() {
                     // Show user input in chat
-                    if !input.trim().is_empty() {
-                        if let Some(ws) = app.current_ws_mut() {
-                            ws.chat_history.push(app::ChatLine::User(
-                                input.clone(),
-                                app::now_ts(),
-                                None,
-                            ));
-                            ws.chat_scroll.scroll_to_bottom();
-                        }
+                    if !input.trim().is_empty()
+                        && let Some(ws) = app.current_ws_mut()
+                    {
+                        ws.chat_history.push(app::ChatLine::User(
+                            input.clone(),
+                            app::now_ts(),
+                            None,
+                        ));
+                        ws.chat_scroll.scroll_to_bottom();
                     }
                     let done = app.process_setup_input(&input);
                     if done {

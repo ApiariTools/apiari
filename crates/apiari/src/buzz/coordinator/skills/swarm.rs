@@ -28,8 +28,8 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
         "auto" => "Agent selection: auto. If `claude` is available, use `--agent claude`; \
                    otherwise use `--agent codex`. For persistent sessions, append `-tui`."
             .to_string(),
-        _ => "Default agent is claude-tui (persistent, stays alive). \
-              For autonomous tasks, add `--agent claude`."
+        _ => "Default agent is claude. Use `--agent claude` for autonomous tasks, \
+              or `--agent claude-tui` for persistent sessions."
             .to_string(),
     };
 

@@ -562,10 +562,14 @@ impl App {
             .unwrap_or("workspace")
             .to_string();
 
-        // Placeholder workspace for chat
+        // Placeholder workspace for chat — fall back to a cwd-rooted config on
+        // any parse error so we never panic on first run.
         let config: config::WorkspaceConfig =
             serde_json::from_value(serde_json::json!({"root": cwd.to_string_lossy()}))
-                .expect("minimal config should parse");
+                .unwrap_or_else(|_| {
+                    serde_json::from_value(serde_json::json!({"root": "."}))
+                        .expect("hardcoded fallback config")
+                });
 
         let ws_state = WorkspaceState {
             name: "(setup)".to_string(),
@@ -795,7 +799,7 @@ impl App {
         let dir = config::workspaces_dir();
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-        let config_path = dir.join(format!("{}.toml", setup.workspace_name));
+        let config_path = find_available_config_path(&dir, &setup.workspace_name);
         std::fs::write(&config_path, &toml_content)
             .map_err(|e| format!("could not write config: {e}"))?;
 
@@ -804,12 +808,18 @@ impl App {
             tracing::warn!("failed to write onboarded marker: {e}");
         }
 
-        // Reload workspaces
+        // Reload workspaces — the actual file name may differ from
+        // setup.workspace_name if a collision was found (e.g. "foo-2.toml").
+        let actual_name = config_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&setup.workspace_name)
+            .to_string();
         let workspaces = config::discover_workspaces()
             .map_err(|e| format!("could not reload workspaces: {e}"))?;
         let ws = workspaces
             .into_iter()
-            .find(|w| w.name == setup.workspace_name)
+            .find(|w| w.name == actual_name)
             .ok_or("workspace not found after creation")?;
 
         // Preserve chat history from setup conversation
@@ -1890,41 +1900,72 @@ impl App {
 
 // ── Free functions ────────────────────────────────────────
 
+/// Return a config path that does not already exist.
+///
+/// Tries `<dir>/<name>.toml` first, then `<name>-2.toml`, `<name>-3.toml`, etc.
+fn find_available_config_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let candidate = dir.join(format!("{name}.toml"));
+    if !candidate.exists() {
+        return candidate;
+    }
+    for n in 2..100 {
+        let candidate = dir.join(format!("{name}-{n}.toml"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Extremely unlikely: just overwrite the base name.
+    dir.join(format!("{name}.toml"))
+}
+
 /// Build a workspace TOML config from setup state.
 fn build_setup_toml(setup: &SetupState) -> String {
-    let root = setup.workspace_root.display();
-    let swarm_state = setup.workspace_root.join(".swarm/state.json");
-    let mut s = format!(
-        "root = \"{root}\"\n\
-         repos = []  # empty = auto-discover from workspace root\n\n\
-         [coordinator]\n\
-         model = \"sonnet\"\n\
-         max_turns = 20\n\n\
-         [swarm]\n\
-         default_agent = \"{}\"\n\n",
-        setup.default_agent,
-    );
+    use toml_edit::{Array, DocumentMut, Item, Table, value};
 
+    let mut doc = DocumentMut::new();
+
+    doc["root"] = value(setup.workspace_root.display().to_string());
+    doc["repos"] = Item::Value(toml_edit::Value::Array(Array::new()));
+
+    // [coordinator]
+    let mut coordinator = Table::new();
+    coordinator["model"] = value("sonnet");
+    coordinator["max_turns"] = value(20i64);
+    doc["coordinator"] = Item::Table(coordinator);
+
+    // [swarm]
+    let mut swarm = Table::new();
+    swarm["default_agent"] = value(setup.default_agent.clone());
+    doc["swarm"] = Item::Table(swarm);
+
+    // [telegram] (optional)
     if let Some(ref token) = setup.telegram_token {
-        s.push_str(&format!("[telegram]\nbot_token = \"{token}\"\n"));
+        let mut telegram = Table::new();
+        telegram["bot_token"] = value(token.clone());
         if let Some(chat_id) = setup.telegram_chat_id {
-            s.push_str(&format!("chat_id = {chat_id}\n"));
+            telegram["chat_id"] = value(chat_id);
         }
-        s.push('\n');
+        doc["telegram"] = Item::Table(telegram);
     }
+
+    // [watchers]
+    let mut watchers = Table::new();
 
     if setup.has_github {
-        s.push_str("[watchers.github]\ninterval_secs = 120\n\n");
+        let mut github = Table::new();
+        github["interval_secs"] = value(120i64);
+        watchers["github"] = Item::Table(github);
     }
 
-    s.push_str(&format!(
-        "[watchers.swarm]\n\
-         state_path = \"{}\"\n\
-         interval_secs = 15\n",
-        swarm_state.display()
-    ));
+    let swarm_state = setup.workspace_root.join(".swarm/state.json");
+    let mut swarm_watcher = Table::new();
+    swarm_watcher["state_path"] = value(swarm_state.display().to_string());
+    swarm_watcher["interval_secs"] = value(15i64);
+    watchers["swarm"] = Item::Table(swarm_watcher);
 
-    s
+    doc["watchers"] = Item::Table(watchers);
+
+    doc.to_string()
 }
 
 /// Legacy fallback: load chat history from JSONL file.
@@ -2527,5 +2568,131 @@ mod tests {
             app.workspaces[0].coordinator_preview,
             Some("welcome back".into())
         );
+    }
+
+    // ── Setup state machine tests ────────────────────────────
+
+    /// Drive the setup state machine and return the finished SetupState + generated TOML.
+    fn run_setup(inputs: &[&str]) -> (App, String) {
+        let mut app = App::new_setup();
+        for input in inputs {
+            let done = app.process_setup_input(input);
+            if done {
+                let setup = app.setup.as_ref().expect("setup should still be present");
+                let toml_str = build_setup_toml(setup);
+                return (app, toml_str);
+            }
+        }
+        panic!("setup did not complete after all inputs");
+    }
+
+    fn assert_valid_config(toml_str: &str) -> crate::config::WorkspaceConfig {
+        toml::from_str(toml_str).unwrap_or_else(|e| panic!("invalid TOML config: {e}\n{toml_str}"))
+    }
+
+    #[test]
+    fn test_setup_claude_no_github_no_telegram() {
+        let (_, toml_str) = run_setup(&[
+            "",       // accept default root
+            "claude", // provider
+            "no",     // github
+            "skip",   // telegram
+        ]);
+        let cfg = assert_valid_config(&toml_str);
+        assert_eq!(cfg.swarm.default_agent, "claude");
+        assert!(cfg.telegram.is_none());
+        assert!(cfg.watchers.github.is_none());
+    }
+
+    #[test]
+    fn test_setup_codex_with_github_no_telegram() {
+        let (_, toml_str) = run_setup(&[
+            "/tmp/myproject", // custom root
+            "codex",          // provider
+            "yes",            // github
+            "skip",           // telegram
+        ]);
+        let cfg = assert_valid_config(&toml_str);
+        assert_eq!(cfg.root, std::path::PathBuf::from("/tmp/myproject"));
+        assert_eq!(cfg.swarm.default_agent, "codex");
+        assert!(cfg.watchers.github.is_some());
+        assert!(cfg.telegram.is_none());
+    }
+
+    #[test]
+    fn test_setup_auto_with_telegram() {
+        let (_, toml_str) = run_setup(&[
+            "",                // default root
+            "both",            // auto
+            "no",              // github
+            "123456:AABBccDD", // telegram token
+            "-1001234567890",  // chat id
+        ]);
+        let cfg = assert_valid_config(&toml_str);
+        assert_eq!(cfg.swarm.default_agent, "auto");
+        let tg = cfg.telegram.expect("telegram should be set");
+        assert_eq!(tg.bot_token, "123456:AABBccDD");
+        assert_eq!(tg.chat_id, -1001234567890);
+    }
+
+    #[test]
+    fn test_setup_invalid_chat_id_retries() {
+        let mut app = App::new_setup();
+        // AskRoot -> AskProvider
+        app.process_setup_input("");
+        // AskProvider -> AskGithub
+        app.process_setup_input("claude");
+        // AskGithub -> AskTelegram
+        app.process_setup_input("no");
+        // AskTelegram -> AskTelegramChatId
+        app.process_setup_input("sometoken");
+        // Invalid chat ID — should NOT complete
+        let done = app.process_setup_input("not-a-number");
+        assert!(!done);
+        assert_eq!(
+            app.setup.as_ref().unwrap().step,
+            SetupStep::AskTelegramChatId
+        );
+        // Valid chat ID — should complete
+        let done = app.process_setup_input("12345");
+        assert!(done);
+    }
+
+    #[test]
+    fn test_setup_toml_special_chars_in_root() {
+        // Paths with quotes/backslashes should be safely encoded
+        let mut app = App::new_setup();
+        app.process_setup_input("/tmp/my \"project\"");
+        app.process_setup_input("claude");
+        app.process_setup_input("no");
+        let done = app.process_setup_input("skip");
+        assert!(done);
+        let toml_str = build_setup_toml(app.setup.as_ref().unwrap());
+        // Must parse without error — toml_edit handles escaping
+        assert_valid_config(&toml_str);
+    }
+
+    #[test]
+    fn test_find_available_config_path_no_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = find_available_config_path(dir.path(), "myws");
+        assert_eq!(path, dir.path().join("myws.toml"));
+    }
+
+    #[test]
+    fn test_find_available_config_path_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("myws.toml"), "root = '/'").unwrap();
+        let path = find_available_config_path(dir.path(), "myws");
+        assert_eq!(path, dir.path().join("myws-2.toml"));
+    }
+
+    #[test]
+    fn test_find_available_config_path_multiple_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("myws.toml"), "root = '/'").unwrap();
+        std::fs::write(dir.path().join("myws-2.toml"), "root = '/'").unwrap();
+        let path = find_available_config_path(dir.path(), "myws");
+        assert_eq!(path, dir.path().join("myws-3.toml"));
     }
 }
