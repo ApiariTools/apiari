@@ -4,6 +4,7 @@
 //! based on the workspace configuration. Each skill contributes a block
 //! of prompt text; `build_skills_prompt()` aggregates them all.
 
+pub mod config;
 mod email;
 mod github;
 mod linear;
@@ -30,6 +31,7 @@ pub struct SkillContext {
     pub email_names: Vec<String>,
     pub has_notion: bool,
     pub notion_names: Vec<String>,
+    pub has_telegram: bool,
     /// Custom prompt preamble loaded from prompt_file.
     /// If set, replaces the default identity/role sections in the system prompt.
     pub prompt_preamble: Option<String>,
@@ -43,6 +45,7 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
     let mut sections = Vec::new();
 
     // Always-on skills
+    sections.push(config::build_prompt(ctx));
     sections.push(signals::build_prompt(ctx));
 
     // Conditional skills
@@ -136,6 +139,7 @@ mod tests {
             email_names: vec![],
             has_notion: false,
             notion_names: vec![],
+            has_telegram: false,
             prompt_preamble: None,
         }
     }
@@ -145,6 +149,8 @@ mod tests {
         let prompt = build_skills_prompt(&test_ctx());
         assert!(prompt.contains("## Workspace"));
         assert!(prompt.contains("myproject"));
+        assert!(prompt.contains("## Current Workspace Config"));
+        assert!(prompt.contains("## Integration Setup Guides"));
         assert!(prompt.contains("## Signal Store"));
         assert!(prompt.contains("## GitHub"));
         assert!(prompt.contains("## Sentry"));

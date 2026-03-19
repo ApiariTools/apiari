@@ -583,6 +583,7 @@ pub fn build_skill_context(
         email_names,
         has_notion: !notion_names.is_empty(),
         notion_names,
+        has_telegram: config.telegram.is_some(),
         prompt_preamble: config.coordinator.prompt.clone(),
     }
 }

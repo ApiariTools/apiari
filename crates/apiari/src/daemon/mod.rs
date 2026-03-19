@@ -1471,8 +1471,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         };
                                         tokio::spawn(morning_brief::execute_brief(params));
                                     }
+                                    "config" => {
+                                        let skill_ctx = build_skill_context(&slot.name, &slot.config);
+                                        let text = crate::buzz::coordinator::skills::config::build_config_summary(&skill_ctx);
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+                                    }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -1896,8 +1904,14 @@ async fn handle_tui_command(
             }
             true
         }
+        "config" => {
+            let skill_ctx = build_skill_context(&slot.name, &slot.config);
+            let text = crate::buzz::coordinator::skills::config::build_config_summary(&skill_ctx);
+            reply(responder, socket_server, &slot.name, &text);
+            true
+        }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");
