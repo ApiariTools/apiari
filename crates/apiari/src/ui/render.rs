@@ -16,6 +16,24 @@ use super::theme;
 
 const SPINNER: &[&str] = &["|", "/", "-", "\\"];
 
+/// Calculate the number of visual rows needed for input text with wrapping.
+/// `text` is the raw input (may contain newlines), `width` is the available
+/// display width. Builds the exact rendered string (` {text}_`) and uses
+/// display width for correct Unicode/emoji handling.
+fn visual_input_rows(text: &str, width: u16) -> u16 {
+    let w = width as usize;
+    if w == 0 {
+        return 1;
+    }
+    let rendered = format!(" {text}_");
+    let mut total: usize = 0;
+    for segment in rendered.split('\n') {
+        let display_w = Line::from(segment).width();
+        total += display_w.max(1).div_ceil(w);
+    }
+    total.max(1) as u16
+}
+
 // ── Main draw ────────────────────────────────────────────
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -822,8 +840,11 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
 
     // Input height (inside the bordered panel)
     let input_h = if app.chat_focused {
-        let line_count = ws.input.matches('\n').count() + 1;
-        (line_count as u16).clamp(1, 4) + 1 // +1 for separator
+        // Account for visual line wrapping, not just explicit newlines.
+        // area.width - 2 accounts for the panel's left+right borders.
+        let avail_w = area.width.saturating_sub(2);
+        let rows = visual_input_rows(&ws.input, avail_w);
+        rows.clamp(1, 6) + 1 // +1 to include the top-border separator row
     } else {
         1 // just the hint line
     };
@@ -1578,10 +1599,16 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
         _ => ("\u{25cb}", theme::status_idle()),
     };
 
-    // Input bar height
-    let input_h: u16 = if app.worker_input_active { 3 } else { 0 };
+    // Input bar height — account for visual line wrapping
+    let input_h: u16 = if app.worker_input_active {
+        let avail_w = area.width;
+        let rows = visual_input_rows(&app.worker_input, avail_w);
+        rows.clamp(1, 6) + 1 // +1 for top border separator
+    } else {
+        0
+    };
 
-    // Layout: header (1) + conversation (fill) + input (0 or 3)
+    // Layout: header (1) + conversation (fill) + input (input_h, 0 when inactive)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

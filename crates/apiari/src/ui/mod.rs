@@ -115,6 +115,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     // Terminal setup FIRST — don't block on daemon before the user sees anything.
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(crossterm::event::EnableMouseCapture)?;
+    stdout().execute(crossterm::event::EnableBracketedPaste)?;
     enable_raw_mode()?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
@@ -124,6 +125,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
+        let _ = stdout().execute(crossterm::event::DisableBracketedPaste);
         let _ = stdout().execute(crossterm::event::DisableMouseCapture);
         let _ = stdout().execute(LeaveAlternateScreen);
         original_hook(info);
@@ -240,6 +242,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
 
     // Terminal teardown
     disable_raw_mode()?;
+    stdout().execute(crossterm::event::DisableBracketedPaste)?;
     stdout().execute(crossterm::event::DisableMouseCapture)?;
     stdout().execute(LeaveAlternateScreen)?;
 
@@ -328,6 +331,12 @@ async fn event_loop(
                             }
                             _ => {}
                         }
+                    }
+                    Some(Ok(Event::Paste(text))) => {
+                        if settings_state.is_some() {
+                            continue;
+                        }
+                        handle_paste(&mut app, &text);
                     }
                     Some(Ok(Event::Resize(_, _))) => {
                         app.needs_redraw = true;
@@ -569,6 +578,22 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
         View::ReviewList => handle_review_list_key(app, key),
         View::PrList => handle_pr_list_key(app, key),
     }
+}
+
+// ── Paste handling ───────────────────────────────────────
+
+/// Handle a bracketed paste event by inserting the text into the active input.
+fn handle_paste(app: &mut App, text: &str) {
+    if app.chat_focused {
+        if let Some(ws) = app.current_ws_mut() {
+            ws.input.push_str(text);
+        }
+    } else if app.worker_input_active {
+        app.worker_input.push_str(text);
+    } else if app.review_comment_active {
+        app.review_comment_input.push_str(text);
+    }
+    app.needs_redraw = true;
 }
 
 // ── Dashboard keys ───────────────────────────────────────
@@ -922,21 +947,26 @@ fn handle_worker_input_key(
 ) -> KeyAction {
     match key.code {
         KeyCode::Enter => {
-            let text = std::mem::take(&mut app.worker_input);
-            if !text.trim().is_empty()
-                && let Some(ws) = app.current_ws()
-                && let Some(worker) = ws.workers.get(idx)
-            {
-                let id = worker.id.clone();
+            if key.modifiers.contains(KeyModifiers::ALT) {
+                app.worker_input.push('\n');
+                app.needs_redraw = true;
+            } else {
+                let text = std::mem::take(&mut app.worker_input);
+                if !text.trim().is_empty()
+                    && let Some(ws) = app.current_ws()
+                    && let Some(worker) = ws.workers.get(idx)
+                {
+                    let id = worker.id.clone();
+                    app.worker_input_active = false;
+                    app.needs_redraw = true;
+                    return KeyAction::SendWorkerMessage {
+                        worker_id: id,
+                        text,
+                    };
+                }
                 app.worker_input_active = false;
                 app.needs_redraw = true;
-                return KeyAction::SendWorkerMessage {
-                    worker_id: id,
-                    text,
-                };
             }
-            app.worker_input_active = false;
-            app.needs_redraw = true;
         }
         KeyCode::Esc => {
             app.worker_input.clear();
