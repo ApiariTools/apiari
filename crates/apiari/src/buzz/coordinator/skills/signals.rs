@@ -37,7 +37,7 @@ sqlite3 ~/.config/apiari/apiari.db \"SELECT source, severity, title, created_at 
 
 Unresolved signals:
 ```
-sqlite3 ~/.config/apiari/apiari.db \"SELECT source, severity, title, created_at FROM signals WHERE workspace='{ws}' AND resolved_at IS NULL AND status IN ('open','updated') ORDER BY created_at DESC\"
+sqlite3 ~/.config/apiari/apiari.db \"SELECT source, severity, title, created_at FROM signals WHERE workspace='{ws}' AND status IN ('open','updated') ORDER BY created_at DESC\"
 ```
 
 Recent conversation history:
