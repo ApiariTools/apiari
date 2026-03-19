@@ -301,6 +301,9 @@ async fn event_loop(
                         }
                     }
                     Some(Ok(Event::Paste(text))) => {
+                        if settings_state.is_some() {
+                            continue;
+                        }
                         handle_paste(&mut app, &text);
                     }
                     Some(Ok(Event::Resize(_, _))) => {

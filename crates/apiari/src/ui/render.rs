@@ -1608,7 +1608,7 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
         0
     };
 
-    // Layout: header (1) + conversation (fill) + input (0 or 3)
+    // Layout: header (1) + conversation (fill) + input (input_h, 0 when inactive)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
