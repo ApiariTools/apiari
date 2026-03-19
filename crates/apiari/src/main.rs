@@ -7,14 +7,14 @@ mod init;
 mod ui;
 mod validate_bash;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use color_eyre::eyre::Result;
 
 #[derive(Parser)]
 #[command(name = "apiari", about = "Unified CLI for apiari workspaces")]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -117,17 +117,24 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init { name } => {
+        None => {
+            if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                ui::run(None).await?;
+            } else {
+                Cli::command().print_help()?;
+            }
+        }
+        Some(Command::Init { name }) => {
             init::run_init(name.as_deref())?;
             // After init, launch the TUI — onboarding will run in-dashboard
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 ui::run(name.as_deref()).await?;
             }
         }
-        Command::Daemon {
+        Some(Command::Daemon {
             command,
             background,
-        } => match command {
+        }) => match command {
             Some(DaemonCommand::Start { foreground }) => {
                 if foreground {
                     daemon::run_foreground().await?;
@@ -157,18 +164,18 @@ async fn main() -> Result<()> {
                 }
             }
         },
-        Command::Status { workspace } => {
+        Some(Command::Status { workspace }) => {
             daemon::ensure_daemon()?;
             daemon::show_status(workspace.as_deref())?;
         }
-        Command::Chat { workspace, message } => {
+        Some(Command::Chat { workspace, message }) => {
             daemon::ensure_daemon()?;
             daemon::run_chat(&workspace, message).await?;
         }
-        Command::Ui { workspace } => {
+        Some(Command::Ui { workspace }) => {
             ui::run(workspace.as_deref()).await?;
         }
-        Command::Config { command } => match command {
+        Some(Command::Config { command }) => match command {
             ConfigCommand::Set {
                 key,
                 value,
@@ -177,7 +184,7 @@ async fn main() -> Result<()> {
                 config_set::run(workspace.as_deref(), &key, &value)?;
             }
         },
-        Command::ValidateBash => {
+        Some(Command::ValidateBash) => {
             std::process::exit(validate_bash::run());
         }
     }
