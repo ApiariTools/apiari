@@ -196,9 +196,31 @@ pub struct SignalHookConfig {
     /// Empty string = use default formatting.
     #[serde(default)]
     pub prompt: String,
+    /// Action the coordinator should take when this hook fires.
+    /// Default: `notify` (just send a message).
+    #[serde(default)]
+    pub action: SignalHookAction,
     /// Max seconds to wait in queue before dropping. Default: 120.
     #[serde(default = "default_hook_ttl")]
     pub ttl_secs: u64,
+}
+
+/// Action type for signal hooks — determines what the coordinator should DO
+/// when signals arrive, beyond just narrating what happened.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalHookAction {
+    /// Just notify via Telegram/TUI (current default behavior).
+    #[default]
+    Notify,
+    /// Identify the failing worker/PR and dispatch a fix worker or send
+    /// the error to an existing worker.
+    AutoFix,
+    /// Find the relevant swarm worker for the PR and forward the
+    /// review/comments to it.
+    ForwardToWorker,
+    /// Assess the situation and decide whether to act or just notify.
+    Triage,
 }
 
 fn default_hook_ttl() -> u64 {
@@ -210,11 +232,19 @@ fn default_signal_hooks() -> Vec<SignalHookConfig> {
         SignalHookConfig {
             source: "swarm".into(),
             prompt: String::new(),
+            action: SignalHookAction::Triage,
             ttl_secs: default_hook_ttl(),
         },
         SignalHookConfig {
             source: "github_bot_review".into(),
             prompt: "Bot code review: {events}".into(),
+            action: SignalHookAction::ForwardToWorker,
+            ttl_secs: 300,
+        },
+        SignalHookConfig {
+            source: "github_ci_failure".into(),
+            prompt: "CI failed: {events}".into(),
+            action: SignalHookAction::AutoFix,
             ttl_secs: 300,
         },
     ]
@@ -920,11 +950,15 @@ root = "/tmp/test"
         assert_eq!(config.coordinator.model, "sonnet");
         assert_eq!(config.coordinator.max_turns, 20);
         assert_eq!(config.coordinator.max_session_turns, 50);
-        assert_eq!(config.coordinator.signal_hooks.len(), 2);
+        assert_eq!(config.coordinator.signal_hooks.len(), 3);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
         assert_eq!(
             config.coordinator.signal_hooks[1].source,
             "github_bot_review"
+        );
+        assert_eq!(
+            config.coordinator.signal_hooks[2].source,
+            "github_ci_failure"
         );
     }
 
@@ -1431,9 +1465,13 @@ max_session_turns = 0
     fn test_signal_hooks_default() {
         let toml_str = r#"root = "/tmp/test""#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.coordinator.signal_hooks.len(), 2);
+        assert_eq!(config.coordinator.signal_hooks.len(), 3);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
         assert!(config.coordinator.signal_hooks[0].prompt.is_empty());
+        assert_eq!(
+            config.coordinator.signal_hooks[0].action,
+            SignalHookAction::Triage
+        );
         assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 120);
         assert_eq!(
             config.coordinator.signal_hooks[1].source,
@@ -1443,7 +1481,19 @@ max_session_turns = 0
             config.coordinator.signal_hooks[1].prompt,
             "Bot code review: {events}"
         );
+        assert_eq!(
+            config.coordinator.signal_hooks[1].action,
+            SignalHookAction::ForwardToWorker
+        );
         assert_eq!(config.coordinator.signal_hooks[1].ttl_secs, 300);
+        assert_eq!(
+            config.coordinator.signal_hooks[2].source,
+            "github_ci_failure"
+        );
+        assert_eq!(
+            config.coordinator.signal_hooks[2].action,
+            SignalHookAction::AutoFix
+        );
     }
 
     #[test]
@@ -1458,12 +1508,18 @@ ttl_secs = 60
 [[coordinator.signal_hooks]]
 source = "github_ci_failure"
 prompt = "CI failed: {title}"
+action = "auto_fix"
 ttl_secs = 300
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.coordinator.signal_hooks.len(), 2);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
         assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 60);
+        // No action specified → defaults to Notify
+        assert_eq!(
+            config.coordinator.signal_hooks[0].action,
+            SignalHookAction::Notify
+        );
         assert_eq!(
             config.coordinator.signal_hooks[1].source,
             "github_ci_failure"
@@ -1472,7 +1528,52 @@ ttl_secs = 300
             config.coordinator.signal_hooks[1].prompt,
             "CI failed: {title}"
         );
+        assert_eq!(
+            config.coordinator.signal_hooks[1].action,
+            SignalHookAction::AutoFix
+        );
         assert_eq!(config.coordinator.signal_hooks[1].ttl_secs, 300);
+    }
+
+    #[test]
+    fn test_signal_hook_action_all_variants() {
+        let toml_str = r#"
+root = "/tmp/test"
+
+[[coordinator.signal_hooks]]
+source = "a"
+action = "notify"
+
+[[coordinator.signal_hooks]]
+source = "b"
+action = "auto_fix"
+
+[[coordinator.signal_hooks]]
+source = "c"
+action = "forward_to_worker"
+
+[[coordinator.signal_hooks]]
+source = "d"
+action = "triage"
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.signal_hooks.len(), 4);
+        assert_eq!(
+            config.coordinator.signal_hooks[0].action,
+            SignalHookAction::Notify
+        );
+        assert_eq!(
+            config.coordinator.signal_hooks[1].action,
+            SignalHookAction::AutoFix
+        );
+        assert_eq!(
+            config.coordinator.signal_hooks[2].action,
+            SignalHookAction::ForwardToWorker
+        );
+        assert_eq!(
+            config.coordinator.signal_hooks[3].action,
+            SignalHookAction::Triage
+        );
     }
 
     #[test]

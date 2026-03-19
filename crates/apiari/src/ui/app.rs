@@ -1927,10 +1927,33 @@ fn build_setup_toml(setup: &SetupState) -> String {
     doc["root"] = value(setup.workspace_root.display().to_string());
     doc["repos"] = Item::Value(toml_edit::Value::Array(Array::new()));
 
-    // [coordinator]
+    // [coordinator] + [[coordinator.signal_hooks]]
     let mut coordinator = Table::new();
     coordinator["model"] = value("sonnet");
     coordinator["max_turns"] = value(20i64);
+
+    let mut signal_hooks = toml_edit::ArrayOfTables::new();
+
+    let mut hook_swarm = Table::new();
+    hook_swarm["source"] = value("swarm");
+    hook_swarm["action"] = value("triage");
+    signal_hooks.push(hook_swarm);
+
+    let mut hook_review = Table::new();
+    hook_review["source"] = value("github_bot_review");
+    hook_review["prompt"] = value("Bot code review: {events}");
+    hook_review["action"] = value("forward_to_worker");
+    hook_review["ttl_secs"] = value(300i64);
+    signal_hooks.push(hook_review);
+
+    let mut hook_ci = Table::new();
+    hook_ci["source"] = value("github_ci_failure");
+    hook_ci["prompt"] = value("CI failed: {events}");
+    hook_ci["action"] = value("auto_fix");
+    hook_ci["ttl_secs"] = value(300i64);
+    signal_hooks.push(hook_ci);
+
+    coordinator.insert("signal_hooks", Item::ArrayOfTables(signal_hooks));
     doc["coordinator"] = Item::Table(coordinator);
 
     // [swarm]

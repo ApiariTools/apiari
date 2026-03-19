@@ -170,15 +170,29 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          poll_database_ids = [\"db-id-1\"]  # optional\n\
          ```\n\n\
          **Signal hooks setup:**\n\
-         Signal hooks trigger coordinator follow-through when signals arrive:\n\
+         Signal hooks trigger coordinator follow-through when signals arrive.\n\
+         The `action` field controls what you should DO (not just narrate):\n\
+         - `notify` — just send a message (default if omitted)\n\
+         - `auto_fix` — find the failing worker/PR and dispatch a fix or send the error to an existing worker\n\
+         - `forward_to_worker` — find the swarm worker for this PR and forward the review to it\n\
+         - `triage` — assess the situation and decide whether to act or just notify\n\
          ```toml\n\
          [[coordinator.signal_hooks]]\n\
          source = \"github_ci_failure\"\n\
          prompt = \"CI failed: {events}\"\n\
+         action = \"auto_fix\"\n\
          ttl_secs = 300\n\
-         ```\n\
-         The default hook watches `swarm` signals. Add more hooks for sources like \
-         `github_ci_failure`, `github_bot_review`, `sentry`, etc.\n",
+         \n\
+         [[coordinator.signal_hooks]]\n\
+         source = \"github_bot_review\"\n\
+         prompt = \"Bot review: {events}\"\n\
+         action = \"forward_to_worker\"\n\
+         ttl_secs = 300\n\
+         \n\
+         [[coordinator.signal_hooks]]\n\
+         source = \"swarm\"\n\
+         action = \"triage\"\n\
+         ```\n",
     );
 
     prompt

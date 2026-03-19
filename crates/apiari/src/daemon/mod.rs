@@ -104,6 +104,7 @@ enum CoordinatorJob {
         signals: Vec<String>,
         source: String,
         prompt_override: Option<String>,
+        action: config::SignalHookAction,
         queued_at: std::time::Instant,
         ttl_secs: u64,
         telegram: Option<(TelegramChannel, i64, Option<i64>)>,
@@ -443,6 +444,7 @@ async fn run_coordinator_task(
                 signals,
                 source,
                 prompt_override,
+                action,
                 queued_at,
                 ttl_secs,
                 telegram,
@@ -461,11 +463,17 @@ async fn run_coordinator_task(
                     continue;
                 }
 
-                let notification = if let Some(ref tpl) = prompt_override {
+                let mut notification = if let Some(ref tpl) = prompt_override {
                     format_hook_notification(&source, &signals, tpl)
                 } else {
                     format_system_notification(&source, &signals)
                 };
+
+                // Append action-oriented guidance so the coordinator knows what to DO
+                if let Some(guidance) = action_guidance(&action) {
+                    notification.push_str("\n\n");
+                    notification.push_str(guidance);
+                }
                 info!(
                     "[{slot_name}] triggering coordinator follow-through ({source}, {} event(s))",
                     signals.len()
@@ -1230,6 +1238,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             signals,
                             source,
                             prompt_override,
+                            action: hook.action.clone(),
                             queued_at: std::time::Instant::now(),
                             ttl_secs: hook.ttl_secs,
                             telegram: telegram_info,
@@ -2040,6 +2049,31 @@ fn format_system_notification(source: &str, events: &[String]) -> String {
          provide a brief contextual update. Otherwise respond with just \"ack\".",
     );
     msg
+}
+
+/// Return action-specific guidance for the coordinator, or None for `notify` (default behavior).
+fn action_guidance(action: &config::SignalHookAction) -> Option<&'static str> {
+    match action {
+        config::SignalHookAction::Notify => None,
+        config::SignalHookAction::AutoFix => Some(
+            "[Action: auto_fix] Look at the failure details. \
+             Run `swarm status` to check if there's an existing worker for this PR/branch. \
+             If a worker exists, send the error to that worker with `swarm send`. \
+             If no worker exists, dispatch a new one with `swarm create` including the error details \
+             and instructions to fix it.",
+        ),
+        config::SignalHookAction::ForwardToWorker => Some(
+            "[Action: forward_to_worker] Find the swarm worker whose branch matches this PR. \
+             Run `swarm status` to list workers, then use `swarm send` to forward the review \
+             comments directly to the matching worker.",
+        ),
+        config::SignalHookAction::Triage => Some(
+            "[Action: triage] Assess the situation. \
+             If it needs immediate action (e.g. a worker failed, CI broke, a blocker was raised), \
+             take appropriate action (dispatch a worker, send a message, etc.). \
+             If it's purely informational, summarize and notify.",
+        ),
+    }
 }
 
 /// Format a hook notification using a custom prompt template.
