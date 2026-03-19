@@ -202,11 +202,18 @@ fn default_hook_ttl() -> u64 {
 }
 
 fn default_signal_hooks() -> Vec<SignalHookConfig> {
-    vec![SignalHookConfig {
-        source: "swarm".into(),
-        prompt: String::new(),
-        ttl_secs: default_hook_ttl(),
-    }]
+    vec![
+        SignalHookConfig {
+            source: "swarm".into(),
+            prompt: String::new(),
+            ttl_secs: default_hook_ttl(),
+        },
+        SignalHookConfig {
+            source: "github_bot_review".into(),
+            prompt: "Bot code review: {events}".into(),
+            ttl_secs: 300,
+        },
+    ]
 }
 
 /// Watcher configurations (all optional).
@@ -887,8 +894,12 @@ root = "/tmp/test"
         assert_eq!(config.coordinator.model, "sonnet");
         assert_eq!(config.coordinator.max_turns, 20);
         assert_eq!(config.coordinator.max_session_turns, 50);
-        assert_eq!(config.coordinator.signal_hooks.len(), 1);
+        assert_eq!(config.coordinator.signal_hooks.len(), 2);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
+        assert_eq!(
+            config.coordinator.signal_hooks[1].source,
+            "github_bot_review"
+        );
     }
 
     #[test]
@@ -1390,10 +1401,19 @@ max_session_turns = 0
     fn test_signal_hooks_default() {
         let toml_str = r#"root = "/tmp/test""#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.coordinator.signal_hooks.len(), 1);
+        assert_eq!(config.coordinator.signal_hooks.len(), 2);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
         assert!(config.coordinator.signal_hooks[0].prompt.is_empty());
         assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 120);
+        assert_eq!(
+            config.coordinator.signal_hooks[1].source,
+            "github_bot_review"
+        );
+        assert_eq!(
+            config.coordinator.signal_hooks[1].prompt,
+            "Bot code review: {events}"
+        );
+        assert_eq!(config.coordinator.signal_hooks[1].ttl_secs, 300);
     }
 
     #[test]
