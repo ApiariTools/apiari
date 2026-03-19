@@ -98,11 +98,13 @@ async fn main() -> Result<()> {
             // Launch conversational onboarding when stdin is a TTY and no workspace exists yet
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 let cwd = std::env::current_dir()?;
-                let ws_name = name.as_deref().unwrap_or_else(|| {
+                let raw_name = name.as_deref().unwrap_or_else(|| {
                     cwd.file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("workspace")
                 });
+                let ws_name =
+                    ui::onboarding::sanitize_workspace_name(raw_name).unwrap_or("workspace");
                 let config_path = config::workspaces_dir().join(format!("{ws_name}.toml"));
                 if !config_path.exists() {
                     let result = ui::onboarding::run_onboarding(name.as_deref()).await?;

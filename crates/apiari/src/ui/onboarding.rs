@@ -70,6 +70,7 @@ struct OnboardingState {
     github_repos: Vec<String>,
     telegram_skipped: bool,
     github_skipped: bool,
+    swarm_available: bool,
     // Common
     needs_redraw: bool,
     quit: bool,
@@ -86,6 +87,14 @@ impl OnboardingState {
                 .to_string()
         });
 
+        let swarm_available = std::process::Command::new("which")
+            .arg("swarm")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
         let mut state = Self {
             stage: Stage::Greeting,
             messages: Vec::new(),
@@ -101,6 +110,7 @@ impl OnboardingState {
             github_repos: Vec::new(),
             telegram_skipped: false,
             github_skipped: false,
+            swarm_available,
             needs_redraw: true,
             quit: false,
             done: false,
@@ -146,7 +156,10 @@ impl OnboardingState {
             && !self.bot_token.trim().is_empty()
             && !self.chat_id.trim().is_empty()
         {
-            let chat_id: i64 = self.chat_id.trim().parse().unwrap_or(0);
+            let chat_id: i64 = match self.chat_id.trim().parse() {
+                Ok(id) => id,
+                Err(_) => return Ok(name.to_string()), // skip telegram if chat_id is invalid
+            };
             let topic_id = if self.topic_id.trim().is_empty() {
                 None
             } else {
@@ -177,15 +190,7 @@ impl OnboardingState {
             ..config::WatchersConfig::default()
         };
 
-        // Auto-detect swarm
-        let swarm_available = std::process::Command::new("which")
-            .arg("swarm")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if swarm_available {
+        if self.swarm_available {
             let state_path = self.root_dir.join(".swarm/state.json");
             watchers.swarm = Some(config::SwarmWatcherConfig {
                 state_path,
@@ -227,7 +232,7 @@ impl OnboardingState {
 
 // ── Validation helpers ───────────────────────────────────
 
-fn sanitize_workspace_name(name: &str) -> Option<&str> {
+pub(crate) fn sanitize_workspace_name(name: &str) -> Option<&str> {
     let name = name.trim();
     if name.is_empty() {
         return None;
@@ -350,9 +355,14 @@ async fn handle_key(state: &mut OnboardingState, key: crossterm::event::KeyEvent
         return;
     }
 
-    // Esc = skip everything, use defaults
+    // Esc = skip remaining sections (or just launch if already complete)
     if key.code == KeyCode::Esc {
-        skip_to_end(state);
+        if state.stage == Stage::Complete {
+            // Already have collected config — just launch without mutating
+            state.done = true;
+        } else {
+            skip_to_end(state);
+        }
         state.needs_redraw = true;
         return;
     }
