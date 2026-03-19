@@ -144,11 +144,15 @@ fn draw_sidebar_divider(frame: &mut Frame, area: Rect) {
 
 fn draw_sidebar_list(frame: &mut Frame, area: Rect, app: &App) {
     let workers = app.flat_workers();
+    let has_heartbeat = !app.heartbeat_entries.is_empty();
     let has_dispatch = app.active_dispatch.is_some();
     let viewport = area.height as usize;
 
-    // Build item heights: Chat=2, Dispatch=2 (optional), each Worker=3
+    // Build item heights: Chat=2, Heartbeat=2 (optional), Dispatch=2 (optional), each Worker=3
     let mut heights: Vec<usize> = vec![2]; // Chat item
+    if has_heartbeat {
+        heights.push(2); // Heartbeat item
+    }
     if has_dispatch {
         heights.push(2); // Dispatch item
     }
@@ -168,15 +172,17 @@ fn draw_sidebar_list(frame: &mut Frame, area: Rect, app: &App) {
     let total_height = cumulative;
 
     // Find selected item index in the heights array
+    let heartbeat_offset = usize::from(has_heartbeat);
     let dispatch_offset = usize::from(has_dispatch);
     let selected_item = match app.sidebar_selection {
         SidebarItem::Chat => 0,
-        SidebarItem::Dispatch => 1, // only valid when has_dispatch
+        SidebarItem::Heartbeat => 1, // only valid when has_heartbeat
+        SidebarItem::Dispatch => 1 + heartbeat_offset, // only valid when has_dispatch
         SidebarItem::Worker(i) => {
             if workers.is_empty() {
                 0
             } else {
-                1 + dispatch_offset + i
+                1 + heartbeat_offset + dispatch_offset + i
             }
         }
     };
@@ -223,17 +229,29 @@ fn draw_sidebar_list(frame: &mut Frame, area: Rect, app: &App) {
         };
 
     // Item 0: Chat
-    render_item(0, &mut render_y, &|f, r| draw_chat_sidebar_item(f, r, app));
+    let mut item_idx = 0;
+    render_item(item_idx, &mut render_y, &|f, r| {
+        draw_chat_sidebar_item(f, r, app)
+    });
 
-    // Item 1 (optional): Dispatch
+    // Heartbeat (optional)
+    if has_heartbeat {
+        item_idx += 1;
+        render_item(item_idx, &mut render_y, &|f, r| {
+            draw_heartbeat_sidebar_item(f, r, app)
+        });
+    }
+
+    // Dispatch (optional)
     if has_dispatch {
-        render_item(1, &mut render_y, &|f, r| {
+        item_idx += 1;
+        render_item(item_idx, &mut render_y, &|f, r| {
             draw_dispatch_sidebar_item(f, r, app)
         });
     }
 
     // Workers
-    let worker_start = 1 + dispatch_offset;
+    let worker_start = item_idx + 1;
     if workers.is_empty() {
         // "No workers" placeholder
         if render_y < viewport_bottom {
@@ -243,9 +261,9 @@ fn draw_sidebar_list(frame: &mut Frame, area: Rect, app: &App) {
         }
     } else {
         for (i, (_, wt)) in workers.iter().enumerate() {
-            let item_idx = worker_start + i;
-            let item_top = tops[item_idx];
-            let item_bottom = item_top + heights[item_idx];
+            let idx = worker_start + i;
+            let item_top = tops[idx];
+            let item_bottom = item_top + heights[idx];
 
             if item_bottom <= scroll {
                 continue;
@@ -256,7 +274,7 @@ fn draw_sidebar_list(frame: &mut Frame, area: Rect, app: &App) {
 
             let skip_top = scroll.saturating_sub(item_top);
             let available = (viewport_bottom - render_y) as usize;
-            let render_h = (heights[item_idx] - skip_top).min(available);
+            let render_h = (heights[idx] - skip_top).min(available);
 
             if render_h == 0 {
                 continue;
@@ -322,6 +340,65 @@ fn draw_chat_sidebar_item(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("    ", Style::default()),
             Span::styled(
                 status_text,
+                Style::default().fg(ratatui::style::Color::Rgb(100, 97, 90)),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line2).style(row_style),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+    }
+}
+
+/// 2-line heartbeat entry in the sidebar.
+fn draw_heartbeat_sidebar_item(frame: &mut Frame, area: Rect, app: &App) {
+    let is_selected = app.sidebar_selection == SidebarItem::Heartbeat;
+
+    let row_style = if is_selected {
+        Style::default().bg(ratatui::style::Color::Rgb(58, 50, 42))
+    } else {
+        Style::default().bg(theme::COMB)
+    };
+    frame.render_widget(Paragraph::new("").style(row_style), area);
+
+    let selector = if is_selected { "\u{25b8}" } else { " " };
+    let text_style = if is_selected {
+        theme::selected()
+    } else {
+        theme::text()
+    };
+
+    // Line 1: " ▸ ♡ Heartbeat"
+    if area.height >= 1 {
+        let has_bee = app
+            .heartbeat_entries
+            .iter()
+            .any(|e| e.bee_response.is_some());
+        let icon = if has_bee {
+            Span::styled("\u{1f41d} ", Style::default())
+        } else {
+            Span::styled("\u{2665} ", theme::accent())
+        };
+        let line1 = Line::from(vec![
+            Span::styled(format!(" {selector}"), text_style),
+            Span::styled(" ", Style::default()),
+            icon,
+            Span::styled("Heartbeat", text_style),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line1).style(row_style),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+    }
+
+    // Line 2: "     N events"
+    if area.height >= 2 {
+        let count = app.heartbeat_entries.len();
+        let status = format!("{count} entr{}", if count == 1 { "y" } else { "ies" });
+        let line2 = Line::from(vec![
+            Span::styled("    ", Style::default()),
+            Span::styled(
+                status,
                 Style::default().fg(ratatui::style::Color::Rgb(100, 97, 90)),
             ),
         ]);
@@ -618,6 +695,17 @@ fn draw_sidebar_status_bar(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled(" back", theme::key_desc()),
             ]),
         }
+    } else if app.is_heartbeat_selected() {
+        Line::from(vec![
+            Span::styled(" j", theme::key_hint()),
+            Span::styled("/", theme::key_desc()),
+            Span::styled("k", theme::key_hint()),
+            Span::styled(" nav  ", theme::key_desc()),
+            Span::styled("\u{21b5}", theme::key_hint()),
+            Span::styled(" expand  ", theme::key_desc()),
+            Span::styled("?", theme::key_hint()),
+            Span::styled(" help", theme::key_desc()),
+        ])
     } else if app.is_dispatch_selected() {
         Line::from(vec![
             Span::styled(" j", theme::key_hint()),
@@ -692,6 +780,9 @@ fn draw_content_panel(frame: &mut Frame, area: Rect, app: &App) {
 
             draw_chat_panel(frame, right[0], app);
             draw_input_bar(frame, right[1], app);
+        }
+        SidebarItem::Heartbeat => {
+            draw_heartbeat_panel(frame, area, app);
         }
         SidebarItem::Dispatch => {
             draw_dispatch_review(frame, area, app);
@@ -1637,6 +1728,138 @@ fn cursor_position(text: &str, cursor_byte: usize, width: usize) -> (usize, usiz
         col = 0;
     }
     (row, col)
+}
+
+// ── Heartbeat Panel ──────────────────────────────────────
+
+fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
+    let border_style = if app.focus == Panel::Chat {
+        theme::border_active()
+    } else {
+        theme::border()
+    };
+
+    let hint = " j/k nav  \u{21b5} expand  h sidebar ";
+    let block = Block::default()
+        .title(Span::styled(" Heartbeat ", theme::title()))
+        .title_bottom(Line::from(Span::styled(hint, theme::subtitle())).centered())
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.heartbeat_entries.is_empty() {
+        let line = Line::from(Span::styled("  No heartbeat events yet.", theme::muted()));
+        frame.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+
+    // Build lines for all entries (collapsed + expanded).
+    let mut lines: Vec<Line> = Vec::new();
+    let dim_style = Style::default().fg(ratatui::style::Color::Rgb(100, 97, 90));
+
+    for (i, entry) in app.heartbeat_entries.iter().enumerate() {
+        let is_selected = i == app.heartbeat_cursor;
+        let is_expanded = app.heartbeat_expanded.contains(&i);
+        let has_bee = entry.bee_response.is_some();
+
+        // Build the main row.
+        let arrow = if is_expanded {
+            "\u{25bc}" // ▼
+        } else {
+            "\u{25b6}" // ▶
+        };
+
+        let row_style = if is_selected {
+            Style::default()
+                .fg(theme::HONEY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            theme::text()
+        };
+
+        let bee_indicator = if has_bee { " \u{1f41d}" } else { "" };
+
+        let event_label = format!(
+            " \u{00b7} {} event{}",
+            entry.event_count,
+            if entry.event_count == 1 { "" } else { "s" }
+        );
+
+        // Pad source to 9 chars for alignment.
+        let source_padded = format!("{:<9}", entry.source);
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{arrow} "), row_style),
+            Span::styled(&entry.timestamp, dim_style),
+            Span::styled("  ", Style::default()),
+            Span::styled(source_padded, row_style),
+            Span::styled(
+                &entry.summary,
+                if is_selected {
+                    row_style
+                } else {
+                    theme::text()
+                },
+            ),
+            Span::styled(event_label, dim_style),
+            Span::styled(bee_indicator.to_string(), Style::default()),
+        ]));
+
+        // Expanded detail lines.
+        if is_expanded {
+            for sig in &entry.signals {
+                lines.push(Line::from(vec![
+                    Span::styled("  \u{2022} ", dim_style), // bullet
+                    Span::styled(format!("{}: {}", sig.source, sig.title), dim_style),
+                ]));
+            }
+
+            if let Some(ref bee) = entry.bee_response {
+                lines.push(Line::from(vec![
+                    Span::styled("  \u{1f41d} Bee: ", Style::default().fg(theme::HONEY)),
+                    Span::styled(bee.clone(), theme::text()),
+                ]));
+            }
+
+            // Blank line after expanded section.
+            lines.push(Line::from(""));
+        }
+    }
+
+    // Scroll to keep cursor visible.
+    let visible_height = inner.height as usize;
+    let mut cursor_line = 0usize;
+    let mut line_count = 0usize;
+    for (i, entry) in app.heartbeat_entries.iter().enumerate() {
+        if i == app.heartbeat_cursor {
+            cursor_line = line_count;
+        }
+        line_count += 1; // header line
+        if app.heartbeat_expanded.contains(&i) {
+            line_count += entry.signals.len();
+            if entry.bee_response.is_some() {
+                line_count += 1;
+            }
+            line_count += 1; // blank line
+        }
+    }
+
+    let scroll = if cursor_line >= visible_height {
+        cursor_line.saturating_sub(visible_height / 3)
+    } else {
+        0
+    };
+
+    let visible_lines: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(visible_height)
+        .collect();
+
+    let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 // ── Worker Output ─────────────────────────────────────────
