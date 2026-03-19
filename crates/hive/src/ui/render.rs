@@ -391,10 +391,15 @@ fn draw_heartbeat_sidebar_item(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
 
-    // Line 2: "     N events"
+    // Line 2: "     N signals"
     if area.height >= 2 {
-        let count = app.heartbeat_entries.len();
-        let status = format!("{count} entr{}", if count == 1 { "y" } else { "ies" });
+        let count = app.visible_heartbeat_count();
+        let total = app.heartbeat_entries.len();
+        let status = if app.heartbeat_debug_mode || count == total {
+            format!("{total} entr{}", if total == 1 { "y" } else { "ies" })
+        } else {
+            format!("{count} signal{}", if count == 1 { "" } else { "s" })
+        };
         let line2 = Line::from(vec![
             Span::styled("    ", Style::default()),
             Span::styled(
@@ -703,6 +708,8 @@ fn draw_sidebar_status_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(" nav  ", theme::key_desc()),
             Span::styled("\u{21b5}", theme::key_hint()),
             Span::styled(" expand  ", theme::key_desc()),
+            Span::styled("d", theme::key_hint()),
+            Span::styled(" debug  ", theme::key_desc()),
             Span::styled("?", theme::key_hint()),
             Span::styled(" help", theme::key_desc()),
         ])
@@ -1732,6 +1739,17 @@ fn cursor_position(text: &str, cursor_byte: usize, width: usize) -> (usize, usiz
 
 // ── Heartbeat Panel ──────────────────────────────────────
 
+/// Signal sources that are hidden in normal (non-debug) mode.
+const HIDDEN_SIGNAL_SOURCES: &[&str] = &["github_merged_pr", "github_ci_pass"];
+
+/// Check whether a heartbeat entry contains only non-actionable signals.
+fn is_entry_non_actionable(entry: &super::app::App, idx: usize) -> bool {
+    let e = &entry.heartbeat_entries[idx];
+    e.signals
+        .iter()
+        .all(|sig| HIDDEN_SIGNAL_SOURCES.contains(&sig.source.as_str()))
+}
+
 fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
     let border_style = if app.focus == Panel::Chat {
         theme::border_active()
@@ -1739,9 +1757,14 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
         theme::border()
     };
 
-    let hint = " j/k nav  \u{21b5} expand  h sidebar ";
+    let hint = " j/k nav  \u{21b5} expand  d debug  h sidebar ";
+    let title = if app.heartbeat_debug_mode {
+        " Signals [debug] "
+    } else {
+        " Signals "
+    };
     let block = Block::default()
-        .title(Span::styled(" Heartbeat ", theme::title()))
+        .title(Span::styled(title, theme::title()))
         .title_bottom(Line::from(Span::styled(hint, theme::subtitle())).centered())
         .borders(Borders::ALL)
         .border_style(border_style);
@@ -1755,16 +1778,85 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Build lines for all entries (collapsed + expanded).
+    // Build the list of visible entry indices based on debug mode.
+    let visible_indices: Vec<usize> = if app.heartbeat_debug_mode {
+        (0..app.heartbeat_entries.len()).collect()
+    } else {
+        (0..app.heartbeat_entries.len())
+            .filter(|&i| !is_entry_non_actionable(app, i))
+            .collect()
+    };
+
+    if visible_indices.is_empty() {
+        let line = Line::from(Span::styled(
+            "  No actionable signals. Press d for debug view.",
+            theme::muted(),
+        ));
+        frame.render_widget(Paragraph::new(line), inner);
+        return;
+    }
+
+    // Build lines for visible entries.
     let mut lines: Vec<Line> = Vec::new();
     let dim_style = Style::default().fg(ratatui::style::Color::Rgb(100, 97, 90));
 
-    for (i, entry) in app.heartbeat_entries.iter().enumerate() {
-        let is_selected = i == app.heartbeat_cursor;
-        let is_expanded = app.heartbeat_expanded.contains(&i);
+    // In debug mode, batch consecutive github_merged_pr-only entries.
+    let mut vi = 0;
+    while vi < visible_indices.len() {
+        let idx = visible_indices[vi];
+        let entry = &app.heartbeat_entries[idx];
+
+        // In debug mode, batch consecutive entries where ALL signals are github_merged_pr.
+        if app.heartbeat_debug_mode && is_all_merged_pr(entry) {
+            let batch_start = vi;
+            let mut batch_count = 0usize;
+            let mut total_merged = 0usize;
+            while vi < visible_indices.len() {
+                let bidx = visible_indices[vi];
+                let bentry = &app.heartbeat_entries[bidx];
+                if is_all_merged_pr(bentry) {
+                    batch_count += 1;
+                    total_merged += bentry
+                        .signals
+                        .iter()
+                        .filter(|s| s.source == "github_merged_pr")
+                        .count();
+                    vi += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if batch_count > 1 {
+                // Render as a single collapsed row.
+                let is_selected = app.heartbeat_cursor == batch_start;
+                let row_style = if is_selected {
+                    Style::default()
+                        .fg(theme::HONEY)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    theme::text()
+                };
+                let first_entry = &app.heartbeat_entries[visible_indices[batch_start]];
+                lines.push(Line::from(vec![
+                    Span::styled("  ", row_style),
+                    Span::styled(&first_entry.timestamp, dim_style),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(
+                        format!("{total_merged} merged PRs ({batch_count} cycles)"),
+                        if is_selected { row_style } else { dim_style },
+                    ),
+                ]));
+                continue;
+            }
+            // Single merged-PR entry: fall through to normal rendering.
+            vi = batch_start;
+        }
+
+        let is_selected = vi == app.heartbeat_cursor;
+        let is_expanded = app.heartbeat_expanded.contains(&vi);
         let has_bee = entry.bee_response.is_some();
 
-        // Build the main row.
         let arrow = if is_expanded {
             "\u{25bc}" // ▼
         } else {
@@ -1787,7 +1879,6 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
             if entry.event_count == 1 { "" } else { "s" }
         );
 
-        // Pad source to 9 chars for alignment.
         let source_padded = format!("{:<9}", entry.source);
 
         lines.push(Line::from(vec![
@@ -1811,7 +1902,7 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
         if is_expanded {
             for sig in &entry.signals {
                 lines.push(Line::from(vec![
-                    Span::styled("  \u{2022} ", dim_style), // bullet
+                    Span::styled("  \u{2022} ", dim_style),
                     Span::styled(format!("{}: {}", sig.source, sig.title), dim_style),
                 ]));
             }
@@ -1823,27 +1914,58 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
                 ]));
             }
 
-            // Blank line after expanded section.
             lines.push(Line::from(""));
         }
+
+        vi += 1;
     }
 
     // Scroll to keep cursor visible.
     let visible_height = inner.height as usize;
     let mut cursor_line = 0usize;
     let mut line_count = 0usize;
-    for (i, entry) in app.heartbeat_entries.iter().enumerate() {
-        if i == app.heartbeat_cursor {
+
+    // Recompute line offsets for scroll tracking.
+    let mut vi2 = 0;
+    while vi2 < visible_indices.len() {
+        let idx2 = visible_indices[vi2];
+        let entry2 = &app.heartbeat_entries[idx2];
+
+        if app.heartbeat_debug_mode && is_all_merged_pr(entry2) {
+            let batch_start2 = vi2;
+            let mut batch_count2 = 0usize;
+            while vi2 < visible_indices.len() {
+                let bidx2 = visible_indices[vi2];
+                let bentry2 = &app.heartbeat_entries[bidx2];
+                if is_all_merged_pr(bentry2) {
+                    batch_count2 += 1;
+                    vi2 += 1;
+                } else {
+                    break;
+                }
+            }
+            if batch_count2 > 1 {
+                if app.heartbeat_cursor == batch_start2 {
+                    cursor_line = line_count;
+                }
+                line_count += 1;
+                continue;
+            }
+            vi2 = batch_start2;
+        }
+
+        if vi2 == app.heartbeat_cursor {
             cursor_line = line_count;
         }
-        line_count += 1; // header line
-        if app.heartbeat_expanded.contains(&i) {
-            line_count += entry.signals.len();
-            if entry.bee_response.is_some() {
+        line_count += 1;
+        if app.heartbeat_expanded.contains(&vi2) {
+            line_count += entry2.signals.len();
+            if entry2.bee_response.is_some() {
                 line_count += 1;
             }
-            line_count += 1; // blank line
+            line_count += 1;
         }
+        vi2 += 1;
     }
 
     let scroll = if cursor_line >= visible_height {
@@ -1860,6 +1982,11 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
+}
+
+/// Check whether all signals in an entry are `github_merged_pr`.
+fn is_all_merged_pr(entry: &crate::daemon::tui_socket::HeartbeatEntry) -> bool {
+    !entry.signals.is_empty() && entry.signals.iter().all(|s| s.source == "github_merged_pr")
 }
 
 // ── Worker Output ─────────────────────────────────────────
@@ -2089,7 +2216,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 // ── Help Overlay ─────────────────────────────────────────
 
 fn draw_help_overlay(frame: &mut Frame, area: Rect) {
-    let popup = centered_rect(54, 35, area);
+    let popup = centered_rect(54, 40, area);
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
@@ -2143,6 +2270,11 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         key_line("g / G", "Scroll to top/bottom"),
         key_line("h / Tab", "Return to sidebar"),
         key_line("z", "Toggle zoom"),
+        Line::from(""),
+        section("Signals"),
+        key_line("j / k", "Navigate entries"),
+        key_line("↵", "Expand / collapse"),
+        key_line("d", "Toggle debug mode"),
         Line::from(""),
         section("Dispatch Review"),
         key_line("j / k", "Navigate sections"),

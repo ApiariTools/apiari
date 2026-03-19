@@ -199,6 +199,8 @@ pub struct App {
     pub heartbeat_cursor: usize,
     /// Which heartbeat entries are expanded (by index).
     pub heartbeat_expanded: std::collections::HashSet<usize>,
+    /// Debug/verbose mode for heartbeat panel (shows all signals including non-actionable).
+    pub heartbeat_debug_mode: bool,
 
     // Periodic refresh
     last_worker_refresh: Instant,
@@ -260,6 +262,7 @@ impl App {
             heartbeat_entries: Vec::new(),
             heartbeat_cursor: 0,
             heartbeat_expanded: std::collections::HashSet::new(),
+            heartbeat_debug_mode: false,
             last_worker_refresh: Instant::now(),
         }
     }
@@ -926,9 +929,26 @@ impl App {
         self.sidebar_selection == SidebarItem::Heartbeat
     }
 
+    /// Count of visible heartbeat entries (filtered in normal mode).
+    pub fn visible_heartbeat_count(&self) -> usize {
+        if self.heartbeat_debug_mode {
+            self.heartbeat_entries.len()
+        } else {
+            self.heartbeat_entries
+                .iter()
+                .filter(|e| {
+                    !e.signals.iter().all(|sig| {
+                        sig.source == "github_merged_pr" || sig.source == "github_ci_pass"
+                    })
+                })
+                .count()
+        }
+    }
+
     /// Move heartbeat cursor down.
     pub fn heartbeat_next(&mut self) {
-        if self.heartbeat_cursor + 1 < self.heartbeat_entries.len() {
+        let count = self.visible_heartbeat_count();
+        if count > 0 && self.heartbeat_cursor + 1 < count {
             self.heartbeat_cursor += 1;
         }
     }
@@ -936,6 +956,14 @@ impl App {
     /// Move heartbeat cursor up.
     pub fn heartbeat_prev(&mut self) {
         self.heartbeat_cursor = self.heartbeat_cursor.saturating_sub(1);
+    }
+
+    /// Toggle debug/verbose mode for the heartbeat panel.
+    pub fn heartbeat_toggle_debug(&mut self) {
+        self.heartbeat_debug_mode = !self.heartbeat_debug_mode;
+        // Reset cursor and expanded state when toggling modes since indices change.
+        self.heartbeat_cursor = 0;
+        self.heartbeat_expanded.clear();
     }
 
     /// Toggle expand/collapse of the currently selected heartbeat entry.

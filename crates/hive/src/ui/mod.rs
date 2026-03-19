@@ -682,6 +682,7 @@ async fn event_loop(
                                 KeyCode::Char('j') | KeyCode::Down => app.heartbeat_next(),
                                 KeyCode::Char('k') | KeyCode::Up => app.heartbeat_prev(),
                                 KeyCode::Enter => app.heartbeat_toggle(),
+                                KeyCode::Char('d') => app.heartbeat_toggle_debug(),
                                 KeyCode::Char('z') => {
                                     app.zoomed = !app.zoomed;
                                 }
