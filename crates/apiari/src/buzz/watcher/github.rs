@@ -45,6 +45,7 @@ struct RepoPollResult {
     new_release_cursor: Option<u64>,
     updated_merged_prs: Option<HashSet<u64>>,
     updated_ci_pass: HashSet<u64>,
+    updated_bot_review_cursor: Option<String>,
 }
 
 /// Watches GitHub repositories via the `gh` CLI.
@@ -58,6 +59,9 @@ pub struct GithubWatcher {
     merged_pr_cursors: HashMap<String, HashSet<u64>>,
     /// PRs with passing CI per repo (cursor: github_ci_pass:{repo}).
     ci_pass_state: HashMap<String, HashSet<u64>>,
+    /// Last-seen bot review timestamp per repo (cursor: github_bot_review:{repo}).
+    /// ISO 8601 string — only reviews newer than this are emitted.
+    bot_review_cursors: HashMap<String, String>,
     /// Cached rate-limit remaining count and when it was fetched.
     last_rate_check: Option<(Instant, u32)>,
 }
@@ -71,6 +75,7 @@ impl GithubWatcher {
             release_cursors: HashMap::new(),
             merged_pr_cursors: HashMap::new(),
             ci_pass_state: HashMap::new(),
+            bot_review_cursors: HashMap::new(),
             last_rate_check: None,
         }
     }
@@ -98,6 +103,13 @@ impl GithubWatcher {
                 let state: HashSet<u64> = val.split(',').filter_map(|n| n.parse().ok()).collect();
                 if !state.is_empty() {
                     self.ci_pass_state.insert(repo.clone(), state);
+                }
+            }
+
+            let bk = format!("github_bot_review:{repo}");
+            if let Ok(Some(val)) = store.get_cursor(&bk) {
+                if !val.is_empty() {
+                    self.bot_review_cursors.insert(repo.clone(), val);
                 }
             }
         }
@@ -391,6 +403,147 @@ impl GithubWatcher {
         }
     }
 
+    /// Poll for bot/automated code reviews on open PRs.
+    /// Returns (signals, optional new cursor timestamp).
+    async fn poll_bot_reviews(
+        &self,
+        repo: &str,
+        cursor_ts: Option<&str>,
+    ) -> (Vec<SignalUpdate>, Option<String>) {
+        let mut signals = Vec::new();
+        let mut max_ts = cursor_ts.map(|s| s.to_string());
+
+        // Fetch open PRs (up to 20) and their reviews
+        let endpoint = format!("repos/{repo}/pulls?state=open&per_page=20");
+        let Some(prs_value) = self.gh_api(&endpoint).await else {
+            return (signals, None);
+        };
+        let Some(prs) = prs_value.as_array() else {
+            return (signals, None);
+        };
+
+        // Collect PR numbers + titles for review lookup
+        let pr_infos: Vec<(u64, String)> = prs
+            .iter()
+            .filter_map(|pr| {
+                let number = pr.get("number")?.as_u64()?;
+                let title = pr.get("title")?.as_str()?.to_string();
+                Some((number, title))
+            })
+            .collect();
+
+        // Fetch reviews for each PR concurrently in bounded chunks
+        for chunk in pr_infos.chunks(MAX_CONCURRENT_GH_CALLS) {
+            let endpoints: Vec<String> = chunk
+                .iter()
+                .map(|(number, _)| format!("repos/{repo}/pulls/{number}/reviews?per_page=30"))
+                .collect();
+            let review_futures: Vec<_> = endpoints.iter().map(|ep| self.gh_api(ep)).collect();
+            let results = futures::future::join_all(review_futures).await;
+
+            for ((pr_number, pr_title), reviews_opt) in chunk.iter().zip(results) {
+                let Some(reviews_value) = reviews_opt else {
+                    continue;
+                };
+                let Some(reviews) = reviews_value.as_array() else {
+                    continue;
+                };
+
+                for review in reviews {
+                    let Some(user) = review.get("user") else {
+                        continue;
+                    };
+                    let login = user.get("login").and_then(|v| v.as_str()).unwrap_or("");
+                    let user_type = user.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                    // Only bot reviews: GitHub App bots have type "Bot",
+                    // or users with [bot] suffix in login
+                    let is_bot = user_type == "Bot" || login.ends_with("[bot]");
+                    if !is_bot {
+                        continue;
+                    }
+
+                    let submitted_at = review
+                        .get("submitted_at")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if submitted_at.is_empty() {
+                        continue;
+                    }
+
+                    // Skip reviews older than or equal to cursor
+                    if let Some(cursor) = cursor_ts {
+                        if submitted_at <= cursor {
+                            continue;
+                        }
+                    }
+
+                    let state = review
+                        .get("state")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("COMMENTED");
+                    let body = review.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                    let review_id = review.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let html_url = review
+                        .get("html_url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    // Truncate body to 500 chars
+                    let truncated_body: String = body.chars().take(500).collect();
+
+                    // Build metadata JSON
+                    let metadata = serde_json::json!({
+                        "pr_number": pr_number,
+                        "pr_title": pr_title,
+                        "repo": repo,
+                        "bot_name": login,
+                        "review_state": state,
+                        "review_body": truncated_body,
+                    });
+
+                    let severity = match state {
+                        "CHANGES_REQUESTED" => Severity::Warning,
+                        "APPROVED" => Severity::Info,
+                        _ => Severity::Info,
+                    };
+
+                    let bot_display = login.strip_suffix("[bot]").unwrap_or(login);
+                    let key = format!("bot-review-{repo}-{pr_number}-{review_id}");
+                    let title = format!("{bot_display} reviewed PR #{pr_number}: {state}");
+                    let mut signal = SignalUpdate::new("github_bot_review", &key, &title, severity)
+                        .with_metadata(metadata.to_string());
+                    if !truncated_body.is_empty() {
+                        signal = signal.with_body(&truncated_body);
+                    }
+                    if !html_url.is_empty() {
+                        signal = signal.with_url(html_url);
+                    }
+                    signals.push(signal);
+
+                    // Track max timestamp
+                    match &max_ts {
+                        Some(ts) if submitted_at > ts.as_str() => {
+                            max_ts = Some(submitted_at.to_string());
+                        }
+                        None => {
+                            max_ts = Some(submitted_at.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let new_cursor = if max_ts.as_deref() != cursor_ts {
+            max_ts
+        } else {
+            None
+        };
+
+        (signals, new_cursor)
+    }
+
     async fn poll_repo(&self, repo: &str) -> Vec<(String, SignalUpdate)> {
         let mut signals = Vec::new();
 
@@ -495,6 +648,7 @@ impl GithubWatcher {
         last_seen_release_id: u64,
         seen_merged_prs: HashSet<u64>,
         mut ci_pass_prs: HashSet<u64>,
+        bot_review_cursor: Option<String>,
     ) -> RepoPollResult {
         // Run independent poll types concurrently within this repo.
         let (
@@ -502,16 +656,19 @@ impl GithubWatcher {
             (release_signals, new_release_cursor),
             (merged_signals, updated_merged_prs),
             prs,
+            (bot_review_signals, updated_bot_review_cursor),
         ) = tokio::join!(
             self.poll_repo(repo),
             self.poll_release_runs(repo, last_seen_release_id),
             self.poll_merged_prs(repo, &seen_merged_prs),
             self.fetch_open_prs(repo),
+            self.poll_bot_reviews(repo, bot_review_cursor.as_deref()),
         );
 
         let mut signals: Vec<SignalUpdate> = repo_signals.into_iter().map(|(_, s)| s).collect();
         signals.extend(release_signals);
         signals.extend(merged_signals);
+        signals.extend(bot_review_signals);
 
         // Fetch latest CI run for each open PR concurrently in bounded chunks.
         let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _)| *n).collect();
@@ -577,6 +734,7 @@ impl GithubWatcher {
             new_release_cursor,
             updated_merged_prs,
             updated_ci_pass: ci_pass_prs,
+            updated_bot_review_cursor,
         }
     }
 }
@@ -609,7 +767,8 @@ impl Watcher for GithubWatcher {
                     .cloned()
                     .unwrap_or_default();
                 let ci_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
-                self.poll_repo_full(repo, last_seen, seen_prs, ci_prs)
+                let bot_cursor = self.bot_review_cursors.get(repo).cloned();
+                self.poll_repo_full(repo, last_seen, seen_prs, ci_prs, bot_cursor)
             })
             .collect();
 
@@ -636,6 +795,11 @@ impl Watcher for GithubWatcher {
 
             self.ci_pass_state
                 .insert(result.repo.clone(), result.updated_ci_pass);
+
+            if let Some(new_cursor) = result.updated_bot_review_cursor {
+                self.bot_review_cursors
+                    .insert(result.repo.clone(), new_cursor);
+            }
         }
 
         if !all_signals.is_empty() {
@@ -675,6 +839,12 @@ impl Watcher for GithubWatcher {
                 .join(",");
             if let Err(e) = store.set_cursor(&key, &val) {
                 warn!("failed to persist CI pass cursor for {repo}: {e}");
+            }
+        }
+        for (repo, ts) in &self.bot_review_cursors {
+            let key = format!("github_bot_review:{repo}");
+            if let Err(e) = store.set_cursor(&key, ts) {
+                warn!("failed to persist bot review cursor for {repo}: {e}");
             }
         }
         // Return 0: cursor persistence is done, but let the framework
@@ -982,6 +1152,65 @@ mod tests {
         assert!(signal.title.contains("Merged:"));
         assert!(signal.title.contains("#53"));
         assert_eq!(signal.url.as_deref(), Some(url));
+    }
+
+    #[test]
+    fn test_bot_review_signal_structure() {
+        let pr_number = 42u64;
+        let pr_title = "Add new feature";
+        let repo = "org/repo";
+        let review_id = 1234u64;
+        let login = "copilot[bot]";
+        let state = "CHANGES_REQUESTED";
+        let body = "Consider refactoring this function";
+
+        let metadata = serde_json::json!({
+            "pr_number": pr_number,
+            "pr_title": pr_title,
+            "repo": repo,
+            "bot_name": login,
+            "review_state": state,
+            "review_body": body,
+        });
+
+        let bot_display = login.strip_suffix("[bot]").unwrap_or(login);
+        let key = format!("bot-review-{repo}-{pr_number}-{review_id}");
+        let title = format!("{bot_display} reviewed PR #{pr_number}: {state}");
+        let signal = SignalUpdate::new("github_bot_review", &key, &title, Severity::Warning)
+            .with_metadata(metadata.to_string())
+            .with_body(body)
+            .with_url("https://github.com/org/repo/pull/42#pullrequestreview-1234");
+
+        assert_eq!(signal.source, "github_bot_review");
+        assert_eq!(signal.external_id, "bot-review-org/repo-42-1234");
+        assert_eq!(signal.severity, Severity::Warning);
+        assert!(signal.title.contains("copilot"));
+        assert!(signal.title.contains("CHANGES_REQUESTED"));
+        assert!(signal.metadata.is_some());
+        let meta: serde_json::Value =
+            serde_json::from_str(signal.metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(meta["pr_number"], 42);
+        assert_eq!(meta["bot_name"], "copilot[bot]");
+        assert_eq!(meta["review_state"], "CHANGES_REQUESTED");
+    }
+
+    #[test]
+    fn test_bot_review_approved_is_info() {
+        let signal = SignalUpdate::new(
+            "github_bot_review",
+            "bot-review-org/repo-1-100",
+            "dependabot reviewed PR #1: APPROVED",
+            Severity::Info,
+        );
+        assert_eq!(signal.severity, Severity::Info);
+    }
+
+    #[test]
+    fn test_bot_review_body_truncation() {
+        let long_body: String = "x".repeat(600);
+        let truncated: String = long_body.chars().take(500).collect();
+        assert_eq!(truncated.len(), 500);
+        assert!(long_body.len() > 500);
     }
 
     #[test]

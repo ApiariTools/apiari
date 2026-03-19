@@ -40,6 +40,12 @@ fn find_workspace_config(workspace: Option<&str>) -> Result<(String, PathBuf)> {
 ///
 /// Reads the TOML file, navigates/creates the path, sets the value,
 /// validates the result, and writes it back.
+///
+/// Supports array-of-tables via inline TOML array syntax:
+///   `coordinator.signal_hooks '[{source = "swarm"}]'`
+///
+/// Supports appending to arrays with `.+` suffix:
+///   `coordinator.signal_hooks.+ '{source = "swarm"}'`
 pub fn run(workspace: Option<&str>, key: &str, value: &str) -> Result<()> {
     let (_name, path) = find_workspace_config(workspace)?;
     let content = std::fs::read_to_string(&path)
@@ -54,7 +60,18 @@ pub fn run(workspace: Option<&str>, key: &str, value: &str) -> Result<()> {
         bail!("invalid key: {key}");
     }
 
-    set_value_at_path(&mut doc, &parts, value).wrap_err_with(|| format!("failed to set {key}"))?;
+    // Check for append mode: last segment is "+"
+    if parts.last() == Some(&"+") {
+        if parts.len() < 2 {
+            bail!("invalid key for append: {key}");
+        }
+        let array_parts = &parts[..parts.len() - 1];
+        append_to_array(&mut doc, array_parts, value)
+            .wrap_err_with(|| format!("failed to append to {key}"))?;
+    } else {
+        set_value_at_path(&mut doc, &parts, value)
+            .wrap_err_with(|| format!("failed to set {key}"))?;
+    }
 
     let new_content = doc.to_string();
 
@@ -85,10 +102,97 @@ fn set_value_at_path(doc: &mut toml_edit::DocumentMut, parts: &[&str], value: &s
     }
 
     let leaf = parts.last().expect("parts is non-empty");
+
+    // Try parsing as an inline TOML array (e.g. '[{source = "swarm"}]')
+    if let Some(array_item) = try_parse_toml_array(value) {
+        table.insert(leaf, array_item);
+        return Ok(());
+    }
+
     let toml_value = parse_toml_value(value);
     table.insert(leaf, toml_value);
 
     Ok(())
+}
+
+/// Append a single item to an existing (or new) array-of-tables.
+fn append_to_array(doc: &mut toml_edit::DocumentMut, parts: &[&str], value: &str) -> Result<()> {
+    let mut table = doc.as_table_mut();
+
+    // Navigate (or create) intermediate tables
+    for &part in &parts[..parts.len() - 1] {
+        if !table.contains_key(part) {
+            table.insert(part, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        table = table[part]
+            .as_table_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("{part} exists but is not a table"))?;
+    }
+
+    let leaf = parts.last().expect("parts is non-empty");
+
+    // Parse the value as a single inline table: '{source = "swarm", ...}'
+    let item = parse_inline_table_as_item(value).ok_or_else(|| {
+        color_eyre::eyre::eyre!("value must be an inline table like '{{key = \"val\"}}' for append")
+    })?;
+
+    // Get or create the array
+    if !table.contains_key(leaf) {
+        table.insert(
+            leaf,
+            toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())),
+        );
+    }
+
+    let array = table[leaf]
+        .as_array_mut()
+        .ok_or_else(|| color_eyre::eyre::eyre!("{leaf} exists but is not an array"))?;
+
+    if let Some(val) = item.as_value() {
+        array.push_formatted(val.clone());
+    }
+
+    Ok(())
+}
+
+/// Try to parse a value string as an inline TOML array.
+///
+/// Wraps the value in a synthetic TOML document (`_arr = <value>`) and
+/// extracts the resulting array if it parsed successfully.
+fn try_parse_toml_array(value: &str) -> Option<toml_edit::Item> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return None;
+    }
+
+    let synthetic = format!("_arr = {value}");
+    let doc: toml_edit::DocumentMut = synthetic.parse().ok()?;
+    let item = doc.get("_arr")?;
+
+    // Only accept actual arrays
+    if item.as_array().is_some() {
+        Some(item.clone())
+    } else {
+        None
+    }
+}
+
+/// Parse an inline table string like `{source = "swarm", ttl_secs = 300}` as a TOML item.
+fn parse_inline_table_as_item(value: &str) -> Option<toml_edit::Item> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+        return None;
+    }
+
+    let synthetic = format!("_val = {value}");
+    let doc: toml_edit::DocumentMut = synthetic.parse().ok()?;
+    let item = doc.get("_val")?;
+
+    if item.as_inline_table().is_some() {
+        Some(item.clone())
+    } else {
+        None
+    }
 }
 
 /// Parse a string value into a TOML item, auto-detecting the type.
@@ -209,6 +313,144 @@ mod tests {
         let output = doc.to_string();
         assert!(output.contains("# My workspace"));
         assert!(output.contains("# A comment"));
+    }
+
+    #[test]
+    fn test_set_array_of_tables() {
+        let toml_str = "root = \"/tmp/test\"\n";
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        set_value_at_path(
+            &mut doc,
+            &["coordinator", "signal_hooks"],
+            "[{source = \"swarm\", prompt = \"\", ttl_secs = 120}]",
+        )
+        .unwrap();
+        let arr = doc["coordinator"]["signal_hooks"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let entry = arr.get(0).unwrap().as_inline_table().unwrap();
+        assert_eq!(entry.get("source").unwrap().as_str(), Some("swarm"));
+        assert_eq!(entry.get("ttl_secs").unwrap().as_integer(), Some(120));
+    }
+
+    #[test]
+    fn test_set_array_replaces_existing() {
+        let toml_str = concat!(
+            "root = \"/tmp/test\"\n",
+            "[coordinator]\n",
+            "signal_hooks = [{source = \"old\"}]\n",
+        );
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        set_value_at_path(
+            &mut doc,
+            &["coordinator", "signal_hooks"],
+            "[{source = \"new\", prompt = \"hello\", ttl_secs = 60}]",
+        )
+        .unwrap();
+        let arr = doc["coordinator"]["signal_hooks"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        let entry = arr.get(0).unwrap().as_inline_table().unwrap();
+        assert_eq!(entry.get("source").unwrap().as_str(), Some("new"));
+    }
+
+    #[test]
+    fn test_set_array_multiple_entries() {
+        let toml_str = "root = \"/tmp/test\"\n";
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        set_value_at_path(
+            &mut doc,
+            &["coordinator", "signal_hooks"],
+            "[{source = \"swarm\", prompt = \"\", ttl_secs = 120}, {source = \"github_bot_review\", prompt = \"Bot review: {events}\", ttl_secs = 300}]",
+        )
+        .unwrap();
+        let arr = doc["coordinator"]["signal_hooks"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn test_append_to_new_array() {
+        let toml_str = "root = \"/tmp/test\"\n[coordinator]\n";
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        append_to_array(
+            &mut doc,
+            &["coordinator", "signal_hooks"],
+            "{source = \"swarm\", prompt = \"\", ttl_secs = 120}",
+        )
+        .unwrap();
+        let arr = doc["coordinator"]["signal_hooks"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+    }
+
+    #[test]
+    fn test_append_to_existing_array() {
+        let toml_str = concat!(
+            "root = \"/tmp/test\"\n",
+            "[coordinator]\n",
+            "signal_hooks = [{source = \"swarm\", prompt = \"\", ttl_secs = 120}]\n",
+        );
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        append_to_array(
+            &mut doc,
+            &["coordinator", "signal_hooks"],
+            "{source = \"github_bot_review\", prompt = \"Bot: {events}\", ttl_secs = 300}",
+        )
+        .unwrap();
+        let arr = doc["coordinator"]["signal_hooks"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        let last = arr.get(1).unwrap().as_inline_table().unwrap();
+        assert_eq!(
+            last.get("source").unwrap().as_str(),
+            Some("github_bot_review")
+        );
+    }
+
+    #[test]
+    fn test_append_rejects_non_table() {
+        let toml_str = "root = \"/tmp/test\"\n[coordinator]\n";
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        let result = append_to_array(&mut doc, &["coordinator", "signal_hooks"], "not_a_table");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_try_parse_toml_array_valid() {
+        let item = try_parse_toml_array("[{source = \"s\"}]");
+        assert!(item.is_some());
+        let arr = item.unwrap();
+        assert!(arr.as_array().is_some());
+    }
+
+    #[test]
+    fn test_try_parse_toml_array_not_array() {
+        assert!(try_parse_toml_array("42").is_none());
+        assert!(try_parse_toml_array("\"hello\"").is_none());
+        assert!(try_parse_toml_array("{x = 1}").is_none());
+    }
+
+    #[test]
+    fn test_parse_inline_table() {
+        let item = parse_inline_table_as_item("{source = \"swarm\", ttl_secs = 120}");
+        assert!(item.is_some());
+        let tbl = item.unwrap();
+        assert!(tbl.as_inline_table().is_some());
+    }
+
+    #[test]
+    fn test_set_array_validates_against_workspace_config() {
+        // The array value should round-trip through WorkspaceConfig validation
+        let toml_str = "root = \"/tmp/test\"\n";
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        set_value_at_path(
+            &mut doc,
+            &["coordinator", "signal_hooks"],
+            "[{source = \"swarm\", prompt = \"\", ttl_secs = 120}]",
+        )
+        .unwrap();
+        let new_content = doc.to_string();
+        let result: Result<crate::config::WorkspaceConfig, _> = toml::from_str(&new_content);
+        assert!(result.is_ok(), "config should be valid: {result:?}");
+        let config = result.unwrap();
+        assert_eq!(config.coordinator.signal_hooks.len(), 1);
+        assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
     }
 
     #[test]
