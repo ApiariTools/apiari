@@ -259,6 +259,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     // Thoughts strip
     if has_thoughts {
         draw_thoughts_strip(frame, app, ws, rows[3]);
+        dim_areas.push((Panel::Home, rows[3]));
     }
 
     draw_chat_panel(frame, app, ws, rows[4]);
@@ -630,14 +631,19 @@ fn dim_area(frame: &mut Frame, area: Rect) {
 }
 
 /// Heavy dim for onboarding — unrevealed panels are barely visible.
-/// Uses dark gray fg and removes any modifiers, making content ghost-like.
+/// Resets fg, bg, and modifiers so content appears ghost-like.
 fn onboarding_dim_area(frame: &mut Frame, area: Rect) {
+    let dim_style = Style::default()
+        .fg(ratatui::style::Color::Rgb(50, 48, 42))
+        .bg(ratatui::style::Color::Rgb(30, 28, 25));
+    // set_style merges, so we need to reset per-cell to clear BOLD/DIM/etc.
     let buf = frame.buffer_mut();
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_fg(ratatui::style::Color::Rgb(50, 48, 42));
-                cell.set_bg(ratatui::style::Color::Rgb(30, 28, 25));
+                cell.set_style(dim_style);
+                // Explicitly clear modifiers that set_style merges additively
+                cell.modifier = Modifier::empty();
             }
         }
     }

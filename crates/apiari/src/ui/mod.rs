@@ -682,7 +682,9 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                             }
                         }
                         if !app.onboarding.active {
-                            onboarding::mark_onboarded();
+                            if let Err(e) = onboarding::mark_onboarded() {
+                                app.flash(e);
+                            }
                         }
                         return KeyAction::Redraw;
                     }
@@ -699,7 +701,9 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                         }
                     }
                     if !app.onboarding.active {
-                        onboarding::mark_onboarded();
+                        if let Err(e) = onboarding::mark_onboarded() {
+                            app.flash(e);
+                        }
                     }
                     return send_action;
                 }
@@ -727,7 +731,9 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                     ));
                     ws.chat_scroll.scroll_to_bottom();
                 }
-                onboarding::mark_onboarded();
+                if let Err(e) = onboarding::mark_onboarded() {
+                    app.flash(e);
+                }
                 app.needs_redraw = true;
                 return KeyAction::Redraw;
             }

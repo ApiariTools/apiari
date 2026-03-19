@@ -17,8 +17,11 @@ pub fn needs_onboarding() -> bool {
 }
 
 /// Write the `.onboarded` marker so onboarding doesn't run again.
-pub fn mark_onboarded() {
+/// Returns an error message if the marker could not be written.
+pub fn mark_onboarded() -> Result<(), String> {
     let path = onboarded_marker_path();
-    let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
-    let _ = std::fs::write(path, "done\n");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("Could not create config dir: {e}"))?;
+    }
+    std::fs::write(&path, "done\n").map_err(|e| format!("Could not write onboarded marker: {e}"))
 }
