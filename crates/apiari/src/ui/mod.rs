@@ -53,6 +53,8 @@ enum CoordResponse {
         kind: String,
         text: String,
     },
+    /// Startup status message shown to the user (e.g. "Starting daemon...").
+    SystemStatus(String),
 }
 
 // ── Key actions ──────────────────────────────────────────
@@ -157,19 +159,57 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     } else {
         let coord_tx_clone = coord_tx.clone();
         tokio::spawn(async move {
+            let already_running = crate::daemon::is_daemon_running();
+            let mut attempted_start = false;
+
             // Auto-start daemon if not running
-            if !crate::daemon::is_daemon_running()
-                && let Ok(()) = crate::daemon::spawn_background()
-            {
-                for _ in 0..20 {
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    if daemon_client::socket_exists() && crate::daemon::is_daemon_running() {
-                        break;
+            if !already_running {
+                match crate::daemon::spawn_background() {
+                    Ok(()) => {
+                        attempted_start = true;
+                        let _ = coord_tx_clone
+                            .send(CoordResponse::SystemStatus("Starting daemon...".into()))
+                            .await;
+
+                        // Check for fast-fail: if the process exits quickly, skip waiting
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        let fast_failed =
+                            !crate::daemon::is_daemon_running() && !daemon_client::socket_exists();
+
+                        if !fast_failed {
+                            // Wait up to ~8s for daemon to become ready
+                            for _ in 0..31 {
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                if daemon_client::socket_exists()
+                                    && crate::daemon::is_daemon_running()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        attempted_start = true;
                     }
                 }
             }
 
             let use_daemon = daemon_client::socket_exists() && crate::daemon::is_daemon_running();
+
+            // Send user-visible status message
+            let status_msg = if use_daemon && already_running {
+                "Connected to daemon \u{2713}"
+            } else if use_daemon {
+                "Daemon started \u{2713}"
+            } else if attempted_start {
+                "Could not start daemon \u{2014} run `apiari daemon --background` to start it manually"
+            } else {
+                "Using local coordinator (daemon not running)"
+            };
+            let _ = coord_tx_clone
+                .send(CoordResponse::SystemStatus(status_msg.into()))
+                .await;
+
             let _ = startup_update_tx
                 .send(AppUpdate::DaemonStatus {
                     connected: use_daemon,
@@ -317,6 +357,9 @@ async fn event_loop(
                     }
                     CoordResponse::Activity { source, workspace, kind, text } => {
                         app.push_activity(&workspace, &source, &kind, &text);
+                    }
+                    CoordResponse::SystemStatus(text) => {
+                        app.push_system_message(text);
                     }
                 }
             }
@@ -1716,8 +1759,8 @@ async fn coordinator_task(
                 };
 
                 let token_tx = coord_tx.clone();
-                match coordinator
-                    .handle_message(&text, &store, move |event| match event {
+                let handle_fut =
+                    coordinator.handle_message(&text, &store, move |event| match event {
                         CoordinatorEvent::Token(t) => {
                             let _ = token_tx.try_send(CoordResponse::Token(t));
                         }
@@ -1744,14 +1787,22 @@ async fn coordinator_task(
                                 "Bash audit ({matched_pattern}): {command}"
                             )));
                         }
-                    })
-                    .await
-                {
-                    Ok(_) => {
+                    });
+
+                match tokio::time::timeout(Duration::from_secs(60), handle_fut).await {
+                    Ok(Ok(_)) => {
                         let _ = coord_tx.send(CoordResponse::Done).await;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         let _ = coord_tx.send(CoordResponse::Error(format!("{e}"))).await;
+                    }
+                    Err(_) => {
+                        let _ = coord_tx
+                            .send(CoordResponse::Error(
+                                "Coordinator timed out \u{2014} is the `claude` CLI installed and working?".to_string(),
+                            ))
+                            .await;
+                        let _ = coord_tx.send(CoordResponse::Done).await;
                     }
                 }
             }
