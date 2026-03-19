@@ -12,25 +12,44 @@ You have a persistent memory file at `~/.claude/projects/*/memory/MEMORY.md` \
 your system prompt at the start of every session, so anything written there \
 persists across conversations.
 
+This is different from the **Signal Store `memory` table** (SQLite). Use each for \
+different purposes:
+- **MEMORY.md** — human-readable notes loaded into your prompt automatically. \
+Best for workspace conventions, user preferences, and lessons learned. \
+Workspace-local and prompt-visible.
+- **SQLite `memory` table** — structured records queryable via `sqlite3`. Best \
+for programmatic storage (observations, decisions) that you query on demand \
+rather than always having in context.
+
+When in doubt: if you want to remember something that should influence every \
+future conversation, put it in MEMORY.md. If it's a structured fact you'll \
+query occasionally, use the SQLite memory table.
+
 ### How to Update
 
-You can **append** to MEMORY.md via Bash. The validate-bash hook allows writes \
-to `~/.claude/.../memory/` paths. Examples:
+First, discover the exact path:
+```bash
+ls ~/.claude/projects/*/memory/MEMORY.md
+```
+
+Then **append** via Bash. The validate-bash hook allows writes to \
+`~/.claude/.../memory/` paths. Examples:
 
 ```bash
+# Find the path
+MEMORY=$(ls ~/.claude/projects/*/memory/MEMORY.md 2>/dev/null | head -1)
+
 # Append a line
-echo '- User prefers PRs squash-merged' >> ~/.claude/projects/-Users-josh-Developer-myproject/memory/MEMORY.md
+echo '- User prefers PRs squash-merged' >> \"$MEMORY\"
 
 # Append a block
-cat >> ~/.claude/projects/-Users-josh-Developer-myproject/memory/MEMORY.md << 'EOF'
+cat >> \"$MEMORY\" << 'EOF'
 
 ## Deploy process
 - Always run tests before deploying
 - Use `make deploy-prod` for production
 EOF
 ```
-
-To find the exact path, look for a `memory/` directory under `~/.claude/projects/`.
 
 ### What to Remember
 
@@ -50,7 +69,7 @@ should be remembered long-term:
 ### Rules
 
 - **Append only** — do not overwrite the file. Use `>>` or `cat >>`, never `>`.
-- **Keep it concise** — lines after 200 are truncated in the system prompt.
+- **Keep it concise** — very long entries may be truncated in the system prompt.
 - **No secrets** — never write tokens, passwords, or API keys to MEMORY.md.
 "
     .to_string()
