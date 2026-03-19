@@ -1921,6 +1921,42 @@ mod tests {
     }
 
     #[test]
+    fn test_d_key_toggles_debug_on_signals_panel() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Signals;
+        assert!(!app.signals_debug_mode);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(app.signals_debug_mode, "d should enable debug mode");
+        assert!(app.needs_redraw, "should trigger redraw");
+
+        app.needs_redraw = false;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(!app.signals_debug_mode, "d should toggle debug off");
+        assert!(app.needs_redraw, "should trigger redraw on toggle off");
+    }
+
+    #[test]
+    fn test_d_key_no_effect_on_other_panels() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Workers;
+        assert!(!app.signals_debug_mode);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(
+            !app.signals_debug_mode,
+            "d should not toggle debug on Workers panel"
+        );
+
+        app.focused_panel = Panel::Feed;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(
+            !app.signals_debug_mode,
+            "d should not toggle debug on Feed panel"
+        );
+    }
+
+    #[test]
     fn test_number_keys_no_effect_when_chat_focused() {
         let mut app = test_app();
         app.focused_panel = Panel::Chat;

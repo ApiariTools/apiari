@@ -1045,14 +1045,26 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     }
 
     if total == 0 {
-        let msg = if debug {
-            "No open signals"
+        // Check if there are hidden noise signals that debug mode would reveal
+        let hidden_noise = if debug {
+            0
         } else {
-            "No open signals (d=debug)"
+            ws.signals
+                .iter()
+                .filter(|s| s.source != "github_review_queue")
+                .filter(|s| app::is_noise_signal(s))
+                .count()
+        };
+        let msg = if hidden_noise > 0 {
+            Cow::Owned(format!(
+                "No actionable signals ({hidden_noise} hidden, d=debug)"
+            ))
+        } else {
+            Cow::Borrowed("No open signals")
         };
         let lines = vec![Line::from(vec![
             Span::raw(" "),
-            Span::styled(msg, theme::muted()),
+            Span::styled(msg.into_owned(), theme::muted()),
         ])];
         frame.render_widget(Paragraph::new(lines), content_area);
         return;
@@ -1079,7 +1091,7 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
                 let mut lines: Vec<Line> = Vec::new();
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(format!("{batch_count} merged PRs"), theme::muted()),
+                    Span::styled(format!("{batch_count} noise signals"), theme::muted()),
                     Span::styled(format!("  ({}/{})", idx + 1, total), theme::muted()),
                 ]));
                 let p = Paragraph::new(lines);
@@ -2495,6 +2507,10 @@ fn draw_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  R             ", theme::key_hint()),
             Span::styled("Resolve signal (confirm)", theme::key_desc()),
+        ]),
+        Line::from(vec![
+            Span::styled("  d             ", theme::key_hint()),
+            Span::styled("Toggle signal debug mode", theme::key_desc()),
         ]),
         Line::from(vec![
             Span::styled("  q             ", theme::key_hint()),
