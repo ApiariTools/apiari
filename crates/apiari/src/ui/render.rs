@@ -47,6 +47,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_status_bar(frame, app, outer[3]);
 
+    // During onboarding, dim the status bar and tab bar
+    if app.onboarding.active {
+        onboarding_dim_area(frame, outer[0]); // tab bar
+        onboarding_dim_area(frame, outer[3]); // status bar
+    }
+
     // Overlays
     match app.mode {
         Mode::Help => draw_help_overlay(frame, size),
@@ -147,10 +153,15 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
+    // Track areas for onboarding dimming
+    let mut dim_areas: Vec<(Panel, Rect)> = Vec::new();
+
     draw_kpi_strip(frame, app, ws, rows[0]);
+    dim_areas.push((Panel::Home, rows[0]));
 
     if !actions.is_empty() {
         draw_action_banner(frame, &actions, rows[1]);
+        dim_areas.push((Panel::Home, rows[1]));
     }
 
     // Workers + right column side by side
@@ -167,6 +178,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
             .split(items);
 
         draw_workers_panel(frame, app, ws, cols[0]);
+        dim_areas.push((Panel::Workers, cols[0]));
 
         if wide {
             if has_reviews {
@@ -180,8 +192,11 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
                     ])
                     .split(cols[1]);
                 draw_reviews_pane(frame, app, ws, right_rows[0]);
+                dim_areas.push((Panel::Reviews, right_rows[0]));
                 draw_signals_card(frame, app, ws, right_rows[1]);
+                dim_areas.push((Panel::Signals, right_rows[1]));
                 draw_feed_panel(frame, app, ws, right_rows[2]);
+                dim_areas.push((Panel::Feed, right_rows[2]));
             } else {
                 // Wide: Signals (top) + Feed (bottom)
                 let right_rows = Layout::default()
@@ -189,7 +204,9 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
                     .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
                     .split(cols[1]);
                 draw_signals_card(frame, app, ws, right_rows[0]);
+                dim_areas.push((Panel::Signals, right_rows[0]));
                 draw_feed_panel(frame, app, ws, right_rows[1]);
+                dim_areas.push((Panel::Feed, right_rows[1]));
             }
         } else if has_reviews {
             // Medium + reviews: Reviews (50%) + Signals (50%)
@@ -198,10 +215,13 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(cols[1]);
             draw_reviews_pane(frame, app, ws, right_rows[0]);
+            dim_areas.push((Panel::Reviews, right_rows[0]));
             draw_signals_card(frame, app, ws, right_rows[1]);
+            dim_areas.push((Panel::Signals, right_rows[1]));
         } else {
             // Medium: just signals, no feed
             draw_signals_card(frame, app, ws, cols[1]);
+            dim_areas.push((Panel::Signals, cols[1]));
         }
     } else {
         // Narrow: stack vertically
@@ -209,24 +229,29 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
             let third = items.height / 3;
             let wk_area = Rect::new(items.x, items.y, items.width, third);
             draw_workers_panel(frame, app, ws, wk_area);
+            dim_areas.push((Panel::Workers, wk_area));
             let rev_y = items.y + third;
             let rev_area = Rect::new(items.x, rev_y, items.width, third);
             draw_reviews_pane(frame, app, ws, rev_area);
+            dim_areas.push((Panel::Reviews, rev_area));
             let sig_y = rev_y + third;
             let sig_rem = items.height.saturating_sub(third * 2);
             if sig_rem > 0 {
                 let sig_area = Rect::new(items.x, sig_y, items.width, sig_rem);
                 draw_signals_card(frame, app, ws, sig_area);
+                dim_areas.push((Panel::Signals, sig_area));
             }
         } else {
             let half = items.height / 2;
             let wk_area = Rect::new(items.x, items.y, items.width, half);
             draw_workers_panel(frame, app, ws, wk_area);
+            dim_areas.push((Panel::Workers, wk_area));
             let sig_y = items.y + half;
             let sig_rem = items.height.saturating_sub(half);
             if sig_rem > 0 {
                 let sig_area = Rect::new(items.x, sig_y, items.width, sig_rem);
                 draw_signals_card(frame, app, ws, sig_area);
+                dim_areas.push((Panel::Signals, sig_area));
             }
         }
     }
@@ -234,9 +259,19 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     // Thoughts strip
     if has_thoughts {
         draw_thoughts_strip(frame, app, ws, rows[3]);
+        dim_areas.push((Panel::Home, rows[3]));
     }
 
     draw_chat_panel(frame, app, ws, rows[4]);
+
+    // Onboarding: dim unrevealed panels
+    if app.onboarding.active {
+        for (panel, rect) in &dim_areas {
+            if !app.onboarding.is_revealed(*panel) {
+                onboarding_dim_area(frame, *rect);
+            }
+        }
+    }
 }
 
 // ── Home panel (full-screen zoom) ────────────────────────
@@ -593,6 +628,25 @@ fn dim_area(frame: &mut Frame, area: Rect) {
     frame
         .buffer_mut()
         .set_style(area, Style::default().add_modifier(Modifier::DIM));
+}
+
+/// Heavy dim for onboarding — unrevealed panels are barely visible.
+/// Resets fg, bg, and modifiers so content appears ghost-like.
+fn onboarding_dim_area(frame: &mut Frame, area: Rect) {
+    let dim_style = Style::default()
+        .fg(ratatui::style::Color::Rgb(50, 48, 42))
+        .bg(ratatui::style::Color::Rgb(30, 28, 25));
+    // set_style merges, so we need to reset per-cell to clear BOLD/DIM/etc.
+    let buf = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_style(dim_style);
+                // Explicitly clear modifiers that set_style merges additively
+                cell.modifier = Modifier::empty();
+            }
+        }
+    }
 }
 
 // ── Panel block helper ───────────────────────────────────
