@@ -107,10 +107,10 @@ impl GithubWatcher {
             }
 
             let bk = format!("github_bot_review:{repo}");
-            if let Ok(Some(val)) = store.get_cursor(&bk) {
-                if !val.is_empty() {
-                    self.bot_review_cursors.insert(repo.clone(), val);
-                }
+            if let Ok(Some(val)) = store.get_cursor(&bk)
+                && !val.is_empty()
+            {
+                self.bot_review_cursors.insert(repo.clone(), val);
             }
         }
     }
@@ -472,10 +472,10 @@ impl GithubWatcher {
                     }
 
                     // Skip reviews older than or equal to cursor
-                    if let Some(cursor) = cursor_ts {
-                        if submitted_at <= cursor {
-                            continue;
-                        }
+                    if let Some(cursor) = cursor_ts
+                        && submitted_at <= cursor
+                    {
+                        continue;
                     }
 
                     let state = review
