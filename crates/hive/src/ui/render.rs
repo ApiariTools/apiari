@@ -391,14 +391,17 @@ fn draw_heartbeat_sidebar_item(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
 
-    // Line 2: "     N signals"
+    // Line 2: "     N entries" (filtered count in normal mode)
     if area.height >= 2 {
         let count = app.visible_heartbeat_count();
         let total = app.heartbeat_entries.len();
         let status = if app.heartbeat_debug_mode || count == total {
             format!("{total} entr{}", if total == 1 { "y" } else { "ies" })
         } else {
-            format!("{count} signal{}", if count == 1 { "" } else { "s" })
+            format!(
+                "{count} of {total} entr{}",
+                if total == 1 { "y" } else { "ies" }
+            )
         };
         let line2 = Line::from(vec![
             Span::styled("    ", Style::default()),
@@ -1739,18 +1742,9 @@ fn cursor_position(text: &str, cursor_byte: usize, width: usize) -> (usize, usiz
 
 // ── Heartbeat Panel ──────────────────────────────────────
 
-/// Signal sources that are hidden in normal (non-debug) mode.
-const HIDDEN_SIGNAL_SOURCES: &[&str] = &["github_merged_pr", "github_ci_pass"];
-
-/// Check whether a heartbeat entry contains only non-actionable signals.
-fn is_entry_non_actionable(entry: &super::app::App, idx: usize) -> bool {
-    let e = &entry.heartbeat_entries[idx];
-    e.signals
-        .iter()
-        .all(|sig| HIDDEN_SIGNAL_SOURCES.contains(&sig.source.as_str()))
-}
-
 fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
+    use super::app::HeartbeatRow;
+
     let border_style = if app.focus == Panel::Chat {
         theme::border_active()
     } else {
@@ -1778,16 +1772,9 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Build the list of visible entry indices based on debug mode.
-    let visible_indices: Vec<usize> = if app.heartbeat_debug_mode {
-        (0..app.heartbeat_entries.len()).collect()
-    } else {
-        (0..app.heartbeat_entries.len())
-            .filter(|&i| !is_entry_non_actionable(app, i))
-            .collect()
-    };
+    let rows = app.visible_heartbeat_rows();
 
-    if visible_indices.is_empty() {
+    if rows.is_empty() {
         let line = Line::from(Span::styled(
             "  No actionable signals. Press d for debug view.",
             theme::muted(),
@@ -1796,40 +1783,23 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    // Build lines for visible entries.
+    // Build lines and track cursor position in one pass over the row model.
     let mut lines: Vec<Line> = Vec::new();
+    let mut cursor_line = 0usize;
     let dim_style = Style::default().fg(ratatui::style::Color::Rgb(100, 97, 90));
 
-    // In debug mode, batch consecutive github_merged_pr-only entries.
-    let mut vi = 0;
-    while vi < visible_indices.len() {
-        let idx = visible_indices[vi];
-        let entry = &app.heartbeat_entries[idx];
+    for (row_idx, row) in rows.iter().enumerate() {
+        let is_selected = row_idx == app.heartbeat_cursor;
 
-        // In debug mode, batch consecutive entries where ALL signals are github_merged_pr.
-        if app.heartbeat_debug_mode && is_all_merged_pr(entry) {
-            let batch_start = vi;
-            let mut batch_count = 0usize;
-            let mut total_merged = 0usize;
-            while vi < visible_indices.len() {
-                let bidx = visible_indices[vi];
-                let bentry = &app.heartbeat_entries[bidx];
-                if is_all_merged_pr(bentry) {
-                    batch_count += 1;
-                    total_merged += bentry
-                        .signals
-                        .iter()
-                        .filter(|s| s.source == "github_merged_pr")
-                        .count();
-                    vi += 1;
-                } else {
-                    break;
-                }
-            }
+        if is_selected {
+            cursor_line = lines.len();
+        }
 
-            if batch_count > 1 {
-                // Render as a single collapsed row.
-                let is_selected = app.heartbeat_cursor == batch_start;
+        match row {
+            HeartbeatRow::BatchedMergedPrs {
+                entry_indices,
+                total_prs,
+            } => {
                 let row_style = if is_selected {
                     Style::default()
                         .fg(theme::HONEY)
@@ -1837,137 +1807,87 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
                 } else {
                     theme::text()
                 };
-                let first_entry = &app.heartbeat_entries[visible_indices[batch_start]];
+                let first_entry = &app.heartbeat_entries[entry_indices[0]];
+                let cycle_count = entry_indices.len();
                 lines.push(Line::from(vec![
                     Span::styled("  ", row_style),
                     Span::styled(&first_entry.timestamp, dim_style),
                     Span::styled("  ", Style::default()),
                     Span::styled(
-                        format!("{total_merged} merged PRs ({batch_count} cycles)"),
+                        format!("{total_prs} merged PRs ({cycle_count} cycles)"),
                         if is_selected { row_style } else { dim_style },
                     ),
                 ]));
-                continue;
             }
-            // Single merged-PR entry: fall through to normal rendering.
-            vi = batch_start;
-        }
+            HeartbeatRow::Entry(entry_idx) => {
+                let entry = &app.heartbeat_entries[*entry_idx];
+                let is_expanded = app.heartbeat_expanded.contains(&row_idx);
+                let has_bee = entry.bee_response.is_some();
 
-        let is_selected = vi == app.heartbeat_cursor;
-        let is_expanded = app.heartbeat_expanded.contains(&vi);
-        let has_bee = entry.bee_response.is_some();
+                let arrow = if is_expanded {
+                    "\u{25bc}" // ▼
+                } else {
+                    "\u{25b6}" // ▶
+                };
 
-        let arrow = if is_expanded {
-            "\u{25bc}" // ▼
-        } else {
-            "\u{25b6}" // ▶
-        };
-
-        let row_style = if is_selected {
-            Style::default()
-                .fg(theme::HONEY)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            theme::text()
-        };
-
-        let bee_indicator = if has_bee { " \u{1f41d}" } else { "" };
-
-        let event_label = format!(
-            " \u{00b7} {} event{}",
-            entry.event_count,
-            if entry.event_count == 1 { "" } else { "s" }
-        );
-
-        let source_padded = format!("{:<9}", entry.source);
-
-        lines.push(Line::from(vec![
-            Span::styled(format!("{arrow} "), row_style),
-            Span::styled(&entry.timestamp, dim_style),
-            Span::styled("  ", Style::default()),
-            Span::styled(source_padded, row_style),
-            Span::styled(
-                &entry.summary,
-                if is_selected {
-                    row_style
+                let row_style = if is_selected {
+                    Style::default()
+                        .fg(theme::HONEY)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     theme::text()
-                },
-            ),
-            Span::styled(event_label, dim_style),
-            Span::styled(bee_indicator.to_string(), Style::default()),
-        ]));
+                };
 
-        // Expanded detail lines.
-        if is_expanded {
-            for sig in &entry.signals {
+                let bee_indicator = if has_bee { " \u{1f41d}" } else { "" };
+
+                let event_label = format!(
+                    " \u{00b7} {} event{}",
+                    entry.event_count,
+                    if entry.event_count == 1 { "" } else { "s" }
+                );
+
+                let source_padded = format!("{:<9}", entry.source);
+
                 lines.push(Line::from(vec![
-                    Span::styled("  \u{2022} ", dim_style),
-                    Span::styled(format!("{}: {}", sig.source, sig.title), dim_style),
+                    Span::styled(format!("{arrow} "), row_style),
+                    Span::styled(&entry.timestamp, dim_style),
+                    Span::styled("  ", Style::default()),
+                    Span::styled(source_padded, row_style),
+                    Span::styled(
+                        &entry.summary,
+                        if is_selected {
+                            row_style
+                        } else {
+                            theme::text()
+                        },
+                    ),
+                    Span::styled(event_label, dim_style),
+                    Span::styled(bee_indicator.to_string(), Style::default()),
                 ]));
-            }
 
-            if let Some(ref bee) = entry.bee_response {
-                lines.push(Line::from(vec![
-                    Span::styled("  \u{1f41d} Bee: ", Style::default().fg(theme::HONEY)),
-                    Span::styled(bee.clone(), theme::text()),
-                ]));
-            }
+                if is_expanded {
+                    for sig in &entry.signals {
+                        lines.push(Line::from(vec![
+                            Span::styled("  \u{2022} ", dim_style),
+                            Span::styled(format!("{}: {}", sig.source, sig.title), dim_style),
+                        ]));
+                    }
 
-            lines.push(Line::from(""));
+                    if let Some(ref bee) = entry.bee_response {
+                        lines.push(Line::from(vec![
+                            Span::styled("  \u{1f41d} Bee: ", Style::default().fg(theme::HONEY)),
+                            Span::styled(bee.clone(), theme::text()),
+                        ]));
+                    }
+
+                    lines.push(Line::from(""));
+                }
+            }
         }
-
-        vi += 1;
     }
 
     // Scroll to keep cursor visible.
     let visible_height = inner.height as usize;
-    let mut cursor_line = 0usize;
-    let mut line_count = 0usize;
-
-    // Recompute line offsets for scroll tracking.
-    let mut vi2 = 0;
-    while vi2 < visible_indices.len() {
-        let idx2 = visible_indices[vi2];
-        let entry2 = &app.heartbeat_entries[idx2];
-
-        if app.heartbeat_debug_mode && is_all_merged_pr(entry2) {
-            let batch_start2 = vi2;
-            let mut batch_count2 = 0usize;
-            while vi2 < visible_indices.len() {
-                let bidx2 = visible_indices[vi2];
-                let bentry2 = &app.heartbeat_entries[bidx2];
-                if is_all_merged_pr(bentry2) {
-                    batch_count2 += 1;
-                    vi2 += 1;
-                } else {
-                    break;
-                }
-            }
-            if batch_count2 > 1 {
-                if app.heartbeat_cursor == batch_start2 {
-                    cursor_line = line_count;
-                }
-                line_count += 1;
-                continue;
-            }
-            vi2 = batch_start2;
-        }
-
-        if vi2 == app.heartbeat_cursor {
-            cursor_line = line_count;
-        }
-        line_count += 1;
-        if app.heartbeat_expanded.contains(&vi2) {
-            line_count += entry2.signals.len();
-            if entry2.bee_response.is_some() {
-                line_count += 1;
-            }
-            line_count += 1;
-        }
-        vi2 += 1;
-    }
-
     let scroll = if cursor_line >= visible_height {
         cursor_line.saturating_sub(visible_height / 3)
     } else {
@@ -1982,11 +1902,6 @@ fn draw_heartbeat_panel(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
-}
-
-/// Check whether all signals in an entry are `github_merged_pr`.
-fn is_all_merged_pr(entry: &crate::daemon::tui_socket::HeartbeatEntry) -> bool {
-    !entry.signals.is_empty() && entry.signals.iter().all(|s| s.source == "github_merged_pr")
 }
 
 // ── Worker Output ─────────────────────────────────────────

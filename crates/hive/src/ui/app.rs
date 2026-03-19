@@ -9,6 +9,37 @@ use std::time::Instant;
 
 use super::history;
 
+/// Signal sources that are hidden in normal (non-debug) mode.
+pub const HIDDEN_SIGNAL_SOURCES: &[&str] = &["github_merged_pr", "github_ci_pass"];
+
+/// Whether a heartbeat entry contains only non-actionable signals.
+pub fn is_entry_non_actionable(entry: &HeartbeatEntry) -> bool {
+    entry
+        .signals
+        .iter()
+        .all(|sig| HIDDEN_SIGNAL_SOURCES.contains(&sig.source.as_str()))
+}
+
+/// Whether all signals in an entry are `github_merged_pr`.
+pub fn is_all_merged_pr(entry: &HeartbeatEntry) -> bool {
+    !entry.signals.is_empty() && entry.signals.iter().all(|s| s.source == "github_merged_pr")
+}
+
+/// A single visible row in the heartbeat panel.
+///
+/// Built from the raw `heartbeat_entries` based on debug mode and batching rules.
+/// The `heartbeat_cursor` indexes into a `Vec<HeartbeatRow>`.
+#[derive(Debug, Clone)]
+pub enum HeartbeatRow {
+    /// A normal entry (index into `heartbeat_entries`).
+    Entry(usize),
+    /// A batched group of merged-PR-only entries (indices into `heartbeat_entries`).
+    BatchedMergedPrs {
+        entry_indices: Vec<usize>,
+        total_prs: usize,
+    },
+}
+
 /// Pipeline stage for a single repo in dispatch.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RepoStage {
@@ -195,7 +226,7 @@ pub struct App {
 
     // Heartbeat panel state.
     pub heartbeat_entries: Vec<HeartbeatEntry>,
-    /// Which heartbeat entry is selected (index into heartbeat_entries).
+    /// Which visible row is selected (index into `visible_heartbeat_rows()`).
     pub heartbeat_cursor: usize,
     /// Which heartbeat entries are expanded (by index).
     pub heartbeat_expanded: std::collections::HashSet<usize>,
@@ -929,20 +960,57 @@ impl App {
         self.sidebar_selection == SidebarItem::Heartbeat
     }
 
-    /// Count of visible heartbeat entries (filtered in normal mode).
-    pub fn visible_heartbeat_count(&self) -> usize {
+    /// Build the visible rows model for the heartbeat panel.
+    ///
+    /// In normal mode, non-actionable entries are filtered out.
+    /// In debug mode, consecutive merged-PR-only entries are batched.
+    pub fn visible_heartbeat_rows(&self) -> Vec<HeartbeatRow> {
+        let mut rows = Vec::new();
+
         if self.heartbeat_debug_mode {
-            self.heartbeat_entries.len()
+            let mut i = 0;
+            while i < self.heartbeat_entries.len() {
+                if is_all_merged_pr(&self.heartbeat_entries[i]) {
+                    // Collect consecutive merged-PR-only entries.
+                    let start = i;
+                    let mut total_prs = 0usize;
+                    while i < self.heartbeat_entries.len()
+                        && is_all_merged_pr(&self.heartbeat_entries[i])
+                    {
+                        total_prs += self.heartbeat_entries[i]
+                            .signals
+                            .iter()
+                            .filter(|s| s.source == "github_merged_pr")
+                            .count();
+                        i += 1;
+                    }
+                    if i - start > 1 {
+                        rows.push(HeartbeatRow::BatchedMergedPrs {
+                            entry_indices: (start..i).collect(),
+                            total_prs,
+                        });
+                    } else {
+                        rows.push(HeartbeatRow::Entry(start));
+                    }
+                } else {
+                    rows.push(HeartbeatRow::Entry(i));
+                    i += 1;
+                }
+            }
         } else {
-            self.heartbeat_entries
-                .iter()
-                .filter(|e| {
-                    !e.signals.iter().all(|sig| {
-                        sig.source == "github_merged_pr" || sig.source == "github_ci_pass"
-                    })
-                })
-                .count()
+            for (i, entry) in self.heartbeat_entries.iter().enumerate() {
+                if !is_entry_non_actionable(entry) {
+                    rows.push(HeartbeatRow::Entry(i));
+                }
+            }
         }
+
+        rows
+    }
+
+    /// Count of visible rows in the heartbeat panel.
+    pub fn visible_heartbeat_count(&self) -> usize {
+        self.visible_heartbeat_rows().len()
     }
 
     /// Move heartbeat cursor down.
@@ -961,18 +1029,22 @@ impl App {
     /// Toggle debug/verbose mode for the heartbeat panel.
     pub fn heartbeat_toggle_debug(&mut self) {
         self.heartbeat_debug_mode = !self.heartbeat_debug_mode;
-        // Reset cursor and expanded state when toggling modes since indices change.
+        // Reset cursor and expanded state when toggling modes since row indices change.
         self.heartbeat_cursor = 0;
         self.heartbeat_expanded.clear();
     }
 
-    /// Toggle expand/collapse of the currently selected heartbeat entry.
+    /// Toggle expand/collapse of the currently selected heartbeat row.
     pub fn heartbeat_toggle(&mut self) {
-        if self.heartbeat_cursor < self.heartbeat_entries.len() {
-            if self.heartbeat_expanded.contains(&self.heartbeat_cursor) {
-                self.heartbeat_expanded.remove(&self.heartbeat_cursor);
-            } else {
-                self.heartbeat_expanded.insert(self.heartbeat_cursor);
+        let rows = self.visible_heartbeat_rows();
+        if self.heartbeat_cursor < rows.len() {
+            // Only Entry rows are expandable (batched rows are not).
+            if matches!(rows[self.heartbeat_cursor], HeartbeatRow::Entry(_)) {
+                if self.heartbeat_expanded.contains(&self.heartbeat_cursor) {
+                    self.heartbeat_expanded.remove(&self.heartbeat_cursor);
+                } else {
+                    self.heartbeat_expanded.insert(self.heartbeat_cursor);
+                }
             }
         }
     }
