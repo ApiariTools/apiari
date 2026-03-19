@@ -8,6 +8,7 @@ pub mod config;
 mod email;
 mod github;
 mod linear;
+mod memory;
 mod notion;
 mod sentry;
 mod signals;
@@ -49,6 +50,7 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
     // Always-on skills
     sections.push(config::build_prompt(ctx));
     sections.push(signals::build_prompt(ctx));
+    sections.push(memory::build_prompt(ctx));
 
     // Conditional skills
     if let Some(s) = github::build_prompt(ctx) {
@@ -231,6 +233,13 @@ mod tests {
         let ctx = test_ctx();
         let prompt = build_skills_prompt(&ctx);
         assert!(!prompt.contains("## Notion"));
+    }
+
+    #[test]
+    fn test_build_skills_prompt_includes_memory() {
+        let prompt = build_skills_prompt(&test_ctx());
+        assert!(prompt.contains("## Persistent Memory"));
+        assert!(prompt.contains("MEMORY.md"));
     }
 
     #[test]
