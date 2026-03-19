@@ -18,21 +18,18 @@ const SPINNER: &[&str] = &["|", "/", "-", "\\"];
 
 /// Calculate the number of visual rows needed for input text with wrapping.
 /// `text` is the raw input (may contain newlines), `width` is the available
-/// display width. Accounts for the leading space and trailing cursor char
-/// that are added when rendering (` {text}_`).
+/// display width. Builds the exact rendered string (` {text}_`) and uses
+/// display width for correct Unicode/emoji handling.
 fn visual_input_rows(text: &str, width: u16) -> u16 {
     let w = width as usize;
     if w == 0 {
         return 1;
     }
-    let lines: Vec<&str> = text.split('\n').collect();
-    let last_idx = lines.len().saturating_sub(1);
+    let rendered = format!(" {text}_");
     let mut total: usize = 0;
-    for (i, line) in lines.iter().enumerate() {
-        // Rendered as " {line}" on non-last lines, " {line}_" on last line
-        let extra = if i == last_idx { 2 } else { 1 }; // leading space + optional cursor
-        let len = line.len() + extra;
-        total += len.div_ceil(w);
+    for segment in rendered.split('\n') {
+        let display_w = Line::from(segment).width();
+        total += display_w.max(1).div_ceil(w);
     }
     total.max(1) as u16
 }
@@ -844,11 +841,10 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
     // Input height (inside the bordered panel)
     let input_h = if app.chat_focused {
         // Account for visual line wrapping, not just explicit newlines.
-        // The input block has a TOP border (1 row), so subtract that as separator.
         // area.width - 2 accounts for the panel's left+right borders.
         let avail_w = area.width.saturating_sub(2);
         let rows = visual_input_rows(&ws.input, avail_w);
-        rows.clamp(1, 6) + 1 // +1 for separator (top border on input block)
+        rows.clamp(1, 6) + 1 // +1 to include the top-border separator row
     } else {
         1 // just the hint line
     };
