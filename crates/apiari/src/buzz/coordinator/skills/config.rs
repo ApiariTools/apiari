@@ -65,10 +65,34 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
     }
 
     prompt.push_str(&format!(
-        "\nThe workspace config file is at `{}`.\n\
-         Users edit this file directly — you can tell them exactly what to add and where.\n",
+        "\nThe workspace config file is at `{}`.\n",
         ctx.config_path.display(),
     ));
+
+    // Config set skill
+    prompt.push_str(
+        "\n## Updating Config\n\
+         You can update config values directly using the `apiari config set` command via Bash:\n\
+         ```\n\
+         apiari config set <key> <value>\n\
+         ```\n\
+         Examples:\n\
+         ```\n\
+         apiari config set telegram.bot_token \"8139996548:AAGxyz\"\n\
+         apiari config set telegram.chat_id -1003861140305\n\
+         apiari config set watchers.github.interval_secs 120\n\
+         apiari config set coordinator.model \"opus\"\n\
+         ```\n\
+         Keys are dot-separated paths into the TOML config. Values are auto-detected \
+         as integer, boolean, or string.\n\n\
+         **Rules for config changes:**\n\
+         - ALWAYS tell the user what you're about to change before running the command.\n\
+         - Wait for the user to confirm, unless they explicitly asked you to just do it.\n\
+         - After writing, tell the user: \"Restart the daemon with `/reinstall` or \
+         `apiari daemon restart` to pick up the changes.\"\n\
+         - You can chain multiple sets: \
+         `apiari config set telegram.bot_token \"tok\" && apiari config set telegram.chat_id -123`\n",
+    );
 
     // Setup guides
     prompt.push_str(

@@ -1,5 +1,6 @@
 mod buzz;
 mod config;
+mod config_set;
 mod daemon;
 mod git_safety;
 mod init;
@@ -75,9 +76,31 @@ enum Command {
         workspace: Option<String>,
     },
 
+    /// Read or update workspace configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+
     /// PreToolUse hook: validate Bash commands (used internally by coordinator)
     #[command(hide = true)]
     ValidateBash,
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// Set a config value (dot-separated key path)
+    Set {
+        /// Dot-separated key (e.g. telegram.bot_token, watchers.github.interval_secs)
+        key: String,
+
+        /// Value to set (auto-detects type: integer, boolean, or string)
+        value: String,
+
+        /// Workspace name (default: auto-detect from current directory)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -145,6 +168,15 @@ async fn main() -> Result<()> {
         Command::Ui { workspace } => {
             ui::run(workspace.as_deref()).await?;
         }
+        Command::Config { command } => match command {
+            ConfigCommand::Set {
+                key,
+                value,
+                workspace,
+            } => {
+                config_set::run(workspace.as_deref(), &key, &value)?;
+            }
+        },
         Command::ValidateBash => {
             std::process::exit(validate_bash::run());
         }

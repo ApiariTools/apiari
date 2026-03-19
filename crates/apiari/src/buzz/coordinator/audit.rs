@@ -57,8 +57,15 @@ const GIT_MUTATING: &[&str] = &[
 ///
 /// Commands that only target `/tmp/` are considered read-only (the coordinator
 /// needs to write prompt files there for `swarm --prompt-file`).
+/// `apiari config set` is also allowed — it's a safe, targeted config write.
 pub fn classify_bash_command(command: &str) -> BashClassification {
     let trimmed = command.trim();
+
+    // Allow `apiari config set` — safe targeted config write.
+    if is_apiari_config_command(trimmed) {
+        return BashClassification::ReadOnly;
+    }
+
     // Strip heredoc bodies so their text doesn't trigger pattern matches or
     // false-positive redirect detection.
     let stripped = strip_heredoc_bodies(trimmed);
@@ -108,6 +115,29 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
     }
 
     BashClassification::ReadOnly
+}
+
+/// Check if a command is an `apiari config` invocation.
+///
+/// Allows `apiari config set ...` (and chained variants with `&&`).
+fn is_apiari_config_command(command: &str) -> bool {
+    // Check each part of a chained command (&&, ;)
+    for sep in &[" && ", "; "] {
+        if command.contains(sep) {
+            return command
+                .split(sep)
+                .all(|part| is_single_apiari_config(part.trim()));
+        }
+    }
+    is_single_apiari_config(command)
+}
+
+/// Check if a single (non-chained) command is `apiari config ...`.
+fn is_single_apiari_config(command: &str) -> bool {
+    let cmd = command.trim();
+    cmd.starts_with("apiari config ")
+        || cmd.starts_with("apiari config\t")
+        || cmd == "apiari config"
 }
 
 /// Strip heredoc bodies from a command string.
@@ -607,6 +637,62 @@ if len(data) > 0:
         assert!(
             stripped.contains("cat > /tmp/f.txt"),
             "command line should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_set_allowed() {
+        let result =
+            classify_bash_command("apiari config set telegram.bot_token \"8139996548:AAG\"");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "apiari config set should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_set_integer_allowed() {
+        let result = classify_bash_command("apiari config set telegram.chat_id -1003861140305");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "apiari config set with integer should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_set_chained_allowed() {
+        let result = classify_bash_command(
+            "apiari config set telegram.bot_token \"tok\" && apiari config set telegram.chat_id -123",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "chained apiari config set commands should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_set_with_workspace_flag() {
+        let result = classify_bash_command(
+            "apiari config set --workspace myproject telegram.bot_token \"tok\"",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "apiari config set with --workspace should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_non_apiari_config_still_blocked() {
+        // Chaining apiari config with a mutating command should still be blocked
+        let result =
+            classify_bash_command("apiari config set telegram.bot_token tok && rm -rf /important");
+        assert!(
+            result.is_mutating(),
+            "chain with non-config command should be blocked"
         );
     }
 }
