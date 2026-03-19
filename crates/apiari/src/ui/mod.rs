@@ -8,7 +8,7 @@ pub mod render;
 pub mod settings;
 pub mod theme;
 
-use app::{App, Mode, Panel, PendingAction, View, review_signal_target};
+use app::{App, AppUpdate, Mode, Panel, PendingAction, View, review_signal_target};
 use color_eyre::Result;
 use crossterm::ExecutableCommand;
 use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
@@ -99,83 +99,18 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
     let (coord_tx, coord_rx) = mpsc::channel::<CoordResponse>(64);
 
+    // Background refresh channels
+    let (update_tx, update_rx) = mpsc::channel::<AppUpdate>(64);
+
     // Detect remote workspace before auto-start so we skip local daemon spawn.
     let focused = app.current_ws();
     let remote_endpoints = focused
         .map(|ws| ws.config.resolved_daemon_endpoints())
         .unwrap_or_default();
     let is_remote = !remote_endpoints.is_empty();
-
-    // Auto-start daemon if not running (skip for remote workspaces — they
-    // connect to a daemon running on the remote host).
-    if !is_remote && !crate::daemon::is_daemon_running() {
-        eprintln!("Starting daemon in the background...");
-        if let Err(e) = crate::daemon::spawn_background() {
-            eprintln!("Warning: failed to start daemon: {e}");
-        } else {
-            // Wait for the daemon to create the socket
-            for _ in 0..20 {
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                if daemon_client::socket_exists() && crate::daemon::is_daemon_running() {
-                    break;
-                }
-            }
-        }
-    }
-
-    // Choose daemon client (shared session) or local coordinator (standalone).
-    let use_daemon = if is_remote {
-        true // remote always uses daemon client
-    } else {
-        daemon_client::socket_exists() && crate::daemon::is_daemon_running()
-    };
-    // For remote: daemon_connected starts false until TCP actually succeeds.
-    app.daemon_connected = if is_remote { false } else { use_daemon };
     app.daemon_remote = is_remote;
 
-    if is_remote {
-        // Remote daemon — connect via TCP with endpoint fallback.
-        // The oneshot reports the connected host (or None on failure).
-        // We update daemon_connected + remote_host once the result arrives,
-        // but cap the wait so the TUI isn't blocked indefinitely.
-        let coord_tx_clone = coord_tx.clone();
-        let (host_tx, host_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(daemon_client_task_tcp(
-            remote_endpoints,
-            user_rx,
-            coord_tx_clone,
-            host_tx,
-        ));
-        // Wait up to 3s for the connection result so the status bar is accurate
-        // on first render, but don't block startup forever.
-        match tokio::time::timeout(Duration::from_secs(3), host_rx).await {
-            Ok(Ok(Some(host))) => {
-                app.daemon_connected = true;
-                app.remote_host = Some(host);
-            }
-            Ok(Ok(None)) => {
-                // All endpoints failed — daemon_connected stays false.
-            }
-            _ => {
-                // Timeout or channel dropped — proceed without host info.
-            }
-        }
-    } else if use_daemon {
-        // Spawn daemon client task (tokio task — the daemon handles coordinator)
-        let coord_tx_clone = coord_tx.clone();
-        tokio::spawn(daemon_client_task(user_rx, coord_tx_clone));
-    } else {
-        // Spawn coordinator on a dedicated thread (SignalStore is !Send).
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build coordinator runtime");
-            rt.block_on(coordinator_task(user_rx, coord_tx));
-        });
-    }
-
-    // Terminal setup
+    // Terminal setup FIRST — don't block on daemon before the user sees anything.
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(crossterm::event::EnableMouseCapture)?;
     enable_raw_mode()?;
@@ -192,7 +127,84 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
         original_hook(info);
     }));
 
-    let result = event_loop(&mut terminal, app, &user_tx, coord_rx).await;
+    // Spawn daemon startup + coordinator connection in background.
+    // The TUI renders immediately with empty state; daemon status arrives
+    // via AppUpdate::DaemonStatus once the connection is established.
+    let startup_update_tx = update_tx.clone();
+    if is_remote {
+        let coord_tx_clone = coord_tx.clone();
+        tokio::spawn(async move {
+            let (host_tx, host_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(daemon_client_task_tcp(
+                remote_endpoints,
+                user_rx,
+                coord_tx_clone,
+                host_tx,
+            ));
+            let (connected, host) =
+                match tokio::time::timeout(Duration::from_secs(3), host_rx).await {
+                    Ok(Ok(Some(host))) => (true, Some(host)),
+                    _ => (false, None),
+                };
+            let _ = startup_update_tx
+                .send(AppUpdate::DaemonStatus {
+                    connected,
+                    alive: connected,
+                    remote_host: host,
+                })
+                .await;
+        });
+    } else {
+        let coord_tx_clone = coord_tx.clone();
+        tokio::spawn(async move {
+            // Auto-start daemon if not running
+            if !crate::daemon::is_daemon_running()
+                && let Ok(()) = crate::daemon::spawn_background()
+            {
+                for _ in 0..20 {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    if daemon_client::socket_exists() && crate::daemon::is_daemon_running() {
+                        break;
+                    }
+                }
+            }
+
+            let use_daemon = daemon_client::socket_exists() && crate::daemon::is_daemon_running();
+            let _ = startup_update_tx
+                .send(AppUpdate::DaemonStatus {
+                    connected: use_daemon,
+                    alive: use_daemon,
+                    remote_host: None,
+                })
+                .await;
+
+            if use_daemon {
+                daemon_client_task(user_rx, coord_tx_clone).await;
+            } else {
+                // Spawn coordinator on a dedicated thread (SignalStore is !Send).
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build coordinator runtime");
+                    rt.block_on(coordinator_task(user_rx, coord_tx_clone));
+                });
+            }
+        });
+    }
+
+    // Spawn background refresh task (workers, signals, extras, chat history).
+    let refresh_infos = app.build_refresh_infos();
+    let db_path = config::db_path();
+    let pid_path = config::pid_path();
+    tokio::spawn(background_refresh_task(
+        update_tx.clone(),
+        refresh_infos,
+        db_path,
+        pid_path,
+    ));
+
+    let result = event_loop(&mut terminal, app, &user_tx, coord_rx, update_rx, update_tx).await;
 
     // Terminal teardown
     disable_raw_mode()?;
@@ -209,6 +221,8 @@ async fn event_loop(
     mut app: App,
     user_tx: &mpsc::Sender<UserMessage>,
     mut coord_rx: mpsc::Receiver<CoordResponse>,
+    mut update_rx: mpsc::Receiver<AppUpdate>,
+    update_tx: mpsc::Sender<AppUpdate>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
@@ -307,6 +321,61 @@ async fn event_loop(
                 }
             }
 
+            Some(update) = update_rx.recv() => {
+                match update {
+                    AppUpdate::Workers(data) => {
+                        app.apply_worker_update(data);
+                        // Refresh conversation in background when viewing worker detail
+                        if let View::WorkerDetail(idx) = app.view
+                            && let Some(ws) = app.current_ws()
+                            && let Some(worker) = ws.workers.get(idx)
+                        {
+                            let root = ws.config.root.clone();
+                            let worker_id = worker.id.clone();
+                            let ws_name = ws.name.clone();
+                            let tx = update_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let entries = app::load_worker_conversation_blocking(&root, &worker_id);
+                                let _ = tx.blocking_send(AppUpdate::WorkerConversation {
+                                    workspace_name: ws_name,
+                                    worker_id,
+                                    entries,
+                                });
+                            });
+                        }
+                    }
+                    AppUpdate::Signals(data) => {
+                        app.apply_signal_update(data);
+                    }
+                    AppUpdate::Extras { daemon_alive, daemon_uptime_secs, per_workspace } => {
+                        app.apply_extras_update(daemon_alive, daemon_uptime_secs, per_workspace);
+                    }
+                    AppUpdate::ChatHistory(data) => {
+                        app.apply_chat_history(data);
+                    }
+                    AppUpdate::DaemonStatus { connected, alive, remote_host } => {
+                        app.daemon_connected = connected;
+                        app.daemon_alive = alive;
+                        if remote_host.is_some() {
+                            app.remote_host = remote_host;
+                        }
+                        app.needs_redraw = true;
+                    }
+                    AppUpdate::WorkerConversation { workspace_name, worker_id, entries } => {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == workspace_name)
+                            && let Some(worker) = ws.workers.iter_mut().find(|w| w.id == worker_id)
+                        {
+                            let had = worker.conversation.len();
+                            worker.conversation = entries;
+                            if worker.conversation.len() > had {
+                                worker.conv_scroll.scroll_to_bottom();
+                            }
+                        }
+                        app.needs_redraw = true;
+                    }
+                }
+            }
+
             _ = tick.tick() => {
                 app.spinner_tick = app.spinner_tick.wrapping_add(1);
 
@@ -334,7 +403,8 @@ async fn event_loop(
                 app.push_activity_value(val);
 
                 app.tick_flash();
-                app.maybe_refresh();
+                // Periodic refresh handled by background_refresh_task — no
+                // blocking I/O on the event thread.
                 app.needs_redraw = true;
             }
         }
@@ -1346,6 +1416,108 @@ async fn handle_action(
     }
     app.needs_redraw = true;
     None
+}
+
+// ── Background refresh task ──────────────────────────────
+
+/// Runs periodic data refreshes on background threads, sending results
+/// back to the TUI event loop via `AppUpdate` messages. All blocking I/O
+/// (filesystem reads, SQLite queries) happens inside `spawn_blocking`.
+async fn background_refresh_task(
+    update_tx: mpsc::Sender<AppUpdate>,
+    workspace_infos: Vec<app::WorkspaceRefreshInfo>,
+    db_path: std::path::PathBuf,
+    pid_path: std::path::PathBuf,
+) {
+    // Load initial chat history
+    {
+        let db = db_path.clone();
+        let names: Vec<String> = workspace_infos.iter().map(|i| i.name.clone()).collect();
+        let tx = update_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let history = app::load_chat_history_blocking(&db, &names);
+            let _ = tx.blocking_send(AppUpdate::ChatHistory(history));
+        });
+    }
+
+    // Do initial data refresh immediately
+    do_worker_refresh(&update_tx, &workspace_infos).await;
+    do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
+    do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
+
+    let mut worker_interval = tokio::time::interval(Duration::from_secs(2));
+    worker_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut signal_interval = tokio::time::interval(Duration::from_secs(5));
+    signal_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut extras_interval = tokio::time::interval(Duration::from_secs(10));
+    extras_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Skip first ticks (already did initial refresh above)
+    worker_interval.tick().await;
+    signal_interval.tick().await;
+    extras_interval.tick().await;
+
+    loop {
+        if update_tx.is_closed() {
+            break;
+        }
+        tokio::select! {
+            _ = worker_interval.tick() => {
+                do_worker_refresh(&update_tx, &workspace_infos).await;
+            }
+            _ = signal_interval.tick() => {
+                do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
+            }
+            _ = extras_interval.tick() => {
+                do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
+            }
+        }
+    }
+}
+
+async fn do_worker_refresh(tx: &mpsc::Sender<AppUpdate>, infos: &[app::WorkspaceRefreshInfo]) {
+    let infos = infos.to_vec();
+    if let Ok(result) =
+        tokio::task::spawn_blocking(move || app::load_all_workers_blocking(&infos)).await
+    {
+        let _ = tx.send(AppUpdate::Workers(result)).await;
+    }
+}
+
+async fn do_signal_refresh(
+    tx: &mpsc::Sender<AppUpdate>,
+    infos: &[app::WorkspaceRefreshInfo],
+    db_path: &std::path::Path,
+) {
+    let db = db_path.to_path_buf();
+    let names: Vec<String> = infos.iter().map(|i| i.name.clone()).collect();
+    if let Ok(result) =
+        tokio::task::spawn_blocking(move || app::load_all_signals_blocking(&db, &names)).await
+    {
+        let _ = tx.send(AppUpdate::Signals(result)).await;
+    }
+}
+
+async fn do_extras_refresh(
+    tx: &mpsc::Sender<AppUpdate>,
+    infos: &[app::WorkspaceRefreshInfo],
+    db_path: &std::path::Path,
+    pid_path: &std::path::Path,
+) {
+    let infos = infos.to_vec();
+    let db = db_path.to_path_buf();
+    let pid = pid_path.to_path_buf();
+    if let Ok((daemon_alive, daemon_uptime_secs, per_workspace)) =
+        tokio::task::spawn_blocking(move || app::load_all_extras_blocking(&db, &pid, &infos)).await
+    {
+        let _ = tx
+            .send(AppUpdate::Extras {
+                daemon_alive,
+                daemon_uptime_secs,
+                per_workspace,
+            })
+            .await;
+    }
 }
 
 // ── Daemon client task ───────────────────────────────────

@@ -99,6 +99,49 @@ pub struct WatcherHealth {
     pub last_check_secs: i64, // seconds since last check
 }
 
+// ── Background refresh types ─────────────────────────────
+
+/// Info needed by the background refresh task for each workspace.
+#[derive(Clone)]
+pub(super) struct WorkspaceRefreshInfo {
+    pub(super) name: String,
+    pub(super) root: std::path::PathBuf,
+    pub(super) has_github_watcher: bool,
+    pub(super) has_sentry_watcher: bool,
+    pub(super) has_swarm_watcher: bool,
+}
+
+/// Data returned from background extras refresh (per workspace).
+pub(super) struct WorkspaceExtrasData {
+    pub(super) sparkline_data: Vec<u64>,
+    pub(super) watcher_health: Vec<WatcherHealth>,
+    pub(super) thoughts: Vec<(String, String)>,
+    /// Feed items from SQLite (signals + watcher heartbeats). Worker items merged by caller.
+    pub(super) feed_items: Vec<FeedItem>,
+}
+
+/// Messages from background refresh tasks to the TUI event loop.
+pub(super) enum AppUpdate {
+    Workers(Vec<(String, Vec<WorkerInfo>)>),
+    Signals(Vec<(String, Vec<SignalRecord>)>),
+    Extras {
+        daemon_alive: bool,
+        daemon_uptime_secs: Option<u64>,
+        per_workspace: Vec<(String, WorkspaceExtrasData)>,
+    },
+    ChatHistory(Vec<(String, Vec<ChatLine>, Option<String>)>),
+    DaemonStatus {
+        connected: bool,
+        alive: bool,
+        remote_host: Option<String>,
+    },
+    WorkerConversation {
+        workspace_name: String,
+        worker_id: String,
+        entries: Vec<ConversationEntry>,
+    },
+}
+
 // ── Worker info from state.json ───────────────────────────
 
 #[derive(Debug, Clone)]
@@ -369,72 +412,35 @@ pub struct App {
 impl App {
     /// Create app from discovered workspaces, focusing the given tab.
     /// If `needs_onboarding` is true, the dashboard starts with progressive reveal.
+    ///
+    /// **No I/O**: initializes with empty state. Background tasks load data
+    /// and send updates via the `AppUpdate` channel.
     pub fn new(
         workspaces: Vec<Workspace>,
         focus_workspace: Option<&str>,
         needs_onboarding: bool,
     ) -> Self {
-        let db = config::db_path();
         let ws_states: Vec<WorkspaceState> = workspaces
             .into_iter()
-            .map(|ws| {
-                // Load chat history from DB (primary), falling back to JSONL (legacy)
-                let chat_history: Vec<ChatLine> =
-                    if let Ok(store) = SignalStore::open(&db, &ws.name) {
-                        let conv = ConversationStore::new(store.conn(), &ws.name);
-                        match conv.load_history(200) {
-                            Ok(rows) if !rows.is_empty() => rows
-                                .into_iter()
-                                .map(|row| {
-                                    let ts = chrono::DateTime::parse_from_rfc3339(&row.created_at)
-                                        .map(|dt| dt.format("%H:%M").to_string())
-                                        .unwrap_or_default();
-                                    let source = row.source.as_deref().map(|s| match s {
-                                        "telegram" => MessageSource::Telegram,
-                                        "system" => MessageSource::System,
-                                        _ => MessageSource::Tui,
-                                    });
-                                    match row.role.as_str() {
-                                        "user" => ChatLine::User(row.content, ts, source),
-                                        _ => ChatLine::Assistant(row.content, ts, source),
-                                    }
-                                })
-                                .collect(),
-                            _ => load_history_from_jsonl(&ws.name),
-                        }
-                    } else {
-                        load_history_from_jsonl(&ws.name)
-                    };
-
-                // Extract coordinator preview from last assistant message
-                let coordinator_preview = chat_history.iter().rev().find_map(|msg| {
-                    if let ChatLine::Assistant(s, _, _) = msg {
-                        Some(truncate_preview(s, 120))
-                    } else {
-                        None
-                    }
-                });
-
-                WorkspaceState {
-                    name: ws.name,
-                    config: ws.config,
-                    signals: Vec::new(),
-                    workers: Vec::new(),
-                    chat_history,
-                    input: String::new(),
-                    chat_scroll: ScrollState::new(),
-                    streaming: false,
-                    coordinator_preview,
-                    has_unread_response: false,
-                    sparkline_data: vec![0; 24],
-                    watcher_health: Vec::new(),
-                    feed: Vec::new(),
-                    prev_worker_phases: std::collections::HashMap::new(),
-                    prev_signal_ids: std::collections::HashSet::new(),
-                    prev_pr_workers: std::collections::HashSet::new(),
-                    feed_scroll: ScrollState::new(),
-                    thoughts: Vec::new(),
-                }
+            .map(|ws| WorkspaceState {
+                name: ws.name,
+                config: ws.config,
+                signals: Vec::new(),
+                workers: Vec::new(),
+                chat_history: Vec::new(),
+                input: String::new(),
+                chat_scroll: ScrollState::new(),
+                streaming: false,
+                coordinator_preview: None,
+                has_unread_response: false,
+                sparkline_data: vec![0; 24],
+                watcher_health: Vec::new(),
+                feed: Vec::new(),
+                prev_worker_phases: std::collections::HashMap::new(),
+                prev_signal_ids: std::collections::HashSet::new(),
+                prev_pr_workers: std::collections::HashSet::new(),
+                feed_scroll: ScrollState::new(),
+                thoughts: Vec::new(),
             })
             .collect();
 
@@ -512,9 +518,7 @@ impl App {
             ws.chat_scroll.scroll_to_bottom();
         }
 
-        app.refresh_workers();
-        app.refresh_signals();
-        app.refresh_extras();
+        // No I/O here — background tasks handle initial data load.
         app
     }
 
@@ -815,7 +819,8 @@ impl App {
             let events_path = ws
                 .config
                 .root
-                .join(".swarm/agents")
+                .join(".swarm")
+                .join("agents")
                 .join(&worker.id)
                 .join("events.jsonl");
             let new_entries = apiari_tui::events_parser::parse_events(&events_path);
@@ -1184,83 +1189,6 @@ impl App {
 
     // ── Data refresh ──────────────────────────────────────
 
-    pub fn refresh_workers(&mut self) {
-        for ws in &mut self.workspaces {
-            let state_path = ws.config.root.join(".swarm/state.json");
-            ws.workers = load_workers_from_state(&state_path);
-            // Enrich with last activity from events
-            for worker in &mut ws.workers {
-                worker.last_activity = load_last_activity(&ws.config.root, &worker.id);
-            }
-
-            // Detect state changes and inject chat notifications
-            let is_first_load = ws.prev_worker_phases.is_empty() && !ws.workers.is_empty();
-            for worker in &ws.workers {
-                let phase = phase_display(worker).to_string();
-                let prev = ws.prev_worker_phases.get(&worker.id);
-
-                // Skip first load — don't spam on startup
-                if !is_first_load {
-                    if let Some(prev_phase) = prev {
-                        if *prev_phase != phase {
-                            // Phase changed — announce it
-                            let msg = match phase.as_str() {
-                                "completed" => format!("\u{2713} {} completed", worker.id),
-                                "waiting" => {
-                                    format!("\u{25cb} {} waiting for input", worker.id)
-                                }
-                                "closed" => format!("\u{2500} {} closed", worker.id),
-                                "running" if prev_phase == "waiting" => {
-                                    format!("\u{25cf} {} resumed", worker.id)
-                                }
-                                _ => String::new(),
-                            };
-                            if !msg.is_empty() {
-                                ws.chat_history.push(ChatLine::System(msg));
-                                ws.has_unread_response = true;
-                                ws.chat_scroll.scroll_to_bottom();
-                            }
-                        }
-                    } else {
-                        // New worker appeared
-                        ws.chat_history
-                            .push(ChatLine::System(format!("\u{25cf} {} spawned", worker.id)));
-                        ws.has_unread_response = true;
-                        ws.chat_scroll.scroll_to_bottom();
-                    }
-
-                    // PR opened
-                    if let Some(ref pr) = worker.pr
-                        && !ws.prev_pr_workers.contains(&worker.id)
-                    {
-                        ws.chat_history.push(ChatLine::System(format!(
-                            "\u{27f3} {} opened PR #{}: {}",
-                            worker.id, pr.number, pr.title
-                        )));
-                        ws.has_unread_response = true;
-                        ws.chat_scroll.scroll_to_bottom();
-                    }
-                }
-            }
-
-            // Update tracking state
-            ws.prev_worker_phases = ws
-                .workers
-                .iter()
-                .map(|w| (w.id.clone(), phase_display(w).to_string()))
-                .collect();
-            ws.prev_pr_workers = ws
-                .workers
-                .iter()
-                .filter(|w| w.pr.is_some())
-                .map(|w| w.id.clone())
-                .collect();
-        }
-        self.last_worker_refresh = Instant::now();
-        self.clamp_selections();
-        self.needs_redraw = true;
-    }
-
     pub fn refresh_signals(&mut self) {
         let db = config::db_path();
         for ws in &mut self.workspaces {
@@ -1312,105 +1240,144 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Refresh sparkline, thoughts, daemon health, and activity feed.
-    pub fn refresh_extras(&mut self) {
-        let db = config::db_path();
-        let pid_path = config::pid_path();
+    /// Apply worker data from background refresh.
+    pub(super) fn apply_worker_update(&mut self, data: Vec<(String, Vec<WorkerInfo>)>) {
+        for (name, new_workers) in data {
+            if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
+                // Detect state changes and inject chat notifications
+                let is_first_load = ws.prev_worker_phases.is_empty() && !new_workers.is_empty();
+                for worker in &new_workers {
+                    let phase = phase_display(worker).to_string();
+                    let prev = ws.prev_worker_phases.get(&worker.id);
 
-        // Daemon health
-        self.daemon_alive = crate::daemon::is_daemon_running();
-        self.daemon_uptime_secs = if self.daemon_alive {
-            std::fs::metadata(&pid_path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
-                .map(|d| d.as_secs())
-        } else {
-            None
-        };
+                    // Skip first load — don't spam on startup
+                    if !is_first_load {
+                        if let Some(prev_phase) = prev {
+                            if *prev_phase != phase {
+                                let msg = match phase.as_str() {
+                                    "completed" => format!("\u{2713} {} completed", worker.id),
+                                    "waiting" => {
+                                        format!("\u{25cb} {} waiting for input", worker.id)
+                                    }
+                                    "closed" => format!("\u{2500} {} closed", worker.id),
+                                    "running" if prev_phase == "waiting" => {
+                                        format!("\u{25cf} {} resumed", worker.id)
+                                    }
+                                    _ => String::new(),
+                                };
+                                if !msg.is_empty() {
+                                    ws.chat_history.push(ChatLine::System(msg));
+                                    ws.has_unread_response = true;
+                                    ws.chat_scroll.scroll_to_bottom();
+                                }
+                            }
+                        } else {
+                            // New worker appeared
+                            ws.chat_history
+                                .push(ChatLine::System(format!("\u{25cf} {} spawned", worker.id)));
+                            ws.has_unread_response = true;
+                            ws.chat_scroll.scroll_to_bottom();
+                        }
 
-        for ws in &mut self.workspaces {
-            if let Ok(store) = SignalStore::open(&db, &ws.name) {
-                // Sparkline
-                ws.sparkline_data = store
-                    .count_signals_by_hour()
-                    .unwrap_or_else(|_| vec![0; 24]);
-
-                // Thoughts from MemoryStore
-                let mem = MemoryStore::new(store.conn(), &ws.name);
-                ws.thoughts = mem
-                    .get_recent(20)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|e| (e.category.as_str().to_string(), e.content))
-                    .collect();
-
-                // Watcher health — merge config (what's configured) with cursors (runtime)
-                let now = Utc::now();
-                let cursor_map: std::collections::HashMap<String, String> = store
-                    .get_watcher_cursors()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .collect();
-
-                // Build list from configured watchers
-                let mut watchers: Vec<WatcherHealth> = Vec::new();
-                let wc = &ws.config.watchers;
-                let configured: &[(&str, bool)] = &[
-                    ("github", wc.github.is_some()),
-                    ("sentry", wc.sentry.is_some()),
-                    ("swarm", wc.swarm.is_some()),
-                ];
-                for &(name, enabled) in configured {
-                    if !enabled {
-                        continue;
-                    }
-                    if let Some(updated_at) = cursor_map.get(name) {
-                        let dt = chrono::DateTime::parse_from_rfc3339(updated_at)
-                            .map(|d| d.with_timezone(&Utc))
-                            .unwrap_or(now);
-                        let age = now.signed_duration_since(dt);
-                        watchers.push(WatcherHealth {
-                            name: name.to_string(),
-                            healthy: age.num_minutes() < 5,
-                            last_check_secs: age.num_seconds(),
-                        });
-                    } else {
-                        // Configured but never ran
-                        watchers.push(WatcherHealth {
-                            name: name.to_string(),
-                            healthy: false,
-                            last_check_secs: -1, // sentinel: never checked
-                        });
+                        // PR opened
+                        if let Some(ref pr) = worker.pr
+                            && !ws.prev_pr_workers.contains(&worker.id)
+                        {
+                            ws.chat_history.push(ChatLine::System(format!(
+                                "\u{27f3} {} opened PR #{}: {}",
+                                worker.id, pr.number, pr.title
+                            )));
+                            ws.has_unread_response = true;
+                            ws.chat_scroll.scroll_to_bottom();
+                        }
                     }
                 }
-                ws.watcher_health = watchers;
 
-                // Build feed: proactive AI activity only (signals + workers, not chat)
-                let mut feed: Vec<FeedItem> = Vec::new();
+                // Update tracking state
+                ws.prev_worker_phases = new_workers
+                    .iter()
+                    .map(|w| (w.id.clone(), phase_display(w).to_string()))
+                    .collect();
+                ws.prev_pr_workers = new_workers
+                    .iter()
+                    .filter(|w| w.pr.is_some())
+                    .map(|w| w.id.clone())
+                    .collect();
+
+                ws.workers = new_workers;
+            }
+        }
+        self.last_worker_refresh = Instant::now();
+        self.clamp_selections();
+        self.needs_redraw = true;
+    }
+
+    /// Apply signal data from background refresh.
+    pub(super) fn apply_signal_update(&mut self, data: Vec<(String, Vec<SignalRecord>)>) {
+        for (name, new_signals) in data {
+            if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
+                let current_ids: std::collections::HashSet<i64> =
+                    new_signals.iter().map(|s| s.id).collect();
+                let is_first_load = ws.prev_signal_ids.is_empty() && !new_signals.is_empty();
+
+                if !is_first_load {
+                    let new_sigs: Vec<&SignalRecord> = new_signals
+                        .iter()
+                        .filter(|s| !ws.prev_signal_ids.contains(&s.id))
+                        .collect();
+
+                    if !new_sigs.is_empty() {
+                        let count = new_sigs.len();
+                        let mut by_source: std::collections::HashMap<&str, usize> =
+                            std::collections::HashMap::new();
+                        for sig in &new_sigs {
+                            *by_source.entry(sig.source.as_str()).or_default() += 1;
+                        }
+                        let summary: Vec<String> = by_source
+                            .iter()
+                            .map(|(src, n)| format!("{n} {src}"))
+                            .collect();
+                        let msg = format!(
+                            "! {} new signal{}: {}",
+                            count,
+                            if count > 1 { "s" } else { "" },
+                            summary.join(", ")
+                        );
+                        ws.chat_history.push(ChatLine::System(msg));
+                        ws.has_unread_response = true;
+                        ws.chat_scroll.scroll_to_bottom();
+                    }
+                }
+
+                ws.prev_signal_ids = current_ids;
+                ws.signals = new_signals;
+            }
+        }
+        self.last_signal_refresh = Instant::now();
+        self.clamp_selections();
+        self.needs_redraw = true;
+    }
+
+    /// Apply extras data from background refresh.
+    pub(super) fn apply_extras_update(
+        &mut self,
+        daemon_alive: bool,
+        daemon_uptime_secs: Option<u64>,
+        per_workspace: Vec<(String, WorkspaceExtrasData)>,
+    ) {
+        self.daemon_alive = daemon_alive;
+        self.daemon_uptime_secs = daemon_uptime_secs;
+
+        for (name, data) in per_workspace {
+            if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
+                ws.sparkline_data = data.sparkline_data;
+                ws.watcher_health = data.watcher_health;
+                ws.thoughts = data.thoughts;
+
+                // Start with SQLite-sourced feed items, then add in-memory worker items
+                let mut feed = data.feed_items;
+
                 let now_utc = Utc::now();
-
-                // Recent signals — deduplicated by title prefix (collapse similar errors)
-                if let Ok(recent) = store.get_recent_signals(30) {
-                    let mut seen_ids = std::collections::HashSet::new();
-                    let mut seen_titles = std::collections::HashSet::new();
-                    for sig in recent {
-                        if !seen_ids.insert(sig.external_id.clone()) {
-                            continue;
-                        }
-                        let title_key: String = sig.title.chars().take(50).collect();
-                        if !seen_titles.insert(title_key) {
-                            continue;
-                        }
-                        feed.push(FeedItem {
-                            when: sig.updated_at,
-                            kind: FeedKind::Signal,
-                            text: sig.title.clone(),
-                        });
-                    }
-                }
-
-                // Worker lifecycle events
                 for worker in &ws.workers {
                     let phase = phase_display(worker);
                     let when = worker
@@ -1431,22 +1398,7 @@ impl App {
                     });
                 }
 
-                // Watcher heartbeats — show when each watcher last checked in
-                if let Ok(cursors) = store.get_watcher_cursors() {
-                    for (watcher, updated_at_str) in &cursors {
-                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(updated_at_str) {
-                            let dt_utc = dt.with_timezone(&Utc);
-                            feed.push(FeedItem {
-                                when: dt_utc,
-                                kind: FeedKind::Heartbeat,
-                                text: format!("{watcher} checked"),
-                            });
-                        }
-                    }
-                }
-
-                // If daemon is alive but no signals and no workers doing anything, say so
-                if self.daemon_alive
+                if daemon_alive
                     && ws.signals.is_empty()
                     && ws.workers.iter().all(|w| {
                         let p = phase_display(w);
@@ -1460,7 +1412,6 @@ impl App {
                     });
                 }
 
-                // Sort by time descending (most recent first)
                 feed.sort_by(|a, b| b.when.cmp(&a.when));
                 feed.truncate(20);
                 ws.feed = feed;
@@ -1472,22 +1423,45 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Check if periodic refreshes are due.
-    pub fn maybe_refresh(&mut self) {
-        let now = Instant::now();
-        if now.duration_since(self.last_worker_refresh).as_secs() >= 2 {
-            self.refresh_workers();
-            // Also refresh conversation when viewing a worker detail
-            if let View::WorkerDetail(idx) = self.view {
-                self.refresh_worker_conversation(idx);
+    /// Apply initial chat history loaded in background.
+    pub(super) fn apply_chat_history(
+        &mut self,
+        data: Vec<(String, Vec<ChatLine>, Option<String>)>,
+    ) {
+        for (name, history, preview) in data {
+            if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
+                // Only apply if chat history is still empty (or just has onboarding msg)
+                let only_onboarding = ws.chat_history.len() <= 1 && self.onboarding.active;
+                if ws.chat_history.is_empty() || only_onboarding {
+                    let onboarding_msg = if self.onboarding.active {
+                        ws.chat_history.pop()
+                    } else {
+                        None
+                    };
+                    ws.chat_history = history;
+                    if let Some(msg) = onboarding_msg {
+                        ws.chat_history.push(msg);
+                    }
+                    ws.coordinator_preview = preview;
+                    ws.chat_scroll.scroll_to_bottom();
+                }
             }
         }
-        if now.duration_since(self.last_signal_refresh).as_secs() >= 5 {
-            self.refresh_signals();
-        }
-        if now.duration_since(self.last_extras_refresh).as_secs() >= 10 {
-            self.refresh_extras();
-        }
+        self.needs_redraw = true;
+    }
+
+    /// Build refresh infos for background task from current workspace state.
+    pub(super) fn build_refresh_infos(&self) -> Vec<WorkspaceRefreshInfo> {
+        self.workspaces
+            .iter()
+            .map(|ws| WorkspaceRefreshInfo {
+                name: ws.name.clone(),
+                root: ws.config.root.clone(),
+                has_github_watcher: ws.config.watchers.github.is_some(),
+                has_sentry_watcher: ws.config.watchers.sentry.is_some(),
+                has_swarm_watcher: ws.config.watchers.swarm.is_some(),
+            })
+            .collect()
     }
 
     // ── Helpers ───────────────────────────────────────────
@@ -1697,6 +1671,223 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
     }
 }
 
+// ── Blocking I/O for background tasks ─────────────────────
+
+/// Load workers for all workspaces (blocking filesystem reads).
+pub(super) fn load_all_workers_blocking(
+    infos: &[WorkspaceRefreshInfo],
+) -> Vec<(String, Vec<WorkerInfo>)> {
+    infos
+        .iter()
+        .map(|info| {
+            let state_path = info.root.join(".swarm/state.json");
+            let mut workers = load_workers_from_state(&state_path);
+            for worker in &mut workers {
+                worker.last_activity = load_last_activity(&info.root, &worker.id);
+            }
+            (info.name.clone(), workers)
+        })
+        .collect()
+}
+
+/// Load signals for all workspaces (blocking SQLite queries).
+pub(super) fn load_all_signals_blocking(
+    db_path: &Path,
+    names: &[String],
+) -> Vec<(String, Vec<SignalRecord>)> {
+    names
+        .iter()
+        .map(|name| {
+            let signals = if let Ok(store) = SignalStore::open(db_path, name) {
+                store.get_open_signals().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            (name.clone(), signals)
+        })
+        .collect()
+}
+
+/// Load extras (sparkline, thoughts, watcher health, feed) for all workspaces.
+/// Returns (daemon_alive, daemon_uptime_secs, per-workspace extras).
+pub(super) fn load_all_extras_blocking(
+    db_path: &Path,
+    pid_path: &Path,
+    infos: &[WorkspaceRefreshInfo],
+) -> (bool, Option<u64>, Vec<(String, WorkspaceExtrasData)>) {
+    let daemon_alive = crate::daemon::is_daemon_running();
+    let daemon_uptime_secs = if daemon_alive {
+        std::fs::metadata(pid_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+            .map(|d| d.as_secs())
+    } else {
+        None
+    };
+
+    let per_workspace = infos
+        .iter()
+        .map(|info| {
+            let mut data = WorkspaceExtrasData {
+                sparkline_data: vec![0; 24],
+                watcher_health: Vec::new(),
+                thoughts: Vec::new(),
+                feed_items: Vec::new(),
+            };
+
+            if let Ok(store) = SignalStore::open(db_path, &info.name) {
+                // Sparkline
+                data.sparkline_data = store
+                    .count_signals_by_hour()
+                    .unwrap_or_else(|_| vec![0; 24]);
+
+                // Thoughts from MemoryStore
+                let mem = MemoryStore::new(store.conn(), &info.name);
+                data.thoughts = mem
+                    .get_recent(20)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| (e.category.as_str().to_string(), e.content))
+                    .collect();
+
+                // Watcher health
+                let now = Utc::now();
+                let cursor_map: std::collections::HashMap<String, String> = store
+                    .get_watcher_cursors()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                let configured: &[(&str, bool)] = &[
+                    ("github", info.has_github_watcher),
+                    ("sentry", info.has_sentry_watcher),
+                    ("swarm", info.has_swarm_watcher),
+                ];
+                for &(name, enabled) in configured {
+                    if !enabled {
+                        continue;
+                    }
+                    if let Some(updated_at) = cursor_map.get(name) {
+                        let dt = chrono::DateTime::parse_from_rfc3339(updated_at)
+                            .map(|d| d.with_timezone(&Utc))
+                            .unwrap_or(now);
+                        let age = now.signed_duration_since(dt);
+                        data.watcher_health.push(WatcherHealth {
+                            name: name.to_string(),
+                            healthy: age.num_minutes() < 5,
+                            last_check_secs: age.num_seconds(),
+                        });
+                    } else {
+                        data.watcher_health.push(WatcherHealth {
+                            name: name.to_string(),
+                            healthy: false,
+                            last_check_secs: -1,
+                        });
+                    }
+                }
+
+                // Feed: signal items
+                if let Ok(recent) = store.get_recent_signals(30) {
+                    let mut seen_ids = std::collections::HashSet::new();
+                    let mut seen_titles = std::collections::HashSet::new();
+                    for sig in recent {
+                        if !seen_ids.insert(sig.external_id.clone()) {
+                            continue;
+                        }
+                        let title_key: String = sig.title.chars().take(50).collect();
+                        if !seen_titles.insert(title_key) {
+                            continue;
+                        }
+                        data.feed_items.push(FeedItem {
+                            when: sig.updated_at,
+                            kind: FeedKind::Signal,
+                            text: sig.title.clone(),
+                        });
+                    }
+                }
+
+                // Feed: watcher heartbeats
+                if let Ok(cursors) = store.get_watcher_cursors() {
+                    for (watcher, updated_at_str) in &cursors {
+                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(updated_at_str) {
+                            let dt_utc = dt.with_timezone(&Utc);
+                            data.feed_items.push(FeedItem {
+                                when: dt_utc,
+                                kind: FeedKind::Heartbeat,
+                                text: format!("{watcher} checked"),
+                            });
+                        }
+                    }
+                }
+            }
+
+            (info.name.clone(), data)
+        })
+        .collect();
+
+    (daemon_alive, daemon_uptime_secs, per_workspace)
+}
+
+/// Load chat history for all workspaces (blocking SQLite/JSONL reads).
+pub(super) fn load_chat_history_blocking(
+    db_path: &Path,
+    workspace_names: &[String],
+) -> Vec<(String, Vec<ChatLine>, Option<String>)> {
+    workspace_names
+        .iter()
+        .map(|name| {
+            let chat_history: Vec<ChatLine> = if let Ok(store) = SignalStore::open(db_path, name) {
+                let conv = ConversationStore::new(store.conn(), name);
+                match conv.load_history(200) {
+                    Ok(rows) if !rows.is_empty() => rows
+                        .into_iter()
+                        .map(|row| {
+                            let ts = chrono::DateTime::parse_from_rfc3339(&row.created_at)
+                                .map(|dt| dt.format("%H:%M").to_string())
+                                .unwrap_or_default();
+                            let source = row.source.as_deref().map(|s| match s {
+                                "telegram" => MessageSource::Telegram,
+                                "system" => MessageSource::System,
+                                _ => MessageSource::Tui,
+                            });
+                            match row.role.as_str() {
+                                "user" => ChatLine::User(row.content, ts, source),
+                                _ => ChatLine::Assistant(row.content, ts, source),
+                            }
+                        })
+                        .collect(),
+                    _ => load_history_from_jsonl(name),
+                }
+            } else {
+                load_history_from_jsonl(name)
+            };
+
+            let coordinator_preview = chat_history.iter().rev().find_map(|msg| {
+                if let ChatLine::Assistant(s, _, _) = msg {
+                    Some(truncate_preview(s, 120))
+                } else {
+                    None
+                }
+            });
+
+            (name.clone(), chat_history, coordinator_preview)
+        })
+        .collect()
+}
+
+/// Load worker conversation entries from events.jsonl (blocking).
+pub(super) fn load_worker_conversation_blocking(
+    root: &Path,
+    worker_id: &str,
+) -> Vec<ConversationEntry> {
+    let events_path = root
+        .join(".swarm")
+        .join("agents")
+        .join(worker_id)
+        .join("events.jsonl");
+    apiari_tui::events_parser::parse_events(&events_path)
+}
+
 /// Extract (repo, pr_number) from a review queue signal.
 /// Prefers metadata fields; falls back to parsing `external_id` (`rq-{repo}-{number}`).
 /// Returns `None` for non-GitHub review signals (e.g. Linear).
@@ -1835,5 +2026,102 @@ mod tests {
         let signal = make_signal("sentry", "sentry-42", None);
         let result = review_signal_target(&signal);
         assert_eq!(result, None);
+    }
+
+    // ── apply_chat_history tests ─────────────────────────────
+
+    fn make_test_workspace(name: &str) -> config::Workspace {
+        let config: config::WorkspaceConfig =
+            toml::from_str(&format!("root = '/tmp/{name}'")).unwrap();
+        config::Workspace {
+            name: name.to_string(),
+            config,
+        }
+    }
+
+    fn make_app(names: &[&str], needs_onboarding: bool) -> App {
+        let workspaces: Vec<config::Workspace> =
+            names.iter().map(|n| make_test_workspace(n)).collect();
+        App::new(workspaces, None, needs_onboarding)
+    }
+
+    #[test]
+    fn test_apply_chat_history_populates_empty_workspace() {
+        let mut app = make_app(&["ws1"], false);
+        assert!(app.workspaces[0].chat_history.is_empty());
+
+        let history = vec![
+            ChatLine::User("hello".into(), "12:00".into(), None),
+            ChatLine::Assistant("hi".into(), "12:01".into(), None),
+        ];
+        app.apply_chat_history(vec![("ws1".into(), history, Some("hi".into()))]);
+
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        assert_eq!(app.workspaces[0].coordinator_preview, Some("hi".into()));
+    }
+
+    #[test]
+    fn test_apply_chat_history_preserves_onboarding_message() {
+        let mut app = make_app(&["ws1"], true);
+        // Onboarding injects one message
+        assert_eq!(app.workspaces[0].chat_history.len(), 1);
+
+        let history = vec![ChatLine::User("old msg".into(), "11:00".into(), None)];
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // Should have loaded history + preserved onboarding msg at end
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        // Last message should be the onboarding assistant message
+        assert!(matches!(
+            &app.workspaces[0].chat_history[1],
+            ChatLine::Assistant(_, _, _)
+        ));
+    }
+
+    #[test]
+    fn test_apply_chat_history_does_not_overwrite_user_chat() {
+        let mut app = make_app(&["ws1"], false);
+        // Simulate user already typing messages before background load completes
+        app.workspaces[0].chat_history.push(ChatLine::User(
+            "user typed this".into(),
+            "12:00".into(),
+            None,
+        ));
+        app.workspaces[0].chat_history.push(ChatLine::Assistant(
+            "bot replied".into(),
+            "12:01".into(),
+            None,
+        ));
+
+        let history = vec![ChatLine::User("old history".into(), "10:00".into(), None)];
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // Should NOT overwrite — still has the 2 user messages
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        if let ChatLine::User(content, _, _) = &app.workspaces[0].chat_history[0] {
+            assert_eq!(content, "user typed this");
+        } else {
+            panic!("expected user message");
+        }
+    }
+
+    #[test]
+    fn test_apply_chat_history_inactive_onboarding_empty_workspace() {
+        let mut app = make_app(&["ws1"], false);
+        assert!(!app.onboarding.active);
+        assert!(app.workspaces[0].chat_history.is_empty());
+
+        let history = vec![ChatLine::Assistant(
+            "welcome back".into(),
+            "09:00".into(),
+            None,
+        )];
+        app.apply_chat_history(vec![("ws1".into(), history, Some("welcome back".into()))]);
+
+        assert_eq!(app.workspaces[0].chat_history.len(), 1);
+        assert_eq!(
+            app.workspaces[0].coordinator_preview,
+            Some("welcome back".into())
+        );
     }
 }
