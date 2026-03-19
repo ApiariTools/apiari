@@ -16,6 +16,27 @@ use super::theme;
 
 const SPINNER: &[&str] = &["|", "/", "-", "\\"];
 
+/// Calculate the number of visual rows needed for input text with wrapping.
+/// `text` is the raw input (may contain newlines), `width` is the available
+/// display width. Accounts for the leading space and trailing cursor char
+/// that are added when rendering (` {text}_`).
+fn visual_input_rows(text: &str, width: u16) -> u16 {
+    let w = width as usize;
+    if w == 0 {
+        return 1;
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let last_idx = lines.len().saturating_sub(1);
+    let mut total: usize = 0;
+    for (i, line) in lines.iter().enumerate() {
+        // Rendered as " {line}" on non-last lines, " {line}_" on last line
+        let extra = if i == last_idx { 2 } else { 1 }; // leading space + optional cursor
+        let len = line.len() + extra;
+        total += (len + w - 1) / w; // ceil division
+    }
+    total.max(1) as u16
+}
+
 // ── Main draw ────────────────────────────────────────────
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -822,8 +843,12 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
 
     // Input height (inside the bordered panel)
     let input_h = if app.chat_focused {
-        let line_count = ws.input.matches('\n').count() + 1;
-        (line_count as u16).clamp(1, 4) + 1 // +1 for separator
+        // Account for visual line wrapping, not just explicit newlines.
+        // The input block has a TOP border (1 row), so subtract that as separator.
+        // area.width - 2 accounts for the panel's left+right borders.
+        let avail_w = area.width.saturating_sub(2);
+        let rows = visual_input_rows(&ws.input, avail_w);
+        rows.clamp(1, 6) + 1 // +1 for separator (top border on input block)
     } else {
         1 // just the hint line
     };
@@ -1578,8 +1603,14 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
         _ => ("\u{25cb}", theme::status_idle()),
     };
 
-    // Input bar height
-    let input_h: u16 = if app.worker_input_active { 3 } else { 0 };
+    // Input bar height — account for visual line wrapping
+    let input_h: u16 = if app.worker_input_active {
+        let avail_w = area.width;
+        let rows = visual_input_rows(&app.worker_input, avail_w);
+        rows.clamp(1, 6) + 1 // +1 for top border separator
+    } else {
+        0
+    };
 
     // Layout: header (1) + conversation (fill) + input (0 or 3)
     let chunks = Layout::default()
