@@ -451,7 +451,7 @@ async fn event_loop(
                 CoordResponse::HeartbeatUpdate { entries } => {
                     // Prepend new entries (newest first) and cap at 50.
                     let mut new_entries = entries;
-                    new_entries.extend(app.heartbeat_entries.drain(..));
+                    new_entries.append(&mut app.heartbeat_entries);
                     new_entries.truncate(50);
                     app.heartbeat_entries = new_entries;
                     // Reset expanded state since indices shifted.
