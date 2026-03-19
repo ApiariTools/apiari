@@ -1667,9 +1667,6 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// Extract (repo, pr_number) from a review queue signal.
-/// Prefers metadata fields; falls back to parsing `external_id` (`rq-{repo}-{number}`).
-/// Returns `None` for non-GitHub review signals (e.g. Linear).
 // ── Blocking I/O for background tasks ─────────────────────
 
 /// Load workers for all workspaces (blocking filesystem reads).
@@ -1881,6 +1878,9 @@ pub fn load_worker_conversation_blocking(root: &Path, worker_id: &str) -> Vec<Co
     apiari_tui::events_parser::parse_events(&events_path)
 }
 
+/// Extract (repo, pr_number) from a review queue signal.
+/// Prefers metadata fields; falls back to parsing `external_id` (`rq-{repo}-{number}`).
+/// Returns `None` for non-GitHub review signals (e.g. Linear).
 pub fn review_signal_target(signal: &SignalRecord) -> Option<(String, u64)> {
     if signal.source != "github_review_queue" {
         return None;

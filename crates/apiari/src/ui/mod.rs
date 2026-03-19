@@ -158,13 +158,13 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
         let coord_tx_clone = coord_tx.clone();
         tokio::spawn(async move {
             // Auto-start daemon if not running
-            if !crate::daemon::is_daemon_running() {
-                if let Ok(()) = crate::daemon::spawn_background() {
-                    for _ in 0..20 {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                        if daemon_client::socket_exists() && crate::daemon::is_daemon_running() {
-                            break;
-                        }
+            if !crate::daemon::is_daemon_running()
+                && let Ok(()) = crate::daemon::spawn_background()
+            {
+                for _ in 0..20 {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    if daemon_client::socket_exists() && crate::daemon::is_daemon_running() {
+                        break;
                     }
                 }
             }
@@ -326,23 +326,22 @@ async fn event_loop(
                     AppUpdate::Workers(data) => {
                         app.apply_worker_update(data);
                         // Refresh conversation in background when viewing worker detail
-                        if let View::WorkerDetail(idx) = app.view {
-                            if let Some(ws) = app.current_ws() {
-                                if let Some(worker) = ws.workers.get(idx) {
-                                    let root = ws.config.root.clone();
-                                    let worker_id = worker.id.clone();
-                                    let ws_idx = app.active_tab;
-                                    let tx = update_tx.clone();
-                                    tokio::task::spawn_blocking(move || {
-                                        let entries = app::load_worker_conversation_blocking(&root, &worker_id);
-                                        let _ = tx.blocking_send(AppUpdate::WorkerConversation {
-                                            workspace_idx: ws_idx,
-                                            worker_idx: idx,
-                                            entries,
-                                        });
-                                    });
-                                }
-                            }
+                        if let View::WorkerDetail(idx) = app.view
+                            && let Some(ws) = app.current_ws()
+                            && let Some(worker) = ws.workers.get(idx)
+                        {
+                            let root = ws.config.root.clone();
+                            let worker_id = worker.id.clone();
+                            let ws_idx = app.active_tab;
+                            let tx = update_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let entries = app::load_worker_conversation_blocking(&root, &worker_id);
+                                let _ = tx.blocking_send(AppUpdate::WorkerConversation {
+                                    workspace_idx: ws_idx,
+                                    worker_idx: idx,
+                                    entries,
+                                });
+                            });
                         }
                     }
                     AppUpdate::Signals(data) => {
@@ -363,13 +362,13 @@ async fn event_loop(
                         app.needs_redraw = true;
                     }
                     AppUpdate::WorkerConversation { workspace_idx, worker_idx, entries } => {
-                        if let Some(ws) = app.workspaces.get_mut(workspace_idx) {
-                            if let Some(worker) = ws.workers.get_mut(worker_idx) {
-                                let had = worker.conversation.len();
-                                worker.conversation = entries;
-                                if worker.conversation.len() > had {
-                                    worker.conv_scroll.scroll_to_bottom();
-                                }
+                        if let Some(ws) = app.workspaces.get_mut(workspace_idx)
+                            && let Some(worker) = ws.workers.get_mut(worker_idx)
+                        {
+                            let had = worker.conversation.len();
+                            worker.conversation = entries;
+                            if worker.conversation.len() > had {
+                                worker.conv_scroll.scroll_to_bottom();
                             }
                         }
                         app.needs_redraw = true;
