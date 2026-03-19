@@ -331,6 +331,29 @@ impl OnboardingState {
     }
 }
 
+// ── Setup mode (first-run onboarding) ─────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupStep {
+    AskRoot,
+    AskProvider,
+    AskGithub,
+    AskTelegram,
+    AskTelegramChatId,
+    Done,
+}
+
+#[derive(Debug, Clone)]
+pub struct SetupState {
+    pub step: SetupStep,
+    pub workspace_root: std::path::PathBuf,
+    pub workspace_name: String,
+    pub default_agent: String,
+    pub has_github: bool,
+    pub telegram_token: Option<String>,
+    pub telegram_chat_id: Option<i64>,
+}
+
 // ── Per-workspace state ───────────────────────────────────
 
 pub struct WorkspaceState {
@@ -402,6 +425,8 @@ pub struct App {
     pub signals_debug_mode: bool,
     // Onboarding
     pub onboarding: OnboardingState,
+    // Setup mode (first-run, no workspace exists yet)
+    pub setup: Option<SetupState>,
     // Common
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashMessage>,
@@ -500,6 +525,7 @@ impl App {
             snooze_selection: 0,
             signals_debug_mode: false,
             onboarding,
+            setup: None,
             pending_action: None,
             flash: None,
             needs_redraw: true,
@@ -523,6 +549,341 @@ impl App {
 
         // No I/O here — background tasks handle initial data load.
         app
+    }
+
+    /// Create app in setup mode (no workspaces exist yet).
+    /// Provides a placeholder workspace for the chat UI while Bee walks
+    /// the user through initial configuration.
+    pub fn new_setup() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let ws_name = cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+
+        // Placeholder workspace for chat — fall back to a cwd-rooted config on
+        // any parse error so we never panic on first run.
+        let config: config::WorkspaceConfig =
+            serde_json::from_value(serde_json::json!({"root": cwd.to_string_lossy()}))
+                .unwrap_or_else(|_| {
+                    serde_json::from_value(serde_json::json!({"root": "."}))
+                        .expect("hardcoded fallback config")
+                });
+
+        let ws_state = WorkspaceState {
+            name: "(setup)".to_string(),
+            config,
+            signals: Vec::new(),
+            workers: Vec::new(),
+            chat_history: Vec::new(),
+            input: String::new(),
+            chat_scroll: ScrollState::new(),
+            streaming: false,
+            coordinator_preview: None,
+            has_unread_response: false,
+            prev_worker_phases: std::collections::HashMap::new(),
+            prev_signal_ids: std::collections::HashSet::new(),
+            prev_pr_workers: std::collections::HashSet::new(),
+            sparkline_data: vec![0; 24],
+            watcher_health: Vec::new(),
+            feed: Vec::new(),
+            feed_scroll: ScrollState::new(),
+            thoughts: Vec::new(),
+        };
+
+        let setup = SetupState {
+            step: SetupStep::AskRoot,
+            workspace_root: cwd.clone(),
+            workspace_name: ws_name,
+            default_agent: "claude".to_string(),
+            has_github: false,
+            telegram_token: None,
+            telegram_chat_id: None,
+        };
+
+        let cwd_display = cwd.display().to_string();
+
+        let mut app = Self {
+            workspaces: vec![ws_state],
+            active_tab: 0,
+            prefix_active: false,
+            view: View::Dashboard,
+            mode: Mode::Normal,
+            focused_panel: Panel::Chat,
+            zoomed_panel: None,
+            worker_selection: 0,
+            signal_selection: 0,
+            review_selection: 0,
+            feed_selection: 0,
+            chat_focused: true,
+            worker_input: String::new(),
+            worker_input_active: false,
+            review_comment_active: false,
+            review_comment_input: String::new(),
+            review_comment_repo: String::new(),
+            review_comment_pr: 0,
+            content_scroll: 0,
+            signal_list_selection: 0,
+            review_list_selection: 0,
+            pr_list_selection: 0,
+            daemon_alive: false,
+            daemon_connected: false,
+            daemon_remote: false,
+            remote_host: None,
+            daemon_uptime_secs: None,
+            last_extras_refresh: Instant::now(),
+            terminal_width: 80,
+            activity_buf: vec![0; 18],
+            snooze_selection: 0,
+            onboarding: OnboardingState::new_active(), // only Chat panel visible
+            setup: Some(setup),
+            signals_debug_mode: false,
+            pending_action: None,
+            flash: None,
+            needs_redraw: true,
+            spinner_tick: 0,
+            last_worker_refresh: Instant::now(),
+            last_signal_refresh: Instant::now(),
+        };
+
+        // Inject first setup message
+        if let Some(ws) = app.workspaces.get_mut(0) {
+            ws.chat_history.push(ChatLine::Assistant(
+                format!(
+                    "Hi! I'm Bee \u{2014} your dev workspace coordinator.\n\n\
+                     Looks like you haven't set up a workspace yet. Let's fix that!\n\n\
+                     What directory would you like to use as your workspace root?\n\
+                     (Press Enter for current directory: {cwd_display})"
+                ),
+                now_ts(),
+                None,
+            ));
+            ws.chat_scroll.scroll_to_bottom();
+        }
+
+        app
+    }
+
+    /// Process user input during setup mode. Returns true when setup is complete.
+    pub fn process_setup_input(&mut self, input: &str) -> bool {
+        // Compute the response and whether we're done (scope ends mutable borrow on self.setup)
+        let (response, done) = {
+            let setup = match self.setup.as_mut() {
+                Some(s) => s,
+                None => return false,
+            };
+
+            match setup.step {
+                SetupStep::AskRoot => {
+                    let input = input.trim();
+                    if !input.is_empty() {
+                        setup.workspace_root = std::path::PathBuf::from(input);
+                    }
+                    setup.workspace_name = setup
+                        .workspace_root
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("workspace")
+                        .to_string();
+                    let root = setup.workspace_root.display().to_string();
+                    setup.step = SetupStep::AskProvider;
+                    (
+                        format!(
+                            "\u{2713} Workspace root: {root}\n\n\
+                             Which AI providers do you have access to?\n\
+                             \u{2022} claude \u{2014} Anthropic Claude (recommended)\n\
+                             \u{2022} codex \u{2014} OpenAI Codex\n\
+                             \u{2022} both \u{2014} auto-detect at dispatch time"
+                        ),
+                        false,
+                    )
+                }
+                SetupStep::AskProvider => {
+                    let input = input.trim().to_lowercase();
+                    setup.default_agent = match input.as_str() {
+                        "codex" => "codex".to_string(),
+                        "both" => "auto".to_string(),
+                        _ => "claude".to_string(),
+                    };
+                    let agent = setup.default_agent.clone();
+                    setup.step = SetupStep::AskGithub;
+                    (
+                        format!(
+                            "\u{2713} Default agent: {agent}\n\n\
+                             Do you have a GitHub token configured with the `gh` CLI? (yes / no)"
+                        ),
+                        false,
+                    )
+                }
+                SetupStep::AskGithub => {
+                    let input = input.trim().to_lowercase();
+                    setup.has_github = matches!(input.as_str(), "y" | "yes");
+                    let gh_status = if setup.has_github {
+                        "enabled"
+                    } else {
+                        "skipped"
+                    };
+                    setup.step = SetupStep::AskTelegram;
+                    (
+                        format!(
+                            "\u{2713} GitHub watcher: {gh_status}\n\n\
+                             Would you like Telegram notifications?\n\
+                             Enter your bot token from @BotFather, or type 'skip'."
+                        ),
+                        false,
+                    )
+                }
+                SetupStep::AskTelegram => {
+                    let input = input.trim();
+                    if input.is_empty()
+                        || input.eq_ignore_ascii_case("skip")
+                        || input.eq_ignore_ascii_case("no")
+                    {
+                        setup.telegram_token = None;
+                        setup.step = SetupStep::Done;
+                        (
+                            "\u{2713} Telegram: skipped\n\nWriting workspace config...".to_string(),
+                            true,
+                        )
+                    } else {
+                        setup.telegram_token = Some(input.to_string());
+                        setup.step = SetupStep::AskTelegramChatId;
+                        (
+                            "\u{2713} Bot token saved.\n\n\
+                             Now I need your Telegram chat ID.\n\
+                             Message @userinfobot on Telegram to get it, then paste it here."
+                                .to_string(),
+                            false,
+                        )
+                    }
+                }
+                SetupStep::AskTelegramChatId => {
+                    let input = input.trim();
+                    if let Ok(chat_id) = input.parse::<i64>() {
+                        setup.telegram_chat_id = Some(chat_id);
+                        setup.step = SetupStep::Done;
+                        (
+                            format!("\u{2713} Chat ID: {chat_id}\n\nWriting workspace config..."),
+                            true,
+                        )
+                    } else {
+                        (
+                            "That doesn't look like a valid chat ID (should be a number). \
+                             Try again:"
+                                .to_string(),
+                            false,
+                        )
+                    }
+                }
+                SetupStep::Done => return false,
+            }
+        }; // setup borrow released
+
+        // Push Bee's response to chat
+        if let Some(ws) = self.current_ws_mut() {
+            ws.chat_history
+                .push(ChatLine::Assistant(response, now_ts(), None));
+            ws.chat_scroll.scroll_to_bottom();
+        }
+        self.needs_redraw = true;
+        done
+    }
+
+    /// Write workspace config and transition from setup mode to normal dashboard.
+    pub fn complete_setup(&mut self) -> Result<(), String> {
+        let setup = self.setup.take().ok_or("not in setup mode")?;
+
+        // Build and write TOML config
+        let toml_content = build_setup_toml(&setup);
+        let dir = config::workspaces_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+        let config_path = find_available_config_path(&dir, &setup.workspace_name);
+        std::fs::write(&config_path, &toml_content)
+            .map_err(|e| format!("could not write config: {e}"))?;
+
+        // Write .onboarded marker
+        if let Err(e) = super::onboarding::mark_onboarded() {
+            tracing::warn!("failed to write onboarded marker: {e}");
+        }
+
+        // Reload workspaces — the actual file name may differ from
+        // setup.workspace_name if a collision was found (e.g. "foo-2.toml").
+        let actual_name = config_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&setup.workspace_name)
+            .to_string();
+        let workspaces = config::discover_workspaces()
+            .map_err(|e| format!("could not reload workspaces: {e}"))?;
+        let ws = workspaces
+            .into_iter()
+            .find(|w| w.name == actual_name)
+            .ok_or("workspace not found after creation")?;
+
+        // Preserve chat history from setup conversation
+        let chat_history = self
+            .workspaces
+            .first()
+            .map(|w| w.chat_history.clone())
+            .unwrap_or_default();
+
+        // Build real workspace state
+        let mut ws_state = WorkspaceState {
+            name: ws.name,
+            config: ws.config,
+            signals: Vec::new(),
+            workers: Vec::new(),
+            chat_history,
+            input: String::new(),
+            chat_scroll: ScrollState::new(),
+            streaming: false,
+            coordinator_preview: None,
+            has_unread_response: false,
+            prev_worker_phases: std::collections::HashMap::new(),
+            prev_signal_ids: std::collections::HashSet::new(),
+            prev_pr_workers: std::collections::HashSet::new(),
+            sparkline_data: vec![0; 24],
+            watcher_health: Vec::new(),
+            feed: Vec::new(),
+            feed_scroll: ScrollState::new(),
+            thoughts: Vec::new(),
+        };
+
+        // Config display path with ~ shorthand
+        let config_display = if let Some(home) = dirs::home_dir() {
+            if let Ok(suffix) = config_path.strip_prefix(&home) {
+                format!("~/{}", suffix.display())
+            } else {
+                config_path.display().to_string()
+            }
+        } else {
+            config_path.display().to_string()
+        };
+
+        // Completion message
+        ws_state.chat_history.push(ChatLine::Assistant(
+            format!(
+                "\u{2713} Workspace '{}' created!\n\n\
+                 Config written to {}\n\n\
+                 The dashboard is all yours. Ask me anything \u{2014} \
+                 try 'what can you do?' or '/help'.",
+                setup.workspace_name, config_display
+            ),
+            now_ts(),
+            None,
+        ));
+        ws_state.chat_scroll.scroll_to_bottom();
+
+        self.workspaces = vec![ws_state];
+        self.active_tab = 0;
+        self.onboarding = OnboardingState::completed();
+        self.focused_panel = Panel::Workers;
+        self.chat_focused = false;
+        self.needs_redraw = true;
+
+        Ok(())
     }
 
     /// Current workspace, if any.
@@ -1539,6 +1900,74 @@ impl App {
 
 // ── Free functions ────────────────────────────────────────
 
+/// Return a config path that does not already exist.
+///
+/// Tries `<dir>/<name>.toml` first, then `<name>-2.toml`, `<name>-3.toml`, etc.
+fn find_available_config_path(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let candidate = dir.join(format!("{name}.toml"));
+    if !candidate.exists() {
+        return candidate;
+    }
+    for n in 2..100 {
+        let candidate = dir.join(format!("{name}-{n}.toml"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Extremely unlikely: just overwrite the base name.
+    dir.join(format!("{name}.toml"))
+}
+
+/// Build a workspace TOML config from setup state.
+fn build_setup_toml(setup: &SetupState) -> String {
+    use toml_edit::{Array, DocumentMut, Item, Table, value};
+
+    let mut doc = DocumentMut::new();
+
+    doc["root"] = value(setup.workspace_root.display().to_string());
+    doc["repos"] = Item::Value(toml_edit::Value::Array(Array::new()));
+
+    // [coordinator]
+    let mut coordinator = Table::new();
+    coordinator["model"] = value("sonnet");
+    coordinator["max_turns"] = value(20i64);
+    doc["coordinator"] = Item::Table(coordinator);
+
+    // [swarm]
+    let mut swarm = Table::new();
+    swarm["default_agent"] = value(setup.default_agent.clone());
+    doc["swarm"] = Item::Table(swarm);
+
+    // [telegram] (optional)
+    if let Some(ref token) = setup.telegram_token {
+        let mut telegram = Table::new();
+        telegram["bot_token"] = value(token.clone());
+        if let Some(chat_id) = setup.telegram_chat_id {
+            telegram["chat_id"] = value(chat_id);
+        }
+        doc["telegram"] = Item::Table(telegram);
+    }
+
+    // [watchers]
+    let mut watchers = Table::new();
+
+    if setup.has_github {
+        let mut github = Table::new();
+        github["interval_secs"] = value(120i64);
+        watchers["github"] = Item::Table(github);
+    }
+
+    let swarm_state = setup.workspace_root.join(".swarm/state.json");
+    let mut swarm_watcher = Table::new();
+    swarm_watcher["state_path"] = value(swarm_state.display().to_string());
+    swarm_watcher["interval_secs"] = value(15i64);
+    watchers["swarm"] = Item::Table(swarm_watcher);
+
+    doc["watchers"] = Item::Table(watchers);
+
+    doc.to_string()
+}
+
 /// Legacy fallback: load chat history from JSONL file.
 fn load_history_from_jsonl(workspace: &str) -> Vec<ChatLine> {
     let history = super::history::load_history(workspace, 200);
@@ -2139,5 +2568,131 @@ mod tests {
             app.workspaces[0].coordinator_preview,
             Some("welcome back".into())
         );
+    }
+
+    // ── Setup state machine tests ────────────────────────────
+
+    /// Drive the setup state machine and return the finished SetupState + generated TOML.
+    fn run_setup(inputs: &[&str]) -> (App, String) {
+        let mut app = App::new_setup();
+        for input in inputs {
+            let done = app.process_setup_input(input);
+            if done {
+                let setup = app.setup.as_ref().expect("setup should still be present");
+                let toml_str = build_setup_toml(setup);
+                return (app, toml_str);
+            }
+        }
+        panic!("setup did not complete after all inputs");
+    }
+
+    fn assert_valid_config(toml_str: &str) -> crate::config::WorkspaceConfig {
+        toml::from_str(toml_str).unwrap_or_else(|e| panic!("invalid TOML config: {e}\n{toml_str}"))
+    }
+
+    #[test]
+    fn test_setup_claude_no_github_no_telegram() {
+        let (_, toml_str) = run_setup(&[
+            "",       // accept default root
+            "claude", // provider
+            "no",     // github
+            "skip",   // telegram
+        ]);
+        let cfg = assert_valid_config(&toml_str);
+        assert_eq!(cfg.swarm.default_agent, "claude");
+        assert!(cfg.telegram.is_none());
+        assert!(cfg.watchers.github.is_none());
+    }
+
+    #[test]
+    fn test_setup_codex_with_github_no_telegram() {
+        let (_, toml_str) = run_setup(&[
+            "/tmp/myproject", // custom root
+            "codex",          // provider
+            "yes",            // github
+            "skip",           // telegram
+        ]);
+        let cfg = assert_valid_config(&toml_str);
+        assert_eq!(cfg.root, std::path::PathBuf::from("/tmp/myproject"));
+        assert_eq!(cfg.swarm.default_agent, "codex");
+        assert!(cfg.watchers.github.is_some());
+        assert!(cfg.telegram.is_none());
+    }
+
+    #[test]
+    fn test_setup_auto_with_telegram() {
+        let (_, toml_str) = run_setup(&[
+            "",                // default root
+            "both",            // auto
+            "no",              // github
+            "123456:AABBccDD", // telegram token
+            "-1001234567890",  // chat id
+        ]);
+        let cfg = assert_valid_config(&toml_str);
+        assert_eq!(cfg.swarm.default_agent, "auto");
+        let tg = cfg.telegram.expect("telegram should be set");
+        assert_eq!(tg.bot_token, "123456:AABBccDD");
+        assert_eq!(tg.chat_id, -1001234567890);
+    }
+
+    #[test]
+    fn test_setup_invalid_chat_id_retries() {
+        let mut app = App::new_setup();
+        // AskRoot -> AskProvider
+        app.process_setup_input("");
+        // AskProvider -> AskGithub
+        app.process_setup_input("claude");
+        // AskGithub -> AskTelegram
+        app.process_setup_input("no");
+        // AskTelegram -> AskTelegramChatId
+        app.process_setup_input("sometoken");
+        // Invalid chat ID — should NOT complete
+        let done = app.process_setup_input("not-a-number");
+        assert!(!done);
+        assert_eq!(
+            app.setup.as_ref().unwrap().step,
+            SetupStep::AskTelegramChatId
+        );
+        // Valid chat ID — should complete
+        let done = app.process_setup_input("12345");
+        assert!(done);
+    }
+
+    #[test]
+    fn test_setup_toml_special_chars_in_root() {
+        // Paths with quotes/backslashes should be safely encoded
+        let mut app = App::new_setup();
+        app.process_setup_input("/tmp/my \"project\"");
+        app.process_setup_input("claude");
+        app.process_setup_input("no");
+        let done = app.process_setup_input("skip");
+        assert!(done);
+        let toml_str = build_setup_toml(app.setup.as_ref().unwrap());
+        // Must parse without error — toml_edit handles escaping
+        assert_valid_config(&toml_str);
+    }
+
+    #[test]
+    fn test_find_available_config_path_no_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = find_available_config_path(dir.path(), "myws");
+        assert_eq!(path, dir.path().join("myws.toml"));
+    }
+
+    #[test]
+    fn test_find_available_config_path_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("myws.toml"), "root = '/'").unwrap();
+        let path = find_available_config_path(dir.path(), "myws");
+        assert_eq!(path, dir.path().join("myws-2.toml"));
+    }
+
+    #[test]
+    fn test_find_available_config_path_multiple_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("myws.toml"), "root = '/'").unwrap();
+        std::fs::write(dir.path().join("myws-2.toml"), "root = '/'").unwrap();
+        let path = find_available_config_path(dir.path(), "myws");
+        assert_eq!(path, dir.path().join("myws-3.toml"));
     }
 }

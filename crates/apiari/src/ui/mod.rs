@@ -80,6 +80,7 @@ enum KeyAction {
         body: String,
     },
     SnoozeSignal(i64, chrono::DateTime<chrono::Utc>),
+    SetupComplete,
     OpenSettings,
     Redraw,
 }
@@ -89,13 +90,14 @@ enum KeyAction {
 /// Launch the TUI.
 pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let workspaces = config::discover_workspaces()?;
-    if workspaces.is_empty() {
-        eprintln!("No workspace configs found. Run `apiari init` first.");
-        return Ok(());
-    }
 
-    let needs_onboarding = onboarding::needs_onboarding();
-    let mut app = App::new(workspaces, focus_workspace, needs_onboarding);
+    let mut app = if workspaces.is_empty() {
+        // No workspaces — launch setup mode
+        App::new_setup()
+    } else {
+        let needs_onboarding = onboarding::needs_onboarding();
+        App::new(workspaces, focus_workspace, needs_onboarding)
+    };
 
     // Coordinator channels
     let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
@@ -301,6 +303,21 @@ async fn event_loop(
                                     &ws.name, &ws.config,
                                 ));
                             }
+                            app.needs_redraw = true;
+                            continue;
+                        }
+
+                        // Setup completion: spawn background refresh for the new workspace
+                        if matches!(action, KeyAction::SetupComplete) {
+                            let refresh_infos = app.build_refresh_infos();
+                            let db = config::db_path();
+                            let pid = config::pid_path();
+                            tokio::spawn(background_refresh_task(
+                                update_tx.clone(),
+                                refresh_infos,
+                                db,
+                                pid,
+                            ));
                             app.needs_redraw = true;
                             continue;
                         }
@@ -804,6 +821,30 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
             } else {
                 let input = app.take_input();
 
+                // Setup mode: process input as setup answer
+                if app.setup.is_some() {
+                    // Show user input in chat
+                    if !input.trim().is_empty()
+                        && let Some(ws) = app.current_ws_mut()
+                    {
+                        ws.chat_history.push(app::ChatLine::User(
+                            input.clone(),
+                            app::now_ts(),
+                            None,
+                        ));
+                        ws.chat_scroll.scroll_to_bottom();
+                    }
+                    let done = app.process_setup_input(&input);
+                    if done {
+                        if let Err(e) = app.complete_setup() {
+                            app.push_system_message(format!("Setup failed: {e}"));
+                            return KeyAction::Redraw;
+                        }
+                        return KeyAction::SetupComplete;
+                    }
+                    return KeyAction::Redraw;
+                }
+
                 // During onboarding: empty Enter advances the stage
                 if app.onboarding.active {
                     if input.trim().is_empty() {
@@ -854,6 +895,10 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
             }
         }
         KeyCode::Esc => {
+            // Can't leave chat during setup — it's the only interaction
+            if app.setup.is_some() {
+                return KeyAction::Redraw;
+            }
             // During onboarding, Esc skips to complete
             if app.onboarding.active {
                 app.onboarding.skip_to_complete();
@@ -1484,7 +1529,10 @@ async fn handle_action(
                 }
             }
         }
-        KeyAction::OpenSettings | KeyAction::None | KeyAction::Redraw => {}
+        KeyAction::OpenSettings
+        | KeyAction::SetupComplete
+        | KeyAction::None
+        | KeyAction::Redraw => {}
     }
     app.needs_redraw = true;
     None
@@ -1929,6 +1977,7 @@ mod tests {
             terminal_width: 120,
             activity_buf: vec![0; 18],
             onboarding: app::OnboardingState::completed(),
+            setup: None,
             pending_action: None,
             flash: None,
             needs_redraw: false,

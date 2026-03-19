@@ -65,6 +65,10 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub pipeline: PipelineConfig,
 
+    /// Swarm agent configuration.
+    #[serde(default)]
+    pub swarm: SwarmConfig,
+
     /// Custom slash commands.
     #[serde(default)]
     pub commands: Vec<CommandConfig>,
@@ -592,6 +596,7 @@ pub fn build_skill_context(
         notion_names,
         has_telegram: config.telegram.is_some(),
         prompt_preamble: config.coordinator.prompt.clone(),
+        default_agent: config.swarm.default_agent.clone(),
     }
 }
 
@@ -767,6 +772,27 @@ pub struct PipelineRuleConfig {
     pub action: String,
     #[serde(default)]
     pub rate_limit_secs: u64,
+}
+
+/// Swarm agent configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwarmConfig {
+    /// Default agent for swarm workers: "claude", "codex", or "auto".
+    /// When "auto", prefers claude if both binaries are available.
+    #[serde(default = "default_swarm_agent")]
+    pub default_agent: String,
+}
+
+impl Default for SwarmConfig {
+    fn default() -> Self {
+        Self {
+            default_agent: default_swarm_agent(),
+        }
+    }
+}
+
+fn default_swarm_agent() -> String {
+    "claude".to_string()
 }
 
 /// Convert pipeline config rules into buzz pipeline rules.
@@ -968,6 +994,7 @@ max_session_turns = 0
             telegram: None,
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
+            swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
             commands: vec![],
             morning_brief: None,
@@ -989,6 +1016,7 @@ max_session_turns = 0
             telegram: None,
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
+            swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
             commands: vec![],
             morning_brief: None,
@@ -1014,6 +1042,7 @@ max_session_turns = 0
             }),
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
+            swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
             commands: vec![],
             morning_brief: None,
@@ -1264,6 +1293,7 @@ max_session_turns = 0
                 }),
                 ..Default::default()
             },
+            swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
             commands: vec![],
             morning_brief: None,

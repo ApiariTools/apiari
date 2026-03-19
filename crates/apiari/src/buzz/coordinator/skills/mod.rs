@@ -35,6 +35,8 @@ pub struct SkillContext {
     /// Custom prompt preamble loaded from prompt_file.
     /// If set, replaces the default identity/role sections in the system prompt.
     pub prompt_preamble: Option<String>,
+    /// Default swarm agent: "claude", "codex", or "auto".
+    pub default_agent: String,
 }
 
 /// Build the combined skills prompt from workspace context.
@@ -141,6 +143,7 @@ mod tests {
             notion_names: vec![],
             has_telegram: false,
             prompt_preamble: None,
+            default_agent: "claude".to_string(),
         }
     }
 
