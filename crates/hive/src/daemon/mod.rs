@@ -2488,6 +2488,8 @@ impl DaemonRunner {
     ///
     /// Iterates all workspaces. For each: if it has a buzz_slot, polls inline
     /// watchers; otherwise reads new signals from the JSONL file.
+    ///
+    /// Also builds heartbeat entries grouped by source and pushes them to the TUI.
     async fn poll_buzz(&mut self) -> Result<()> {
         // Collect (ws_idx, signal, topic) tuples across all workspaces.
         struct TaggedSignal {
@@ -2554,26 +2556,48 @@ impl DaemonRunner {
             }
         }
 
+        if tagged.is_empty() {
+            return Ok(());
+        }
+
+        // Build heartbeat entries grouped by source.
+        let mut heartbeat_entries =
+            build_heartbeat_entries(&tagged.iter().map(|t| &t.signal).collect::<Vec<_>>());
+
         // Filter for important signals.
         let important: Vec<&TaggedSignal> = tagged
             .iter()
             .filter(|t| matches!(t.signal.severity, Severity::Critical | Severity::Warning))
             .collect();
 
-        if important.is_empty() {
-            return Ok(());
+        if !important.is_empty() {
+            tracing::info!(count = important.len(), "New buzz signals to triage");
+
+            for t in &important {
+                self.active_workspace = Some(t.ws_idx);
+                let alert_chat_id = self.active_ws().config.telegram.alert_chat_id;
+                let assessment = self.triage_signal(&t.signal).await;
+                let alert = format_triage_alert(&t.signal, &assessment);
+                self.send(alert_chat_id, &alert).await?;
+
+                // Store bee's response in the matching heartbeat entry.
+                let source = capitalize_source(&t.signal.source);
+                for entry in &mut heartbeat_entries {
+                    if entry.source == source && entry.bee_response.is_none() {
+                        entry.bee_response = Some(assessment.clone());
+                        break;
+                    }
+                }
+            }
+            self.active_workspace = None;
         }
 
-        tracing::info!(count = important.len(), "New buzz signals to triage");
-
-        for t in important {
-            self.active_workspace = Some(t.ws_idx);
-            let alert_chat_id = self.active_ws().config.telegram.alert_chat_id;
-            let assessment = self.triage_signal(&t.signal).await;
-            let alert = format_triage_alert(&t.signal, &assessment);
-            self.send(alert_chat_id, &alert).await?;
+        // Push heartbeat entries to TUI.
+        if let Some(ref socket) = self.tui_socket {
+            socket.push_response(TuiResponse::HeartbeatUpdate {
+                entries: heartbeat_entries,
+            });
         }
-        self.active_workspace = None;
 
         Ok(())
     }
@@ -4088,6 +4112,101 @@ fn format_triage_alert(signal: &Signal, assessment: &str) -> String {
     }
 
     alert
+}
+
+/// Capitalize a watcher source name for display (e.g. "github" → "GitHub").
+fn capitalize_source(source: &str) -> String {
+    match source.to_lowercase().as_str() {
+        "github" => "GitHub".to_string(),
+        "sentry" => "Sentry".to_string(),
+        "linear" => "Linear".to_string(),
+        "webhook" => "Webhook".to_string(),
+        "reminder" => "Reminder".to_string(),
+        "swarm" => "Swarm".to_string(),
+        _ => {
+            let mut s = source.to_string();
+            if let Some(first) = s.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            s
+        }
+    }
+}
+
+/// Build heartbeat entries by grouping signals by source for this poll cycle.
+fn build_heartbeat_entries(signals: &[&Signal]) -> Vec<tui_socket::HeartbeatEntry> {
+    use std::collections::BTreeMap;
+
+    // Group signals by source.
+    let mut by_source: BTreeMap<String, Vec<&Signal>> = BTreeMap::new();
+    for signal in signals {
+        let source = capitalize_source(&signal.source);
+        by_source.entry(source).or_default().push(signal);
+    }
+
+    let now = chrono::Local::now();
+    let ts = now.format("%-H:%M").to_string();
+
+    by_source
+        .into_iter()
+        .map(|(source, sigs)| {
+            let summary = build_signal_summary(&sigs);
+            let heartbeat_signals = sigs
+                .iter()
+                .map(|s| tui_socket::HeartbeatSignal {
+                    source: s.source.clone(),
+                    title: s.title.clone(),
+                })
+                .collect();
+
+            tui_socket::HeartbeatEntry {
+                poll_cycle_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: ts.clone(),
+                source,
+                summary,
+                event_count: sigs.len(),
+                bee_response: None,
+                signals: heartbeat_signals,
+            }
+        })
+        .collect()
+}
+
+/// Build a human-readable summary from a group of signals.
+///
+/// E.g. "CI failed on apiari", "2 CI passes, 1 merged PR", "PR opened: apiari-1569"
+fn build_signal_summary(signals: &[&Signal]) -> String {
+    if signals.len() == 1 {
+        return signals[0].title.clone();
+    }
+
+    // Count by title prefix patterns for grouping.
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for sig in signals {
+        let label = &sig.title;
+        if let Some(existing) = counts.iter_mut().find(|(l, _)| l == label) {
+            existing.1 += 1;
+        } else {
+            counts.push((label.clone(), 1));
+        }
+    }
+
+    let parts: Vec<String> = counts
+        .iter()
+        .map(|(label, count)| {
+            if *count == 1 {
+                label.clone()
+            } else {
+                format!("{count} {label}")
+            }
+        })
+        .collect();
+
+    if parts.len() <= 3 {
+        parts.join(", ")
+    } else {
+        format!("{}, +{} more", parts[..2].join(", "), parts.len() - 2)
+    }
 }
 
 /// Split text into chunks of at most `limit` characters, preferring to break at newlines.

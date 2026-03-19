@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use crate::daemon::tui_socket::{RepoDispatchInfo, TuiResponse};
+use crate::daemon::tui_socket::{HeartbeatEntry, RepoDispatchInfo, TuiResponse};
 use crate::presence;
 use crate::workspace::{self, load_workspace};
 
@@ -66,6 +66,8 @@ enum CoordResponse {
         user_name: String,
         text: String,
     },
+    /// Heartbeat entries from buzz poll cycles.
+    HeartbeatUpdate { entries: Vec<HeartbeatEntry> },
 }
 
 /// Async action results sent back to the event loop.
@@ -285,6 +287,9 @@ async fn daemon_client_task(
                                 user_name,
                                 text,
                             },
+                            TuiResponse::HeartbeatUpdate { entries } => {
+                                CoordResponse::HeartbeatUpdate { entries }
+                            }
                         };
                         if coord_tx.send(coord_msg).await.is_err() {
                             break;
@@ -442,6 +447,16 @@ async fn event_loop(
                         .push(ChatLine::User(format!("{label}: {text}"), app::now_ts()));
                     app.streaming = true;
                     app.chat_scroll = 0;
+                }
+                CoordResponse::HeartbeatUpdate { entries } => {
+                    // Prepend new entries (newest first) and cap at 50.
+                    let mut new_entries = entries;
+                    new_entries.extend(app.heartbeat_entries.drain(..));
+                    new_entries.truncate(50);
+                    app.heartbeat_entries = new_entries;
+                    // Reset expanded state since indices shifted.
+                    app.heartbeat_expanded.clear();
+                    app.heartbeat_cursor = 0;
                 }
             }
         }
@@ -661,7 +676,28 @@ async fn event_loop(
             if !handled {
                 match app.focus {
                     Panel::Chat => {
-                        if app.is_dispatch_selected() {
+                        if app.is_heartbeat_selected() {
+                            // ── Content: Heartbeat panel ──
+                            match key.code {
+                                KeyCode::Char('j') | KeyCode::Down => app.heartbeat_next(),
+                                KeyCode::Char('k') | KeyCode::Up => app.heartbeat_prev(),
+                                KeyCode::Enter => app.heartbeat_toggle(),
+                                KeyCode::Char('z') => {
+                                    app.zoomed = !app.zoomed;
+                                }
+                                KeyCode::Esc => {
+                                    if app.zoomed {
+                                        app.zoomed = false;
+                                    } else {
+                                        app.focus = Panel::Workers;
+                                    }
+                                }
+                                KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('h') => {
+                                    app.focus = Panel::Workers;
+                                }
+                                _ => {}
+                            }
+                        } else if app.is_dispatch_selected() {
                             // ── Content: Dispatch review ──
                             match key.code {
                                 KeyCode::Char('y') => {

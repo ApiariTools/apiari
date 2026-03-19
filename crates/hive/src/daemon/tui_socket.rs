@@ -52,6 +52,32 @@ fn default_stage() -> String {
     "pending".into()
 }
 
+/// A single signal within a heartbeat entry (for the expanded view).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatSignal {
+    pub source: String,
+    pub title: String,
+}
+
+/// A heartbeat entry representing one poll cycle's grouped signals.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatEntry {
+    /// Unique ID for this poll cycle.
+    pub poll_cycle_id: String,
+    /// Timestamp of the poll cycle.
+    pub timestamp: String,
+    /// Watcher source (e.g. "GitHub", "Swarm", "Sentry").
+    pub source: String,
+    /// Pre-computed grouped summary (e.g. "2 CI passes, 1 merged PR").
+    pub summary: String,
+    /// Number of signals in this cycle.
+    pub event_count: usize,
+    /// Bee's coordinator response, if a signal hook fired.
+    pub bee_response: Option<String>,
+    /// Individual signals for the expanded view.
+    pub signals: Vec<HeartbeatSignal>,
+}
+
 /// Messages from daemon to TUI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -82,6 +108,8 @@ pub enum TuiResponse {
         user_name: String,
         text: String,
     },
+    /// Heartbeat entries (poll cycle summaries) pushed to TUI.
+    HeartbeatUpdate { entries: Vec<HeartbeatEntry> },
 }
 
 /// A handle to a connected TUI client's write channel.

@@ -1,5 +1,6 @@
 //! Application state for the unified hive TUI.
 
+use crate::daemon::tui_socket::HeartbeatEntry;
 use crate::keeper::discovery::{self, SwarmSession, WorktreeInfo};
 use crate::workspace::RegistryEntry;
 use std::cell::Cell;
@@ -84,6 +85,7 @@ pub enum Panel {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SidebarItem {
     Chat,
+    Heartbeat,
     Dispatch,
     Worker(usize), // index into flat_workers()
 }
@@ -191,6 +193,13 @@ pub struct App {
     // PR detail overlay.
     pub pr_detail: Option<PrDetailInfo>,
 
+    // Heartbeat panel state.
+    pub heartbeat_entries: Vec<HeartbeatEntry>,
+    /// Which heartbeat entry is selected (index into heartbeat_entries).
+    pub heartbeat_cursor: usize,
+    /// Which heartbeat entries are expanded (by index).
+    pub heartbeat_expanded: std::collections::HashSet<usize>,
+
     // Periodic refresh
     last_worker_refresh: Instant,
 }
@@ -248,6 +257,9 @@ impl App {
             zoomed: false,
             show_help: false,
             pr_detail: None,
+            heartbeat_entries: Vec::new(),
+            heartbeat_cursor: 0,
+            heartbeat_expanded: std::collections::HashSet::new(),
             last_worker_refresh: Instant::now(),
         }
     }
@@ -384,9 +396,16 @@ impl App {
         self.active_dispatch.is_some()
     }
 
-    /// Total sidebar item count (Chat + optional Dispatch + workers).
+    /// Whether the heartbeat item is showing in the sidebar.
+    fn has_heartbeat(&self) -> bool {
+        !self.heartbeat_entries.is_empty()
+    }
+
+    /// Total sidebar item count (Chat + optional Heartbeat + optional Dispatch + workers).
     fn sidebar_count(&self) -> usize {
-        1 + usize::from(self.has_dispatch()) + self.total_workers()
+        1 + usize::from(self.has_heartbeat())
+            + usize::from(self.has_dispatch())
+            + self.total_workers()
     }
 
     /// Total flat worker count across all sessions.
@@ -395,13 +414,15 @@ impl App {
     }
 
     /// Current sidebar selection as a numeric index.
-    /// Chat=0, Dispatch=1 (when present), Workers=1+has_dispatch+i.
+    /// Chat=0, Heartbeat=1 (when present), Dispatch=next (when present), Workers=rest.
     fn sidebar_index(&self) -> usize {
+        let h = usize::from(self.has_heartbeat());
         let d = usize::from(self.has_dispatch());
         match self.sidebar_selection {
             SidebarItem::Chat => 0,
-            SidebarItem::Dispatch => 1,
-            SidebarItem::Worker(i) => 1 + d + i,
+            SidebarItem::Heartbeat => 1,
+            SidebarItem::Dispatch => 1 + h,
+            SidebarItem::Worker(i) => 1 + h + d + i,
         }
     }
 
@@ -410,11 +431,20 @@ impl App {
         if index == 0 {
             return SidebarItem::Chat;
         }
-        if self.has_dispatch() && index == 1 {
-            return SidebarItem::Dispatch;
+        let mut offset = 1;
+        if self.has_heartbeat() {
+            if index == offset {
+                return SidebarItem::Heartbeat;
+            }
+            offset += 1;
         }
-        let worker_offset = 1 + usize::from(self.has_dispatch());
-        SidebarItem::Worker(index - worker_offset)
+        if self.has_dispatch() {
+            if index == offset {
+                return SidebarItem::Dispatch;
+            }
+            offset += 1;
+        }
+        SidebarItem::Worker(index - offset)
     }
 
     /// Select next sidebar item.
@@ -657,6 +687,11 @@ impl App {
         let total = self.total_workers();
         match self.sidebar_selection {
             SidebarItem::Chat => {} // always valid
+            SidebarItem::Heartbeat => {
+                if !self.has_heartbeat() {
+                    self.sidebar_selection = SidebarItem::Chat;
+                }
+            }
             SidebarItem::Dispatch => {
                 if !self.has_dispatch() {
                     self.sidebar_selection = SidebarItem::Chat;
@@ -883,6 +918,34 @@ impl App {
     pub fn dispatch_prev_section(&mut self) {
         if let Some(ref mut d) = self.active_dispatch {
             d.focused_section = d.focused_section.saturating_sub(1);
+        }
+    }
+
+    /// Whether heartbeat is the active sidebar item.
+    pub fn is_heartbeat_selected(&self) -> bool {
+        self.sidebar_selection == SidebarItem::Heartbeat
+    }
+
+    /// Move heartbeat cursor down.
+    pub fn heartbeat_next(&mut self) {
+        if self.heartbeat_cursor + 1 < self.heartbeat_entries.len() {
+            self.heartbeat_cursor += 1;
+        }
+    }
+
+    /// Move heartbeat cursor up.
+    pub fn heartbeat_prev(&mut self) {
+        self.heartbeat_cursor = self.heartbeat_cursor.saturating_sub(1);
+    }
+
+    /// Toggle expand/collapse of the currently selected heartbeat entry.
+    pub fn heartbeat_toggle(&mut self) {
+        if self.heartbeat_cursor < self.heartbeat_entries.len() {
+            if self.heartbeat_expanded.contains(&self.heartbeat_cursor) {
+                self.heartbeat_expanded.remove(&self.heartbeat_cursor);
+            } else {
+                self.heartbeat_expanded.insert(self.heartbeat_cursor);
+            }
         }
     }
 
