@@ -27,7 +27,7 @@ pub enum View {
     PrList,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {
     Home,
     Workers,
@@ -168,6 +168,126 @@ struct SwarmPrInfo {
     url: Option<String>,
 }
 
+// ── Onboarding (progressive dashboard reveal) ────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingStage {
+    Chat,      // only chat panel bright, Bee introduces herself
+    Workers,   // workers panel brightens
+    Heartbeat, // feed panel brightens
+    Reviews,   // reviews/signals panels brighten
+    Complete,  // all panels bright, onboarding done
+}
+
+pub struct OnboardingState {
+    pub active: bool,
+    pub stage: OnboardingStage,
+    pub revealed_panels: std::collections::HashSet<Panel>,
+}
+
+impl OnboardingState {
+    pub fn new_active() -> Self {
+        let mut revealed = std::collections::HashSet::new();
+        revealed.insert(Panel::Chat);
+        Self {
+            active: true,
+            stage: OnboardingStage::Chat,
+            revealed_panels: revealed,
+        }
+    }
+
+    pub fn completed() -> Self {
+        Self {
+            active: false,
+            stage: OnboardingStage::Complete,
+            revealed_panels: [
+                Panel::Home,
+                Panel::Workers,
+                Panel::Signals,
+                Panel::Reviews,
+                Panel::Feed,
+                Panel::Chat,
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    pub fn is_revealed(&self, panel: Panel) -> bool {
+        !self.active || self.revealed_panels.contains(&panel)
+    }
+
+    /// Advance to next stage, returning the Bee message for the new stage.
+    pub fn advance(&mut self) -> Option<&'static str> {
+        match self.stage {
+            OnboardingStage::Chat => {
+                self.stage = OnboardingStage::Workers;
+                self.revealed_panels.insert(Panel::Workers);
+                Some(
+                    "On your left: Workers. When you dispatch a coding task, \
+                     an AI agent spins up in its own git worktree and gets to work. \
+                     Each worker shows its status, branch, and PR link.\n\n\
+                     Press enter to continue.",
+                )
+            }
+            OnboardingStage::Workers => {
+                self.stage = OnboardingStage::Heartbeat;
+                self.revealed_panels.insert(Panel::Feed);
+                self.revealed_panels.insert(Panel::Home);
+                Some(
+                    "This is your Heartbeat \u{2014} a live feed of everything happening \
+                     in your workspace. Signals from GitHub (CI, PRs, releases), Sentry \
+                     errors, Linear issues \u{2014} it all flows here.\n\n\
+                     Press enter to continue.",
+                )
+            }
+            OnboardingStage::Heartbeat => {
+                self.stage = OnboardingStage::Reviews;
+                self.revealed_panels.insert(Panel::Signals);
+                self.revealed_panels.insert(Panel::Reviews);
+                Some(
+                    "Over here: your signal queue and reviews. Open PRs, review requests, \
+                     anything that needs your attention surfaces here automatically.\n\n\
+                     Press enter to continue.",
+                )
+            }
+            OnboardingStage::Reviews => {
+                self.stage = OnboardingStage::Complete;
+                self.active = false;
+                // Reveal everything
+                self.revealed_panels.insert(Panel::Home);
+                self.revealed_panels.insert(Panel::Workers);
+                self.revealed_panels.insert(Panel::Signals);
+                self.revealed_panels.insert(Panel::Reviews);
+                self.revealed_panels.insert(Panel::Feed);
+                self.revealed_panels.insert(Panel::Chat);
+                Some(
+                    "You're all set. \u{1f41d} The whole dashboard is yours.\n\n\
+                     Ask me anything \u{2014} I know your repos, your workers, and your config. \
+                     Try: 'what's the status?' or '/help' to see what I can do.",
+                )
+            }
+            OnboardingStage::Complete => None,
+        }
+    }
+
+    /// Skip straight to complete.
+    pub fn skip_to_complete(&mut self) {
+        self.stage = OnboardingStage::Complete;
+        self.active = false;
+        self.revealed_panels = [
+            Panel::Home,
+            Panel::Workers,
+            Panel::Signals,
+            Panel::Reviews,
+            Panel::Feed,
+            Panel::Chat,
+        ]
+        .into_iter()
+        .collect();
+    }
+}
+
 // ── Per-workspace state ───────────────────────────────────
 
 pub struct WorkspaceState {
@@ -235,6 +355,8 @@ pub struct App {
     pub activity_buf: Vec<u8>, // fixed array, each value = bar height 0-7
     // Snooze
     pub snooze_selection: usize,
+    // Onboarding
+    pub onboarding: OnboardingState,
     // Common
     pub pending_action: Option<PendingAction>,
     pub flash: Option<FlashMessage>,
@@ -246,7 +368,12 @@ pub struct App {
 
 impl App {
     /// Create app from discovered workspaces, focusing the given tab.
-    pub fn new(workspaces: Vec<Workspace>, focus_workspace: Option<&str>) -> Self {
+    /// If `needs_onboarding` is true, the dashboard starts with progressive reveal.
+    pub fn new(
+        workspaces: Vec<Workspace>,
+        focus_workspace: Option<&str>,
+        needs_onboarding: bool,
+    ) -> Self {
         let db = config::db_path();
         let ws_states: Vec<WorkspaceState> = workspaces
             .into_iter()
@@ -317,19 +444,33 @@ impl App {
             0
         };
 
+        let onboarding = if needs_onboarding {
+            OnboardingState::new_active()
+        } else {
+            OnboardingState::completed()
+        };
+
+        let focused_panel = if needs_onboarding {
+            Panel::Chat
+        } else {
+            Panel::Workers
+        };
+
+        let chat_focused = needs_onboarding;
+
         let mut app = Self {
             workspaces: ws_states,
             active_tab,
             prefix_active: false,
             view: View::Dashboard,
             mode: Mode::Normal,
-            focused_panel: Panel::Workers,
+            focused_panel,
             zoomed_panel: None,
             worker_selection: 0,
             signal_selection: 0,
             review_selection: 0,
             feed_selection: 0,
-            chat_focused: false,
+            chat_focused,
             worker_input: String::new(),
             worker_input_active: false,
             review_comment_active: false,
@@ -349,6 +490,7 @@ impl App {
             terminal_width: 80,
             activity_buf: vec![0; 18],
             snooze_selection: 0,
+            onboarding,
             pending_action: None,
             flash: None,
             needs_redraw: true,
@@ -356,6 +498,21 @@ impl App {
             last_worker_refresh: Instant::now(),
             last_signal_refresh: Instant::now(),
         };
+
+        // Inject first onboarding message into chat
+        if needs_onboarding {
+            if let Some(ws) = app.workspaces.get_mut(app.active_tab) {
+                ws.chat_history.push(ChatLine::Assistant(
+                    "Hey! I'm Bee \u{2014} your dev workspace coordinator. \
+                     I watch your GitHub, manage AI workers, and keep you in the loop.\n\n\
+                     Let me show you around. Press enter to continue."
+                        .to_string(),
+                    now_ts(),
+                    None,
+                ));
+                ws.chat_scroll.scroll_to_bottom();
+            }
+        }
 
         app.refresh_workers();
         app.refresh_signals();

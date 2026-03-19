@@ -95,26 +95,11 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Init { name } => {
-            // Launch conversational onboarding when stdin is a TTY and no workspace exists yet
-            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                let cwd = std::env::current_dir()?;
-                let raw_name = name.as_deref().unwrap_or_else(|| {
-                    cwd.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("workspace")
-                });
-                let ws_name =
-                    ui::onboarding::sanitize_workspace_name(raw_name).unwrap_or("workspace");
-                let config_path = config::workspaces_dir().join(format!("{ws_name}.toml"));
-                if !config_path.exists() {
-                    let result = ui::onboarding::run_onboarding(name.as_deref()).await?;
-                    if result.launch_ui {
-                        ui::run(result.workspace_name.as_deref()).await?;
-                    }
-                    return Ok(());
-                }
-            }
             init::run_init(name.as_deref())?;
+            // After init, launch the TUI — onboarding will run in-dashboard
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                ui::run(name.as_deref()).await?;
+            }
         }
         Command::Daemon {
             command,

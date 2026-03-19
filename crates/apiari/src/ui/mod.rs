@@ -86,22 +86,14 @@ enum KeyAction {
 
 /// Launch the TUI.
 pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
-    let mut workspaces = config::discover_workspaces()?;
+    let workspaces = config::discover_workspaces()?;
     if workspaces.is_empty() {
-        // Launch conversational onboarding instead of printing instructions
-        let result = onboarding::run_onboarding(None).await?;
-        if !result.launch_ui {
-            return Ok(());
-        }
-        // Re-discover workspaces after onboarding wrote the config
-        workspaces = config::discover_workspaces()?;
-        if workspaces.is_empty() {
-            eprintln!("No workspace configs found after setup.");
-            return Ok(());
-        }
+        eprintln!("No workspace configs found. Run `apiari init` first.");
+        return Ok(());
     }
 
-    let mut app = App::new(workspaces, focus_workspace);
+    let needs_onboarding = onboarding::needs_onboarding();
+    let mut app = App::new(workspaces, focus_workspace, needs_onboarding);
 
     // Coordinator channels
     let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
@@ -674,6 +666,44 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
                 app.insert_char('\n');
             } else {
                 let input = app.take_input();
+
+                // During onboarding: empty Enter advances the stage
+                if app.onboarding.active {
+                    if input.trim().is_empty() {
+                        // Advance onboarding
+                        if let Some(msg) = app.onboarding.advance() {
+                            if let Some(ws) = app.current_ws_mut() {
+                                ws.chat_history.push(app::ChatLine::Assistant(
+                                    msg.to_string(),
+                                    app::now_ts(),
+                                    None,
+                                ));
+                                ws.chat_scroll.scroll_to_bottom();
+                            }
+                        }
+                        if !app.onboarding.active {
+                            onboarding::mark_onboarded();
+                        }
+                        return KeyAction::Redraw;
+                    }
+                    // Non-empty input: send the chat, then advance
+                    let send_action = KeyAction::SendChat(input);
+                    if let Some(msg) = app.onboarding.advance() {
+                        if let Some(ws) = app.current_ws_mut() {
+                            ws.chat_history.push(app::ChatLine::Assistant(
+                                msg.to_string(),
+                                app::now_ts(),
+                                None,
+                            ));
+                            ws.chat_scroll.scroll_to_bottom();
+                        }
+                    }
+                    if !app.onboarding.active {
+                        onboarding::mark_onboarded();
+                    }
+                    return send_action;
+                }
+
                 if input.trim() == "/settings" {
                     return KeyAction::OpenSettings;
                 }
@@ -683,6 +713,24 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
             }
         }
         KeyCode::Esc => {
+            // During onboarding, Esc skips to complete
+            if app.onboarding.active {
+                app.onboarding.skip_to_complete();
+                if let Some(ws) = app.current_ws_mut() {
+                    ws.chat_history.push(app::ChatLine::Assistant(
+                        "You're all set. \u{1f41d} The whole dashboard is yours.\n\n\
+                         Ask me anything \u{2014} I know your repos, your workers, \
+                         and your config."
+                            .to_string(),
+                        app::now_ts(),
+                        None,
+                    ));
+                    ws.chat_scroll.scroll_to_bottom();
+                }
+                onboarding::mark_onboarded();
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
             app.chat_focused = false;
             app.needs_redraw = true;
         }
@@ -1622,6 +1670,7 @@ mod tests {
             last_extras_refresh: std::time::Instant::now(),
             terminal_width: 120,
             activity_buf: vec![0; 18],
+            onboarding: app::OnboardingState::completed(),
             pending_action: None,
             flash: None,
             needs_redraw: false,
