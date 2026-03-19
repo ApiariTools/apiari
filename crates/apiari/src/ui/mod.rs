@@ -171,20 +171,12 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
                             .send(CoordResponse::SystemStatus("Starting daemon...".into()))
                             .await;
 
-                        // Check for fast-fail: if the process exits quickly, skip waiting
-                        tokio::time::sleep(Duration::from_millis(300)).await;
-                        let fast_failed =
-                            !crate::daemon::is_daemon_running() && !daemon_client::socket_exists();
-
-                        if !fast_failed {
-                            // Wait up to ~8s for daemon to become ready
-                            for _ in 0..31 {
-                                tokio::time::sleep(Duration::from_millis(250)).await;
-                                if daemon_client::socket_exists()
-                                    && crate::daemon::is_daemon_running()
-                                {
-                                    break;
-                                }
+                        // Wait up to ~8s for daemon to become ready
+                        for _ in 0..31 {
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            if daemon_client::socket_exists() && crate::daemon::is_daemon_running()
+                            {
+                                break;
                             }
                         }
                     }
@@ -202,7 +194,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
             } else if use_daemon {
                 "Daemon started \u{2713}"
             } else if attempted_start {
-                "Could not start daemon \u{2014} run `apiari daemon --background` to start it manually"
+                "Could not start daemon \u{2014} run `apiari daemon start` to start it manually"
             } else {
                 "Using local coordinator (daemon not running)"
             };
