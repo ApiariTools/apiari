@@ -32,7 +32,7 @@ fn visual_input_rows(text: &str, width: u16) -> u16 {
         // Rendered as " {line}" on non-last lines, " {line}_" on last line
         let extra = if i == last_idx { 2 } else { 1 }; // leading space + optional cursor
         let len = line.len() + extra;
-        total += (len + w - 1) / w; // ceil division
+        total += len.div_ceil(w);
     }
     total.max(1) as u16
 }
