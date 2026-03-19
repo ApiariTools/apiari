@@ -306,7 +306,7 @@ fn draw_home_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
 
 // ── KPI strip (single inline bar) ────────────────────────
 
-fn draw_kpi_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, area: Rect) {
+fn draw_kpi_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
     let kpi_border = Style::default().fg(theme::STEEL);
     let kpi_title = Style::default().fg(theme::POLLEN);
     let kpi_bg = Style::default().bg(theme::COMB);
@@ -460,10 +460,18 @@ fn draw_kpi_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, area:
             Span::styled(format!(" \u{2713}{done}"), theme::status_done()),
         ]));
 
-        // Signals summary
+        // Signals summary (filtered in normal mode, total in debug)
+        let sig_display_count = if app.signals_debug_mode {
+            ws.signals.len()
+        } else {
+            ws.signals
+                .iter()
+                .filter(|s| !app::is_noise_signal(s))
+                .count()
+        };
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {} signals", ws.signals.len()),
+                format!(" {} signals", sig_display_count),
                 Style::default().fg(theme::FROST),
             ),
             if crit > 0 {
@@ -996,30 +1004,34 @@ fn draw_workers_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, ar
 
 fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
     let panel_focused = app.focused_panel == Panel::Signals;
+    let debug = app.signals_debug_mode;
 
-    // Filter out review queue signals — those go in the Reviews pane
+    // Filter out review queue signals — those go in the Reviews pane.
+    // In normal mode, also hide noise signals (merged PRs, CI pass).
     let filtered: Vec<&crate::buzz::signal::SignalRecord> = ws
         .signals
         .iter()
         .filter(|s| s.source != "github_review_queue")
+        .filter(|s| debug || !app::is_noise_signal(s))
         .collect();
     let total = filtered.len();
 
-    // Title with navigation indicator
+    // Title with navigation indicator + debug badge
+    let label = if debug { "Signals [debug]" } else { "Signals" };
     let title = if total == 0 {
-        format!("Signals ({total})")
+        format!("{label} ({total})")
     } else {
         let idx = app.signal_selection.min(total.saturating_sub(1));
         let signal = filtered[idx];
         let icon = app::severity_icon(&signal.severity);
         if panel_focused {
             format!(
-                "Signals ({total})  {icon} \u{25c0} {}/{} \u{25b6}",
+                "{label} ({total})  {icon} \u{25c0} {}/{} \u{25b6}",
                 idx + 1,
                 total
             )
         } else {
-            format!("Signals ({total})  {icon} {}/{}", idx + 1, total)
+            format!("{label} ({total})  {icon} {}/{}", idx + 1, total)
         }
     };
 
@@ -1033,12 +1045,51 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     }
 
     if total == 0 {
+        let msg = if debug {
+            "No open signals"
+        } else {
+            "No open signals (d=debug)"
+        };
         let lines = vec![Line::from(vec![
             Span::raw(" "),
-            Span::styled("No open signals", theme::muted()),
+            Span::styled(msg, theme::muted()),
         ])];
         frame.render_widget(Paragraph::new(lines), content_area);
         return;
+    }
+
+    // In debug mode, batch consecutive merged-PR-only entries
+    if debug {
+        let idx = app.signal_selection.min(total.saturating_sub(1));
+
+        // Check if the selected signal is part of a batch of consecutive noise signals
+        let mut batch_start = idx;
+        let mut batch_end = idx;
+        if app::is_noise_signal(filtered[idx]) {
+            // Expand backward
+            while batch_start > 0 && app::is_noise_signal(filtered[batch_start - 1]) {
+                batch_start -= 1;
+            }
+            // Expand forward
+            while batch_end + 1 < total && app::is_noise_signal(filtered[batch_end + 1]) {
+                batch_end += 1;
+            }
+            let batch_count = batch_end - batch_start + 1;
+            if batch_count > 1 {
+                let mut lines: Vec<Line> = Vec::new();
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(format!("{batch_count} merged PRs"), theme::muted()),
+                    Span::styled(format!("  ({}/{})", idx + 1, total), theme::muted()),
+                ]));
+                let p = Paragraph::new(lines);
+                frame.render_widget(p, content_area);
+                if !panel_focused {
+                    dim_area(frame, content_area);
+                }
+                return;
+            }
+        }
     }
 
     let idx = app.signal_selection.min(total.saturating_sub(1));

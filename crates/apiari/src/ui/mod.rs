@@ -690,6 +690,13 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 ws.chat_scroll.scroll_to_bottom();
             }
         }
+        KeyCode::Char('d') => {
+            if app.focused_panel == Panel::Signals {
+                app.signals_debug_mode = !app.signals_debug_mode;
+                app.clamp_selections();
+                app.needs_redraw = true;
+            }
+        }
         KeyCode::Char('s') => {
             return KeyAction::OpenSettings;
         }
@@ -1856,6 +1863,7 @@ mod tests {
             last_worker_refresh: std::time::Instant::now(),
             last_signal_refresh: std::time::Instant::now(),
             snooze_selection: 0,
+            signals_debug_mode: false,
         }
     }
 
