@@ -4,7 +4,7 @@
 //! validates the result against `WorkspaceConfig`, and writes it back.
 
 use color_eyre::eyre::{Result, WrapErr, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Find the workspace config file path.
 ///
@@ -100,10 +100,10 @@ fn parse_toml_value(value: &str) -> toml_edit::Item {
         return toml_edit::value(n);
     }
     // Float
-    if let Ok(f) = value.parse::<f64>() {
-        if value.contains('.') {
-            return toml_edit::value(f);
-        }
+    if let Ok(f) = value.parse::<f64>()
+        && value.contains('.')
+    {
+        return toml_edit::value(f);
     }
     // Boolean
     if value == "true" {
@@ -117,11 +117,11 @@ fn parse_toml_value(value: &str) -> toml_edit::Item {
 }
 
 /// Replace the home directory prefix with `~` for display.
-fn tilde_path(path: &PathBuf) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(suffix) = path.strip_prefix(&home) {
-            return format!("~/{}", suffix.display());
-        }
+fn tilde_path(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(suffix) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", suffix.display());
     }
     path.display().to_string()
 }
