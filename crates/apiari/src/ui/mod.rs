@@ -3,10 +3,10 @@
 pub mod app;
 pub mod daemon_client;
 pub mod history;
+pub mod onboarding;
 pub mod render;
 pub mod settings;
 pub mod theme;
-pub mod wizard;
 
 use app::{App, Mode, Panel, PendingAction, View, review_signal_target};
 use color_eyre::Result;
@@ -88,12 +88,12 @@ enum KeyAction {
 pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     let mut workspaces = config::discover_workspaces()?;
     if workspaces.is_empty() {
-        // Launch the onboarding wizard instead of printing instructions
-        let result = wizard::run_wizard(None).await?;
+        // Launch conversational onboarding instead of printing instructions
+        let result = onboarding::run_onboarding(None).await?;
         if !result.launch_ui {
             return Ok(());
         }
-        // Re-discover workspaces after wizard wrote the config
+        // Re-discover workspaces after onboarding wrote the config
         workspaces = config::discover_workspaces()?;
         if workspaces.is_empty() {
             eprintln!("No workspace configs found after setup.");
