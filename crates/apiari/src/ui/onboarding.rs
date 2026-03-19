@@ -130,7 +130,14 @@ impl OnboardingState {
 
     /// Write config file with whatever has been collected so far.
     fn write_config(&self) -> Result<String> {
-        let name = sanitize_workspace_name(&self.workspace_name).unwrap_or(&self.workspace_name);
+        let name = match sanitize_workspace_name(&self.workspace_name) {
+            Some(n) => n,
+            None => {
+                return Err(color_eyre::eyre::eyre!(
+                    "Invalid workspace name: must not contain path separators"
+                ));
+            }
+        };
         let dir = config::workspaces_dir();
         std::fs::create_dir_all(&dir)?;
         let config_path = dir.join(format!("{name}.toml"));
@@ -165,8 +172,10 @@ impl OnboardingState {
             None
         };
 
-        let mut watchers = config::WatchersConfig::default();
-        watchers.github = github;
+        let mut watchers = config::WatchersConfig {
+            github,
+            ..config::WatchersConfig::default()
+        };
 
         // Auto-detect swarm
         let swarm_available = std::process::Command::new("which")
@@ -189,7 +198,7 @@ impl OnboardingState {
 
         let ws_config = config::WorkspaceConfig {
             root: self.root_dir.clone(),
-            repos: vec![],
+            repos: self.github_repos.clone(),
             telegram,
             coordinator: config::CoordinatorConfig {
                 name: coordinator_name.to_string(),
@@ -357,8 +366,10 @@ async fn handle_key(state: &mut OnboardingState, key: crossterm::event::KeyEvent
         }
         KeyCode::Char(c) => {
             state.input.push(c);
-            // Debounce token validation
+            // Debounce token validation — sync input to bot_token so the
+            // debounce tick validates the current value.
             if state.stage == Stage::TelegramToken && state.input.len() > 10 {
+                state.bot_token = state.input.clone();
                 state.token_status = TokenStatus::Validating;
                 state.last_token_change = Some(Instant::now());
             }
@@ -393,17 +404,17 @@ async fn handle_enter(state: &mut OnboardingState) {
             }
 
             // Write initial config
-            let _ = state.write_config();
+            try_save(state);
 
-            state.bee(format!(
+            state.bee(
                 "Nice. I've created your workspace config.\n\
                  On the left you'll see your Workers panel \u{2014}\n\
                  that's where swarm agents will appear when\n\
                  you dispatch coding tasks.\n\
                  \n\
                  Want to connect Telegram so I can reach you\n\
-                 when you're away? (yes / skip)"
-            ));
+                 when you're away? (yes / skip)",
+            );
             state.stage = Stage::WorkersReveal;
         }
 
@@ -419,7 +430,7 @@ async fn handle_enter(state: &mut OnboardingState) {
                 state.stage = Stage::TelegramToken;
             } else if is_no(&input) {
                 state.telegram_skipped = true;
-                let _ = state.write_config();
+                try_save(state);
                 advance_to_heartbeat(state);
             } else {
                 state.bee("Just type 'yes' or 'skip':");
@@ -434,7 +445,7 @@ async fn handle_enter(state: &mut OnboardingState) {
             if is_no(&input) {
                 state.user(input);
                 state.telegram_skipped = true;
-                let _ = state.write_config();
+                try_save(state);
                 advance_to_heartbeat(state);
                 return;
             }
@@ -471,7 +482,7 @@ async fn handle_enter(state: &mut OnboardingState) {
                 state.user(input);
                 state.telegram_skipped = true;
                 state.bot_token.clear();
-                let _ = state.write_config();
+                try_save(state);
                 advance_to_heartbeat(state);
                 return;
             }
@@ -502,7 +513,7 @@ async fn handle_enter(state: &mut OnboardingState) {
                 }
             }
             // Write telegram config
-            let _ = state.write_config();
+            try_save(state);
             advance_to_heartbeat(state);
         }
 
@@ -550,18 +561,14 @@ async fn handle_enter(state: &mut OnboardingState) {
                         repo_list.join(", ")
                     ));
                 }
-                let _ = state.write_config();
+                try_save(state);
                 state.stage = Stage::GithubConfirm;
             } else if is_no(&input) {
                 state.github_skipped = true;
-                let _ = state.write_config();
+                try_save(state);
                 state.stage = Stage::GithubConfirm;
-            } else if input.is_empty() {
-                state.bee("Just type 'yes' or 'skip':");
-                return;
             } else {
                 state.bee("Just type 'yes' or 'skip':");
-                return;
             }
         }
 
@@ -603,6 +610,13 @@ fn advance_to_complete(state: &mut OnboardingState) {
     state.stage = Stage::Complete;
 }
 
+/// Try to write config; show error via Bee if it fails.
+fn try_save(state: &mut OnboardingState) {
+    if let Err(e) = state.write_config() {
+        state.bee(format!("Warning: couldn't save config: {e}"));
+    }
+}
+
 fn skip_to_end(state: &mut OnboardingState) {
     state.telegram_skipped = true;
     state.github_skipped = true;
@@ -610,7 +624,7 @@ fn skip_to_end(state: &mut OnboardingState) {
         "All set with defaults. Add integrations\n\
          anytime via /settings.",
     );
-    let _ = state.write_config();
+    try_save(state);
     state.done = true;
 }
 
