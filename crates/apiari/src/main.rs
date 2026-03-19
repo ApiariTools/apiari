@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Init { name } => {
-            // Launch TUI wizard when stdin is a TTY and no workspace exists yet
+            // Launch conversational onboarding when stdin is a TTY and no workspace exists yet
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 let cwd = std::env::current_dir()?;
                 let ws_name = name.as_deref().unwrap_or_else(|| {
@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
                 });
                 let config_path = config::workspaces_dir().join(format!("{ws_name}.toml"));
                 if !config_path.exists() {
-                    let result = ui::wizard::run_wizard(name.as_deref()).await?;
+                    let result = ui::onboarding::run_onboarding(name.as_deref()).await?;
                     if result.launch_ui {
                         ui::run(result.workspace_name.as_deref()).await?;
                     }
