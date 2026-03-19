@@ -634,6 +634,7 @@ impl App {
             snooze_selection: 0,
             onboarding: OnboardingState::new_active(), // only Chat panel visible
             setup: Some(setup),
+            signals_debug_mode: false,
             pending_action: None,
             flash: None,
             needs_redraw: true,
