@@ -750,6 +750,13 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 ws.chat_scroll.scroll_to_bottom();
             }
         }
+        KeyCode::Char('d') => {
+            if app.focused_panel == Panel::Signals {
+                app.signals_debug_mode = !app.signals_debug_mode;
+                app.clamp_selections();
+                app.needs_redraw = true;
+            }
+        }
         KeyCode::Char('s') => {
             return KeyAction::OpenSettings;
         }
@@ -1929,6 +1936,7 @@ mod tests {
             last_worker_refresh: std::time::Instant::now(),
             last_signal_refresh: std::time::Instant::now(),
             snooze_selection: 0,
+            signals_debug_mode: false,
         }
     }
 
@@ -1983,6 +1991,42 @@ mod tests {
         // Simulate Enter key
         let action = handle_dashboard_chat_key(&mut app, key(KeyCode::Enter));
         assert!(matches!(action, KeyAction::OpenSettings));
+    }
+
+    #[test]
+    fn test_d_key_toggles_debug_on_signals_panel() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Signals;
+        assert!(!app.signals_debug_mode);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(app.signals_debug_mode, "d should enable debug mode");
+        assert!(app.needs_redraw, "should trigger redraw");
+
+        app.needs_redraw = false;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(!app.signals_debug_mode, "d should toggle debug off");
+        assert!(app.needs_redraw, "should trigger redraw on toggle off");
+    }
+
+    #[test]
+    fn test_d_key_no_effect_on_other_panels() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Workers;
+        assert!(!app.signals_debug_mode);
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(
+            !app.signals_debug_mode,
+            "d should not toggle debug on Workers panel"
+        );
+
+        app.focused_panel = Panel::Feed;
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+        assert!(
+            !app.signals_debug_mode,
+            "d should not toggle debug on Feed panel"
+        );
     }
 
     #[test]

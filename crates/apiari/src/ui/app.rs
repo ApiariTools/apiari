@@ -398,6 +398,8 @@ pub struct App {
     pub activity_buf: Vec<u8>, // fixed array, each value = bar height 0-7
     // Snooze
     pub snooze_selection: usize,
+    // Signal filtering
+    pub signals_debug_mode: bool,
     // Onboarding
     pub onboarding: OnboardingState,
     // Common
@@ -496,6 +498,7 @@ impl App {
             terminal_width: 80,
             activity_buf: vec![0; 18],
             snooze_selection: 0,
+            signals_debug_mode: false,
             onboarding,
             pending_action: None,
             flash: None,
@@ -691,6 +694,7 @@ impl App {
             ws.signals
                 .iter()
                 .filter(|s| s.source != "github_review_queue")
+                .filter(|s| self.signals_debug_mode || !is_noise_signal(s))
                 .count()
         })
     }
@@ -713,6 +717,7 @@ impl App {
                     ws.signals
                         .iter()
                         .filter(|s| s.source != "github_review_queue")
+                        .filter(|s| self.signals_debug_mode || !is_noise_signal(s))
                         .count(),
                     ws.signals
                         .iter()
@@ -845,11 +850,13 @@ impl App {
                 }
             }
             Panel::Signals => {
+                let debug = self.signals_debug_mode;
                 let orig_idx = self.current_ws().and_then(|ws| {
                     ws.signals
                         .iter()
                         .enumerate()
                         .filter(|(_, s)| s.source != "github_review_queue")
+                        .filter(|(_, s)| debug || !is_noise_signal(s))
                         .map(|(i, _)| i)
                         .nth(self.signal_selection)
                 });
@@ -1494,6 +1501,7 @@ impl App {
                         .signals
                         .iter()
                         .filter(|s| s.source != "github_review_queue")
+                        .filter(|s| self.signals_debug_mode || !is_noise_signal(s))
                         .nth(self.signal_selection)
                 } else if self.focused_panel == Panel::Reviews {
                     self.current_ws()?
@@ -1913,6 +1921,14 @@ pub fn review_signal_target(signal: &SignalRecord) -> Option<(String, u64)> {
     let repo = &rest[..last_dash];
     let number: u64 = rest[last_dash + 1..].parse().ok()?;
     Some((repo.to_string(), number))
+}
+
+/// Non-actionable signal sources that are hidden by default (shown in debug mode).
+const NOISE_SOURCES: &[&str] = &["github_merged_pr", "github_ci_pass"];
+
+/// Returns true if a signal is non-actionable noise (merged PR or CI pass).
+pub fn is_noise_signal(signal: &SignalRecord) -> bool {
+    NOISE_SOURCES.contains(&signal.source.as_str())
 }
 
 /// Severity icon for display.
