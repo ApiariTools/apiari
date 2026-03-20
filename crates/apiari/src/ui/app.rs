@@ -665,13 +665,7 @@ impl App {
         // Inject first setup message
         if let Some(ws) = app.workspaces.get_mut(0) {
             ws.chat_history.push(ChatLine::Assistant(
-                format!(
-                    "Hi! I'm Bee \u{1f41d} \u{2014} your dev workspace coordinator.\n\n\
-                     apiari watches your repos, dispatches AI coding agents, and keeps \
-                     you in the loop \u{2014} all from this dashboard.\n\n\
-                     Let's get you set up. Where's your project?\n\
-                     (Press Enter for {cwd_display})"
-                ),
+                setup_greeting(&cwd_display),
                 now_ts(),
                 None,
             ));
@@ -2251,6 +2245,17 @@ fn find_available_config_path(dir: &std::path::Path, name: &str) -> std::path::P
 }
 
 /// Build a workspace TOML config from setup state.
+/// First-run greeting from Bee — single source of truth for the initial setup prompt.
+pub(super) fn setup_greeting(dir_display: &str) -> String {
+    format!(
+        "Hi! I'm Bee \u{1f41d} \u{2014} your dev workspace coordinator.\n\n\
+         apiari watches your repos, dispatches AI coding agents, and keeps \
+         you in the loop \u{2014} all from this dashboard.\n\n\
+         Let's get you set up. Where's your project?\n\
+         (Press Enter for {dir_display})"
+    )
+}
+
 fn build_setup_toml(setup: &SetupState) -> String {
     use toml_edit::{Array, DocumentMut, Item, Table, value};
 
