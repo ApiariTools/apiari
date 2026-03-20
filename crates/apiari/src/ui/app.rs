@@ -2290,6 +2290,9 @@ pub(super) fn load_all_extras_blocking(
                 // Feed: watcher heartbeats
                 if let Ok(cursors) = store.get_watcher_cursors() {
                     for (watcher, updated_at_str) in &cursors {
+                        if !is_top_level_watcher(watcher) {
+                            continue;
+                        }
                         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(updated_at_str) {
                             let dt_utc = dt.with_timezone(&Utc);
                             data.feed_items.push(FeedItem {
@@ -2446,6 +2449,14 @@ pub fn elapsed_display(created_at: &Option<DateTime<Local>>) -> String {
     }
 }
 
+/// Returns true if the watcher name is a known top-level watcher (not a per-repo sub-cursor).
+fn is_top_level_watcher(name: &str) -> bool {
+    matches!(
+        name,
+        "github" | "swarm" | "sentry" | "review_queue" | "linear" | "notion" | "email"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2515,6 +2526,40 @@ mod tests {
         let signal = make_signal("sentry", "sentry-42", None);
         let result = review_signal_target(&signal);
         assert_eq!(result, None);
+    }
+
+    // ── is_top_level_watcher tests ────────────────────────────
+
+    #[test]
+    fn test_top_level_watchers_are_included() {
+        for name in [
+            "github",
+            "swarm",
+            "sentry",
+            "review_queue",
+            "linear",
+            "notion",
+            "email",
+        ] {
+            assert!(is_top_level_watcher(name), "{name} should be top-level");
+        }
+    }
+
+    #[test]
+    fn test_sub_cursors_are_excluded() {
+        for name in [
+            "github_ci_pass:ApiariTools/web",
+            "github_merged_pr:ApiariTools/apiari",
+            "github_release:ApiariTools/apiari",
+            "github_ci_pass:ApiariTools/swarm",
+        ] {
+            assert!(!is_top_level_watcher(name), "{name} should be excluded");
+        }
+    }
+
+    #[test]
+    fn test_unknown_watcher_is_excluded() {
+        assert!(!is_top_level_watcher("some_future_thing"));
     }
 
     // ── apply_chat_history tests ─────────────────────────────
