@@ -1944,7 +1944,7 @@ fn build_setup_toml(setup: &SetupState) -> String {
     signal_hooks.push(hook_swarm);
 
     let mut hook_ci = Table::new();
-    hook_ci["source"] = value("github_ci_failure");
+    hook_ci["source"] = value("github");
     hook_ci["prompt"] = value("CI failed: {events}");
     hook_ci["action"] = value(
         "Find the relevant swarm worker for this PR. If a worker exists, send it the CI error details so it can fix them. If no worker exists, dispatch a new one to fix the failure.",

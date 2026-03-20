@@ -187,9 +187,9 @@ impl Default for CoordinatorConfig {
 /// signals from the specified source arrive.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignalHookConfig {
-    /// Signal source to match (e.g. "swarm", "github_bot_review", "github_ci_failure").
+    /// Signal source to match (e.g. "swarm", "github_bot_review", "github").
     /// Matches exactly, or as a prefix with `_` separator (e.g. "github" matches
-    /// "github_ci_failure", "github_bot_review", etc.).
+    /// "github_bot_review", "github_release", etc.).
     /// The first matching hook wins when multiple hooks could match a signal.
     pub source: String,
     /// Prompt template sent to coordinator. Supports {source} and {events} placeholders.
@@ -226,7 +226,7 @@ fn default_signal_hooks() -> Vec<SignalHookConfig> {
             ttl_secs: 300,
         },
         SignalHookConfig {
-            source: "github_ci_failure".into(),
+            source: "github".into(),
             prompt: "CI failed: {events}".into(),
             action: Some("Find the relevant swarm worker for this PR. If a worker exists, send it the CI error details so it can fix them. If no worker exists, dispatch a new one to fix the failure.".into()),
             ttl_secs: 300,
@@ -940,10 +940,7 @@ root = "/tmp/test"
             config.coordinator.signal_hooks[1].source,
             "github_bot_review"
         );
-        assert_eq!(
-            config.coordinator.signal_hooks[2].source,
-            "github_ci_failure"
-        );
+        assert_eq!(config.coordinator.signal_hooks[2].source, "github");
     }
 
     #[test]
@@ -1459,10 +1456,7 @@ max_session_turns = 0
         );
         assert!(config.coordinator.signal_hooks[1].action.is_some());
         assert_eq!(config.coordinator.signal_hooks[1].ttl_secs, 300);
-        assert_eq!(
-            config.coordinator.signal_hooks[2].source,
-            "github_ci_failure"
-        );
+        assert_eq!(config.coordinator.signal_hooks[2].source, "github");
         assert!(config.coordinator.signal_hooks[2].action.is_some());
     }
 
@@ -1476,8 +1470,8 @@ source = "swarm"
 ttl_secs = 60
 
 [[coordinator.signal_hooks]]
-source = "github_ci_failure"
-prompt = "CI failed: {title}"
+source = "github"
+prompt = "CI failed: {events}"
 action = "Dispatch a worker to fix the CI failure."
 ttl_secs = 300
 "#;
@@ -1487,13 +1481,10 @@ ttl_secs = 300
         assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 60);
         // No action specified → defaults to None
         assert!(config.coordinator.signal_hooks[0].action.is_none());
-        assert_eq!(
-            config.coordinator.signal_hooks[1].source,
-            "github_ci_failure"
-        );
+        assert_eq!(config.coordinator.signal_hooks[1].source, "github");
         assert_eq!(
             config.coordinator.signal_hooks[1].prompt,
-            "CI failed: {title}"
+            "CI failed: {events}"
         );
         assert_eq!(
             config.coordinator.signal_hooks[1].action.as_deref(),

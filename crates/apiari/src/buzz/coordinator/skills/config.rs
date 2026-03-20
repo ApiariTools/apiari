@@ -175,7 +175,7 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          when this hook fires. If omitted, you just notify (current default behavior).\n\
          ```toml\n\
          [[coordinator.signal_hooks]]\n\
-         source = \"github_ci_failure\"\n\
+         source = \"github\"\n\
          prompt = \"CI failed: {events}\"\n\
          action = \"Find the relevant swarm worker for this PR and send it the CI error details.\"\n\
          ttl_secs = 300\n\
