@@ -26,6 +26,7 @@ use crate::buzz::coordinator::skills::{
 use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
 use crate::buzz::daemon::config as buzz_daemon_config;
 use crate::buzz::pipeline::Pipeline;
+use crate::buzz::signal::Severity;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::watcher::WatcherRegistry;
 use crate::buzz::watcher::email::EmailWatcher;
@@ -595,7 +596,22 @@ async fn run_coordinator_task(
                     Ok(response) => {
                         let response = response.trim().to_string();
                         if !response.is_empty() && response.to_lowercase() != "ack" {
-                            if let Some((ref channel, chat_id, topic_id)) = telegram {
+                            // TUI-first: try broadcasting to TUI clients.
+                            // If nobody received it (0 receivers), fall back to Telegram.
+                            let receivers = socket_server
+                                .as_ref()
+                                .map(|server| {
+                                    server.broadcast_activity(
+                                        "signal",
+                                        &slot_name,
+                                        "assistant_message",
+                                        &response,
+                                    )
+                                })
+                                .unwrap_or(0);
+                            if receivers == 0
+                                && let Some((ref channel, chat_id, topic_id)) = telegram
+                            {
                                 let msg = OutboundMessage {
                                     chat_id,
                                     text: response.clone(),
@@ -605,14 +621,6 @@ async fn run_coordinator_task(
                                 if let Err(e) = channel.send_message(&msg).await {
                                     error!("[{slot_name}] failed to send follow-through: {e}");
                                 }
-                            }
-                            if let Some(ref server) = socket_server {
-                                server.broadcast_activity(
-                                    "signal",
-                                    &slot_name,
-                                    "assistant_message",
-                                    &response,
-                                );
                             }
                         } else {
                             info!(
@@ -1210,12 +1218,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             // - github_ci_pass: collected for batched message
                                             // - github_release: immediate real-time
                                             // - Other new signals go through pipeline rules
-                                            let text = if is_new {
+                                            let notification = if is_new {
                                                 slot.store.get_signal(id).ok().flatten().and_then(|record| {
+                                                    let severity = record.severity.clone();
                                                     match update.source.as_str() {
                                                         "github_merged_pr" => None,
                                                         "github_release" => {
-                                                            slot.pipeline.process_force_notify(&record)
+                                                            slot.pipeline.process_force_notify(&record).map(|t| (t, severity))
                                                         }
                                                         "github_ci_pass" => {
                                                             // Extract PR # from external_id (ci-pass-{repo}-{pr}-{run})
@@ -1229,25 +1238,32 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                 .push((pr_ref, record.title.clone()));
                                                             None
                                                         }
-                                                        _ => slot.pipeline.process(&record),
+                                                        _ => slot.pipeline.process(&record).map(|t| (t, severity)),
                                                     }
                                                 })
                                             } else {
                                                 None
                                             };
 
-                                            if let Some(text) = text
-                                                && let Some(tg) = &slot.config.telegram
-                                                && let Some(channel) = telegram_channels.get(&tg.bot_token)
-                                            {
-                                                let msg = OutboundMessage {
-                                                    chat_id: tg.chat_id,
-                                                    text,
-                                                    buttons: vec![],
-                                                    topic_id: tg.topic_id,
-                                                };
-                                                if let Err(e) = channel.send_message(&msg).await {
-                                                    error!("[{}] failed to send notification: {e}", slot.name);
+                                            if let Some((text, severity)) = notification {
+                                                // Always broadcast to TUI
+                                                if let Some(ref server) = socket_server {
+                                                    server.broadcast_activity("signal", &slot.name, "notification", &text);
+                                                }
+                                                // Only send to Telegram if severity is Warning or higher
+                                                if severity.priority() >= Severity::Warning.priority()
+                                                    && let Some(tg) = &slot.config.telegram
+                                                    && let Some(channel) = telegram_channels.get(&tg.bot_token)
+                                                {
+                                                    let msg = OutboundMessage {
+                                                        chat_id: tg.chat_id,
+                                                        text,
+                                                        buttons: vec![],
+                                                        topic_id: tg.topic_id,
+                                                    };
+                                                    if let Err(e) = channel.send_message(&msg).await {
+                                                        error!("[{}] failed to send notification: {e}", slot.name);
+                                                    }
                                                 }
                                             }
                                         }
@@ -1272,7 +1288,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         }
                     }
 
-                    // Send batched CI pass notification
+                    // Send batched CI pass notification (TUI-preferred, Telegram fallback)
                     if !ci_pass_batch.is_empty() {
                         let text = if ci_pass_batch.len() == 1 {
                             ci_pass_batch[0].1.clone()
@@ -1285,7 +1301,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 pr_refs.join(", ")
                             )
                         };
-                        if let Some(tg) = &slot.config.telegram
+                        let receivers = socket_server
+                            .as_ref()
+                            .map(|server| server.broadcast_activity("signal", &slot.name, "ci_pass", &text))
+                            .unwrap_or(0);
+                        if receivers == 0
+                            && let Some(tg) = &slot.config.telegram
                             && let Some(channel) = telegram_channels.get(&tg.bot_token)
                         {
                             let msg = OutboundMessage {
@@ -1300,19 +1321,25 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         }
                     }
 
-                    // Flush any pending batched notifications
-                    if let Some(text) = slot.pipeline.flush_batches()
-                        && let Some(tg) = &slot.config.telegram
-                        && let Some(channel) = telegram_channels.get(&tg.bot_token)
-                    {
-                        let msg = OutboundMessage {
-                            chat_id: tg.chat_id,
-                            text,
-                            buttons: vec![],
-                            topic_id: tg.topic_id,
-                        };
-                        if let Err(e) = channel.send_message(&msg).await {
-                            error!("[{}] failed to send batch notification: {e}", slot.name);
+                    // Flush any pending batched notifications (TUI-preferred, Telegram fallback)
+                    if let Some(text) = slot.pipeline.flush_batches() {
+                        let receivers = socket_server
+                            .as_ref()
+                            .map(|server| server.broadcast_activity("signal", &slot.name, "batch_notification", &text))
+                            .unwrap_or(0);
+                        if receivers == 0
+                            && let Some(tg) = &slot.config.telegram
+                            && let Some(channel) = telegram_channels.get(&tg.bot_token)
+                        {
+                            let msg = OutboundMessage {
+                                chat_id: tg.chat_id,
+                                text,
+                                buttons: vec![],
+                                topic_id: tg.topic_id,
+                            };
+                            if let Err(e) = channel.send_message(&msg).await {
+                                error!("[{}] failed to send batch notification: {e}", slot.name);
+                            }
                         }
                     }
 
