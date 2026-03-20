@@ -1810,22 +1810,48 @@ impl App {
         data: Vec<(String, Vec<ChatLine>, Option<String>)>,
     ) {
         for (name, history, preview) in data {
+            if history.is_empty() {
+                continue;
+            }
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
-                // Only apply if chat history is still empty (or just has onboarding msg)
-                let only_onboarding = ws.chat_history.len() <= 1 && self.onboarding.active;
-                if ws.chat_history.is_empty() || only_onboarding {
-                    let onboarding_msg = if self.onboarding.active {
-                        ws.chat_history.pop()
-                    } else {
-                        None
-                    };
-                    ws.chat_history = history;
-                    if let Some(msg) = onboarding_msg {
-                        ws.chat_history.push(msg);
-                    }
-                    ws.coordinator_preview = preview;
-                    ws.chat_scroll.scroll_to_bottom();
+                // Only apply if no real user/assistant messages yet — system-only
+                // messages (e.g. "Starting daemon…") should not block history load.
+                let has_user = ws
+                    .chat_history
+                    .iter()
+                    .any(|m| matches!(m, ChatLine::User(..)));
+                let assistant_count = ws
+                    .chat_history
+                    .iter()
+                    .filter(|m| matches!(m, ChatLine::Assistant(..)))
+                    .count();
+                // The single onboarding assistant message doesn't count as real chat.
+                let has_real_assistant =
+                    assistant_count > 0 && !(self.onboarding.active && assistant_count <= 1);
+                if has_user || has_real_assistant {
+                    continue;
                 }
+
+                // Preserve existing messages (system status + onboarding) to
+                // re-append after history.
+                let existing: Vec<ChatLine> = ws.chat_history.drain(..).collect();
+
+                // Take only the last 20 history messages to keep the panel light.
+                let skip = history.len().saturating_sub(20);
+                let trimmed: Vec<ChatLine> = history.into_iter().skip(skip).collect();
+
+                // Inject history with session dividers.
+                ws.chat_history
+                    .push(ChatLine::System("─── previous session ───".into()));
+                ws.chat_history.extend(trimmed);
+                ws.chat_history
+                    .push(ChatLine::System("─── new session ───".into()));
+
+                // Re-append existing messages (system statuses, onboarding).
+                ws.chat_history.extend(existing);
+
+                ws.coordinator_preview = preview;
+                ws.chat_scroll.scroll_to_bottom();
             }
         }
         self.needs_redraw = true;
@@ -2322,7 +2348,7 @@ pub(super) fn load_chat_history_blocking(
         .map(|name| {
             let chat_history: Vec<ChatLine> = if let Ok(store) = SignalStore::open(db_path, name) {
                 let conv = ConversationStore::new(store.conn(), name);
-                match conv.load_history(200) {
+                match conv.load_history(20) {
                     Ok(rows) if !rows.is_empty() => rows
                         .into_iter()
                         .map(|row| {
@@ -2590,7 +2616,16 @@ mod tests {
         ];
         app.apply_chat_history(vec![("ws1".into(), history, Some("hi".into()))]);
 
-        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        // 2 history + 2 dividers = 4
+        assert_eq!(app.workspaces[0].chat_history.len(), 4);
+        assert!(matches!(
+            &app.workspaces[0].chat_history[0],
+            ChatLine::System(s) if s.contains("previous session")
+        ));
+        assert!(matches!(
+            &app.workspaces[0].chat_history[3],
+            ChatLine::System(s) if s.contains("new session")
+        ));
         assert_eq!(app.workspaces[0].coordinator_preview, Some("hi".into()));
     }
 
@@ -2603,11 +2638,11 @@ mod tests {
         let history = vec![ChatLine::User("old msg".into(), "11:00".into(), None)];
         app.apply_chat_history(vec![("ws1".into(), history, None)]);
 
-        // Should have loaded history + preserved onboarding msg at end
-        assert_eq!(app.workspaces[0].chat_history.len(), 2);
-        // Last message should be the onboarding assistant message
+        // 1 history + 2 dividers + 1 onboarding = 4
+        assert_eq!(app.workspaces[0].chat_history.len(), 4);
+        // Last message should be the onboarding assistant message (re-appended)
         assert!(matches!(
-            &app.workspaces[0].chat_history[1],
+            &app.workspaces[0].chat_history[3],
             ChatLine::Assistant(_, _, _)
         ));
     }
@@ -2652,11 +2687,42 @@ mod tests {
         )];
         app.apply_chat_history(vec![("ws1".into(), history, Some("welcome back".into()))]);
 
-        assert_eq!(app.workspaces[0].chat_history.len(), 1);
+        // 1 history + 2 dividers = 3
+        assert_eq!(app.workspaces[0].chat_history.len(), 3);
         assert_eq!(
             app.workspaces[0].coordinator_preview,
             Some("welcome back".into())
         );
+    }
+
+    #[test]
+    fn test_apply_chat_history_loads_when_only_system_messages_present() {
+        let mut app = make_app(&["ws1"], false);
+        // Simulate system status messages that arrive before history loads
+        app.workspaces[0]
+            .chat_history
+            .push(ChatLine::System("Starting daemon…".into()));
+        app.workspaces[0]
+            .chat_history
+            .push(ChatLine::System("Connected to daemon ✓".into()));
+
+        let history = vec![
+            ChatLine::User("old question".into(), "10:00".into(), None),
+            ChatLine::Assistant("old answer".into(), "10:01".into(), None),
+        ];
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // History should load: 2 dividers + 2 history + 2 re-appended system msgs = 6
+        assert_eq!(app.workspaces[0].chat_history.len(), 6);
+        assert!(matches!(
+            &app.workspaces[0].chat_history[0],
+            ChatLine::System(s) if s.contains("previous session")
+        ));
+        // The original system messages should be re-appended after the new session divider
+        assert!(matches!(
+            &app.workspaces[0].chat_history[4],
+            ChatLine::System(s) if s.contains("Starting daemon")
+        ));
     }
 
     // ── Setup state machine tests ────────────────────────────
