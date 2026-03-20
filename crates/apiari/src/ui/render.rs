@@ -16,16 +16,34 @@ use super::theme;
 
 const SPINNER: &[&str] = &["|", "/", "-", "\\"];
 
+/// Build the display string for the input box with cursor indicator.
+/// Returns the rendered string with `_` at the cursor position.
+/// `cursor_pos` is a byte offset into `text`, clamped and snapped to
+/// the nearest char boundary for safety.
+fn build_input_display(text: &str, cursor_pos: usize) -> String {
+    // Clamp to text length, then snap back to a char boundary.
+    let mut pos = cursor_pos.min(text.len());
+    while pos > 0 && !text.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push(' ');
+    out.push_str(&text[..pos]);
+    out.push('_');
+    out.push_str(&text[pos..]);
+    out
+}
+
 /// Calculate the number of visual rows needed for input text with wrapping.
 /// `text` is the raw input (may contain newlines), `width` is the available
-/// display width. Builds the exact rendered string (` {text}_`) and uses
+/// display width. Builds the exact rendered string with cursor and uses
 /// display width for correct Unicode/emoji handling.
-fn visual_input_rows(text: &str, width: u16) -> u16 {
+fn visual_input_rows(text: &str, cursor_pos: usize, width: u16) -> u16 {
     let w = width as usize;
     if w == 0 {
         return 1;
     }
-    let rendered = format!(" {text}_");
+    let rendered = build_input_display(text, cursor_pos);
     let mut total: usize = 0;
     for segment in rendered.split('\n') {
         let display_w = Line::from(segment).width();
@@ -863,7 +881,7 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
         // Account for visual line wrapping, not just explicit newlines.
         // area.width - 2 accounts for the panel's left+right borders.
         let avail_w = area.width.saturating_sub(2);
-        let rows = visual_input_rows(&ws.input, avail_w);
+        let rows = visual_input_rows(&ws.input, ws.cursor_pos, avail_w);
         rows.clamp(1, 6) + 1 // +1 to include the top-border separator row
     } else {
         1 // just the hint line
@@ -977,7 +995,7 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
         let input_inner = input_block.inner(layout[1]);
         frame.render_widget(input_block, layout[1]);
 
-        let input_text = format!(" {}_", ws.input);
+        let input_text = build_input_display(&ws.input, ws.cursor_pos);
         let input_p = Paragraph::new(input_text)
             .style(theme::text())
             .wrap(Wrap { trim: false });
@@ -1677,7 +1695,7 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
     // Input bar height — account for visual line wrapping
     let input_h: u16 = if app.worker_input_active {
         let avail_w = area.width;
-        let rows = visual_input_rows(&app.worker_input, avail_w);
+        let rows = visual_input_rows(&app.worker_input, app.worker_input.len(), avail_w);
         rows.clamp(1, 6) + 1 // +1 for top border separator
     } else {
         0
