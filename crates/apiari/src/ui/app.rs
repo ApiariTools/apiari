@@ -1440,7 +1440,7 @@ impl App {
 
     pub fn cursor_up(&mut self) {
         if let Some(ws) = self.current_ws_mut() {
-            // Find current line start and column
+            // Find current line start and column (as char count, not bytes)
             let line_start = ws.input[..ws.cursor_pos]
                 .rfind('\n')
                 .map(|i| i + 1)
@@ -1451,26 +1451,32 @@ impl App {
                 self.needs_redraw = true;
                 return;
             }
-            let col = ws.cursor_pos - line_start;
+            let char_col = ws.input[line_start..ws.cursor_pos].chars().count();
             // Find previous line start
             let prev_line_start = ws.input[..line_start - 1]
                 .rfind('\n')
                 .map(|i| i + 1)
                 .unwrap_or(0);
-            let prev_line_len = line_start - 1 - prev_line_start;
-            ws.cursor_pos = prev_line_start + col.min(prev_line_len);
+            let prev_line = &ws.input[prev_line_start..line_start - 1];
+            // Map char column back to byte offset on prev line
+            let byte_offset: usize = prev_line
+                .char_indices()
+                .nth(char_col)
+                .map(|(i, _)| i)
+                .unwrap_or(prev_line.len());
+            ws.cursor_pos = prev_line_start + byte_offset;
             self.needs_redraw = true;
         }
     }
 
     pub fn cursor_down(&mut self) {
         if let Some(ws) = self.current_ws_mut() {
-            // Find current line start and column
+            // Find current line start and column (as char count, not bytes)
             let line_start = ws.input[..ws.cursor_pos]
                 .rfind('\n')
                 .map(|i| i + 1)
                 .unwrap_or(0);
-            let col = ws.cursor_pos - line_start;
+            let char_col = ws.input[line_start..ws.cursor_pos].chars().count();
             // Find next line
             let next_newline = ws.input[ws.cursor_pos..].find('\n');
             match next_newline {
@@ -1480,8 +1486,14 @@ impl App {
                         .find('\n')
                         .map(|i| next_line_start + i)
                         .unwrap_or(ws.input.len());
-                    let next_line_len = next_line_end - next_line_start;
-                    ws.cursor_pos = next_line_start + col.min(next_line_len);
+                    let next_line = &ws.input[next_line_start..next_line_end];
+                    // Map char column back to byte offset on next line
+                    let byte_offset: usize = next_line
+                        .char_indices()
+                        .nth(char_col)
+                        .map(|(i, _)| i)
+                        .unwrap_or(next_line.len());
+                    ws.cursor_pos = next_line_start + byte_offset;
                 }
                 None => {
                     // Already on last line — move to end

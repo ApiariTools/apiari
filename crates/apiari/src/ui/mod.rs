@@ -2219,4 +2219,129 @@ mod tests {
         let input = &app.workspaces[0].input;
         assert_eq!(input, "1");
     }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn test_ctrl_c_clears_input_when_chat_focused_nonempty() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+        app.workspaces[0].input = "hello".to_string();
+        app.workspaces[0].cursor_pos = 5;
+
+        let action = handle_key(&mut app, ctrl_key(KeyCode::Char('c')));
+
+        // Should clear input, not quit
+        assert!(matches!(action, KeyAction::Redraw));
+        assert!(app.workspaces[0].input.is_empty());
+        assert_eq!(app.workspaces[0].cursor_pos, 0);
+        assert!(app.chat_focused, "should stay in chat mode");
+    }
+
+    #[test]
+    fn test_ctrl_c_quits_when_chat_focused_empty() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+        // Input is empty (default)
+
+        let action = handle_key(&mut app, ctrl_key(KeyCode::Char('c')));
+
+        assert!(matches!(action, KeyAction::Quit));
+    }
+
+    #[test]
+    fn test_ctrl_c_quits_when_not_chat_focused() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Workers;
+        app.chat_focused = false;
+
+        let action = handle_key(&mut app, ctrl_key(KeyCode::Char('c')));
+
+        assert!(matches!(action, KeyAction::Quit));
+    }
+
+    #[test]
+    fn test_cursor_movement_multibyte_utf8() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+
+        // Insert multi-byte chars: "café" = c(1) a(1) f(1) é(2) = 5 bytes
+        app.workspaces[0].input = "café".to_string();
+        app.workspaces[0].cursor_pos = 5; // end of "café"
+
+        // Move left once — should land before 'é' (2-byte char), at byte 3
+        app.cursor_left();
+        assert_eq!(app.workspaces[0].cursor_pos, 3);
+        assert!(app.workspaces[0].input.is_char_boundary(3));
+
+        // Move left again — before 'f', at byte 2
+        app.cursor_left();
+        assert_eq!(app.workspaces[0].cursor_pos, 2);
+
+        // Move right — back to byte 3
+        app.cursor_right();
+        assert_eq!(app.workspaces[0].cursor_pos, 3);
+
+        // Move right — past 'é' to byte 5 (end)
+        app.cursor_right();
+        assert_eq!(app.workspaces[0].cursor_pos, 5);
+    }
+
+    #[test]
+    fn test_cursor_up_down_multibyte_utf8() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+
+        // Two lines: "héllo\nwörld"
+        // Line 1: h(1) é(2) l(1) l(1) o(1) = 6 bytes, 5 chars
+        // Line 2: w(1) ö(2) r(1) l(1) d(1) = 6 bytes, 5 chars
+        app.workspaces[0].input = "héllo\nwörld".to_string();
+        // Put cursor at end of line 2 (byte 13)
+        app.workspaces[0].cursor_pos = 13;
+
+        // Move up — should land on line 1 at same char column (5 = end of line)
+        app.cursor_up();
+        let pos = app.workspaces[0].cursor_pos;
+        assert_eq!(pos, 6); // byte offset of end of "héllo"
+        assert!(app.workspaces[0].input.is_char_boundary(pos));
+
+        // Move cursor to char col 2 on line 1: after "hé" = byte 3
+        app.workspaces[0].cursor_pos = 3;
+
+        // Move down — should land at char col 2 on line 2: after "wö" = byte 10
+        app.cursor_down();
+        let pos = app.workspaces[0].cursor_pos;
+        assert_eq!(pos, 10); // "héllo\n" (7) + "wö" (3) = 10
+        assert!(app.workspaces[0].input.is_char_boundary(pos));
+    }
+
+    #[test]
+    fn test_insert_at_cursor_position() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Chat;
+        app.chat_focused = true;
+
+        // Type "abcd"
+        app.workspaces[0].input = "abcd".to_string();
+        app.workspaces[0].cursor_pos = 4;
+
+        // Move cursor to position 2 (between 'b' and 'c')
+        app.workspaces[0].cursor_pos = 2;
+
+        // Insert 'X' at cursor
+        app.insert_char('X');
+        assert_eq!(app.workspaces[0].input, "abXcd");
+        assert_eq!(app.workspaces[0].cursor_pos, 3); // after 'X'
+    }
 }

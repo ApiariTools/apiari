@@ -18,13 +18,19 @@ const SPINNER: &[&str] = &["|", "/", "-", "\\"];
 
 /// Build the display string for the input box with cursor indicator.
 /// Returns the rendered string with `_` at the cursor position.
-/// `cursor_pos` is a byte offset into `text`.
+/// `cursor_pos` is a byte offset into `text`, clamped and snapped to
+/// the nearest char boundary for safety.
 fn build_input_display(text: &str, cursor_pos: usize) -> String {
+    // Clamp to text length, then snap back to a char boundary.
+    let mut pos = cursor_pos.min(text.len());
+    while pos > 0 && !text.is_char_boundary(pos) {
+        pos -= 1;
+    }
     let mut out = String::with_capacity(text.len() + 2);
     out.push(' ');
-    out.push_str(&text[..cursor_pos]);
+    out.push_str(&text[..pos]);
     out.push('_');
-    out.push_str(&text[cursor_pos..]);
+    out.push_str(&text[pos..]);
     out
 }
 
