@@ -2160,40 +2160,38 @@ async fn build_full_status(slot: &WorkspaceSlot) -> String {
     // Worker states from swarm state file
     if let Some(ref swarm_cfg) = slot.config.watchers.swarm {
         if let Ok(contents) = tokio::fs::read_to_string(&swarm_cfg.state_path).await {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents) {
-                if let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array()) {
-                    if !worktrees.is_empty() {
-                        summary.push_str(&format!("\n{} worker(s):\n", worktrees.len()));
-                        for wt in worktrees {
-                            let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                            let phase = wt
-                                .get("phase")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown");
-                            let branch = wt.get("branch").and_then(|v| v.as_str()).unwrap_or("");
-                            let has_pr = wt.get("pr").and_then(|v| v.as_object()).is_some();
-                            let pr_str = if has_pr { " [PR]" } else { "" };
-                            summary.push_str(&format!("  [{phase}] {id} ({branch}){pr_str}\n"));
-                        }
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents)
+                && let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array())
+                && !worktrees.is_empty()
+            {
+                summary.push_str(&format!("\n{} worker(s):\n", worktrees.len()));
+                for wt in worktrees {
+                    let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                    let phase = wt
+                        .get("phase")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let branch = wt.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+                    let has_pr = wt.get("pr").and_then(|v| v.as_object()).is_some();
+                    let pr_str = if has_pr { " [PR]" } else { "" };
+                    summary.push_str(&format!("  [{phase}] {id} ({branch}){pr_str}\n"));
+                }
 
-                        // PR queue
-                        let prs: Vec<_> = worktrees
-                            .iter()
-                            .filter_map(|wt| {
-                                let pr = wt.get("pr")?.as_object()?;
-                                let number = pr.get("number")?.as_u64()?;
-                                let title = pr.get("title")?.as_str()?;
-                                let state =
-                                    pr.get("state").and_then(|v| v.as_str()).unwrap_or("open");
-                                Some((number, title.to_string(), state.to_string()))
-                            })
-                            .collect();
-                        if !prs.is_empty() {
-                            summary.push_str(&format!("\n{} PR(s):\n", prs.len()));
-                            for (number, title, state) in &prs {
-                                summary.push_str(&format!("  #{number} [{state}] {title}\n"));
-                            }
-                        }
+                // PR queue
+                let prs: Vec<_> = worktrees
+                    .iter()
+                    .filter_map(|wt| {
+                        let pr = wt.get("pr")?.as_object()?;
+                        let number = pr.get("number")?.as_u64()?;
+                        let title = pr.get("title")?.as_str()?;
+                        let state = pr.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+                        Some((number, title.to_string(), state.to_string()))
+                    })
+                    .collect();
+                if !prs.is_empty() {
+                    summary.push_str(&format!("\n{} PR(s):\n", prs.len()));
+                    for (number, title, state) in &prs {
+                        summary.push_str(&format!("  #{number} [{state}] {title}\n"));
                     }
                 }
             }
