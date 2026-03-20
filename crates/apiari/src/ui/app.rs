@@ -2290,6 +2290,10 @@ pub(super) fn load_all_extras_blocking(
                 // Feed: watcher heartbeats
                 if let Ok(cursors) = store.get_watcher_cursors() {
                     for (watcher, updated_at_str) in &cursors {
+                        // Skip sub-cursors (per-repo, per-signal-type) — they're implementation details
+                        if watcher.contains(':') {
+                            continue;
+                        }
                         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(updated_at_str) {
                             let dt_utc = dt.with_timezone(&Utc);
                             data.feed_items.push(FeedItem {
