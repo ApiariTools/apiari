@@ -1936,6 +1936,7 @@ mod tests {
             streaming: false,
             coordinator_preview: None,
             has_unread_response: false,
+            coordinator_turns: 0,
             prev_worker_phases: Default::default(),
             prev_signal_ids: Default::default(),
             prev_pr_workers: Default::default(),

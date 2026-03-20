@@ -459,6 +459,7 @@ async fn run_coordinator_task(
                 info!("[{slot_name}] session compact via /compact command");
 
                 // If we have an active session, ask the coordinator to summarize
+                let mut saved_to_memory = false;
                 if coordinator.has_session() {
                     let summary_prompt = "Summarize the current session in 3-5 bullet points of key context: decisions made, tasks in flight, important state. Output ONLY the bullet points, nothing else.";
 
@@ -481,11 +482,12 @@ async fn run_coordinator_task(
                                         chrono::Local::now().format("%Y-%m-%d %H:%M"),
                                         summary
                                     );
-                                    if let Err(e) = mem.add(
+                                    match mem.add(
                                         crate::buzz::coordinator::memory::MemoryCategory::Observation,
                                         &entry,
                                     ) {
-                                        warn!("[{slot_name}] failed to save compact summary to memory: {e}");
+                                        Ok(_) => saved_to_memory = true,
+                                        Err(e) => warn!("[{slot_name}] failed to save compact summary to memory: {e}"),
                                     }
                                 }
                             }
@@ -499,7 +501,11 @@ async fn run_coordinator_task(
                 coordinator.reset_session();
                 turn_count = 0;
 
-                let msg_text = "\u{1f5dc}\u{fe0f} Session compacted \u{2014} key context saved to memory. Starting fresh.";
+                let msg_text = if saved_to_memory {
+                    "\u{1f5dc}\u{fe0f} Session compacted \u{2014} key context saved to memory. Starting fresh."
+                } else {
+                    "\u{1f5dc}\u{fe0f} Session compacted. Starting fresh."
+                };
                 if let Some(ref server) = socket_server {
                     // Broadcast session_reset so TUI can reset turn counter
                     server.broadcast_activity("system", &slot_name, "session_reset", msg_text);
@@ -2158,42 +2164,40 @@ async fn build_full_status(slot: &WorkspaceSlot) -> String {
     let mut summary = format_signal_summary(&signals);
 
     // Worker states from swarm state file
-    if let Some(ref swarm_cfg) = slot.config.watchers.swarm {
-        if let Ok(contents) = tokio::fs::read_to_string(&swarm_cfg.state_path).await {
-            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents)
-                && let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array())
-                && !worktrees.is_empty()
-            {
-                summary.push_str(&format!("\n{} worker(s):\n", worktrees.len()));
-                for wt in worktrees {
-                    let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let phase = wt
-                        .get("phase")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    let branch = wt.get("branch").and_then(|v| v.as_str()).unwrap_or("");
-                    let has_pr = wt.get("pr").and_then(|v| v.as_object()).is_some();
-                    let pr_str = if has_pr { " [PR]" } else { "" };
-                    summary.push_str(&format!("  [{phase}] {id} ({branch}){pr_str}\n"));
-                }
+    if let Some(ref swarm_cfg) = slot.config.watchers.swarm
+        && let Ok(contents) = tokio::fs::read_to_string(&swarm_cfg.state_path).await
+        && let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents)
+        && let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array())
+        && !worktrees.is_empty()
+    {
+        summary.push_str(&format!("\n{} worker(s):\n", worktrees.len()));
+        for wt in worktrees {
+            let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let phase = wt
+                .get("phase")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let branch = wt.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+            let has_pr = wt.get("pr").and_then(|v| v.as_object()).is_some();
+            let pr_str = if has_pr { " [PR]" } else { "" };
+            summary.push_str(&format!("  [{phase}] {id} ({branch}){pr_str}\n"));
+        }
 
-                // PR queue
-                let prs: Vec<_> = worktrees
-                    .iter()
-                    .filter_map(|wt| {
-                        let pr = wt.get("pr")?.as_object()?;
-                        let number = pr.get("number")?.as_u64()?;
-                        let title = pr.get("title")?.as_str()?;
-                        let state = pr.get("state").and_then(|v| v.as_str()).unwrap_or("open");
-                        Some((number, title.to_string(), state.to_string()))
-                    })
-                    .collect();
-                if !prs.is_empty() {
-                    summary.push_str(&format!("\n{} PR(s):\n", prs.len()));
-                    for (number, title, state) in &prs {
-                        summary.push_str(&format!("  #{number} [{state}] {title}\n"));
-                    }
-                }
+        // PR queue
+        let prs: Vec<_> = worktrees
+            .iter()
+            .filter_map(|wt| {
+                let pr = wt.get("pr")?.as_object()?;
+                let number = pr.get("number")?.as_u64()?;
+                let title = pr.get("title")?.as_str()?;
+                let state = pr.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+                Some((number, title.to_string(), state.to_string()))
+            })
+            .collect();
+        if !prs.is_empty() {
+            summary.push_str(&format!("\n{} PR(s):\n", prs.len()));
+            for (number, title, state) in &prs {
+                summary.push_str(&format!("  #{number} [{state}] {title}\n"));
             }
         }
     }
