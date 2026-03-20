@@ -358,6 +358,10 @@ pub struct SetupState {
     pub telegram_chat_id: Option<i64>,
     /// True when adding a workspace to an existing setup (simplified flow).
     pub add_workspace: bool,
+    /// Previous tab index to restore on cancel (add-workspace only).
+    pub prev_active_tab: usize,
+    /// Previous focused panel to restore on cancel (add-workspace only).
+    pub prev_focused_panel: Panel,
 }
 
 // ── Per-workspace state ───────────────────────────────────
@@ -619,6 +623,8 @@ impl App {
             telegram_token: None,
             telegram_chat_id: None,
             add_workspace: false,
+            prev_active_tab: 0,
+            prev_focused_panel: Panel::Workers,
         };
 
         let cwd_display = cwd.display().to_string();
@@ -740,6 +746,9 @@ impl App {
         ));
         ws_state.chat_scroll.scroll_to_bottom();
 
+        let prev_active_tab = self.active_tab;
+        let prev_focused_panel = self.focused_panel;
+
         self.workspaces.push(ws_state);
         let new_idx = self.workspaces.len() - 1;
         self.active_tab = new_idx;
@@ -755,6 +764,8 @@ impl App {
             telegram_token: None,
             telegram_chat_id: None,
             add_workspace: true,
+            prev_active_tab,
+            prev_focused_panel,
         });
         self.needs_redraw = true;
     }

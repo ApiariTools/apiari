@@ -1028,20 +1028,22 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
         }
         KeyCode::Esc => {
             // During add-workspace setup, ESC cancels and removes the placeholder tab
-            if let Some(ref setup) = app.setup {
+            if let Some(setup) = app.setup.take() {
                 if setup.add_workspace {
-                    app.setup = None;
+                    let restore_tab = setup.prev_active_tab;
+                    let restore_panel = setup.prev_focused_panel;
                     // Remove the placeholder tab
                     if let Some(idx) = app.workspaces.iter().position(|w| w.is_setup_placeholder) {
                         app.workspaces.remove(idx);
-                        app.active_tab = app.active_tab.min(app.workspaces.len().saturating_sub(1));
                     }
+                    app.active_tab = restore_tab.min(app.workspaces.len().saturating_sub(1));
+                    app.focused_panel = restore_panel;
                     app.chat_focused = false;
-                    app.focused_panel = Panel::Workers;
                     app.needs_redraw = true;
                     return KeyAction::Redraw;
                 }
-                // First-run setup: can't leave chat — it's the only interaction
+                // First-run setup: can't leave chat — put it back
+                app.setup = Some(setup);
                 return KeyAction::Redraw;
             }
             // During onboarding, Esc skips to complete

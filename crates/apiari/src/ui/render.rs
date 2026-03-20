@@ -145,10 +145,11 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Right-aligned hints
     let hints = " ^b n/p  q:quit ";
-    let used: usize = Line::from(spans.clone()).width();
+    let used: usize = spans.iter().map(|s| s.width()).sum();
+    let hints_width = Span::from(hints).width();
     let padding = (area.width as usize)
         .saturating_sub(used)
-        .saturating_sub(Line::from(hints).width());
+        .saturating_sub(hints_width);
     if padding > 0 {
         spans.push(Span::raw(" ".repeat(padding)));
     }

@@ -148,7 +148,9 @@ async fn main() -> Result<()> {
         }
         Some(Command::Init { name }) => {
             // Launch TUI directly in add-workspace mode for cwd
-            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            if std::io::IsTerminal::is_terminal(&std::io::stdout())
+                && std::io::IsTerminal::is_terminal(&std::io::stdin())
+            {
                 let cwd = std::env::current_dir()?;
                 ui::run(None, Some(cwd), name.as_deref()).await?;
             } else {
