@@ -90,7 +90,16 @@ enum CoordinatorJob {
     },
     /// Reset the coordinator session.
     ResetSession,
-    /// Compact the coordinator session (reset + respond with confirmation).
+    /// Clear the coordinator session (hard reset, no context carried forward).
+    Clear {
+        /// If Some, send confirmation via Telegram.
+        telegram: Option<(TelegramChannel, i64, Option<i64>)>,
+        /// If Some, send confirmation via TUI responder.
+        tui_responder: Option<mpsc::UnboundedSender<socket::DaemonResponse>>,
+        socket_server: Option<Arc<socket::DaemonSocketServer>>,
+        slot_name: String,
+    },
+    /// Compact the coordinator session (summarize context to memory, then reset).
     Compact {
         /// If Some, send confirmation via Telegram.
         telegram: Option<(TelegramChannel, i64, Option<i64>)>,
@@ -407,7 +416,7 @@ async fn run_coordinator_task(
                 turn_count = 0;
             }
 
-            CoordinatorJob::Compact {
+            CoordinatorJob::Clear {
                 telegram,
                 tui_responder,
                 socket_server,
@@ -415,9 +424,86 @@ async fn run_coordinator_task(
             } => {
                 coordinator.reset_session();
                 turn_count = 0;
-                info!("[{slot_name}] session compacted via /compact command");
+                info!("[{slot_name}] session cleared via /clear command");
 
-                let msg_text = "\u{1f5dc}\u{fe0f} Session compacted. Starting fresh.";
+                let msg_text = "\u{1f5d1}\u{fe0f} Session cleared. Starting fresh.";
+                if let Some(ref server) = socket_server {
+                    server.broadcast_activity("system", &slot_name, "assistant_message", msg_text);
+                }
+                if let Some((channel, chat_id, topic_id)) = telegram {
+                    let msg = OutboundMessage {
+                        chat_id,
+                        text: msg_text.to_string(),
+                        buttons: vec![],
+                        topic_id,
+                    };
+                    if let Err(e) = channel.send_message(&msg).await {
+                        error!("[{slot_name}] failed to send /clear confirmation: {e}");
+                    }
+                }
+                if let Some(responder) = tui_responder {
+                    let _ = responder.send(socket::DaemonResponse::Token {
+                        text: msg_text.to_string(),
+                    });
+                    let _ = responder.send(socket::DaemonResponse::Done);
+                }
+            }
+
+            CoordinatorJob::Compact {
+                telegram,
+                tui_responder,
+                socket_server,
+                slot_name,
+            } => {
+                info!("[{slot_name}] session compact via /compact command");
+
+                // If we have an active session, ask the coordinator to summarize
+                if coordinator.has_session() {
+                    let saved_turns = coordinator.max_turns();
+                    coordinator.set_max_turns(1);
+
+                    let summary_prompt = "Summarize the current session in 3-5 bullet points of key context: decisions made, tasks in flight, important state. Output ONLY the bullet points, nothing else.";
+
+                    let opts = coordinator.build_options(&store);
+                    if let Ok(opts) = opts {
+                        match coordinator
+                            .handle_message_with_options(summary_prompt, opts, |_| {})
+                            .await
+                        {
+                            Ok(summary) => {
+                                let summary = summary.trim();
+                                if !summary.is_empty() {
+                                    // Save summary to memory store
+                                    let mem = crate::buzz::coordinator::memory::MemoryStore::new(
+                                        store.conn(),
+                                        store.workspace(),
+                                    );
+                                    let entry = format!(
+                                        "Session compact ({}): {}",
+                                        chrono::Local::now().format("%Y-%m-%d %H:%M"),
+                                        summary
+                                    );
+                                    if let Err(e) = mem.add(
+                                        crate::buzz::coordinator::memory::MemoryCategory::Observation,
+                                        &entry,
+                                    ) {
+                                        warn!("[{slot_name}] failed to save compact summary to memory: {e}");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("[{slot_name}] failed to get compact summary: {e}");
+                            }
+                        }
+                    }
+
+                    coordinator.set_max_turns(saved_turns);
+                }
+
+                coordinator.reset_session();
+                turn_count = 0;
+
+                let msg_text = "\u{1f5dc}\u{fe0f} Session compacted \u{2014} key context saved to memory. Starting fresh.";
                 if let Some(ref server) = socket_server {
                     server.broadcast_activity("system", &slot_name, "assistant_message", msg_text);
                 }
@@ -1355,8 +1441,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             if let Some(channel) = get_channel(slot, &telegram_channels) {
                                 match command.as_str() {
                                     "status" => {
-                                        let signals = slot.store.get_open_signals().unwrap_or_default();
-                                        let summary = format_signal_summary(&signals);
+                                        let summary = build_full_status(slot);
                                         if let Some(ref server) = socket_server {
                                             server.broadcast_activity("telegram", &slot.name, "assistant_message", &summary);
                                         }
@@ -1380,6 +1465,22 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             topic_id,
                                         };
                                         let _ = channel.send_message(&msg).await;
+                                    }
+                                    "clear" => {
+                                        if slot.coord_tx.send(CoordinatorJob::Clear {
+                                            telegram: Some((channel.clone(), chat_id, topic_id)),
+                                            tui_responder: None,
+                                            socket_server: socket_server.clone(),
+                                            slot_name: slot.name.clone(),
+                                        }).is_err() {
+                                            let msg = OutboundMessage {
+                                                chat_id,
+                                                text: "Error: coordinator task shut down".to_string(),
+                                                buttons: vec![],
+                                                topic_id,
+                                            };
+                                            let _ = channel.send_message(&msg).await;
+                                        }
                                     }
                                     "compact" => {
                                         if slot.coord_tx.send(CoordinatorJob::Compact {
@@ -1489,7 +1590,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -1835,14 +1936,33 @@ async fn handle_tui_command(
 
     match command {
         "status" => {
-            let signals = slot.store.get_open_signals().unwrap_or_default();
-            let summary = format_signal_summary(&signals);
+            let summary = build_full_status(slot);
             reply(responder, socket_server, &slot.name, &summary);
             true
         }
         "reset" => {
             let _ = slot.coord_tx.send(CoordinatorJob::ResetSession);
             reply(responder, socket_server, &slot.name, "Session reset.");
+            true
+        }
+        "clear" => {
+            if slot
+                .coord_tx
+                .send(CoordinatorJob::Clear {
+                    telegram: None,
+                    tui_responder: Some(responder.clone()),
+                    socket_server: socket_server.clone(),
+                    slot_name: slot.name.clone(),
+                })
+                .is_err()
+            {
+                reply(
+                    responder,
+                    socket_server,
+                    &slot.name,
+                    "Error: coordinator task shut down",
+                );
+            }
             true
         }
         "compact" => {
@@ -1920,7 +2040,7 @@ async fn handle_tui_command(
             true
         }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/compact — compact coordinator session (clear context, start fresh)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");
@@ -2033,6 +2153,57 @@ async fn handle_tui_command(
             }
         }
     }
+}
+
+/// Build a full status summary: open signals + worker states + PR queue.
+fn build_full_status(slot: &WorkspaceSlot) -> String {
+    let signals = slot.store.get_open_signals().unwrap_or_default();
+    let mut summary = format_signal_summary(&signals);
+
+    // Worker states from swarm state file
+    if let Some(ref swarm_cfg) = slot.config.watchers.swarm {
+        if let Ok(contents) = std::fs::read_to_string(&swarm_cfg.state_path) {
+            if let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents) {
+                if let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array()) {
+                    if !worktrees.is_empty() {
+                        summary.push_str(&format!("\n{} worker(s):\n", worktrees.len()));
+                        for wt in worktrees {
+                            let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                            let phase = wt
+                                .get("phase")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let branch = wt.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+                            let has_pr = wt.get("pr").and_then(|v| v.as_object()).is_some();
+                            let pr_str = if has_pr { " [PR]" } else { "" };
+                            summary.push_str(&format!("  [{phase}] {id} ({branch}){pr_str}\n"));
+                        }
+
+                        // PR queue
+                        let prs: Vec<_> = worktrees
+                            .iter()
+                            .filter_map(|wt| {
+                                let pr = wt.get("pr")?.as_object()?;
+                                let number = pr.get("number")?.as_u64()?;
+                                let title = pr.get("title")?.as_str()?;
+                                let state =
+                                    pr.get("state").and_then(|v| v.as_str()).unwrap_or("open");
+                                Some((number, title.to_string(), state.to_string()))
+                            })
+                            .collect();
+                        if !prs.is_empty() {
+                            summary.push_str(&format!("\n{} PR(s):\n", prs.len()));
+                            for (number, title, state) in &prs {
+                                summary.push_str(&format!("  #{number} [{state}] {title}\n"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    summary
 }
 
 /// Format signal events into a system notification for the coordinator.

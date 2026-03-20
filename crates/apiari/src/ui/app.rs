@@ -367,6 +367,8 @@ pub struct WorkspaceState {
     pub streaming: bool,
     pub coordinator_preview: Option<String>,
     pub has_unread_response: bool,
+    /// Coordinator turn count (exchanges completed in current session).
+    pub coordinator_turns: u32,
     // State tracking for proactive notifications
     pub(super) prev_worker_phases: std::collections::HashMap<String, String>,
     pub(super) prev_signal_ids: std::collections::HashSet<i64>,
@@ -460,6 +462,7 @@ impl App {
                 streaming: false,
                 coordinator_preview: None,
                 has_unread_response: false,
+                coordinator_turns: 0,
                 sparkline_data: vec![0; 24],
                 watcher_health: Vec::new(),
                 feed: Vec::new(),
@@ -582,6 +585,7 @@ impl App {
             streaming: false,
             coordinator_preview: None,
             has_unread_response: false,
+            coordinator_turns: 0,
             prev_worker_phases: std::collections::HashMap::new(),
             prev_signal_ids: std::collections::HashSet::new(),
             prev_pr_workers: std::collections::HashSet::new(),
@@ -841,6 +845,7 @@ impl App {
             streaming: false,
             coordinator_preview: None,
             has_unread_response: false,
+            coordinator_turns: 0,
             prev_worker_phases: std::collections::HashMap::new(),
             prev_signal_ids: std::collections::HashSet::new(),
             prev_pr_workers: std::collections::HashSet::new(),
@@ -1355,6 +1360,7 @@ impl App {
         let is_chat_visible = matches!(self.view, View::Dashboard);
         if let Some(ws) = self.current_ws_mut() {
             ws.streaming = false;
+            ws.coordinator_turns += 1;
             if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last() {
                 let _ = super::history::save_message(
                     &ws.name,
@@ -1395,6 +1401,14 @@ impl App {
                 "tui" => Some(MessageSource::Tui),
                 _ => Some(MessageSource::System),
             };
+
+            // Reset turn counter when session is cleared or compacted
+            if source == "system"
+                && kind == "assistant_message"
+                && (text.contains("Session cleared") || text.contains("Session compacted"))
+            {
+                ws.coordinator_turns = 0;
+            }
 
             let ts = now_ts();
             match kind {

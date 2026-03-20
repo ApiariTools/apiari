@@ -2359,10 +2359,6 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Right-aligned daemon status with ECG heartbeat trace
     let cur_ws = app.current_ws();
-    let healthy_w = cur_ws.map_or(0, |ws| {
-        ws.watcher_health.iter().filter(|w| w.healthy).count()
-    });
-    let total_w = cur_ws.map_or(0, |ws| ws.watcher_health.len());
     let ecg = activity_graph(&app.activity_buf);
     // ECG color reflects signal severity
     let ecg_color = if !app.daemon_alive {
@@ -2408,27 +2404,22 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         theme::muted()
     };
+
+    // Live stats: workers, signals, turns
+    let worker_count = cur_ws.map_or(0, |ws| ws.workers.len());
+    let signal_count = cur_ws.map_or(0, |ws| ws.signals.len());
+    let turn_count = cur_ws.map_or(0, |ws| ws.coordinator_turns);
+    let stats_str = format!("workers:{worker_count}  signals:{signal_count}  turns:{turn_count}  ");
+
     let daemon_spans: Vec<Span> = if app.daemon_alive || app.daemon_remote {
-        let uptime_str = match app.daemon_uptime_secs {
-            Some(s) if s >= 3600 => format!("{}h{}m", s / 3600, (s % 3600) / 60),
-            Some(s) if s >= 60 => format!("{}m", s / 60),
-            Some(_) => "now".into(),
-            None => "up".into(),
-        };
-        let watcher_str = if total_w > 0 {
-            format!(" {healthy_w}/{total_w}w")
-        } else {
-            String::new()
-        };
         vec![
+            Span::styled(stats_str, theme::muted()),
             Span::styled(ecg, Style::default().fg(ecg_color)),
-            Span::styled(
-                format!(" {conn_indicator} {conn_label} {uptime_str}{watcher_str} "),
-                conn_style,
-            ),
+            Span::styled(format!(" {conn_indicator} {conn_label} "), conn_style),
         ]
     } else {
         vec![
+            Span::styled(stats_str, theme::muted()),
             Span::styled(ecg, Style::default().fg(ecg_color)),
             Span::styled(
                 format!(" {conn_indicator} {conn_label} offline "),
