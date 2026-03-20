@@ -366,6 +366,8 @@ pub struct WorkspaceState {
     pub workers: Vec<WorkerInfo>,
     pub chat_history: Vec<ChatLine>,
     pub input: String,
+    /// Cursor byte offset into `input`. Must always be on a char boundary.
+    pub cursor_pos: usize,
     pub chat_scroll: ScrollState,
     pub streaming: bool,
     pub coordinator_preview: Option<String>,
@@ -461,6 +463,7 @@ impl App {
                 workers: Vec::new(),
                 chat_history: Vec::new(),
                 input: String::new(),
+                cursor_pos: 0,
                 chat_scroll: ScrollState::new(),
                 streaming: false,
                 coordinator_preview: None,
@@ -584,6 +587,7 @@ impl App {
             workers: Vec::new(),
             chat_history: Vec::new(),
             input: String::new(),
+            cursor_pos: 0,
             chat_scroll: ScrollState::new(),
             streaming: false,
             coordinator_preview: None,
@@ -844,6 +848,7 @@ impl App {
             workers: Vec::new(),
             chat_history,
             input: String::new(),
+            cursor_pos: 0,
             chat_scroll: ScrollState::new(),
             streaming: false,
             coordinator_preview: None,
@@ -1294,22 +1299,196 @@ impl App {
 
     pub fn insert_char(&mut self, c: char) {
         if let Some(ws) = self.current_ws_mut() {
-            ws.input.push(c);
+            ws.input.insert(ws.cursor_pos, c);
+            ws.cursor_pos += c.len_utf8();
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn insert_str(&mut self, s: &str) {
+        if let Some(ws) = self.current_ws_mut() {
+            ws.input.insert_str(ws.cursor_pos, s);
+            ws.cursor_pos += s.len();
             self.needs_redraw = true;
         }
     }
 
     pub fn backspace(&mut self) {
         if let Some(ws) = self.current_ws_mut() {
-            ws.input.pop();
+            if ws.cursor_pos > 0 {
+                // Find the previous char boundary
+                let prev = ws.input[..ws.cursor_pos]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                ws.input.remove(prev);
+                ws.cursor_pos = prev;
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn delete_forward(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            if ws.cursor_pos < ws.input.len() {
+                ws.input.remove(ws.cursor_pos);
+            }
             self.needs_redraw = true;
         }
     }
 
     pub fn take_input(&mut self) -> String {
         match self.current_ws_mut() {
-            Some(ws) => std::mem::take(&mut ws.input),
+            Some(ws) => {
+                ws.cursor_pos = 0;
+                std::mem::take(&mut ws.input)
+            }
             None => String::new(),
+        }
+    }
+
+    pub fn clear_input(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            ws.input.clear();
+            ws.cursor_pos = 0;
+            self.needs_redraw = true;
+        }
+    }
+
+    // ── Cursor movement ──────────────────────────────────
+
+    pub fn cursor_left(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            if ws.cursor_pos > 0 {
+                ws.cursor_pos = ws.input[..ws.cursor_pos]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    pub fn cursor_right(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            if ws.cursor_pos < ws.input.len() {
+                ws.cursor_pos += ws.input[ws.cursor_pos..].chars().next().unwrap().len_utf8();
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    pub fn cursor_word_left(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            let s = &ws.input[..ws.cursor_pos];
+            // Skip trailing whitespace, then skip non-whitespace
+            let trimmed = s.trim_end();
+            if trimmed.is_empty() {
+                ws.cursor_pos = 0;
+            } else {
+                // Find last whitespace before end of trimmed
+                let pos = trimmed
+                    .rfind(char::is_whitespace)
+                    .map(|i| {
+                        // advance past the whitespace char
+                        i + trimmed[i..].chars().next().unwrap().len_utf8()
+                    })
+                    .unwrap_or(0);
+                ws.cursor_pos = pos;
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn cursor_word_right(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            let s = &ws.input[ws.cursor_pos..];
+            // Skip non-whitespace, then skip whitespace
+            let after_word = s.find(char::is_whitespace).unwrap_or(s.len());
+            let rest = &s[after_word..];
+            let after_space = rest
+                .find(|c: char| !c.is_whitespace())
+                .unwrap_or(rest.len());
+            ws.cursor_pos += after_word + after_space;
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn cursor_home(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            // Move to start of current line (find last '\n' before cursor)
+            ws.cursor_pos = ws.input[..ws.cursor_pos]
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn cursor_end(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            // Move to end of current line (find next '\n' after cursor)
+            ws.cursor_pos = ws.input[ws.cursor_pos..]
+                .find('\n')
+                .map(|i| ws.cursor_pos + i)
+                .unwrap_or(ws.input.len());
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn cursor_up(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            // Find current line start and column
+            let line_start = ws.input[..ws.cursor_pos]
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            if line_start == 0 {
+                // Already on first line — move to beginning
+                ws.cursor_pos = 0;
+                self.needs_redraw = true;
+                return;
+            }
+            let col = ws.cursor_pos - line_start;
+            // Find previous line start
+            let prev_line_start = ws.input[..line_start - 1]
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let prev_line_len = line_start - 1 - prev_line_start;
+            ws.cursor_pos = prev_line_start + col.min(prev_line_len);
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn cursor_down(&mut self) {
+        if let Some(ws) = self.current_ws_mut() {
+            // Find current line start and column
+            let line_start = ws.input[..ws.cursor_pos]
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let col = ws.cursor_pos - line_start;
+            // Find next line
+            let next_newline = ws.input[ws.cursor_pos..].find('\n');
+            match next_newline {
+                Some(offset) => {
+                    let next_line_start = ws.cursor_pos + offset + 1;
+                    let next_line_end = ws.input[next_line_start..]
+                        .find('\n')
+                        .map(|i| next_line_start + i)
+                        .unwrap_or(ws.input.len());
+                    let next_line_len = next_line_end - next_line_start;
+                    ws.cursor_pos = next_line_start + col.min(next_line_len);
+                }
+                None => {
+                    // Already on last line — move to end
+                    ws.cursor_pos = ws.input.len();
+                }
+            }
+            self.needs_redraw = true;
         }
     }
 

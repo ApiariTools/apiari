@@ -538,8 +538,16 @@ async fn event_loop(
 // ── Key handling (pure state) ────────────────────────────
 
 fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
-    // Ctrl+C always quits
+    // Ctrl+C: clear input if chat is focused with text, otherwise quit
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        if app.chat_focused {
+            if let Some(ws) = app.current_ws() {
+                if !ws.input.is_empty() {
+                    app.clear_input();
+                    return KeyAction::Redraw;
+                }
+            }
+        }
         return KeyAction::Quit;
     }
 
@@ -663,9 +671,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
 /// Handle a bracketed paste event by inserting the text into the active input.
 fn handle_paste(app: &mut App, text: &str) {
     if app.chat_focused {
-        if let Some(ws) = app.current_ws_mut() {
-            ws.input.push_str(text);
-        }
+        app.insert_str(text);
     } else if app.worker_input_active {
         app.worker_input.push_str(text);
     } else if app.review_comment_active {
@@ -986,11 +992,50 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
         KeyCode::Backspace => {
             app.backspace();
         }
+        KeyCode::Delete => {
+            app.delete_forward();
+        }
+        KeyCode::Left => {
+            if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                app.cursor_word_left();
+            } else {
+                app.cursor_left();
+            }
+        }
+        KeyCode::Right => {
+            if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                app.cursor_word_right();
+            } else {
+                app.cursor_right();
+            }
+        }
+        KeyCode::Up => {
+            app.cursor_up();
+        }
+        KeyCode::Down => {
+            app.cursor_down();
+        }
+        KeyCode::Home => {
+            app.cursor_home();
+        }
+        KeyCode::End => {
+            app.cursor_end();
+        }
         KeyCode::Char(c) => {
-            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'u' {
-                app.scroll_chat_up(5);
-            } else if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'd' {
-                app.scroll_chat_down(5);
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match c {
+                    'u' => app.scroll_chat_up(5),
+                    'd' => app.scroll_chat_down(5),
+                    'a' => app.cursor_home(),
+                    'e' => app.cursor_end(),
+                    _ => {}
+                }
             } else {
                 app.insert_char(c);
             }
@@ -2011,6 +2056,7 @@ mod tests {
             workers: Vec::new(),
             chat_history: Vec::new(),
             input: String::new(),
+            cursor_pos: 0,
             chat_scroll: apiari_tui::scroll::ScrollState::new(),
             streaming: false,
             coordinator_preview: None,
