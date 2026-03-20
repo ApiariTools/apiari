@@ -270,9 +270,17 @@ async fn run_coordinator_task(
                             }
                         }
 
+                        // If the coordinator only used tools and produced no text,
+                        // send a brief fallback so the user knows the run completed.
+                        let final_text = if response.trim().is_empty() {
+                            "✅ Done.".to_string()
+                        } else {
+                            response
+                        };
+
                         let msg = OutboundMessage {
                             chat_id,
-                            text: response,
+                            text: final_text,
                             buttons: vec![],
                             topic_id,
                         };
