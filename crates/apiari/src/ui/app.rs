@@ -340,10 +340,6 @@ impl OnboardingState {
 pub enum SetupStep {
     AskRoot,
     AskName,
-    AskProvider,
-    AskGithub,
-    AskTelegram,
-    AskTelegramChatId,
     Done,
 }
 
@@ -353,9 +349,6 @@ pub struct SetupState {
     pub workspace_root: std::path::PathBuf,
     pub workspace_name: String,
     pub default_agent: String,
-    pub has_github: bool,
-    pub telegram_token: Option<String>,
-    pub telegram_chat_id: Option<i64>,
     /// True when adding a workspace to an existing setup (simplified flow).
     pub add_workspace: bool,
     /// Previous tab index to restore on cancel (add-workspace only).
@@ -619,9 +612,6 @@ impl App {
             workspace_root: cwd.clone(),
             workspace_name: ws_name,
             default_agent: "claude".to_string(),
-            has_github: false,
-            telegram_token: None,
-            telegram_chat_id: None,
             add_workspace: false,
             prev_active_tab: 0,
             prev_focused_panel: Panel::Workers,
@@ -675,12 +665,7 @@ impl App {
         // Inject first setup message
         if let Some(ws) = app.workspaces.get_mut(0) {
             ws.chat_history.push(ChatLine::Assistant(
-                format!(
-                    "Hi! I'm Bee \u{2014} your dev workspace coordinator.\n\n\
-                     Looks like you haven't set up a workspace yet. Let's fix that!\n\n\
-                     What directory would you like to use as your workspace root?\n\
-                     (Press Enter for current directory: {cwd_display})"
-                ),
+                setup_greeting(&cwd_display),
                 now_ts(),
                 None,
             ));
@@ -760,9 +745,6 @@ impl App {
             workspace_root: dir,
             workspace_name: ws_name,
             default_agent: "claude".to_string(),
-            has_github: false,
-            telegram_token: None,
-            telegram_chat_id: None,
             add_workspace: true,
             prev_active_tab,
             prev_focused_panel,
@@ -810,16 +792,14 @@ impl App {
                             false,
                         )
                     } else {
-                        setup.step = SetupStep::AskProvider;
+                        // First-run: accept root and finish immediately
+                        setup.step = SetupStep::Done;
                         (
                             format!(
-                                "\u{2713} Workspace root: {root}\n\n\
-                                 Which AI providers do you have access to?\n\
-                                 \u{2022} claude \u{2014} Anthropic Claude (recommended)\n\
-                                 \u{2022} codex \u{2014} OpenAI Codex\n\
-                                 \u{2022} both \u{2014} auto-detect at dispatch time"
+                                "Got it \u{2014} setting up your workspace at {root}.\n\n\
+                                 Writing config..."
                             ),
-                            false,
+                            true,
                         )
                     }
                 }
@@ -837,83 +817,6 @@ impl App {
                         ),
                         true,
                     )
-                }
-                SetupStep::AskProvider => {
-                    let input = input.trim().to_lowercase();
-                    setup.default_agent = match input.as_str() {
-                        "codex" => "codex".to_string(),
-                        "both" => "auto".to_string(),
-                        _ => "claude".to_string(),
-                    };
-                    let agent = setup.default_agent.clone();
-                    setup.step = SetupStep::AskGithub;
-                    (
-                        format!(
-                            "\u{2713} Default agent: {agent}\n\n\
-                             Do you have a GitHub token configured with the `gh` CLI? (yes / no)"
-                        ),
-                        false,
-                    )
-                }
-                SetupStep::AskGithub => {
-                    let input = input.trim().to_lowercase();
-                    setup.has_github = matches!(input.as_str(), "y" | "yes");
-                    let gh_status = if setup.has_github {
-                        "enabled"
-                    } else {
-                        "skipped"
-                    };
-                    setup.step = SetupStep::AskTelegram;
-                    (
-                        format!(
-                            "\u{2713} GitHub watcher: {gh_status}\n\n\
-                             Would you like Telegram notifications?\n\
-                             Enter your bot token from @BotFather, or type 'skip'."
-                        ),
-                        false,
-                    )
-                }
-                SetupStep::AskTelegram => {
-                    let input = input.trim();
-                    if input.is_empty()
-                        || input.eq_ignore_ascii_case("skip")
-                        || input.eq_ignore_ascii_case("no")
-                    {
-                        setup.telegram_token = None;
-                        setup.step = SetupStep::Done;
-                        (
-                            "\u{2713} Telegram: skipped\n\nWriting workspace config...".to_string(),
-                            true,
-                        )
-                    } else {
-                        setup.telegram_token = Some(input.to_string());
-                        setup.step = SetupStep::AskTelegramChatId;
-                        (
-                            "\u{2713} Bot token saved.\n\n\
-                             Now I need your Telegram chat ID.\n\
-                             Message @userinfobot on Telegram to get it, then paste it here."
-                                .to_string(),
-                            false,
-                        )
-                    }
-                }
-                SetupStep::AskTelegramChatId => {
-                    let input = input.trim();
-                    if let Ok(chat_id) = input.parse::<i64>() {
-                        setup.telegram_chat_id = Some(chat_id);
-                        setup.step = SetupStep::Done;
-                        (
-                            format!("\u{2713} Chat ID: {chat_id}\n\nWriting workspace config..."),
-                            true,
-                        )
-                    } else {
-                        (
-                            "That doesn't look like a valid chat ID (should be a number). \
-                             Try again:"
-                                .to_string(),
-                            false,
-                        )
-                    }
                 }
                 SetupStep::Done => return false,
             }
@@ -998,22 +901,21 @@ impl App {
             thoughts: Vec::new(),
         };
 
-        // Completion message
-        ws_state.chat_history.push(ChatLine::Assistant(
-            format!(
-                "\u{2713} Workspace '{}' created!\n\n\
-                 Config written to {}\n\n\
-                 The dashboard is all yours. Ask me anything \u{2014} \
-                 try 'what can you do?' or '/help'.",
-                setup.workspace_name, config_display
-            ),
-            now_ts(),
-            None,
-        ));
-        ws_state.chat_scroll.scroll_to_bottom();
-
         if is_add {
-            // Add-workspace: replace the placeholder tab with the real one
+            // Add-workspace: simple completion message
+            ws_state.chat_history.push(ChatLine::Assistant(
+                format!(
+                    "\u{2713} Workspace '{}' created!\n\n\
+                     Config written to {}\n\n\
+                     The dashboard is all yours. Ask me anything \u{2014} \
+                     try 'what can you do?' or '/help'.",
+                    setup.workspace_name, config_display
+                ),
+                now_ts(),
+                None,
+            ));
+            ws_state.chat_scroll.scroll_to_bottom();
+
             if let Some(idx) = self.workspaces.iter().position(|w| w.is_setup_placeholder) {
                 self.workspaces[idx] = ws_state;
                 self.active_tab = idx;
@@ -1021,8 +923,47 @@ impl App {
                 self.workspaces.push(ws_state);
                 self.active_tab = self.workspaces.len() - 1;
             }
+            self.focused_panel = Panel::Workers;
+            self.chat_focused = false;
         } else {
-            // First-run setup: preserve chat history from setup conversation
+            // First-run setup: tour narration messages
+            ws_state.chat_history.push(ChatLine::Assistant(
+                format!(
+                    "\u{2713} Workspace '{}' created! Config written to {}\n\n\
+                     Let me show you around \u{1f41d}",
+                    setup.workspace_name, config_display
+                ),
+                now_ts(),
+                None,
+            ));
+
+            ws_state.chat_history.push(ChatLine::Assistant(
+                "\u{1f448} Workers panel \u{2014} when you dispatch AI coding tasks, \
+                 they appear here. You can chat with workers, check their PRs, \
+                 and monitor progress.\n\n\
+                 \u{1f4ca} Signals panel \u{2014} GitHub CI results, Sentry errors, \
+                 and other watcher events surface here automatically.\n\n\
+                 \u{1f493} Heartbeat \u{2014} a live feed of watcher activity so you \
+                 always know what's being monitored."
+                    .to_string(),
+                now_ts(),
+                None,
+            ));
+
+            ws_state.chat_history.push(ChatLine::Assistant(
+                "I'm using Claude as your AI agent by default.\n\n\
+                 You can add integrations anytime by chatting with me:\n\
+                 \u{2022} \"set up Telegram notifications\"\n\
+                 \u{2022} \"watch my GitHub repos\"\n\
+                 \u{2022} \"connect Sentry\"\n\n\
+                 What would you like to work on?"
+                    .to_string(),
+                now_ts(),
+                None,
+            ));
+            ws_state.chat_scroll.scroll_to_bottom();
+
+            // Preserve chat history from setup conversation
             let chat_history = self
                 .workspaces
                 .first()
@@ -1032,13 +973,11 @@ impl App {
 
             self.workspaces = vec![ws_state];
             self.active_tab = 0;
+            self.onboarding = OnboardingState::completed();
+            self.focused_panel = Panel::Chat;
+            self.chat_focused = true;
         }
 
-        if !is_add {
-            self.onboarding = OnboardingState::completed();
-        }
-        self.focused_panel = Panel::Workers;
-        self.chat_focused = false;
         self.needs_redraw = true;
 
         Ok(())
@@ -2306,6 +2245,17 @@ fn find_available_config_path(dir: &std::path::Path, name: &str) -> std::path::P
 }
 
 /// Build a workspace TOML config from setup state.
+/// First-run greeting from Bee — single source of truth for the initial setup prompt.
+pub(super) fn setup_greeting(dir_display: &str) -> String {
+    format!(
+        "Hi! I'm Bee \u{1f41d} \u{2014} your dev workspace coordinator.\n\n\
+         apiari watches your repos, dispatches AI coding agents, and keeps \
+         you in the loop \u{2014} all from this dashboard.\n\n\
+         Let's get you set up. Where's your project?\n\
+         (Press Enter for {dir_display})"
+    )
+}
+
 fn build_setup_toml(setup: &SetupState) -> String {
     use toml_edit::{Array, DocumentMut, Item, Table, value};
 
@@ -2356,24 +2306,8 @@ fn build_setup_toml(setup: &SetupState) -> String {
     swarm["default_agent"] = value(setup.default_agent.clone());
     doc["swarm"] = Item::Table(swarm);
 
-    // [telegram] (optional)
-    if let Some(ref token) = setup.telegram_token {
-        let mut telegram = Table::new();
-        telegram["bot_token"] = value(token.clone());
-        if let Some(chat_id) = setup.telegram_chat_id {
-            telegram["chat_id"] = value(chat_id);
-        }
-        doc["telegram"] = Item::Table(telegram);
-    }
-
     // [watchers]
     let mut watchers = Table::new();
-
-    if setup.has_github {
-        let mut github = Table::new();
-        github["interval_secs"] = value(120i64);
-        watchers["github"] = Item::Table(github);
-    }
 
     let swarm_state = setup.workspace_root.join(".swarm/state.json");
     let mut swarm_watcher = Table::new();
@@ -3135,83 +3069,30 @@ mod tests {
     }
 
     #[test]
-    fn test_setup_claude_no_github_no_telegram() {
+    fn test_setup_default_root() {
+        // First-run: just press Enter to accept default root → done in one step
         let (_, toml_str) = run_setup(&[
-            "",       // accept default root
-            "claude", // provider
-            "no",     // github
-            "skip",   // telegram
+            "", // accept default root
         ]);
         let cfg = assert_valid_config(&toml_str);
         assert_eq!(cfg.swarm.default_agent, "claude");
         assert!(cfg.telegram.is_none());
-        assert!(cfg.watchers.github.is_none());
     }
 
     #[test]
-    fn test_setup_codex_with_github_no_telegram() {
+    fn test_setup_custom_root() {
         let (_, toml_str) = run_setup(&[
             "/tmp/myproject", // custom root
-            "codex",          // provider
-            "yes",            // github
-            "skip",           // telegram
         ]);
         let cfg = assert_valid_config(&toml_str);
         assert_eq!(cfg.root, std::path::PathBuf::from("/tmp/myproject"));
-        assert_eq!(cfg.swarm.default_agent, "codex");
-        assert!(cfg.watchers.github.is_some());
-        assert!(cfg.telegram.is_none());
-    }
-
-    #[test]
-    fn test_setup_auto_with_telegram() {
-        let (_, toml_str) = run_setup(&[
-            "",                // default root
-            "both",            // auto
-            "no",              // github
-            "123456:AABBccDD", // telegram token
-            "-1001234567890",  // chat id
-        ]);
-        let cfg = assert_valid_config(&toml_str);
-        assert_eq!(cfg.swarm.default_agent, "auto");
-        let tg = cfg.telegram.expect("telegram should be set");
-        assert_eq!(tg.bot_token, "123456:AABBccDD");
-        assert_eq!(tg.chat_id, -1001234567890);
-    }
-
-    #[test]
-    fn test_setup_invalid_chat_id_retries() {
-        let mut app = App::new_setup();
-        // AskRoot -> AskProvider
-        app.process_setup_input("");
-        // AskProvider -> AskGithub
-        app.process_setup_input("claude");
-        // AskGithub -> AskTelegram
-        app.process_setup_input("no");
-        // AskTelegram -> AskTelegramChatId
-        app.process_setup_input("sometoken");
-        // Invalid chat ID — should NOT complete
-        let done = app.process_setup_input("not-a-number");
-        assert!(!done);
-        assert_eq!(
-            app.setup.as_ref().unwrap().step,
-            SetupStep::AskTelegramChatId
-        );
-        // Valid chat ID — should complete
-        let done = app.process_setup_input("12345");
-        assert!(done);
+        assert_eq!(cfg.swarm.default_agent, "claude");
     }
 
     #[test]
     fn test_setup_toml_special_chars_in_root() {
         // Paths with quotes/backslashes should be safely encoded
-        let mut app = App::new_setup();
-        app.process_setup_input("/tmp/my \"project\"");
-        app.process_setup_input("claude");
-        app.process_setup_input("no");
-        let done = app.process_setup_input("skip");
-        assert!(done);
-        let toml_str = build_setup_toml(app.setup.as_ref().unwrap());
+        let (_, toml_str) = run_setup(&["/tmp/my \"project\""]);
         // Must parse without error — toml_edit handles escaping
         assert_valid_config(&toml_str);
     }

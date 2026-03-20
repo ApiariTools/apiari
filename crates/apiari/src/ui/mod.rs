@@ -120,12 +120,7 @@ pub async fn run(
             if let Some(ws) = a.workspaces.get_mut(0) {
                 ws.chat_history.clear();
                 ws.chat_history.push(app::ChatLine::Assistant(
-                    format!(
-                        "Hi! I'm Bee \u{2014} your dev workspace coordinator.\n\n\
-                         Looks like you haven't set up a workspace yet. Let's fix that!\n\n\
-                         What directory would you like to use as your workspace root?\n\
-                         (Press Enter for current directory: {dir_display})"
-                    ),
+                    app::setup_greeting(&dir_display),
                     app::now_ts(),
                     None,
                 ));
