@@ -137,6 +137,12 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::raw(" "));
     }
 
+    // "+" tab for adding a new workspace (hidden during setup)
+    if app.setup.is_none() {
+        spans.push(Span::styled(" + ", theme::muted()));
+        spans.push(Span::raw(" "));
+    }
+
     // Right-aligned hints
     let hints = " ^b n/p  q:quit ";
     let used: usize = spans.iter().map(|s| s.content.len()).sum();
