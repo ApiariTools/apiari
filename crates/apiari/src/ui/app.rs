@@ -15,6 +15,9 @@ use apiari_tui::scroll::ScrollState;
 use crate::buzz::conversation::ConversationStore;
 use crate::config::{self, Workspace};
 
+/// Maximum number of chat history messages to load from a previous session.
+const CHAT_HISTORY_LIMIT: usize = 20;
+
 // ── Types ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1820,14 +1823,23 @@ impl App {
                     .chat_history
                     .iter()
                     .any(|m| matches!(m, ChatLine::User(..)));
-                let assistant_count = ws
+                // Count only assistant messages from real chat sources (Tui,
+                // Telegram, None). Assistant lines injected with
+                // MessageSource::System (daemon broadcasts) don't count.
+                let real_assistant_count = ws
                     .chat_history
                     .iter()
-                    .filter(|m| matches!(m, ChatLine::Assistant(..)))
+                    .filter(|m| {
+                        matches!(
+                            m,
+                            ChatLine::Assistant(_, _, src)
+                                if !matches!(src, Some(MessageSource::System))
+                        )
+                    })
                     .count();
                 // The single onboarding assistant message doesn't count as real chat.
-                let has_real_assistant =
-                    assistant_count > 0 && !(self.onboarding.active && assistant_count <= 1);
+                let has_real_assistant = real_assistant_count > 0
+                    && !(self.onboarding.active && real_assistant_count <= 1);
                 if has_user || has_real_assistant {
                     continue;
                 }
@@ -1836,8 +1848,8 @@ impl App {
                 // re-append after history.
                 let existing: Vec<ChatLine> = ws.chat_history.drain(..).collect();
 
-                // Take only the last 20 history messages to keep the panel light.
-                let skip = history.len().saturating_sub(20);
+                // Take only the last N history messages to keep the panel light.
+                let skip = history.len().saturating_sub(CHAT_HISTORY_LIMIT);
                 let trimmed: Vec<ChatLine> = history.into_iter().skip(skip).collect();
 
                 // Inject history with session dividers.
@@ -2348,7 +2360,7 @@ pub(super) fn load_chat_history_blocking(
         .map(|name| {
             let chat_history: Vec<ChatLine> = if let Ok(store) = SignalStore::open(db_path, name) {
                 let conv = ConversationStore::new(store.conn(), name);
-                match conv.load_history(20) {
+                match conv.load_history(CHAT_HISTORY_LIMIT) {
                     Ok(rows) if !rows.is_empty() => rows
                         .into_iter()
                         .map(|row| {
@@ -2722,6 +2734,47 @@ mod tests {
         assert!(matches!(
             &app.workspaces[0].chat_history[4],
             ChatLine::System(s) if s.contains("Starting daemon")
+        ));
+    }
+
+    #[test]
+    fn test_apply_chat_history_truncates_to_limit() {
+        let mut app = make_app(&["ws1"], false);
+        // Build 30 history items — should be trimmed to CHAT_HISTORY_LIMIT (20).
+        let history: Vec<ChatLine> = (0..30)
+            .map(|i| ChatLine::User(format!("msg {i}"), "10:00".into(), None))
+            .collect();
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // 20 kept + 2 dividers = 22
+        assert_eq!(app.workspaces[0].chat_history.len(), CHAT_HISTORY_LIMIT + 2);
+        // First real message should be msg 10 (items 0–9 were trimmed).
+        if let ChatLine::User(content, _, _) = &app.workspaces[0].chat_history[1] {
+            assert_eq!(content, "msg 10");
+        } else {
+            panic!("expected user message at index 1");
+        }
+    }
+
+    #[test]
+    fn test_apply_chat_history_ignores_system_source_assistant_lines() {
+        let mut app = make_app(&["ws1"], false);
+        // Simulate a daemon broadcast assistant message with MessageSource::System.
+        app.workspaces[0].chat_history.push(ChatLine::Assistant(
+            "daemon broadcast".into(),
+            "12:00".into(),
+            Some(MessageSource::System),
+        ));
+
+        let history = vec![ChatLine::User("old msg".into(), "10:00".into(), None)];
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // History should load despite the System-source assistant line.
+        // 2 dividers + 1 history + 1 re-appended System assistant = 4
+        assert_eq!(app.workspaces[0].chat_history.len(), 4);
+        assert!(matches!(
+            &app.workspaces[0].chat_history[0],
+            ChatLine::System(s) if s.contains("previous session")
         ));
     }
 
