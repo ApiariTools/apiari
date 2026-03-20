@@ -52,7 +52,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .split(size);
 
     draw_tab_bar(frame, app, outer[0]);
-    // outer[1] is breathing room
+
+    // Paint an explicit background on every cell that no widget would
+    // otherwise cover: the breathing-room gap (outer[1]), the body area
+    // (outer[2]), and the bottom pad (outer[4]).  Without this, those cells
+    // stay at Color::Reset — identical to the cleared previous buffer — so
+    // the ratatui diff never outputs them.  If the terminal's alternate-
+    // screen buffer was not fully blanked, ghost content from a prior
+    // session persists in those unwritten cells and becomes visible when the
+    // dashboard layout shifts (e.g. during daemon auto-start).
+    let bg = Block::default().style(Style::default().bg(theme::COMB));
+    frame.render_widget(bg.clone(), outer[1]);
+    frame.render_widget(bg.clone(), outer[2]);
+    frame.render_widget(bg, outer[4]);
 
     match &app.view {
         View::Dashboard => draw_dashboard(frame, app, outer[2]),
@@ -130,24 +142,6 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         Some(ws) => ws,
         None => return,
     };
-
-    // Paint an explicit background on every cell in the body area. Without
-    // this, cells not covered by a widget stay at Color::Reset — identical to
-    // the cleared previous buffer — so the ratatui diff never outputs them.
-    // If the terminal's alternate-screen buffer was not fully blanked (macOS
-    // Terminal.app, some iTerm2 configs), ghost content from a prior session
-    // persists in those unwritten cells. When the layout later shifts (e.g.
-    // kpi_h grows after watcher_health arrives during daemon auto-start), the
-    // old Workers-panel position falls into one of these unwritten gaps and
-    // the ghost "Workers (0)" header becomes visible as a duplicate.
-    //
-    // Filling with bg:COMB makes every cell differ from the empty previous
-    // buffer on the first frame, forcing a full terminal write. On subsequent
-    // frames the fill matches the previous buffer so the diff cost is zero.
-    frame.render_widget(
-        Block::default().style(Style::default().bg(theme::COMB)),
-        area,
-    );
 
     // Zoomed panel (or auto-zoom on narrow terminals)
     let zoomed = if area.width < 50 {
