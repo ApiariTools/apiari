@@ -171,27 +171,25 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          ```\n\n\
          **Signal hooks setup:**\n\
          Signal hooks trigger coordinator follow-through when signals arrive.\n\
-         The `action` field controls what you should DO (not just narrate):\n\
-         - `notify` — just send a message (default if omitted)\n\
-         - `auto_fix` — find the failing worker/PR and dispatch a fix or send the error to an existing worker\n\
-         - `forward_to_worker` — find the swarm worker for this PR and forward the review to it\n\
-         - `triage` — assess the situation and decide whether to act or just notify\n\
+         The optional `action` field is a natural-language instruction telling you what to DO \
+         when this hook fires. If omitted, you just notify (current default behavior).\n\
          ```toml\n\
          [[coordinator.signal_hooks]]\n\
          source = \"github_ci_failure\"\n\
          prompt = \"CI failed: {events}\"\n\
-         action = \"auto_fix\"\n\
+         action = \"Find the relevant swarm worker for this PR and send it the CI error details.\"\n\
          ttl_secs = 300\n\
          \n\
          [[coordinator.signal_hooks]]\n\
          source = \"github_bot_review\"\n\
-         prompt = \"Bot review: {events}\"\n\
-         action = \"forward_to_worker\"\n\
+         prompt = \"Bot review received: {events}\"\n\
+         action = \"Find the swarm worker whose branch matches this PR and forward the review.\"\n\
          ttl_secs = 300\n\
          \n\
          [[coordinator.signal_hooks]]\n\
-         source = \"swarm\"\n\
-         action = \"triage\"\n\
+         source = \"github_release\"\n\
+         prompt = \"Release completed: {events}\"\n\
+         ttl_secs = 300\n\
          ```\n",
     );
 

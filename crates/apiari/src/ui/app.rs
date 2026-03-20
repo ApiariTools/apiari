@@ -1936,22 +1936,30 @@ fn build_setup_toml(setup: &SetupState) -> String {
 
     let mut hook_swarm = Table::new();
     hook_swarm["source"] = value("swarm");
-    hook_swarm["action"] = value("triage");
+    hook_swarm["prompt"] = value("Swarm activity: {events}");
+    hook_swarm["action"] = value(
+        "Assess the situation. If a worker opened a PR, check if Copilot has reviewed it and if so forward any comments to the worker. If a worker is stuck or failed, investigate and either send a fix or dispatch a new worker.",
+    );
+    hook_swarm["ttl_secs"] = value(300i64);
     signal_hooks.push(hook_swarm);
-
-    let mut hook_review = Table::new();
-    hook_review["source"] = value("github_bot_review");
-    hook_review["prompt"] = value("Bot code review: {events}");
-    hook_review["action"] = value("forward_to_worker");
-    hook_review["ttl_secs"] = value(300i64);
-    signal_hooks.push(hook_review);
 
     let mut hook_ci = Table::new();
     hook_ci["source"] = value("github_ci_failure");
     hook_ci["prompt"] = value("CI failed: {events}");
-    hook_ci["action"] = value("auto_fix");
+    hook_ci["action"] = value(
+        "Find the relevant swarm worker for this PR. If a worker exists, send it the CI error details so it can fix them. If no worker exists, dispatch a new one to fix the failure.",
+    );
     hook_ci["ttl_secs"] = value(300i64);
     signal_hooks.push(hook_ci);
+
+    let mut hook_review = Table::new();
+    hook_review["source"] = value("github_bot_review");
+    hook_review["prompt"] = value("Bot review received: {events}");
+    hook_review["action"] = value(
+        "Find the swarm worker whose branch matches this PR and forward the review comments directly to it so it can address them.",
+    );
+    hook_review["ttl_secs"] = value(300i64);
+    signal_hooks.push(hook_review);
 
     coordinator.insert("signal_hooks", Item::ArrayOfTables(signal_hooks));
     doc["coordinator"] = Item::Table(coordinator);

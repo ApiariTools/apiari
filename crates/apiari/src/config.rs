@@ -196,31 +196,15 @@ pub struct SignalHookConfig {
     /// Empty string = use default formatting.
     #[serde(default)]
     pub prompt: String,
-    /// Action the coordinator should take when this hook fires.
-    /// Default: `notify` (just send a message).
+    /// Natural-language action instruction for the coordinator.
+    /// When set, appended to the hook prompt so the coordinator knows what to DO
+    /// (e.g. dispatch a worker, forward a review, triage).
+    /// If omitted, the coordinator just notifies (current default behavior).
     #[serde(default)]
-    pub action: SignalHookAction,
+    pub action: Option<String>,
     /// Max seconds to wait in queue before dropping. Default: 120.
     #[serde(default = "default_hook_ttl")]
     pub ttl_secs: u64,
-}
-
-/// Action type for signal hooks — determines what the coordinator should DO
-/// when signals arrive, beyond just narrating what happened.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SignalHookAction {
-    /// Just notify via Telegram/TUI (current default behavior).
-    #[default]
-    Notify,
-    /// Identify the failing worker/PR and dispatch a fix worker or send
-    /// the error to an existing worker.
-    AutoFix,
-    /// Find the relevant swarm worker for the PR and forward the
-    /// review/comments to it.
-    ForwardToWorker,
-    /// Assess the situation and decide whether to act or just notify.
-    Triage,
 }
 
 fn default_hook_ttl() -> u64 {
@@ -231,20 +215,20 @@ fn default_signal_hooks() -> Vec<SignalHookConfig> {
     vec![
         SignalHookConfig {
             source: "swarm".into(),
-            prompt: String::new(),
-            action: SignalHookAction::Triage,
-            ttl_secs: default_hook_ttl(),
+            prompt: "Swarm activity: {events}".into(),
+            action: Some("Assess the situation. If a worker opened a PR, check if Copilot has reviewed it and if so forward any comments to the worker. If a worker is stuck or failed, investigate and either send a fix or dispatch a new worker.".into()),
+            ttl_secs: 300,
         },
         SignalHookConfig {
             source: "github_bot_review".into(),
-            prompt: "Bot code review: {events}".into(),
-            action: SignalHookAction::ForwardToWorker,
+            prompt: "Bot review received: {events}".into(),
+            action: Some("Find the swarm worker whose branch matches this PR and forward the review comments directly to it so it can address them.".into()),
             ttl_secs: 300,
         },
         SignalHookConfig {
             source: "github_ci_failure".into(),
             prompt: "CI failed: {events}".into(),
-            action: SignalHookAction::AutoFix,
+            action: Some("Find the relevant swarm worker for this PR. If a worker exists, send it the CI error details so it can fix them. If no worker exists, dispatch a new one to fix the failure.".into()),
             ttl_secs: 300,
         },
     ]
@@ -1467,33 +1451,19 @@ max_session_turns = 0
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.coordinator.signal_hooks.len(), 3);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
-        assert!(config.coordinator.signal_hooks[0].prompt.is_empty());
-        assert_eq!(
-            config.coordinator.signal_hooks[0].action,
-            SignalHookAction::Triage
-        );
-        assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 120);
+        assert!(config.coordinator.signal_hooks[0].action.is_some());
+        assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 300);
         assert_eq!(
             config.coordinator.signal_hooks[1].source,
             "github_bot_review"
         );
-        assert_eq!(
-            config.coordinator.signal_hooks[1].prompt,
-            "Bot code review: {events}"
-        );
-        assert_eq!(
-            config.coordinator.signal_hooks[1].action,
-            SignalHookAction::ForwardToWorker
-        );
+        assert!(config.coordinator.signal_hooks[1].action.is_some());
         assert_eq!(config.coordinator.signal_hooks[1].ttl_secs, 300);
         assert_eq!(
             config.coordinator.signal_hooks[2].source,
             "github_ci_failure"
         );
-        assert_eq!(
-            config.coordinator.signal_hooks[2].action,
-            SignalHookAction::AutoFix
-        );
+        assert!(config.coordinator.signal_hooks[2].action.is_some());
     }
 
     #[test]
@@ -1508,18 +1478,15 @@ ttl_secs = 60
 [[coordinator.signal_hooks]]
 source = "github_ci_failure"
 prompt = "CI failed: {title}"
-action = "auto_fix"
+action = "Dispatch a worker to fix the CI failure."
 ttl_secs = 300
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.coordinator.signal_hooks.len(), 2);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
         assert_eq!(config.coordinator.signal_hooks[0].ttl_secs, 60);
-        // No action specified → defaults to Notify
-        assert_eq!(
-            config.coordinator.signal_hooks[0].action,
-            SignalHookAction::Notify
-        );
+        // No action specified → defaults to None
+        assert!(config.coordinator.signal_hooks[0].action.is_none());
         assert_eq!(
             config.coordinator.signal_hooks[1].source,
             "github_ci_failure"
@@ -1529,50 +1496,32 @@ ttl_secs = 300
             "CI failed: {title}"
         );
         assert_eq!(
-            config.coordinator.signal_hooks[1].action,
-            SignalHookAction::AutoFix
+            config.coordinator.signal_hooks[1].action.as_deref(),
+            Some("Dispatch a worker to fix the CI failure.")
         );
         assert_eq!(config.coordinator.signal_hooks[1].ttl_secs, 300);
     }
 
     #[test]
-    fn test_signal_hook_action_all_variants() {
+    fn test_signal_hook_action_string() {
         let toml_str = r#"
 root = "/tmp/test"
 
 [[coordinator.signal_hooks]]
 source = "a"
-action = "notify"
 
 [[coordinator.signal_hooks]]
 source = "b"
-action = "auto_fix"
-
-[[coordinator.signal_hooks]]
-source = "c"
-action = "forward_to_worker"
-
-[[coordinator.signal_hooks]]
-source = "d"
-action = "triage"
+action = "Find the worker and forward the review."
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.coordinator.signal_hooks.len(), 4);
+        assert_eq!(config.coordinator.signal_hooks.len(), 2);
+        // No action → None (notify only)
+        assert!(config.coordinator.signal_hooks[0].action.is_none());
+        // With action → Some(string)
         assert_eq!(
-            config.coordinator.signal_hooks[0].action,
-            SignalHookAction::Notify
-        );
-        assert_eq!(
-            config.coordinator.signal_hooks[1].action,
-            SignalHookAction::AutoFix
-        );
-        assert_eq!(
-            config.coordinator.signal_hooks[2].action,
-            SignalHookAction::ForwardToWorker
-        );
-        assert_eq!(
-            config.coordinator.signal_hooks[3].action,
-            SignalHookAction::Triage
+            config.coordinator.signal_hooks[1].action.as_deref(),
+            Some("Find the worker and forward the review.")
         );
     }
 
