@@ -2435,9 +2435,9 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         hints
     };
 
-    // Calculate padding for right-alignment
-    let hints_len: usize = hints.iter().map(|s| s.content.len()).sum();
-    let daemon_len: usize = daemon_spans.iter().map(|s| s.content.len()).sum();
+    // Calculate padding for right-alignment (use display width for Unicode correctness)
+    let hints_len = Line::from(hints.clone()).width();
+    let daemon_len = Line::from(daemon_spans.clone()).width();
     let padding = (area.width as usize)
         .saturating_sub(hints_len)
         .saturating_sub(daemon_len);

@@ -428,7 +428,8 @@ async fn run_coordinator_task(
 
                 let msg_text = "\u{1f5d1}\u{fe0f} Session cleared. Starting fresh.";
                 if let Some(ref server) = socket_server {
-                    server.broadcast_activity("system", &slot_name, "assistant_message", msg_text);
+                    // Broadcast session_reset so TUI can reset turn counter
+                    server.broadcast_activity("system", &slot_name, "session_reset", msg_text);
                 }
                 if let Some((channel, chat_id, topic_id)) = telegram {
                     let msg = OutboundMessage {
@@ -459,9 +460,6 @@ async fn run_coordinator_task(
 
                 // If we have an active session, ask the coordinator to summarize
                 if coordinator.has_session() {
-                    let saved_turns = coordinator.max_turns();
-                    coordinator.set_max_turns(1);
-
                     let summary_prompt = "Summarize the current session in 3-5 bullet points of key context: decisions made, tasks in flight, important state. Output ONLY the bullet points, nothing else.";
 
                     let opts = coordinator.build_options(&store);
@@ -496,8 +494,6 @@ async fn run_coordinator_task(
                             }
                         }
                     }
-
-                    coordinator.set_max_turns(saved_turns);
                 }
 
                 coordinator.reset_session();
@@ -505,7 +501,8 @@ async fn run_coordinator_task(
 
                 let msg_text = "\u{1f5dc}\u{fe0f} Session compacted \u{2014} key context saved to memory. Starting fresh.";
                 if let Some(ref server) = socket_server {
-                    server.broadcast_activity("system", &slot_name, "assistant_message", msg_text);
+                    // Broadcast session_reset so TUI can reset turn counter
+                    server.broadcast_activity("system", &slot_name, "session_reset", msg_text);
                 }
                 if let Some((channel, chat_id, topic_id)) = telegram {
                     let msg = OutboundMessage {
@@ -1441,7 +1438,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             if let Some(channel) = get_channel(slot, &telegram_channels) {
                                 match command.as_str() {
                                     "status" => {
-                                        let summary = build_full_status(slot);
+                                        let summary = build_full_status(slot).await;
                                         if let Some(ref server) = socket_server {
                                             server.broadcast_activity("telegram", &slot.name, "assistant_message", &summary);
                                         }
@@ -1936,7 +1933,7 @@ async fn handle_tui_command(
 
     match command {
         "status" => {
-            let summary = build_full_status(slot);
+            let summary = build_full_status(slot).await;
             reply(responder, socket_server, &slot.name, &summary);
             true
         }
@@ -2156,13 +2153,13 @@ async fn handle_tui_command(
 }
 
 /// Build a full status summary: open signals + worker states + PR queue.
-fn build_full_status(slot: &WorkspaceSlot) -> String {
+async fn build_full_status(slot: &WorkspaceSlot) -> String {
     let signals = slot.store.get_open_signals().unwrap_or_default();
     let mut summary = format_signal_summary(&signals);
 
     // Worker states from swarm state file
     if let Some(ref swarm_cfg) = slot.config.watchers.swarm {
-        if let Ok(contents) = std::fs::read_to_string(&swarm_cfg.state_path) {
+        if let Ok(contents) = tokio::fs::read_to_string(&swarm_cfg.state_path).await {
             if let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents) {
                 if let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array()) {
                     if !worktrees.is_empty() {

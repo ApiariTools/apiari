@@ -1402,16 +1402,15 @@ impl App {
                 _ => Some(MessageSource::System),
             };
 
-            // Reset turn counter when session is cleared or compacted
-            if source == "system"
-                && kind == "assistant_message"
-                && (text.contains("Session cleared") || text.contains("Session compacted"))
-            {
-                ws.coordinator_turns = 0;
-            }
-
             let ts = now_ts();
             match kind {
+                "session_reset" => {
+                    // Explicit session reset signal from daemon (clear/compact)
+                    ws.coordinator_turns = 0;
+                    ws.chat_history
+                        .push(ChatLine::Assistant(text.to_string(), ts, msg_source));
+                    ws.coordinator_preview = Some(truncate_preview(text, 120));
+                }
                 "user_message" => {
                     ws.chat_history
                         .push(ChatLine::User(text.to_string(), ts, msg_source));
