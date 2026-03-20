@@ -686,18 +686,6 @@ pub fn spawn_background() -> Result<()> {
     }
 
     let exe = std::env::current_exe()?;
-
-    // On macOS, clear com.apple.provenance xattr by codesigning before spawning.
-    // This xattr (set by cargo install inside sandboxed environments like Claude Code)
-    // causes macOS to silently kill child processes spawned from the binary.
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("codesign")
-            .args(["-f", "-s", "-"])
-            .arg(&exe)
-            .output();
-    }
-
     let log = log_path();
     std::fs::create_dir_all(config::config_dir())?;
 
