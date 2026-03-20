@@ -151,6 +151,9 @@ async fn main() -> Result<()> {
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 let cwd = std::env::current_dir()?;
                 ui::run(None, Some(cwd), name.as_deref()).await?;
+            } else {
+                eprintln!("error: `apiari init` requires an interactive terminal");
+                std::process::exit(1);
             }
         }
         Some(Command::Daemon {

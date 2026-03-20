@@ -770,15 +770,20 @@ impl App {
             match setup.step {
                 SetupStep::AskRoot => {
                     let input = input.trim();
-                    if !input.is_empty() {
+                    let user_changed_root = !input.is_empty();
+                    if user_changed_root {
                         setup.workspace_root = std::path::PathBuf::from(input);
                     }
-                    setup.workspace_name = setup
-                        .workspace_root
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("workspace")
-                        .to_string();
+                    // Only derive name from directory if user changed the root
+                    // or no name was pre-filled (e.g. from --name)
+                    if user_changed_root || setup.workspace_name.is_empty() {
+                        setup.workspace_name = setup
+                            .workspace_root
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("workspace")
+                            .to_string();
+                    }
                     let root = setup.workspace_root.display().to_string();
                     if setup.add_workspace {
                         // Simplified flow: just confirm root then ask name
@@ -3225,10 +3230,7 @@ mod tests {
 
     #[test]
     fn test_add_workspace_flow_steps() {
-        // Simulate an existing app with one workspace, then enter add-workspace mode
-        let mut app = App::new_setup();
-        // Complete first-run setup to get a real app state
-        // Instead, just test the step transitions directly on a fresh setup with add_workspace=true
+        // Test the step transitions for the add_workspace=true path
         let mut app = App::new_setup();
         // Override to add-workspace mode
         app.setup.as_mut().unwrap().add_workspace = true;
