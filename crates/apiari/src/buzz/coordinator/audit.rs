@@ -243,13 +243,13 @@ fn is_allowed_write_target(path: &str) -> bool {
         return true;
     }
     // Apiari config directory.
-    // Matches: ~/.config/apiari/..., /Users/.../.config/apiari/..., $HOME/.config/apiari/...
-    let has_apiari_config = path.contains("/.config/apiari/")
-        || path.starts_with("~/.config/apiari/")
-        || path.ends_with("/.config/apiari")
-        || path.contains("$HOME/.config/apiari/")
-        || path == "~/.config/apiari";
-    has_apiari_config
+    // Only allow home-dir-anchored paths: ~/..., /Users/*/..., /home/*/..., $HOME/...
+    let is_home_anchored = path.starts_with("~/")
+        || path.starts_with("/Users/")
+        || path.starts_with("/home/")
+        || path.starts_with("$HOME/");
+    let in_apiari_config = path.contains("/.config/apiari/") || path.ends_with("/.config/apiari");
+    (is_home_anchored && in_apiari_config) || path == "~/.config/apiari"
 }
 
 /// Check if the destination/target of a write command is an allowed path.
