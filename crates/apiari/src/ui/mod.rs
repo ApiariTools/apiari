@@ -100,7 +100,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
     };
 
     // Coordinator channels
-    let (user_tx, user_rx) = mpsc::channel::<UserMessage>(32);
+    let (user_tx, mut user_rx) = mpsc::channel::<UserMessage>(32);
     let (coord_tx, coord_rx) = mpsc::channel::<CoordResponse>(64);
 
     // Background refresh channels
@@ -165,6 +165,7 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
         tokio::spawn(async move {
             let already_running = crate::daemon::is_daemon_running();
             let mut attempted_start = false;
+            let mut spawn_error: Option<String> = None;
 
             // Auto-start daemon if not running
             if !already_running {
@@ -175,35 +176,49 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
                             .send(CoordResponse::SystemStatus("Starting daemon...".into()))
                             .await;
 
-                        // Wait up to ~8s for daemon to become ready
-                        for _ in 0..31 {
+                        // Wait up to ~8s for daemon to be connectable (not just socket file present)
+                        let socket_path = crate::config::socket_path();
+                        for _ in 0..32 {
                             tokio::time::sleep(Duration::from_millis(250)).await;
-                            if daemon_client::socket_exists() && crate::daemon::is_daemon_running()
+                            if crate::daemon::is_daemon_running() && daemon_client::socket_exists()
                             {
-                                break;
+                                // Actually try connecting to verify the socket is accepting
+                                if tokio::net::UnixStream::connect(&socket_path).await.is_ok() {
+                                    break;
+                                }
                             }
                         }
                     }
-                    Err(_) => {
+                    Err(e) => {
                         attempted_start = true;
+                        spawn_error = Some(format!("{e}"));
                     }
                 }
             }
 
-            let use_daemon = daemon_client::socket_exists() && crate::daemon::is_daemon_running();
+            // Determine daemon readiness by actually trying to connect
+            let use_daemon = {
+                let socket_path = crate::config::socket_path();
+                daemon_client::socket_exists()
+                    && crate::daemon::is_daemon_running()
+                    && tokio::net::UnixStream::connect(&socket_path).await.is_ok()
+            };
 
             // Send user-visible status message
             let status_msg = if use_daemon && already_running {
-                "Connected to daemon \u{2713}"
+                "Connected to daemon \u{2713}".to_string()
             } else if use_daemon {
-                "Daemon started \u{2713}"
+                "Daemon started \u{2713}".to_string()
+            } else if let Some(ref err) = spawn_error {
+                format!("Could not start daemon: {err}")
             } else if attempted_start {
                 "Could not start daemon \u{2014} run `apiari daemon start` to start it manually"
+                    .to_string()
             } else {
-                "Using local coordinator (daemon not running)"
+                "Using local coordinator (daemon not running)".to_string()
             };
             let _ = coord_tx_clone
-                .send(CoordResponse::SystemStatus(status_msg.into()))
+                .send(CoordResponse::SystemStatus(status_msg))
                 .await;
 
             let _ = startup_update_tx
@@ -215,7 +230,53 @@ pub async fn run(focus_workspace: Option<&str>) -> Result<()> {
                 .await;
 
             if use_daemon {
-                daemon_client_task(user_rx, coord_tx_clone).await;
+                // Create a separate channel for the daemon client so we retain
+                // user_rx for fallback to local coordinator if daemon disconnects.
+                let (daemon_tx, daemon_rx) = mpsc::channel::<UserMessage>(32);
+                let daemon_coord_tx = coord_tx_clone.clone();
+                let mut daemon_handle = tokio::spawn(async move {
+                    daemon_client_task(daemon_rx, daemon_coord_tx).await;
+                });
+
+                // Forward user messages to daemon until it disconnects
+                loop {
+                    tokio::select! {
+                        _ = &mut daemon_handle => {
+                            break;
+                        }
+                        msg = user_rx.recv() => {
+                            match msg {
+                                Some(m) => {
+                                    if daemon_tx.send(m).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                    }
+                }
+
+                // Daemon disconnected — fall back to local coordinator
+                let _ = coord_tx_clone
+                    .send(CoordResponse::SystemStatus(
+                        "Daemon disconnected \u{2014} using local coordinator".into(),
+                    ))
+                    .await;
+                let _ = startup_update_tx
+                    .send(AppUpdate::DaemonStatus {
+                        connected: false,
+                        alive: false,
+                        remote_host: None,
+                    })
+                    .await;
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build coordinator runtime");
+                    rt.block_on(coordinator_task(user_rx, coord_tx_clone));
+                });
             } else {
                 // Spawn coordinator on a dedicated thread (SignalStore is !Send).
                 std::thread::spawn(move || {
@@ -1649,12 +1710,30 @@ async fn daemon_client_task(
     coord_tx: mpsc::Sender<CoordResponse>,
 ) {
     let socket_path = crate::config::socket_path();
-    let mut client = match daemon_client::DaemonClient::connect(&socket_path).await {
-        Ok(c) => c,
-        Err(e) => {
+
+    // Try connecting up to 3 times with 500ms delay before giving up
+    let mut connected = None;
+    let mut last_err = String::new();
+    for attempt in 0..3u8 {
+        match daemon_client::DaemonClient::connect(&socket_path).await {
+            Ok(c) => {
+                connected = Some(c);
+                break;
+            }
+            Err(e) => {
+                last_err = format!("{e}");
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+    }
+    let mut client = match connected {
+        Some(c) => c,
+        None => {
             let _ = coord_tx
                 .send(CoordResponse::Error(format!(
-                    "Failed to connect to daemon: {e}"
+                    "Failed to connect to daemon after 3 attempts: {last_err}"
                 )))
                 .await;
             return;
