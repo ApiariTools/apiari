@@ -540,13 +540,12 @@ async fn event_loop(
 fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
     // Ctrl+C: clear input if chat is focused with text, otherwise quit
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        if app.chat_focused {
-            if let Some(ws) = app.current_ws() {
-                if !ws.input.is_empty() {
-                    app.clear_input();
-                    return KeyAction::Redraw;
-                }
-            }
+        if app.chat_focused
+            && let Some(ws) = app.current_ws()
+            && !ws.input.is_empty()
+        {
+            app.clear_input();
+            return KeyAction::Redraw;
         }
         return KeyAction::Quit;
     }

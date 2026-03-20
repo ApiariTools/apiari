@@ -1359,24 +1359,24 @@ impl App {
     // ── Cursor movement ──────────────────────────────────
 
     pub fn cursor_left(&mut self) {
-        if let Some(ws) = self.current_ws_mut() {
-            if ws.cursor_pos > 0 {
-                ws.cursor_pos = ws.input[..ws.cursor_pos]
-                    .char_indices()
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or(0);
-                self.needs_redraw = true;
-            }
+        if let Some(ws) = self.current_ws_mut()
+            && ws.cursor_pos > 0
+        {
+            ws.cursor_pos = ws.input[..ws.cursor_pos]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.needs_redraw = true;
         }
     }
 
     pub fn cursor_right(&mut self) {
-        if let Some(ws) = self.current_ws_mut() {
-            if ws.cursor_pos < ws.input.len() {
-                ws.cursor_pos += ws.input[ws.cursor_pos..].chars().next().unwrap().len_utf8();
-                self.needs_redraw = true;
-            }
+        if let Some(ws) = self.current_ws_mut()
+            && ws.cursor_pos < ws.input.len()
+        {
+            ws.cursor_pos += ws.input[ws.cursor_pos..].chars().next().unwrap().len_utf8();
+            self.needs_redraw = true;
         }
     }
 
