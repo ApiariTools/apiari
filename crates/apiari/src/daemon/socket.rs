@@ -180,15 +180,22 @@ impl DaemonSocketServer {
     }
 
     /// Broadcast an activity event to all connected TUI clients.
-    pub fn broadcast_activity(&self, source: &str, workspace: &str, kind: &str, text: &str) {
+    /// Returns the number of receivers that got the message (0 = nobody listening).
+    pub fn broadcast_activity(
+        &self,
+        source: &str,
+        workspace: &str,
+        kind: &str,
+        text: &str,
+    ) -> usize {
         let msg = DaemonResponse::Activity {
             source: source.to_string(),
             workspace: workspace.to_string(),
             kind: kind.to_string(),
             text: text.to_string(),
         };
-        // Ignore error — no subscribers means no TUI clients connected
-        let _ = self.activity_tx.send(msg);
+        // send() returns Ok(num_receivers) or Err if zero subscribers
+        self.activity_tx.send(msg).unwrap_or(0)
     }
 
     /// Check if any TUI clients are connected.
