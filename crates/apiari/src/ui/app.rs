@@ -339,6 +339,7 @@ impl OnboardingState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupStep {
     AskRoot,
+    AskName,
     AskProvider,
     AskGithub,
     AskTelegram,
@@ -355,6 +356,12 @@ pub struct SetupState {
     pub has_github: bool,
     pub telegram_token: Option<String>,
     pub telegram_chat_id: Option<i64>,
+    /// True when adding a workspace to an existing setup (simplified flow).
+    pub add_workspace: bool,
+    /// Previous tab index to restore on cancel (add-workspace only).
+    pub prev_active_tab: usize,
+    /// Previous focused panel to restore on cancel (add-workspace only).
+    pub prev_focused_panel: Panel,
 }
 
 // ── Per-workspace state ───────────────────────────────────
@@ -384,6 +391,8 @@ pub struct WorkspaceState {
     pub feed: Vec<FeedItem>,
     pub feed_scroll: ScrollState,
     pub thoughts: Vec<(String, String)>, // (category, content)
+    /// True when this tab is a temporary placeholder for the add-workspace flow.
+    pub is_setup_placeholder: bool,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -477,6 +486,7 @@ impl App {
                 prev_pr_workers: std::collections::HashSet::new(),
                 feed_scroll: ScrollState::new(),
                 thoughts: Vec::new(),
+                is_setup_placeholder: false,
             })
             .collect();
 
@@ -601,6 +611,7 @@ impl App {
             feed: Vec::new(),
             feed_scroll: ScrollState::new(),
             thoughts: Vec::new(),
+            is_setup_placeholder: true,
         };
 
         let setup = SetupState {
@@ -611,6 +622,9 @@ impl App {
             has_github: false,
             telegram_token: None,
             telegram_chat_id: None,
+            add_workspace: false,
+            prev_active_tab: 0,
+            prev_focused_panel: Panel::Workers,
         };
 
         let cwd_display = cwd.display().to_string();
@@ -676,6 +690,86 @@ impl App {
         app
     }
 
+    /// Enter add-workspace mode on an existing app.
+    /// Adds a placeholder workspace tab, switches to it,
+    /// and starts the simplified setup flow.
+    /// `name_override` optionally pre-fills the workspace name.
+    pub fn enter_add_workspace(&mut self, dir: std::path::PathBuf, name_override: Option<&str>) {
+        let ws_name = name_override.map(|n| n.to_string()).unwrap_or_else(|| {
+            dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace")
+                .to_string()
+        });
+
+        let dir_display = dir.display().to_string();
+
+        let config: config::WorkspaceConfig =
+            serde_json::from_value(serde_json::json!({"root": dir.to_string_lossy()}))
+                .unwrap_or_else(|_| {
+                    serde_json::from_value(serde_json::json!({"root": "."}))
+                        .expect("hardcoded fallback config")
+                });
+
+        let mut ws_state = WorkspaceState {
+            name: "(new workspace)".to_string(),
+            config,
+            signals: Vec::new(),
+            workers: Vec::new(),
+            chat_history: Vec::new(),
+            input: String::new(),
+            cursor_pos: 0,
+            chat_scroll: ScrollState::new(),
+            streaming: false,
+            coordinator_preview: None,
+            has_unread_response: false,
+            coordinator_turns: 0,
+            prev_worker_phases: std::collections::HashMap::new(),
+            prev_signal_ids: std::collections::HashSet::new(),
+            prev_pr_workers: std::collections::HashSet::new(),
+            sparkline_data: vec![0; 24],
+            watcher_health: Vec::new(),
+            feed: Vec::new(),
+            feed_scroll: ScrollState::new(),
+            thoughts: Vec::new(),
+            is_setup_placeholder: true,
+        };
+
+        ws_state.chat_history.push(ChatLine::Assistant(
+            format!(
+                "Setting up a new workspace.\n\n\
+                 I'll use `{dir_display}` \u{2014} is that right?\n\
+                 (Press Enter to confirm, or type a different path)"
+            ),
+            now_ts(),
+            None,
+        ));
+        ws_state.chat_scroll.scroll_to_bottom();
+
+        let prev_active_tab = self.active_tab;
+        let prev_focused_panel = self.focused_panel;
+
+        self.workspaces.push(ws_state);
+        let new_idx = self.workspaces.len() - 1;
+        self.active_tab = new_idx;
+        self.view = View::Dashboard;
+        self.focused_panel = Panel::Chat;
+        self.chat_focused = true;
+        self.setup = Some(SetupState {
+            step: SetupStep::AskRoot,
+            workspace_root: dir,
+            workspace_name: ws_name,
+            default_agent: "claude".to_string(),
+            has_github: false,
+            telegram_token: None,
+            telegram_chat_id: None,
+            add_workspace: true,
+            prev_active_tab,
+            prev_focused_panel,
+        });
+        self.needs_redraw = true;
+    }
+
     /// Process user input during setup mode. Returns true when setup is complete.
     pub fn process_setup_input(&mut self, input: &str) -> bool {
         // Compute the response and whether we're done (scope ends mutable borrow on self.setup)
@@ -688,26 +782,60 @@ impl App {
             match setup.step {
                 SetupStep::AskRoot => {
                     let input = input.trim();
-                    if !input.is_empty() {
+                    let user_changed_root = !input.is_empty();
+                    if user_changed_root {
                         setup.workspace_root = std::path::PathBuf::from(input);
                     }
-                    setup.workspace_name = setup
-                        .workspace_root
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("workspace")
-                        .to_string();
+                    // Only derive name from directory if user changed the root
+                    // or no name was pre-filled (e.g. from --name)
+                    if user_changed_root || setup.workspace_name.is_empty() {
+                        setup.workspace_name = setup
+                            .workspace_root
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("workspace")
+                            .to_string();
+                    }
                     let root = setup.workspace_root.display().to_string();
-                    setup.step = SetupStep::AskProvider;
+                    if setup.add_workspace {
+                        // Simplified flow: just confirm root then ask name
+                        let suggested = setup.workspace_name.clone();
+                        setup.step = SetupStep::AskName;
+                        (
+                            format!(
+                                "\u{2713} Workspace root: {root}\n\n\
+                                 What should I call this workspace?\n\
+                                 (Press Enter for '{suggested}')"
+                            ),
+                            false,
+                        )
+                    } else {
+                        setup.step = SetupStep::AskProvider;
+                        (
+                            format!(
+                                "\u{2713} Workspace root: {root}\n\n\
+                                 Which AI providers do you have access to?\n\
+                                 \u{2022} claude \u{2014} Anthropic Claude (recommended)\n\
+                                 \u{2022} codex \u{2014} OpenAI Codex\n\
+                                 \u{2022} both \u{2014} auto-detect at dispatch time"
+                            ),
+                            false,
+                        )
+                    }
+                }
+                SetupStep::AskName => {
+                    let input = input.trim();
+                    if !input.is_empty() {
+                        setup.workspace_name = input.to_string();
+                    }
+                    let name = setup.workspace_name.clone();
+                    setup.step = SetupStep::Done;
                     (
                         format!(
-                            "\u{2713} Workspace root: {root}\n\n\
-                             Which AI providers do you have access to?\n\
-                             \u{2022} claude \u{2014} Anthropic Claude (recommended)\n\
-                             \u{2022} codex \u{2014} OpenAI Codex\n\
-                             \u{2022} both \u{2014} auto-detect at dispatch time"
+                            "\u{2713} Workspace name: {name}\n\n\
+                             Writing workspace config..."
                         ),
-                        false,
+                        true,
                     )
                 }
                 SetupStep::AskProvider => {
@@ -804,6 +932,7 @@ impl App {
     /// Write workspace config and transition from setup mode to normal dashboard.
     pub fn complete_setup(&mut self) -> Result<(), String> {
         let setup = self.setup.take().ok_or("not in setup mode")?;
+        let is_add = setup.add_workspace;
 
         // Build and write TOML config
         let toml_content = build_setup_toml(&setup);
@@ -814,8 +943,8 @@ impl App {
         std::fs::write(&config_path, &toml_content)
             .map_err(|e| format!("could not write config: {e}"))?;
 
-        // Write .onboarded marker
-        if let Err(e) = super::onboarding::mark_onboarded() {
+        // Write .onboarded marker (only for first-run setup, not add-workspace)
+        if !is_add && let Err(e) = super::onboarding::mark_onboarded() {
             tracing::warn!("failed to write onboarded marker: {e}");
         }
 
@@ -833,12 +962,16 @@ impl App {
             .find(|w| w.name == actual_name)
             .ok_or("workspace not found after creation")?;
 
-        // Preserve chat history from setup conversation
-        let chat_history = self
-            .workspaces
-            .first()
-            .map(|w| w.chat_history.clone())
-            .unwrap_or_default();
+        // Config display path with ~ shorthand
+        let config_display = if let Some(home) = dirs::home_dir() {
+            if let Ok(suffix) = config_path.strip_prefix(&home) {
+                format!("~/{}", suffix.display())
+            } else {
+                config_path.display().to_string()
+            }
+        } else {
+            config_path.display().to_string()
+        };
 
         // Build real workspace state
         let mut ws_state = WorkspaceState {
@@ -846,7 +979,7 @@ impl App {
             config: ws.config,
             signals: Vec::new(),
             workers: Vec::new(),
-            chat_history,
+            chat_history: Vec::new(),
             input: String::new(),
             cursor_pos: 0,
             chat_scroll: ScrollState::new(),
@@ -861,18 +994,8 @@ impl App {
             watcher_health: Vec::new(),
             feed: Vec::new(),
             feed_scroll: ScrollState::new(),
+            is_setup_placeholder: false,
             thoughts: Vec::new(),
-        };
-
-        // Config display path with ~ shorthand
-        let config_display = if let Some(home) = dirs::home_dir() {
-            if let Ok(suffix) = config_path.strip_prefix(&home) {
-                format!("~/{}", suffix.display())
-            } else {
-                config_path.display().to_string()
-            }
-        } else {
-            config_path.display().to_string()
         };
 
         // Completion message
@@ -889,9 +1012,31 @@ impl App {
         ));
         ws_state.chat_scroll.scroll_to_bottom();
 
-        self.workspaces = vec![ws_state];
-        self.active_tab = 0;
-        self.onboarding = OnboardingState::completed();
+        if is_add {
+            // Add-workspace: replace the placeholder tab with the real one
+            if let Some(idx) = self.workspaces.iter().position(|w| w.is_setup_placeholder) {
+                self.workspaces[idx] = ws_state;
+                self.active_tab = idx;
+            } else {
+                self.workspaces.push(ws_state);
+                self.active_tab = self.workspaces.len() - 1;
+            }
+        } else {
+            // First-run setup: preserve chat history from setup conversation
+            let chat_history = self
+                .workspaces
+                .first()
+                .map(|w| w.chat_history.clone())
+                .unwrap_or_default();
+            ws_state.chat_history.splice(0..0, chat_history);
+
+            self.workspaces = vec![ws_state];
+            self.active_tab = 0;
+        }
+
+        if !is_add {
+            self.onboarding = OnboardingState::completed();
+        }
         self.focused_panel = Panel::Workers;
         self.chat_focused = false;
         self.needs_redraw = true;
@@ -3093,5 +3238,87 @@ mod tests {
         std::fs::write(dir.path().join("myws-2.toml"), "root = '/'").unwrap();
         let path = find_available_config_path(dir.path(), "myws");
         assert_eq!(path, dir.path().join("myws-3.toml"));
+    }
+
+    #[test]
+    fn test_add_workspace_flow_steps() {
+        // Test the step transitions for the add_workspace=true path
+        let mut app = App::new_setup();
+        // Override to add-workspace mode
+        app.setup.as_mut().unwrap().add_workspace = true;
+
+        // AskRoot → AskName (simplified flow, not AskProvider)
+        let done = app.process_setup_input(""); // accept default root
+        assert!(!done);
+        assert_eq!(app.setup.as_ref().unwrap().step, SetupStep::AskName);
+
+        // AskName with default → Done
+        let done = app.process_setup_input(""); // accept default name
+        assert!(done);
+        let setup = app.setup.as_ref().unwrap();
+        assert_eq!(setup.step, SetupStep::Done);
+        // TOML should be valid
+        let toml_str = build_setup_toml(setup);
+        assert_valid_config(&toml_str);
+    }
+
+    #[test]
+    fn test_add_workspace_flow_custom_name() {
+        let mut app = App::new_setup();
+        app.setup.as_mut().unwrap().add_workspace = true;
+
+        // AskRoot with custom path
+        let done = app.process_setup_input("/tmp/my-project");
+        assert!(!done);
+        assert_eq!(app.setup.as_ref().unwrap().step, SetupStep::AskName);
+        assert_eq!(
+            app.setup.as_ref().unwrap().workspace_root,
+            std::path::PathBuf::from("/tmp/my-project")
+        );
+
+        // AskName with custom name
+        let done = app.process_setup_input("custom-ws");
+        assert!(done);
+        assert_eq!(app.setup.as_ref().unwrap().workspace_name, "custom-ws");
+    }
+
+    #[test]
+    fn test_add_workspace_placeholder_flag() {
+        let mut app = App::new_setup();
+        // new_setup sets is_setup_placeholder = true
+        assert!(app.workspaces[0].is_setup_placeholder);
+
+        // enter_add_workspace also sets the flag
+        let config: crate::config::WorkspaceConfig =
+            serde_json::from_str(r#"{"root":"/tmp"}"#).unwrap();
+        let ws = WorkspaceState {
+            name: "existing".into(),
+            config,
+            signals: Vec::new(),
+            workers: Vec::new(),
+            chat_history: Vec::new(),
+            input: String::new(),
+            cursor_pos: 0,
+            chat_scroll: ScrollState::new(),
+            streaming: false,
+            coordinator_preview: None,
+            has_unread_response: false,
+            coordinator_turns: 0,
+            prev_worker_phases: Default::default(),
+            prev_signal_ids: Default::default(),
+            prev_pr_workers: Default::default(),
+            sparkline_data: vec![0; 24],
+            watcher_health: Vec::new(),
+            feed: Vec::new(),
+            feed_scroll: ScrollState::new(),
+            thoughts: Vec::new(),
+            is_setup_placeholder: false,
+        };
+        app.workspaces = vec![ws];
+        app.setup = None;
+        app.enter_add_workspace(std::path::PathBuf::from("/tmp/new"), None);
+        assert_eq!(app.workspaces.len(), 2);
+        assert!(!app.workspaces[0].is_setup_placeholder);
+        assert!(app.workspaces[1].is_setup_placeholder);
     }
 }

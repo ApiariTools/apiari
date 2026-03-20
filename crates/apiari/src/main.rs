@@ -3,7 +3,6 @@ mod config;
 mod config_set;
 mod daemon;
 mod git_safety;
-mod init;
 mod ui;
 mod validate_bash;
 
@@ -142,16 +141,21 @@ async fn main() -> Result<()> {
     match cli.command {
         None => {
             if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-                ui::run(None).await?;
+                ui::run(None, None, None).await?;
             } else {
                 Cli::command().print_help()?;
             }
         }
         Some(Command::Init { name }) => {
-            init::run_init(name.as_deref())?;
-            // After init, launch the TUI — onboarding will run in-dashboard
-            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-                ui::run(name.as_deref()).await?;
+            // Launch TUI directly in add-workspace mode for cwd
+            if std::io::IsTerminal::is_terminal(&std::io::stdout())
+                && std::io::IsTerminal::is_terminal(&std::io::stdin())
+            {
+                let cwd = std::env::current_dir()?;
+                ui::run(None, Some(cwd), name.as_deref()).await?;
+            } else {
+                eprintln!("error: `apiari init` requires an interactive terminal");
+                std::process::exit(1);
             }
         }
         Some(Command::Daemon {
@@ -196,7 +200,7 @@ async fn main() -> Result<()> {
             daemon::run_chat(&workspace, message).await?;
         }
         Some(Command::Ui { workspace }) => {
-            ui::run(workspace.as_deref()).await?;
+            ui::run(workspace.as_deref(), None, None).await?;
         }
         Some(Command::Config { command }) => match command {
             ConfigCommand::Set {
