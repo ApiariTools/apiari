@@ -9,6 +9,8 @@ mod validate_bash;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use color_eyre::eyre::Result;
+use std::fs;
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 #[derive(Parser)]
 #[command(name = "apiari", about = "Unified CLI for apiari workspaces")]
@@ -107,15 +109,35 @@ enum ConfigCommand {
 #[tokio::main]
 async fn main() -> Result<()> {
     color_eyre::install()?;
+    let cli = Cli::parse();
+
+    // TUI uses stdout for rendering (crossterm alternate screen), so tracing
+    // must not write to stdout OR stderr (both point to the same TTY).
+    // Route tracing to a log file for TUI paths, stderr for everything else.
+    let is_tui = matches!(
+        cli.command,
+        None | Some(Command::Ui { .. }) | Some(Command::Init { .. })
+    );
+    let writer: BoxMakeWriter = if is_tui {
+        let log_dir = config::config_dir();
+        fs::create_dir_all(&log_dir)?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("tui.log"))?;
+        BoxMakeWriter::new(file)
+    } else {
+        BoxMakeWriter::new(std::io::stderr)
+    };
+
     tracing_subscriber::fmt()
+        .with_writer(writer)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "apiari=info,buzz=info".into()),
         )
         .with_target(false)
         .init();
-
-    let cli = Cli::parse();
 
     match cli.command {
         None => {
