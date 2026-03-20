@@ -52,7 +52,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .split(size);
 
     draw_tab_bar(frame, app, outer[0]);
-    // outer[1] is breathing room
+
+    // Paint an explicit background on every cell that no widget would
+    // otherwise cover: the breathing-room gap (outer[1]), the body area
+    // (outer[2]), and the bottom pad (outer[4]).  Without this, those cells
+    // stay at Color::Reset — identical to the cleared previous buffer — so
+    // the ratatui diff never outputs them.  If the terminal's alternate-
+    // screen buffer was not fully blanked, ghost content from a prior
+    // session persists in those unwritten cells and becomes visible when the
+    // dashboard layout shifts (e.g. during daemon auto-start).
+    let bg = Block::default().style(Style::default().bg(theme::COMB));
+    frame.render_widget(bg.clone(), outer[1]);
+    frame.render_widget(bg.clone(), outer[2]);
+    frame.render_widget(bg, outer[4]);
 
     match &app.view {
         View::Dashboard => draw_dashboard(frame, app, outer[2]),
