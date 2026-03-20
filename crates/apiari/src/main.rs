@@ -141,16 +141,16 @@ async fn main() -> Result<()> {
     match cli.command {
         None => {
             if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-                ui::run(None, None).await?;
+                ui::run(None, None, None).await?;
             } else {
                 Cli::command().print_help()?;
             }
         }
-        Some(Command::Init { name: _ }) => {
+        Some(Command::Init { name }) => {
             // Launch TUI directly in add-workspace mode for cwd
             if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                 let cwd = std::env::current_dir()?;
-                ui::run(None, Some(cwd)).await?;
+                ui::run(None, Some(cwd), name.as_deref()).await?;
             }
         }
         Some(Command::Daemon {
@@ -195,7 +195,7 @@ async fn main() -> Result<()> {
             daemon::run_chat(&workspace, message).await?;
         }
         Some(Command::Ui { workspace }) => {
-            ui::run(workspace.as_deref(), None).await?;
+            ui::run(workspace.as_deref(), None, None).await?;
         }
         Some(Command::Config { command }) => match command {
             ConfigCommand::Set {

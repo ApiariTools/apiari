@@ -92,9 +92,11 @@ enum KeyAction {
 ///
 /// If `setup_dir` is provided, the TUI enters "add workspace" mode for that
 /// directory — even when workspaces already exist (used by `apiari init`).
+/// `setup_name` optionally pre-fills the workspace name (from `apiari init --name`).
 pub async fn run(
     focus_workspace: Option<&str>,
     setup_dir: Option<std::path::PathBuf>,
+    setup_name: Option<&str>,
 ) -> Result<()> {
     let workspaces = config::discover_workspaces()?;
 
@@ -104,14 +106,15 @@ pub async fn run(
     } else if workspaces.is_empty() {
         // No workspaces but setup_dir given — first-run setup with that dir
         let mut a = App::new_setup();
-        // Override the pre-filled directory
+        // Override the pre-filled directory and name
         if let (Some(dir), Some(setup)) = (setup_dir.as_ref(), a.setup.as_mut()) {
             setup.workspace_root = dir.clone();
-            setup.workspace_name = dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("workspace")
-                .to_string();
+            setup.workspace_name = setup_name.map(|n| n.to_string()).unwrap_or_else(|| {
+                dir.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("workspace")
+                    .to_string()
+            });
             // Update the first chat message with the correct path
             let dir_display = dir.display().to_string();
             if let Some(ws) = a.workspaces.get_mut(0) {
@@ -135,7 +138,7 @@ pub async fn run(
         let mut a = App::new(workspaces, focus_workspace, needs_onboarding);
         // If setup_dir is given (e.g. from `apiari init`), enter add-workspace mode
         if let Some(dir) = setup_dir {
-            a.enter_add_workspace(dir);
+            a.enter_add_workspace(dir, setup_name);
         }
         a
     };
@@ -428,7 +431,7 @@ async fn event_loop(
                         if matches!(action, KeyAction::AddWorkspace) {
                             let cwd = std::env::current_dir()
                                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
-                            app.enter_add_workspace(cwd);
+                            app.enter_add_workspace(cwd, None);
                             app.needs_redraw = true;
                             continue;
                         }
@@ -615,19 +618,23 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
                 }
             }
             KeyCode::Char('p') => {
-                let prev = if app.active_tab == 0 {
-                    app.workspaces.len().saturating_sub(1)
-                } else {
-                    app.active_tab - 1
-                };
-                app.switch_tab(prev);
+                if app.setup.is_none() {
+                    let prev = if app.active_tab == 0 {
+                        app.workspaces.len().saturating_sub(1)
+                    } else {
+                        app.active_tab - 1
+                    };
+                    app.switch_tab(prev);
+                }
             }
             KeyCode::Char(c @ '1'..='9') => {
-                let idx = (c as usize) - ('1' as usize);
-                if app.setup.is_none() && idx >= app.workspaces.len() {
-                    return KeyAction::AddWorkspace;
+                if app.setup.is_none() {
+                    let idx = (c as usize) - ('1' as usize);
+                    if idx >= app.workspaces.len() {
+                        return KeyAction::AddWorkspace;
+                    }
+                    app.switch_tab(idx);
                 }
-                app.switch_tab(idx);
             }
             KeyCode::Char('z') => app.toggle_zoom(),
             _ => {}
@@ -1024,8 +1031,8 @@ fn handle_dashboard_chat_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
             if let Some(ref setup) = app.setup {
                 if setup.add_workspace {
                     app.setup = None;
-                    // Remove the placeholder "(setup)" tab
-                    if let Some(idx) = app.workspaces.iter().position(|w| w.name == "(setup)") {
+                    // Remove the placeholder tab
+                    if let Some(idx) = app.workspaces.iter().position(|w| w.is_setup_placeholder) {
                         app.workspaces.remove(idx);
                         app.active_tab = app.active_tab.min(app.workspaces.len().saturating_sub(1));
                     }
@@ -2142,6 +2149,7 @@ mod tests {
             feed: Vec::new(),
             feed_scroll: apiari_tui::scroll::ScrollState::new(),
             thoughts: Vec::new(),
+            is_setup_placeholder: false,
         };
         App {
             workspaces: vec![ws],

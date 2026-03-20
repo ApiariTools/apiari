@@ -387,6 +387,8 @@ pub struct WorkspaceState {
     pub feed: Vec<FeedItem>,
     pub feed_scroll: ScrollState,
     pub thoughts: Vec<(String, String)>, // (category, content)
+    /// True when this tab is a temporary placeholder for the add-workspace flow.
+    pub is_setup_placeholder: bool,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -480,6 +482,7 @@ impl App {
                 prev_pr_workers: std::collections::HashSet::new(),
                 feed_scroll: ScrollState::new(),
                 thoughts: Vec::new(),
+                is_setup_placeholder: false,
             })
             .collect();
 
@@ -604,6 +607,7 @@ impl App {
             feed: Vec::new(),
             feed_scroll: ScrollState::new(),
             thoughts: Vec::new(),
+            is_setup_placeholder: true,
         };
 
         let setup = SetupState {
@@ -681,14 +685,16 @@ impl App {
     }
 
     /// Enter add-workspace mode on an existing app.
-    /// Adds a placeholder "(setup)" workspace tab, switches to it,
+    /// Adds a placeholder workspace tab, switches to it,
     /// and starts the simplified setup flow.
-    pub fn enter_add_workspace(&mut self, dir: std::path::PathBuf) {
-        let ws_name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workspace")
-            .to_string();
+    /// `name_override` optionally pre-fills the workspace name.
+    pub fn enter_add_workspace(&mut self, dir: std::path::PathBuf, name_override: Option<&str>) {
+        let ws_name = name_override.map(|n| n.to_string()).unwrap_or_else(|| {
+            dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace")
+                .to_string()
+        });
 
         let dir_display = dir.display().to_string();
 
@@ -700,7 +706,7 @@ impl App {
                 });
 
         let mut ws_state = WorkspaceState {
-            name: "(setup)".to_string(),
+            name: "(new workspace)".to_string(),
             config,
             signals: Vec::new(),
             workers: Vec::new(),
@@ -719,6 +725,7 @@ impl App {
             feed: Vec::new(),
             feed_scroll: ScrollState::new(),
             thoughts: Vec::new(),
+            is_setup_placeholder: true,
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -919,9 +926,11 @@ impl App {
         std::fs::write(&config_path, &toml_content)
             .map_err(|e| format!("could not write config: {e}"))?;
 
-        // Write .onboarded marker
-        if let Err(e) = super::onboarding::mark_onboarded() {
-            tracing::warn!("failed to write onboarded marker: {e}");
+        // Write .onboarded marker (only for first-run setup, not add-workspace)
+        if !is_add {
+            if let Err(e) = super::onboarding::mark_onboarded() {
+                tracing::warn!("failed to write onboarded marker: {e}");
+            }
         }
 
         // Reload workspaces — the actual file name may differ from
@@ -970,6 +979,7 @@ impl App {
             watcher_health: Vec::new(),
             feed: Vec::new(),
             feed_scroll: ScrollState::new(),
+            is_setup_placeholder: false,
             thoughts: Vec::new(),
         };
 
@@ -988,8 +998,8 @@ impl App {
         ws_state.chat_scroll.scroll_to_bottom();
 
         if is_add {
-            // Add-workspace: replace the placeholder "(setup)" tab with the real one
-            if let Some(idx) = self.workspaces.iter().position(|w| w.name == "(setup)") {
+            // Add-workspace: replace the placeholder tab with the real one
+            if let Some(idx) = self.workspaces.iter().position(|w| w.is_setup_placeholder) {
                 self.workspaces[idx] = ws_state;
                 self.active_tab = idx;
             } else {
@@ -1009,7 +1019,9 @@ impl App {
             self.active_tab = 0;
         }
 
-        self.onboarding = OnboardingState::completed();
+        if !is_add {
+            self.onboarding = OnboardingState::completed();
+        }
         self.focused_panel = Panel::Workers;
         self.chat_focused = false;
         self.needs_redraw = true;
@@ -3211,5 +3223,89 @@ mod tests {
         std::fs::write(dir.path().join("myws-2.toml"), "root = '/'").unwrap();
         let path = find_available_config_path(dir.path(), "myws");
         assert_eq!(path, dir.path().join("myws-3.toml"));
+    }
+
+    #[test]
+    fn test_add_workspace_flow_steps() {
+        // Simulate an existing app with one workspace, then enter add-workspace mode
+        let mut app = App::new_setup();
+        // Complete first-run setup to get a real app state
+        // Instead, just test the step transitions directly on a fresh setup with add_workspace=true
+        let mut app = App::new_setup();
+        // Override to add-workspace mode
+        app.setup.as_mut().unwrap().add_workspace = true;
+
+        // AskRoot → AskName (simplified flow, not AskProvider)
+        let done = app.process_setup_input(""); // accept default root
+        assert!(!done);
+        assert_eq!(app.setup.as_ref().unwrap().step, SetupStep::AskName);
+
+        // AskName with default → Done
+        let done = app.process_setup_input(""); // accept default name
+        assert!(done);
+        let setup = app.setup.as_ref().unwrap();
+        assert_eq!(setup.step, SetupStep::Done);
+        // TOML should be valid
+        let toml_str = build_setup_toml(setup);
+        assert_valid_config(&toml_str);
+    }
+
+    #[test]
+    fn test_add_workspace_flow_custom_name() {
+        let mut app = App::new_setup();
+        app.setup.as_mut().unwrap().add_workspace = true;
+
+        // AskRoot with custom path
+        let done = app.process_setup_input("/tmp/my-project");
+        assert!(!done);
+        assert_eq!(app.setup.as_ref().unwrap().step, SetupStep::AskName);
+        assert_eq!(
+            app.setup.as_ref().unwrap().workspace_root,
+            std::path::PathBuf::from("/tmp/my-project")
+        );
+
+        // AskName with custom name
+        let done = app.process_setup_input("custom-ws");
+        assert!(done);
+        assert_eq!(app.setup.as_ref().unwrap().workspace_name, "custom-ws");
+    }
+
+    #[test]
+    fn test_add_workspace_placeholder_flag() {
+        let mut app = App::new_setup();
+        // new_setup sets is_setup_placeholder = true
+        assert!(app.workspaces[0].is_setup_placeholder);
+
+        // enter_add_workspace also sets the flag
+        let config: crate::config::WorkspaceConfig =
+            serde_json::from_str(r#"{"root":"/tmp"}"#).unwrap();
+        let ws = WorkspaceState {
+            name: "existing".into(),
+            config,
+            signals: Vec::new(),
+            workers: Vec::new(),
+            chat_history: Vec::new(),
+            input: String::new(),
+            chat_scroll: ScrollState::new(),
+            streaming: false,
+            coordinator_preview: None,
+            has_unread_response: false,
+            coordinator_turns: 0,
+            prev_worker_phases: Default::default(),
+            prev_signal_ids: Default::default(),
+            prev_pr_workers: Default::default(),
+            sparkline_data: vec![0; 24],
+            watcher_health: Vec::new(),
+            feed: Vec::new(),
+            feed_scroll: ScrollState::new(),
+            thoughts: Vec::new(),
+            is_setup_placeholder: false,
+        };
+        app.workspaces = vec![ws];
+        app.setup = None;
+        app.enter_add_workspace(std::path::PathBuf::from("/tmp/new"), None);
+        assert_eq!(app.workspaces.len(), 2);
+        assert!(!app.workspaces[0].is_setup_placeholder);
+        assert!(app.workspaces[1].is_setup_placeholder);
     }
 }
