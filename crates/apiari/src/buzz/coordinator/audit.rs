@@ -229,6 +229,7 @@ fn contains_pattern(command: &str, pattern: &str) -> bool {
 /// - `/tmp/` — the coordinator needs this for swarm `--prompt-file`.
 /// - Claude Code project memory paths (`~/.claude/.../memory/`) — the
 ///   coordinator is allowed to update its own persistent memory.
+/// - `~/.config/apiari/` — workspace config files managed by the coordinator.
 fn is_allowed_write_target(path: &str) -> bool {
     if path.starts_with("/tmp/") || path == "/tmp" {
         return true;
@@ -238,7 +239,17 @@ fn is_allowed_write_target(path: &str) -> bool {
     let has_claude = path.contains("/.claude/")
         || path.starts_with("~/.claude/")
         || path.contains("$HOME/.claude/");
-    has_claude && (path.contains("/memory/") || path.ends_with("/memory"))
+    if has_claude && (path.contains("/memory/") || path.ends_with("/memory")) {
+        return true;
+    }
+    // Apiari config directory.
+    // Only allow home-dir-anchored paths: ~/..., /Users/*/..., /home/*/..., $HOME/...
+    let is_home_anchored = path.starts_with("~/")
+        || path.starts_with("/Users/")
+        || path.starts_with("/home/")
+        || path.starts_with("$HOME/");
+    let in_apiari_config = path.contains("/.config/apiari/") || path.ends_with("/.config/apiari");
+    (is_home_anchored && in_apiari_config) || path == "~/.config/apiari"
 }
 
 /// Check if the destination/target of a write command is an allowed path.
@@ -693,6 +704,72 @@ if len(data) > 0:
         assert!(
             result.is_mutating(),
             "chain with non-config command should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_dir_cp_allowed() {
+        let result = classify_bash_command(
+            "cp /tmp/apiari-new.toml ~/.config/apiari/workspaces/apiari.toml",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "cp to ~/.config/apiari/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_dir_absolute_path_allowed() {
+        let result = classify_bash_command(
+            "cp /tmp/apiari-new.toml /Users/josh/.config/apiari/workspaces/apiari.toml",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "cp to absolute .config/apiari/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_dir_home_var_allowed() {
+        let result = classify_bash_command(
+            "cp /tmp/apiari-new.toml $HOME/.config/apiari/workspaces/apiari.toml",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "cp to $HOME/.config/apiari/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_dir_mkdir_allowed() {
+        let result = classify_bash_command("mkdir -p ~/.config/apiari/workspaces");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "mkdir for apiari config dir should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_dir_redirect_allowed() {
+        let result =
+            classify_bash_command("echo '[workspace]' > ~/.config/apiari/workspaces/test.toml");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "redirect to ~/.config/apiari/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_non_apiari_config_dir_still_blocked() {
+        let result = classify_bash_command("cp /tmp/evil.txt ~/.config/other/file.txt");
+        assert!(
+            result.is_mutating(),
+            "writing to non-apiari config dir should be mutating"
         );
     }
 }
