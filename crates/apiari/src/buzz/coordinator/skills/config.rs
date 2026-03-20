@@ -170,15 +170,27 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          poll_database_ids = [\"db-id-1\"]  # optional\n\
          ```\n\n\
          **Signal hooks setup:**\n\
-         Signal hooks trigger coordinator follow-through when signals arrive:\n\
+         Signal hooks trigger coordinator follow-through when signals arrive.\n\
+         The optional `action` field is a natural-language instruction telling you what to DO \
+         when this hook fires. If omitted, you just notify (current default behavior).\n\
          ```toml\n\
          [[coordinator.signal_hooks]]\n\
-         source = \"github_ci_failure\"\n\
+         source = \"github\"\n\
          prompt = \"CI failed: {events}\"\n\
+         action = \"Find the relevant swarm worker for this PR and send it the CI error details.\"\n\
          ttl_secs = 300\n\
-         ```\n\
-         The default hook watches `swarm` signals. Add more hooks for sources like \
-         `github_ci_failure`, `github_bot_review`, `sentry`, etc.\n",
+         \n\
+         [[coordinator.signal_hooks]]\n\
+         source = \"github_bot_review\"\n\
+         prompt = \"Bot review received: {events}\"\n\
+         action = \"Find the swarm worker whose branch matches this PR and forward the review.\"\n\
+         ttl_secs = 300\n\
+         \n\
+         [[coordinator.signal_hooks]]\n\
+         source = \"github_release\"\n\
+         prompt = \"Release completed: {events}\"\n\
+         ttl_secs = 300\n\
+         ```\n",
     );
 
     prompt

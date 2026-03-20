@@ -104,6 +104,7 @@ enum CoordinatorJob {
         signals: Vec<String>,
         source: String,
         prompt_override: Option<String>,
+        action: Option<String>,
         queued_at: std::time::Instant,
         ttl_secs: u64,
         telegram: Option<(TelegramChannel, i64, Option<i64>)>,
@@ -443,6 +444,7 @@ async fn run_coordinator_task(
                 signals,
                 source,
                 prompt_override,
+                action,
                 queued_at,
                 ttl_secs,
                 telegram,
@@ -461,11 +463,17 @@ async fn run_coordinator_task(
                     continue;
                 }
 
-                let notification = if let Some(ref tpl) = prompt_override {
+                let mut notification = if let Some(ref tpl) = prompt_override {
                     format_hook_notification(&source, &signals, tpl)
                 } else {
                     format_system_notification(&source, &signals)
                 };
+
+                // Append action instruction so the coordinator knows what to DO
+                if let Some(ref action_str) = action {
+                    notification.push_str("\n\n[Action] ");
+                    notification.push_str(action_str);
+                }
                 info!(
                     "[{slot_name}] triggering coordinator follow-through ({source}, {} event(s))",
                     signals.len()
@@ -1230,6 +1238,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             signals,
                             source,
                             prompt_override,
+                            action: hook.action.clone(),
                             queued_at: std::time::Instant::now(),
                             ttl_secs: hook.ttl_secs,
                             telegram: telegram_info,
