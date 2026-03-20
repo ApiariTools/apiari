@@ -927,10 +927,8 @@ impl App {
             .map_err(|e| format!("could not write config: {e}"))?;
 
         // Write .onboarded marker (only for first-run setup, not add-workspace)
-        if !is_add {
-            if let Err(e) = super::onboarding::mark_onboarded() {
-                tracing::warn!("failed to write onboarded marker: {e}");
-            }
+        if !is_add && let Err(e) = super::onboarding::mark_onboarded() {
+            tracing::warn!("failed to write onboarded marker: {e}");
         }
 
         // Reload workspaces — the actual file name may differ from
