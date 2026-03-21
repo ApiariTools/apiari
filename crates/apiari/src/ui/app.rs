@@ -25,6 +25,7 @@ const CHAT_HISTORY_LIMIT: usize = 20;
 pub enum View {
     Dashboard,
     WorkerDetail(usize),
+    WorkerChat(usize),
     SignalDetail(usize),
     SignalList,
     ReviewList,
@@ -166,6 +167,10 @@ pub struct WorkerInfo {
     pub conversation: Vec<ConversationEntry>,
     /// Per-worker scroll state for conversation view.
     pub conv_scroll: ScrollState,
+    /// Activity log (derived from prompt, PR, phase, etc.).
+    pub activity: Vec<WorkerEvent>,
+    /// Scroll state for activity log in split view.
+    pub activity_scroll: ScrollState,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +180,30 @@ pub struct PrInfo {
     pub title: String,
     pub state: String,
     pub url: String,
+}
+
+// ── Worker activity log ───────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct WorkerEvent {
+    pub ts: Option<DateTime<Local>>,
+    pub kind: WorkerEventKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum WorkerEventKind {
+    Dispatched,
+    BeeToWorker,
+    UserToWorker,
+    PrOpened,
+    #[allow(dead_code)]
+    CiFailed,
+    #[allow(dead_code)]
+    CiPassed,
+    Merged,
+    StatusChange,
 }
 
 /// Deserialization types for .swarm/state.json.
@@ -410,6 +439,8 @@ pub struct App {
     // Worker detail
     pub worker_input: String,
     pub worker_input_active: bool,
+    /// When true, scroll/focus targets the activity pane (left) in WorkerDetail split.
+    pub worker_activity_focused: bool,
     // Review comment input
     pub review_comment_active: bool,
     pub review_comment_input: String,
@@ -522,6 +553,7 @@ impl App {
             chat_focused,
             worker_input: String::new(),
             worker_input_active: false,
+            worker_activity_focused: false,
             review_comment_active: false,
             review_comment_input: String::new(),
             review_comment_repo: String::new(),
@@ -641,6 +673,7 @@ impl App {
             chat_focused: true,
             worker_input: String::new(),
             worker_input_active: false,
+            worker_activity_focused: false,
             review_comment_active: false,
             review_comment_input: String::new(),
             review_comment_repo: String::new(),
@@ -1231,6 +1264,7 @@ impl App {
         self.content_scroll = 0;
         self.worker_input.clear();
         self.worker_input_active = false;
+        self.worker_activity_focused = false;
         self.refresh_worker_conversation(idx);
         self.needs_redraw = true;
     }
@@ -1268,7 +1302,9 @@ impl App {
 
     pub fn back_to_dashboard(&mut self) {
         match self.view {
-            View::WorkerDetail(_) | View::PrList => self.focused_panel = Panel::Workers,
+            View::WorkerDetail(_) | View::WorkerChat(_) | View::PrList => {
+                self.focused_panel = Panel::Workers
+            }
             View::SignalDetail(_) | View::SignalList => {
                 // Return to whichever signal panel was focused before drill-in
                 if self.focused_panel != Panel::Reviews {
@@ -1797,7 +1833,7 @@ impl App {
     }
 
     pub fn scroll_worker_conv_up(&mut self, amount: u16) {
-        if let View::WorkerDetail(idx) = self.view
+        if let View::WorkerDetail(idx) | View::WorkerChat(idx) = self.view
             && let Some(ws) = self.workspaces.get_mut(self.active_tab)
             && let Some(worker) = ws.workers.get_mut(idx)
         {
@@ -1807,11 +1843,31 @@ impl App {
     }
 
     pub fn scroll_worker_conv_down(&mut self, amount: u16) {
-        if let View::WorkerDetail(idx) = self.view
+        if let View::WorkerDetail(idx) | View::WorkerChat(idx) = self.view
             && let Some(ws) = self.workspaces.get_mut(self.active_tab)
             && let Some(worker) = ws.workers.get_mut(idx)
         {
             worker.conv_scroll.scroll_down(amount as u32);
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn scroll_worker_activity_up(&mut self, amount: u16) {
+        if let View::WorkerDetail(idx) | View::WorkerChat(idx) = self.view
+            && let Some(ws) = self.workspaces.get_mut(self.active_tab)
+            && let Some(worker) = ws.workers.get_mut(idx)
+        {
+            worker.activity_scroll.scroll_up(amount as u32);
+            self.needs_redraw = true;
+        }
+    }
+
+    pub fn scroll_worker_activity_down(&mut self, amount: u16) {
+        if let View::WorkerDetail(idx) | View::WorkerChat(idx) = self.view
+            && let Some(ws) = self.workspaces.get_mut(self.active_tab)
+            && let Some(worker) = ws.workers.get_mut(idx)
+        {
+            worker.activity_scroll.scroll_down(amount as u32);
             self.needs_redraw = true;
         }
     }
@@ -2222,7 +2278,7 @@ impl App {
                     None
                 }
             }
-            View::WorkerDetail(i) => self.current_ws()?.workers.get(*i),
+            View::WorkerDetail(i) | View::WorkerChat(i) => self.current_ws()?.workers.get(*i),
             View::PrList => {
                 let prs = self.workers_with_prs();
                 prs.get(self.pr_list_selection).map(|(_, w)| *w)
@@ -2435,6 +2491,8 @@ fn load_workers_from_state(state_path: &std::path::Path) -> Vec<WorkerInfo> {
                 last_activity: None, // filled by refresh_workers
                 conversation: Vec::new(),
                 conv_scroll: ScrollState::new(),
+                activity: Vec::new(), // populated after load
+                activity_scroll: ScrollState::new(),
             }
         })
         .collect()
@@ -2512,6 +2570,54 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Build activity events from the data already available in `WorkerInfo`.
+fn build_worker_activity(worker: &WorkerInfo) -> Vec<WorkerEvent> {
+    let mut events = Vec::new();
+
+    // 1. Task dispatched (from prompt + created_at)
+    events.push(WorkerEvent {
+        ts: worker.created_at,
+        kind: WorkerEventKind::Dispatched,
+        text: truncate_preview(&worker.prompt, 120),
+    });
+
+    // 2. Phase changes → status entries
+    if let Some(ref phase) = worker.phase {
+        let phase_text = match phase.as_str() {
+            "running" => "Agent is running",
+            "waiting" => "Waiting for input",
+            "completed" => "Task completed",
+            "failed" => "Task failed",
+            _ => phase.as_str(),
+        };
+        events.push(WorkerEvent {
+            ts: None,
+            kind: WorkerEventKind::StatusChange,
+            text: phase_text.to_string(),
+        });
+    }
+
+    // 3. PR opened
+    if let Some(ref pr) = worker.pr {
+        events.push(WorkerEvent {
+            ts: None,
+            kind: WorkerEventKind::PrOpened,
+            text: format!("PR #{} opened: {}", pr.number, pr.title),
+        });
+
+        // 4. Check if merged
+        if pr.state == "MERGED" || pr.state == "merged" {
+            events.push(WorkerEvent {
+                ts: None,
+                kind: WorkerEventKind::Merged,
+                text: format!("PR #{} merged", pr.number),
+            });
+        }
+    }
+
+    events
+}
+
 // ── Blocking I/O for background tasks ─────────────────────
 
 /// Load workers for all workspaces (blocking filesystem reads).
@@ -2525,6 +2631,7 @@ pub(super) fn load_all_workers_blocking(
             let mut workers = load_workers_from_state(&state_path);
             for worker in &mut workers {
                 worker.last_activity = load_last_activity(&info.root, &worker.id);
+                worker.activity = build_worker_activity(worker);
             }
             (info.name.clone(), workers)
         })
@@ -3253,5 +3360,118 @@ mod tests {
         assert_eq!(app.workspaces.len(), 2);
         assert!(!app.workspaces[0].is_setup_placeholder);
         assert!(app.workspaces[1].is_setup_placeholder);
+    }
+
+    fn test_worker(prompt: &str, phase: Option<&str>, pr: Option<PrInfo>) -> WorkerInfo {
+        WorkerInfo {
+            id: "w-123".into(),
+            branch: "swarm/test".into(),
+            prompt: prompt.into(),
+            agent_kind: "claude".into(),
+            phase: phase.map(|s| s.into()),
+            agent_session_status: None,
+            summary: None,
+            created_at: Some(Local::now()),
+            pr,
+            last_activity: None,
+            conversation: Vec::new(),
+            conv_scroll: ScrollState::new(),
+            activity: Vec::new(),
+            activity_scroll: ScrollState::new(),
+        }
+    }
+
+    #[test]
+    fn test_build_worker_activity_basic_ordering() {
+        let worker = test_worker("Fix the login bug", Some("running"), None);
+        let events = build_worker_activity(&worker);
+
+        // Should have at least: dispatched + status change
+        assert!(events.len() >= 2);
+        assert!(matches!(events[0].kind, WorkerEventKind::Dispatched));
+        assert!(events[0].text.contains("Fix the login bug"));
+        assert!(matches!(events[1].kind, WorkerEventKind::StatusChange));
+    }
+
+    #[test]
+    fn test_build_worker_activity_with_pr() {
+        let pr = PrInfo {
+            number: 42,
+            title: "fix: login bug".into(),
+            state: "OPEN".into(),
+            url: "https://github.com/test/repo/pull/42".into(),
+        };
+        let worker = test_worker("Fix the login bug", Some("running"), Some(pr));
+        let events = build_worker_activity(&worker);
+
+        // Should have dispatched + status + PR opened
+        let pr_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e.kind, WorkerEventKind::PrOpened))
+            .collect();
+        assert_eq!(pr_events.len(), 1);
+        assert!(pr_events[0].text.contains("#42"));
+    }
+
+    #[test]
+    fn test_build_worker_activity_merged_state() {
+        let pr = PrInfo {
+            number: 42,
+            title: "fix: login bug".into(),
+            state: "MERGED".into(),
+            url: "https://github.com/test/repo/pull/42".into(),
+        };
+        let worker = test_worker("Fix the login bug", Some("completed"), Some(pr));
+        let events = build_worker_activity(&worker);
+
+        // Should detect merged state
+        let merged: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e.kind, WorkerEventKind::Merged))
+            .collect();
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].text.contains("#42"));
+    }
+
+    #[test]
+    fn test_build_worker_activity_no_phase() {
+        let worker = test_worker("Fix something", None, None);
+        let events = build_worker_activity(&worker);
+
+        // Only dispatched, no status change
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0].kind, WorkerEventKind::Dispatched));
+    }
+
+    #[test]
+    fn test_build_worker_activity_event_order() {
+        let pr = PrInfo {
+            number: 10,
+            title: "feat: something".into(),
+            state: "MERGED".into(),
+            url: "https://github.com/test/repo/pull/10".into(),
+        };
+        let worker = test_worker("Add feature", Some("completed"), Some(pr));
+        let events = build_worker_activity(&worker);
+
+        // Verify ordering: dispatched first, then status, then PR, then merged
+        let kinds: Vec<_> = events
+            .iter()
+            .map(|e| std::mem::discriminant(&e.kind))
+            .collect();
+        let dispatched_pos = kinds
+            .iter()
+            .position(|k| *k == std::mem::discriminant(&WorkerEventKind::Dispatched))
+            .unwrap();
+        let pr_pos = kinds
+            .iter()
+            .position(|k| *k == std::mem::discriminant(&WorkerEventKind::PrOpened))
+            .unwrap();
+        let merged_pos = kinds
+            .iter()
+            .position(|k| *k == std::mem::discriminant(&WorkerEventKind::Merged))
+            .unwrap();
+        assert!(dispatched_pos < pr_pos);
+        assert!(pr_pos < merged_pos);
     }
 }

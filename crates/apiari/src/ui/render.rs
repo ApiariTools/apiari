@@ -87,6 +87,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match &app.view {
         View::Dashboard => draw_dashboard(frame, app, outer[2]),
         View::WorkerDetail(i) => draw_worker_detail(frame, app, outer[2], *i),
+        View::WorkerChat(i) => draw_worker_chat(frame, app, outer[2], *i),
         View::SignalDetail(i) => draw_signal_detail(frame, app, outer[2], *i),
         View::SignalList => draw_signal_list(frame, app, outer[2]),
         View::ReviewList => draw_review_list(frame, app, outer[2]),
@@ -1708,7 +1709,7 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
         0
     };
 
-    // Layout: header (1) + conversation (fill) + input (input_h, 0 when inactive)
+    // Layout: header (1) + body (fill) + input (input_h, 0 when inactive)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1736,12 +1737,37 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
     let header = Paragraph::new(header_line).style(Style::default().bg(theme::COMB));
     frame.render_widget(header, chunks[0]);
 
-    // ── Conversation body — borderless ──
-    let conv_block = Block::default();
+    // ── Split body: activity log (40%) | conversation (60%) ──
+    let body_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(chunks[1]);
+
+    // ── Left: Activity log ──
+    let activity_block = if app.worker_activity_focused {
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(theme::border_active())
+    } else {
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(theme::STEEL))
+    };
+    draw_activity_log_with_block(frame, worker, body_cols[0], activity_block);
+
+    // ── Right: Conversation body ──
+    let conv_border_style = if !app.worker_activity_focused {
+        theme::border_active()
+    } else {
+        Style::default().fg(theme::STEEL)
+    };
+    let conv_block = Block::default()
+        .borders(Borders::NONE)
+        .border_style(conv_border_style);
 
     if worker.conversation.is_empty() {
-        let inner = conv_block.inner(chunks[1]);
-        frame.render_widget(conv_block, chunks[1]);
+        let inner = conv_block.inner(body_cols[1]);
+        frame.render_widget(conv_block, body_cols[1]);
         let lines = vec![
             Line::from(""),
             Line::from(vec![
@@ -1760,7 +1786,7 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
 
         apiari_tui::scroll::render_scrollable(
             frame,
-            chunks[1],
+            body_cols[1],
             lines,
             &worker.conv_scroll,
             conv_block,
@@ -1784,6 +1810,211 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
             .style(theme::text())
             .wrap(Wrap { trim: false });
         frame.render_widget(input_p, input_inner);
+    }
+}
+
+// ── Activity log rendering ──────────────────────────────
+
+/// Render the activity log lines from worker events.
+fn render_activity_lines<'a>(events: &'a [app::WorkerEvent]) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line<'a>> = Vec::new();
+    lines.push(Line::from(""));
+
+    for event in events {
+        let ts_str = event
+            .ts
+            .map(|t| t.format("%H:%M").to_string())
+            .unwrap_or_default();
+
+        let (icon, icon_style) = match event.kind {
+            app::WorkerEventKind::Dispatched => {
+                ("\u{25cf}", Style::default().fg(theme::HONEY)) // ●
+            }
+            app::WorkerEventKind::BeeToWorker => {
+                ("\u{2192}", Style::default().fg(theme::MINT)) // →
+            }
+            app::WorkerEventKind::UserToWorker => {
+                ("\u{2192}", Style::default().fg(theme::ICE)) // →
+            }
+            app::WorkerEventKind::PrOpened => {
+                ("\u{2705}", Style::default().fg(theme::MINT)) // ✅
+            }
+            app::WorkerEventKind::CiFailed => ("\u{2717}", theme::error()), // ✗
+            app::WorkerEventKind::CiPassed => {
+                ("\u{2713}", theme::status_done()) // ✓
+            }
+            app::WorkerEventKind::Merged => {
+                ("\u{2713}", theme::status_done()) // ✓
+            }
+            app::WorkerEventKind::StatusChange => {
+                ("\u{25cb}", Style::default().fg(theme::SMOKE)) // ○
+            }
+        };
+
+        let kind_label: &str = match event.kind {
+            app::WorkerEventKind::Dispatched => "Task dispatched",
+            app::WorkerEventKind::BeeToWorker => "Bee \u{2192} worker",
+            app::WorkerEventKind::UserToWorker => "You \u{2192} worker",
+            app::WorkerEventKind::PrOpened => "PR opened",
+            app::WorkerEventKind::CiFailed => "CI failed",
+            app::WorkerEventKind::CiPassed => "CI passed",
+            app::WorkerEventKind::Merged => "Merged",
+            app::WorkerEventKind::StatusChange => "Status",
+        };
+
+        // Icon + timestamp + label line
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {icon} "), icon_style),
+            Span::styled(format!("{ts_str}  "), Style::default().fg(theme::SMOKE)),
+            Span::styled(kind_label, theme::muted()),
+        ]));
+
+        // Event text on next line(s), indented
+        for text_line in event.text.lines() {
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(text_line.to_string(), theme::text()),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+    }
+
+    lines
+}
+
+/// Draw the activity log panel with a custom block (used in the left split of WorkerDetail).
+fn draw_activity_log_with_block(
+    frame: &mut Frame,
+    worker: &app::WorkerInfo,
+    area: Rect,
+    block: Block<'_>,
+) {
+    if worker.activity.is_empty() {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("No activity yet.", theme::muted()),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+    } else {
+        let lines = render_activity_lines(&worker.activity);
+        apiari_tui::scroll::render_scrollable(frame, area, lines, &worker.activity_scroll, block);
+    }
+}
+
+// ── Worker chat (full-screen activity view) ──────────────
+
+fn draw_worker_chat(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
+    let ws = match app.current_ws() {
+        Some(ws) => ws,
+        None => return,
+    };
+    let worker = match ws.workers.get(idx) {
+        Some(w) => w,
+        None => return,
+    };
+
+    let phase = app::phase_display(worker);
+
+    // Status icon
+    let (status_icon, status_style) = match phase {
+        "running" => ("\u{25cf}", theme::status_running()),
+        "waiting" => ("\u{25cb}", Style::default().fg(theme::POLLEN)),
+        "completed" => ("\u{2713}", theme::status_done()),
+        "failed" => ("\u{2717}", theme::error()),
+        _ => ("\u{25cb}", theme::status_idle()),
+    };
+
+    // Layout: header (1) + chat body (fill)
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(area);
+
+    // ── Header ──
+    let mut header_spans = vec![
+        Span::styled(format!(" {status_icon} "), status_style),
+        Span::styled(format!("{} ", worker.id), theme::title()),
+        Span::styled("Activity Log  ", theme::muted()),
+    ];
+    if let Some(ref pr) = worker.pr {
+        header_spans.push(Span::styled(
+            format!("PR #{} ", pr.number),
+            Style::default().fg(theme::MINT),
+        ));
+        header_spans.push(Span::styled(
+            pr.url.clone(),
+            Style::default().fg(theme::ICE),
+        ));
+    }
+    let header_line = Line::from(header_spans);
+    let header = Paragraph::new(header_line).style(Style::default().bg(theme::COMB));
+    frame.render_widget(header, chunks[0]);
+
+    // ── Chat body: render activity events as conversation entries ──
+    let entries: Vec<conversation::ConversationEntry> = worker
+        .activity
+        .iter()
+        .map(|ev| match ev.kind {
+            app::WorkerEventKind::Dispatched | app::WorkerEventKind::UserToWorker => {
+                let ts = ev
+                    .ts
+                    .map(|t| t.format("%H:%M").to_string())
+                    .unwrap_or_default();
+                conversation::ConversationEntry::User {
+                    text: ev.text.clone(),
+                    timestamp: ts,
+                }
+            }
+            app::WorkerEventKind::BeeToWorker => {
+                let ts = ev
+                    .ts
+                    .map(|t| t.format("%H:%M").to_string())
+                    .unwrap_or_default();
+                conversation::ConversationEntry::AssistantText {
+                    text: ev.text.clone(),
+                    timestamp: ts,
+                }
+            }
+            app::WorkerEventKind::PrOpened
+            | app::WorkerEventKind::CiFailed
+            | app::WorkerEventKind::CiPassed
+            | app::WorkerEventKind::Merged
+            | app::WorkerEventKind::StatusChange => conversation::ConversationEntry::Status {
+                text: ev.text.clone(),
+            },
+        })
+        .collect();
+
+    let block = Block::default();
+
+    if entries.is_empty() {
+        let inner = block.inner(chunks[1]);
+        frame.render_widget(block, chunks[1]);
+        let lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("No activity yet.", theme::muted()),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+    } else {
+        let mut lines: Vec<Line<'_>> = Vec::new();
+        conversation::render_conversation(&mut lines, &entries, None, Some("Bee"));
+
+        apiari_tui::scroll::render_scrollable(
+            frame,
+            chunks[1],
+            lines,
+            &worker.activity_scroll,
+            block,
+        );
     }
 }
 
@@ -2311,8 +2542,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 vec![
                     Span::raw(" "),
+                    Span::styled("tab", theme::key_hint()),
+                    Span::styled(":pane  ", theme::key_desc()),
                     Span::styled("c", theme::key_hint()),
-                    Span::styled(":chat  ", theme::key_desc()),
+                    Span::styled(":activity  ", theme::key_desc()),
+                    Span::styled("m", theme::key_hint()),
+                    Span::styled(":message  ", theme::key_desc()),
                     Span::styled("j/k", theme::key_hint()),
                     Span::styled(":scroll  ", theme::key_desc()),
                     Span::styled("o", theme::key_hint()),
@@ -2324,6 +2559,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ]
             }
         }
+        View::WorkerChat(_) => vec![
+            Span::raw(" "),
+            Span::styled("j/k", theme::key_hint()),
+            Span::styled(":scroll  ", theme::key_desc()),
+            Span::styled("o", theme::key_hint()),
+            Span::styled(":open PR  ", theme::key_desc()),
+            Span::styled("esc", theme::key_hint()),
+            Span::styled(":back", theme::key_desc()),
+        ],
         View::SignalDetail(_) => vec![
             Span::raw(" "),
             Span::styled("j/k", theme::key_hint()),
