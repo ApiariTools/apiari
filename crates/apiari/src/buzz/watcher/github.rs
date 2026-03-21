@@ -590,15 +590,15 @@ impl GithubWatcher {
 
             // Only emit if we have a previous SHA and it differs (actual new push).
             // On first run (empty cursors), we seed without emitting to avoid noise.
-            if let Some(prev_sha) = prev_cursors.get(number) {
-                if prev_sha != sha {
-                    let key = format!("pr-push-{repo}-{number}-{sha}");
-                    let msg = format!("New commits on PR #{number}: {title} ({repo})");
-                    let url = format!("https://github.com/{repo}/pull/{number}");
-                    let signal = SignalUpdate::new("github_pr_push", &key, &msg, Severity::Info)
-                        .with_url(url);
-                    signals.push(signal);
-                }
+            if let Some(prev_sha) = prev_cursors.get(number)
+                && prev_sha != sha
+            {
+                let key = format!("pr-push-{repo}-{number}-{sha}");
+                let msg = format!("New commits on PR #{number}: {title} ({repo})");
+                let url = format!("https://github.com/{repo}/pull/{number}");
+                let signal =
+                    SignalUpdate::new("github_pr_push", &key, &msg, Severity::Info).with_url(url);
+                signals.push(signal);
             }
         }
 
