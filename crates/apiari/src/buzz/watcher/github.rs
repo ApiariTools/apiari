@@ -870,10 +870,8 @@ impl Watcher for GithubWatcher {
                     .insert(result.repo.clone(), new_cursor);
             }
 
-            if !result.updated_pr_push_cursors.is_empty() {
-                self.pr_push_cursors
-                    .insert(result.repo.clone(), result.updated_pr_push_cursors);
-            }
+            self.pr_push_cursors
+                .insert(result.repo.clone(), result.updated_pr_push_cursors);
         }
 
         if !all_signals.is_empty() {
@@ -1417,6 +1415,23 @@ mod tests {
         assert_eq!(new_cursors.len(), 1);
         assert!(!new_cursors.contains_key(&5));
         assert_eq!(new_cursors[&10], "sha10");
+    }
+
+    #[test]
+    fn test_pr_push_no_open_prs_clears_cursors() {
+        // All PRs closed — should return empty cursors so old state is replaced.
+        let prs: Vec<(u64, String, String, String)> = vec![];
+        let mut prev = HashMap::new();
+        prev.insert(1, "sha1".to_string());
+        prev.insert(2, "sha2".to_string());
+
+        let (signals, new_cursors) = GithubWatcher::poll_pr_pushes("org/repo", &prs, &prev);
+
+        assert!(signals.is_empty());
+        assert!(
+            new_cursors.is_empty(),
+            "cursors should be empty when no open PRs"
+        );
     }
 
     #[test]
