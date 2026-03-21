@@ -692,7 +692,7 @@ impl GithubWatcher {
                             if let Some(run_id) = run_id {
                                 let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
                                 let mut signal = SignalUpdate::new(
-                                    "github",
+                                    "github_ci_failure",
                                     &key,
                                     format!("CI failed: {pr_title} (#{pr_number})"),
                                     Severity::Error,
@@ -811,7 +811,7 @@ impl Watcher for GithubWatcher {
 
     /// Persist cursor state to the signal store (called synchronously after poll).
     /// Returns 0 so the framework still runs auto-reconcile for source "github"
-    /// (stateless issue/label/check signals need stale resolution).
+    /// (stateless issue/label signals need stale resolution).
     fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
         for (repo, last_id) in &self.release_cursors {
             let key = format!("github_release:{repo}");
@@ -848,7 +848,7 @@ impl Watcher for GithubWatcher {
             }
         }
         // Return 0: cursor persistence is done, but let the framework
-        // auto-reconcile source "github" signals (issues/labels/checks).
+        // auto-reconcile source "github" signals (issues/labels).
         Ok(0)
     }
 }
@@ -939,7 +939,7 @@ fn check_run_to_signal(repo: &str, run: &serde_json::Value) -> Option<(String, S
 
     let key = format!("gh-ci-{repo}-{id}");
     let mut signal = SignalUpdate::new(
-        "github",
+        "github_ci_failure",
         &key,
         format!("[{repo}] CI failed: {name}"),
         Severity::Warning,
@@ -1052,7 +1052,7 @@ mod tests {
 
         let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
         let signal = SignalUpdate::new(
-            "github",
+            "github_ci_failure",
             &key,
             format!("CI failed: {pr_title} (#{pr_number})"),
             Severity::Error,
