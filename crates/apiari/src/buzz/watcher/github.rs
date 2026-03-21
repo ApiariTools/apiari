@@ -692,7 +692,7 @@ impl GithubWatcher {
                             if let Some(run_id) = run_id {
                                 let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
                                 let mut signal = SignalUpdate::new(
-                                    "github",
+                                    "github_ci_failure",
                                     &key,
                                     format!("CI failed: {pr_title} (#{pr_number})"),
                                     Severity::Error,
@@ -809,10 +809,12 @@ impl Watcher for GithubWatcher {
         Ok(all_signals)
     }
 
-    /// Persist cursor state to the signal store (called synchronously after poll).
-    /// Returns 0 so the framework still runs auto-reconcile for source "github"
-    /// (stateless issue/label/check signals need stale resolution).
-    fn reconcile(&self, _source: &str, _poll_ids: &[String], store: &SignalStore) -> Result<usize> {
+    /// Persist cursor state and reconcile stale signals.
+    ///
+    /// The GitHub watcher emits signals under multiple sources ("github",
+    /// "github_ci_failure"), so we must reconcile each source ourselves
+    /// rather than relying on the framework's single-source auto-reconcile.
+    fn reconcile(&self, _source: &str, poll_ids: &[String], store: &SignalStore) -> Result<usize> {
         for (repo, last_id) in &self.release_cursors {
             let key = format!("github_release:{repo}");
             if let Err(e) = store.set_cursor(&key, &last_id.to_string()) {
@@ -847,9 +849,17 @@ impl Watcher for GithubWatcher {
                 warn!("failed to persist bot review cursor for {repo}: {e}");
             }
         }
-        // Return 0: cursor persistence is done, but let the framework
-        // auto-reconcile source "github" signals (issues/labels/checks).
-        Ok(0)
+
+        // Reconcile stale signals for all sources this watcher emits.
+        let mut resolved = 0;
+        for source in ["github", "github_ci_failure"] {
+            resolved += store.resolve_missing_signals(source, poll_ids)?;
+        }
+        if resolved > 0 {
+            info!("github: reconciled {resolved} stale signal(s)");
+        }
+        // Return max(1, resolved) so the framework skips its single-source fallback.
+        Ok(resolved.max(1))
     }
 }
 
@@ -939,7 +949,7 @@ fn check_run_to_signal(repo: &str, run: &serde_json::Value) -> Option<(String, S
 
     let key = format!("gh-ci-{repo}-{id}");
     let mut signal = SignalUpdate::new(
-        "github",
+        "github_ci_failure",
         &key,
         format!("[{repo}] CI failed: {name}"),
         Severity::Warning,
@@ -1052,7 +1062,7 @@ mod tests {
 
         let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
         let signal = SignalUpdate::new(
-            "github",
+            "github_ci_failure",
             &key,
             format!("CI failed: {pr_title} (#{pr_number})"),
             Severity::Error,
