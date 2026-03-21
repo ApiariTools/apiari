@@ -28,11 +28,22 @@ pub enum DaemonRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonResponse {
     /// Unicast: streaming token for YOUR request.
-    Token { workspace: String, text: String },
+    Token {
+        #[serde(default)]
+        workspace: String,
+        text: String,
+    },
     /// Unicast: your request completed.
-    Done { workspace: String },
+    Done {
+        #[serde(default)]
+        workspace: String,
+    },
     /// Unicast: error on your request.
-    Error { workspace: String, text: String },
+    Error {
+        #[serde(default)]
+        workspace: String,
+        text: String,
+    },
     /// Broadcast: activity from any source.
     Activity {
         source: String,
@@ -482,6 +493,27 @@ mod tests {
 
         drop(server_writer);
         let _ = handle.await;
+    }
+
+    #[test]
+    fn test_daemon_response_backward_compat_no_workspace() {
+        // Old daemons may send Token/Done/Error without a workspace field.
+        // Verify #[serde(default)] allows deserialization with workspace = "".
+        let token_json = r#"{"type":"token","text":"hi"}"#;
+        let parsed: DaemonResponse = serde_json::from_str(token_json).unwrap();
+        assert!(
+            matches!(parsed, DaemonResponse::Token { workspace, text } if workspace.is_empty() && text == "hi")
+        );
+
+        let done_json = r#"{"type":"done"}"#;
+        let parsed: DaemonResponse = serde_json::from_str(done_json).unwrap();
+        assert!(matches!(parsed, DaemonResponse::Done { workspace } if workspace.is_empty()));
+
+        let error_json = r#"{"type":"error","text":"fail"}"#;
+        let parsed: DaemonResponse = serde_json::from_str(error_json).unwrap();
+        assert!(
+            matches!(parsed, DaemonResponse::Error { workspace, text } if workspace.is_empty() && text == "fail")
+        );
     }
 
     #[test]

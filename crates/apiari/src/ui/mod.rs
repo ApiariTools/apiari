@@ -2192,8 +2192,10 @@ mod tests {
             thoughts: Vec::new(),
             is_setup_placeholder: false,
         };
+        let ws_name = ws.name.clone();
         App {
             workspaces: vec![ws],
+            ws_name_index: std::collections::HashMap::from([(ws_name, 0)]),
             active_tab: 0,
             prefix_active: false,
             view: View::Dashboard,
