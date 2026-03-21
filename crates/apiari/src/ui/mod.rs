@@ -442,14 +442,18 @@ async fn event_loop(
                         use crossterm::event::MouseEventKind;
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
-                                if matches!(app.view, View::WorkerDetail(_)) {
+                                if matches!(app.view, View::WorkerChat(_)) {
+                                    app.scroll_worker_activity_up(3);
+                                } else if matches!(app.view, View::WorkerDetail(_)) {
                                     app.scroll_worker_conv_up(3);
                                 } else {
                                     app.scroll_chat_up(3);
                                 }
                             }
                             MouseEventKind::ScrollDown => {
-                                if matches!(app.view, View::WorkerDetail(_)) {
+                                if matches!(app.view, View::WorkerChat(_)) {
+                                    app.scroll_worker_activity_down(3);
+                                } else if matches!(app.view, View::WorkerDetail(_)) {
                                     app.scroll_worker_conv_down(3);
                                 } else {
                                     app.scroll_chat_down(3);
@@ -496,7 +500,7 @@ async fn event_loop(
                     AppUpdate::Workers(data) => {
                         app.apply_worker_update(data);
                         // Refresh conversation in background when viewing worker detail
-                        if let View::WorkerDetail(idx) = app.view
+                        if let View::WorkerDetail(idx) | View::WorkerChat(idx) = app.view
                             && let Some(ws) = app.current_ws()
                             && let Some(worker) = ws.workers.get(idx)
                         {
@@ -719,6 +723,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
     match &app.view.clone() {
         View::Dashboard => handle_dashboard_key(app, key),
         View::WorkerDetail(i) => handle_worker_detail_key(app, key, *i),
+        View::WorkerChat(i) => handle_worker_chat_key(app, key, *i),
         View::SignalDetail(i) => handle_signal_detail_key(app, key, *i),
         View::SignalList => handle_signal_list_key(app, key),
         View::ReviewList => handle_review_list_key(app, key),
@@ -1141,6 +1146,10 @@ fn handle_worker_detail_key(
             cycle_fullscreen_prev(app, idx);
         }
         KeyCode::Char('c') => {
+            app.view = View::WorkerChat(idx);
+            app.needs_redraw = true;
+        }
+        KeyCode::Char('m') => {
             app.worker_input_active = true;
             app.worker_input.clear();
             app.needs_redraw = true;
@@ -1214,6 +1223,34 @@ fn handle_worker_input_key(
             app.worker_input.push(c);
             app.needs_redraw = true;
         }
+        _ => {}
+    }
+    KeyAction::Redraw
+}
+
+// ── Worker chat keys ─────────────────────────────────────
+
+fn handle_worker_chat_key(app: &mut App, key: crossterm::event::KeyEvent, idx: usize) -> KeyAction {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('c') => {
+            // Return to WorkerDetail
+            app.view = View::WorkerDetail(idx);
+            app.needs_redraw = true;
+        }
+        KeyCode::Char('j') | KeyCode::Down => app.scroll_worker_activity_up(3),
+        KeyCode::Char('k') | KeyCode::Up => app.scroll_worker_activity_down(3),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_worker_activity_down(10);
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.scroll_worker_activity_up(10);
+        }
+        KeyCode::Char('o') => {
+            if let Some(url) = app.selected_url() {
+                return KeyAction::OpenUrl(url);
+            }
+        }
+        KeyCode::Char('q') => return KeyAction::Quit,
         _ => {}
     }
     KeyAction::Redraw
