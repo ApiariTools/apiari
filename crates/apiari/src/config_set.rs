@@ -46,6 +46,9 @@ fn find_workspace_config(workspace: Option<&str>) -> Result<(String, PathBuf)> {
 ///
 /// Supports appending to arrays with `.+` suffix:
 ///   `coordinator.signal_hooks.+ '{source = "swarm"}'`
+///
+/// Supports appending a JSON object to an array-of-tables with `[+]` suffix:
+///   `watchers.github.review_queue[+] '{"name":"External PRs","query":"is:pr"}'`
 pub fn run(workspace: Option<&str>, key: &str, value: &str) -> Result<()> {
     let (_name, path) = find_workspace_config(workspace)?;
     let content = std::fs::read_to_string(&path)
@@ -60,8 +63,22 @@ pub fn run(workspace: Option<&str>, key: &str, value: &str) -> Result<()> {
         bail!("invalid key: {key}");
     }
 
+    // Check for [+] append mode: last segment ends with "[+]"
+    if let Some(last) = parts.last()
+        && let Some(stripped) = last.strip_suffix("[+]")
+    {
+        if stripped.is_empty() && parts.len() < 2 {
+            bail!("invalid key for append: {key}");
+        }
+        // Build the path to the array: all preceding parts + the stripped last part
+        let mut array_parts: Vec<&str> = parts[..parts.len() - 1].to_vec();
+        if !stripped.is_empty() {
+            array_parts.push(stripped);
+        }
+        append_to_array_from_json(&mut doc, &array_parts, value)
+            .wrap_err_with(|| format!("failed to append to {key}"))?;
     // Check for append mode: last segment is "+"
-    if parts.last() == Some(&"+") {
+    } else if parts.last() == Some(&"+") {
         if parts.len() < 2 {
             bail!("invalid key for append: {key}");
         }
@@ -153,6 +170,112 @@ fn append_to_array(doc: &mut toml_edit::DocumentMut, parts: &[&str], value: &str
     }
 
     Ok(())
+}
+
+/// Append a JSON object as a new entry to an array-of-tables.
+///
+/// The value is parsed as a JSON object and converted to a TOML table,
+/// then appended to the target array. Handles both `ArrayOfTables` (from
+/// `[[header]]` syntax) and inline `Array` representations. When creating
+/// a new array, uses `ArrayOfTables` for proper TOML formatting.
+fn append_to_array_from_json(
+    doc: &mut toml_edit::DocumentMut,
+    parts: &[&str],
+    value: &str,
+) -> Result<()> {
+    // Parse the value as JSON
+    let json_val: serde_json::Value =
+        serde_json::from_str(value).wrap_err("value must be a valid JSON object")?;
+    let json_obj = json_val.as_object().ok_or_else(|| {
+        color_eyre::eyre::eyre!("value must be a JSON object, not an array or primitive")
+    })?;
+
+    let new_table = json_object_to_toml_table(json_obj)?;
+
+    // Navigate to the parent table
+    let mut table = doc.as_table_mut();
+    for &part in &parts[..parts.len() - 1] {
+        if !table.contains_key(part) {
+            table.insert(part, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        table = table[part]
+            .as_table_mut()
+            .ok_or_else(|| color_eyre::eyre::eyre!("{part} exists but is not a table"))?;
+    }
+
+    let leaf = parts.last().expect("parts is non-empty");
+
+    // Get or create the array — handle both ArrayOfTables and inline Array
+    if !table.contains_key(leaf) {
+        let mut aot = toml_edit::ArrayOfTables::new();
+        aot.push(new_table);
+        table.insert(leaf, toml_edit::Item::ArrayOfTables(aot));
+    } else if let Some(aot) = table[leaf].as_array_of_tables_mut() {
+        aot.push(new_table);
+    } else if let Some(array) = table[leaf].as_array_mut() {
+        // Inline array form — convert table to inline table and push
+        let inline = toml_table_to_inline(&new_table);
+        array.push_formatted(toml_edit::Value::InlineTable(inline));
+    } else {
+        bail!("{leaf} exists but is not an array or array-of-tables");
+    }
+
+    Ok(())
+}
+
+/// Convert a JSON object to a `toml_edit::Table`.
+fn json_object_to_toml_table(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> Result<toml_edit::Table> {
+    let mut table = toml_edit::Table::new();
+    for (k, v) in obj {
+        table[k.as_str()] = toml_edit::Item::Value(json_to_toml_value(v)?);
+    }
+    Ok(table)
+}
+
+/// Convert a JSON value to a `toml_edit::Value`.
+///
+/// Rejects `null` — TOML has no null type.
+fn json_to_toml_value(val: &serde_json::Value) -> Result<toml_edit::Value> {
+    match val {
+        serde_json::Value::String(s) => Ok(toml_edit::Value::from(s.as_str())),
+        serde_json::Value::Bool(b) => Ok(toml_edit::Value::from(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(toml_edit::Value::from(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(toml_edit::Value::from(f))
+            } else {
+                bail!("unsupported JSON number: {n}")
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            let mut toml_arr = toml_edit::Array::new();
+            for item in arr {
+                toml_arr.push_formatted(json_to_toml_value(item)?);
+            }
+            Ok(toml_edit::Value::Array(toml_arr))
+        }
+        serde_json::Value::Object(obj) => {
+            let table = json_object_to_toml_table(obj)?;
+            Ok(toml_edit::Value::InlineTable(toml_table_to_inline(&table)))
+        }
+        serde_json::Value::Null => {
+            bail!("JSON null is not supported — TOML has no null type")
+        }
+    }
+}
+
+/// Convert a `toml_edit::Table` to an `InlineTable`.
+fn toml_table_to_inline(table: &toml_edit::Table) -> toml_edit::InlineTable {
+    let mut inline = toml_edit::InlineTable::new();
+    for (k, v) in table.iter() {
+        if let Some(val) = v.as_value() {
+            inline.insert(k, val.clone());
+        }
+    }
+    inline
 }
 
 /// Try to parse a value string as an inline TOML array.
@@ -451,6 +574,226 @@ mod tests {
         let config = result.unwrap();
         assert_eq!(config.coordinator.signal_hooks.len(), 1);
         assert_eq!(config.coordinator.signal_hooks[0].source, "swarm");
+    }
+
+    #[test]
+    fn test_append_json_to_existing_array() {
+        let toml_str = concat!(
+            "root = \"/tmp/test\"\n",
+            "[watchers.github]\n",
+            "repos = [\"org/repo\"]\n",
+            "interval_secs = 300\n",
+            "review_queue = [{name = \"Existing\", query = \"is:pr\"}]\n",
+        );
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        append_to_array_from_json(
+            &mut doc,
+            &["watchers", "github", "review_queue"],
+            r#"{"name":"External PRs","query":"is:pr is:open org:ApiariTools"}"#,
+        )
+        .unwrap();
+        let arr = doc["watchers"]["github"]["review_queue"]
+            .as_array()
+            .unwrap();
+        assert_eq!(arr.len(), 2);
+        let last = arr.get(1).unwrap().as_inline_table().unwrap();
+        assert_eq!(last.get("name").unwrap().as_str(), Some("External PRs"));
+        assert_eq!(
+            last.get("query").unwrap().as_str(),
+            Some("is:pr is:open org:ApiariTools")
+        );
+    }
+
+    #[test]
+    fn test_append_json_creates_new_array() {
+        let toml_str = concat!(
+            "root = \"/tmp/test\"\n",
+            "[watchers.github]\n",
+            "repos = [\"org/repo\"]\n",
+            "interval_secs = 300\n",
+        );
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        append_to_array_from_json(
+            &mut doc,
+            &["watchers", "github", "review_queue"],
+            r#"{"name":"New Queue","query":"is:pr"}"#,
+        )
+        .unwrap();
+        // New arrays are created as ArrayOfTables
+        let aot = doc["watchers"]["github"]["review_queue"]
+            .as_array_of_tables()
+            .unwrap();
+        assert_eq!(aot.len(), 1);
+        assert_eq!(aot.get(0).unwrap()["name"].as_str(), Some("New Queue"));
+    }
+
+    #[test]
+    fn test_append_json_invalid_json_returns_error() {
+        let toml_str = "root = \"/tmp/test\"\n";
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        let result = append_to_array_from_json(
+            &mut doc,
+            &["watchers", "github", "review_queue"],
+            "not valid json",
+        );
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("valid JSON object")
+        );
+    }
+
+    #[test]
+    fn test_append_json_non_object_returns_error() {
+        let toml_str = "root = \"/tmp/test\"\n";
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        let result = append_to_array_from_json(
+            &mut doc,
+            &["watchers", "github", "review_queue"],
+            r#"["not", "an", "object"]"#,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("JSON object"));
+    }
+
+    #[test]
+    fn test_append_json_validates_config() {
+        // Use real [[array.of.tables]] syntax to test the ArrayOfTables path
+        let toml_str = concat!(
+            "root = \"/tmp/test\"\n\n",
+            "[watchers.github]\n",
+            "repos = [\"org/repo\"]\n",
+            "interval_secs = 300\n\n",
+            "[[watchers.github.review_queue]]\n",
+            "name = \"Existing\"\n",
+            "query = \"is:pr\"\n",
+        );
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        append_to_array_from_json(
+            &mut doc,
+            &["watchers", "github", "review_queue"],
+            r#"{"name":"Test","query":"is:pr is:open"}"#,
+        )
+        .unwrap();
+        let new_content = doc.to_string();
+        let result: Result<crate::config::WorkspaceConfig, _> = toml::from_str(&new_content);
+        assert!(result.is_ok(), "config should be valid: {result:?}");
+        let config = result.unwrap();
+        let github = config.watchers.github.unwrap();
+        assert_eq!(github.review_queue.len(), 2);
+        assert_eq!(github.review_queue[0].name, "Existing");
+        assert_eq!(github.review_queue[1].name, "Test");
+    }
+
+    #[test]
+    fn test_json_to_toml_value_types() {
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"name":"Test","count":42,"active":true}"#).unwrap();
+        let table = json_object_to_toml_table(json.as_object().unwrap()).unwrap();
+        assert_eq!(table["name"].as_str(), Some("Test"));
+        assert_eq!(table["count"].as_integer(), Some(42));
+        assert_eq!(table["active"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_json_to_toml_rejects_null() {
+        let json: serde_json::Value = serde_json::from_str(r#"{"key":null}"#).unwrap();
+        let result = json_object_to_toml_table(json.as_object().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("null"));
+    }
+
+    #[test]
+    fn test_json_to_toml_handles_special_strings() {
+        // Strings with newlines, tabs, quotes, backslashes
+        let json: serde_json::Value =
+            serde_json::from_str(r#"{"msg":"line1\nline2\ttab\\slash\"quote"}"#).unwrap();
+        let table = json_object_to_toml_table(json.as_object().unwrap()).unwrap();
+        let val = table["msg"].as_str().unwrap();
+        assert!(val.contains('\n'));
+        assert!(val.contains('\t'));
+        assert!(val.contains('\\'));
+        assert!(val.contains('"'));
+    }
+
+    #[test]
+    fn test_append_json_to_real_array_of_tables() {
+        // Real [[watchers.github.review_queue]] syntax — this is ArrayOfTables in toml_edit
+        let toml_str = concat!(
+            "root = \"/tmp/test\"\n\n",
+            "[watchers.github]\n",
+            "repos = [\"org/repo\"]\n",
+            "interval_secs = 300\n\n",
+            "[[watchers.github.review_queue]]\n",
+            "name = \"Existing\"\n",
+            "query = \"is:pr\"\n",
+        );
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+
+        // Verify it's actually an ArrayOfTables before we test
+        assert!(
+            doc["watchers"]["github"]["review_queue"]
+                .as_array_of_tables()
+                .is_some(),
+            "should be ArrayOfTables"
+        );
+
+        append_to_array_from_json(
+            &mut doc,
+            &["watchers", "github", "review_queue"],
+            r#"{"name":"External PRs","query":"is:pr is:open org:ApiariTools"}"#,
+        )
+        .unwrap();
+
+        let aot = doc["watchers"]["github"]["review_queue"]
+            .as_array_of_tables()
+            .unwrap();
+        assert_eq!(aot.len(), 2);
+        assert_eq!(aot.get(1).unwrap()["name"].as_str(), Some("External PRs"));
+        assert_eq!(
+            aot.get(1).unwrap()["query"].as_str(),
+            Some("is:pr is:open org:ApiariTools")
+        );
+
+        // Verify it validates as WorkspaceConfig
+        let new_content = doc.to_string();
+        let config: crate::config::WorkspaceConfig = toml::from_str(&new_content).unwrap();
+        let github = config.watchers.github.unwrap();
+        assert_eq!(github.review_queue.len(), 2);
+        assert_eq!(github.review_queue[1].name, "External PRs");
+    }
+
+    #[test]
+    fn test_append_json_creates_array_of_tables_not_inline() {
+        // When creating a new array, it should be ArrayOfTables (not inline)
+        let toml_str = concat!(
+            "root = \"/tmp/test\"\n",
+            "[watchers.github]\n",
+            "repos = [\"org/repo\"]\n",
+            "interval_secs = 300\n",
+        );
+        let mut doc: toml_edit::DocumentMut = toml_str.parse().unwrap();
+        append_to_array_from_json(
+            &mut doc,
+            &["watchers", "github", "review_queue"],
+            r#"{"name":"New Queue","query":"is:pr"}"#,
+        )
+        .unwrap();
+
+        // Should be ArrayOfTables, not inline array
+        assert!(
+            doc["watchers"]["github"]["review_queue"]
+                .as_array_of_tables()
+                .is_some(),
+            "newly created array should be ArrayOfTables"
+        );
+        let aot = doc["watchers"]["github"]["review_queue"]
+            .as_array_of_tables()
+            .unwrap();
+        assert_eq!(aot.len(), 1);
+        assert_eq!(aot.get(0).unwrap()["name"].as_str(), Some("New Queue"));
     }
 
     #[test]
