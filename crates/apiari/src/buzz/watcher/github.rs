@@ -46,8 +46,9 @@ struct RepoPollResult {
     updated_merged_prs: Option<HashSet<u64>>,
     updated_ci_pass: HashSet<u64>,
     updated_bot_review_cursor: Option<String>,
-    /// Updated PR head SHA map (always set; replaces previous cursor for this repo).
-    updated_pr_push_cursors: HashMap<u64, String>,
+    /// Updated PR head SHA map. `Some` replaces previous cursor; `None` preserves it
+    /// (e.g. when `fetch_open_prs` fails due to a transient API error).
+    updated_pr_push_cursors: Option<HashMap<u64, String>>,
 }
 
 /// Watches GitHub repositories via the `gh` CLI.
@@ -221,35 +222,34 @@ impl GithubWatcher {
     }
 
     /// Fetch open pull requests for a repo. Returns (pr_number, pr_title, head_branch, head_sha).
-    async fn fetch_open_prs(&self, repo: &str) -> Vec<(u64, String, String, String)> {
-        let mut result = Vec::new();
-        if let Some(prs) = self
+    /// Returns `None` on API failure so callers can distinguish "no open PRs" from "fetch failed".
+    async fn fetch_open_prs(&self, repo: &str) -> Option<Vec<(u64, String, String, String)>> {
+        let prs_value = self
             .gh_api(&format!("repos/{repo}/pulls?state=open&per_page=20"))
-            .await
-            && let Some(prs) = prs.as_array()
-        {
-            for pr in prs {
-                if let Some(number) = pr.get("number").and_then(|v| v.as_u64())
-                    && let Some(title) = pr.get("title").and_then(|v| v.as_str())
-                    && let Some(branch) = pr
-                        .get("head")
-                        .and_then(|v| v.get("ref"))
-                        .and_then(|v| v.as_str())
-                    && let Some(sha) = pr
-                        .get("head")
-                        .and_then(|v| v.get("sha"))
-                        .and_then(|v| v.as_str())
-                {
-                    result.push((
-                        number,
-                        title.to_string(),
-                        branch.to_string(),
-                        sha.to_string(),
-                    ));
-                }
+            .await?;
+        let prs = prs_value.as_array()?;
+        let mut result = Vec::new();
+        for pr in prs {
+            if let Some(number) = pr.get("number").and_then(|v| v.as_u64())
+                && let Some(title) = pr.get("title").and_then(|v| v.as_str())
+                && let Some(branch) = pr
+                    .get("head")
+                    .and_then(|v| v.get("ref"))
+                    .and_then(|v| v.as_str())
+                && let Some(sha) = pr
+                    .get("head")
+                    .and_then(|v| v.get("sha"))
+                    .and_then(|v| v.as_str())
+            {
+                result.push((
+                    number,
+                    title.to_string(),
+                    branch.to_string(),
+                    sha.to_string(),
+                ));
             }
         }
-        result
+        Some(result)
     }
 
     /// Fetch the latest workflow run for a branch using `gh run list`.
@@ -732,10 +732,16 @@ impl GithubWatcher {
         signals.extend(merged_signals);
         signals.extend(bot_review_signals);
 
-        // Detect new commits pushed to open PRs.
-        let (pr_push_signals, updated_pr_push_cursors) =
-            Self::poll_pr_pushes(repo, &prs, &pr_push_prev);
-        signals.extend(pr_push_signals);
+        // If fetch_open_prs failed (transient API error), preserve previous cursors
+        // and skip PR-dependent polling (CI status, push detection).
+        let (prs, updated_pr_push_cursors) = match prs {
+            Some(prs) => {
+                let (pr_push_signals, cursors) = Self::poll_pr_pushes(repo, &prs, &pr_push_prev);
+                signals.extend(pr_push_signals);
+                (prs, Some(cursors))
+            }
+            None => (Vec::new(), None),
+        };
 
         // Fetch latest CI run for each open PR concurrently in bounded chunks.
         let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _, _)| *n).collect();
@@ -870,8 +876,9 @@ impl Watcher for GithubWatcher {
                     .insert(result.repo.clone(), new_cursor);
             }
 
-            self.pr_push_cursors
-                .insert(result.repo.clone(), result.updated_pr_push_cursors);
+            if let Some(pr_push) = result.updated_pr_push_cursors {
+                self.pr_push_cursors.insert(result.repo.clone(), pr_push);
+            }
         }
 
         if !all_signals.is_empty() {
@@ -933,7 +940,7 @@ impl Watcher for GithubWatcher {
             }
         }
 
-        // Reconcile stale signals for all sources this watcher emits.
+        // Reconcile stale signals only for stateful sources that should auto-resolve.
         let mut resolved = 0;
         for source in ["github", "github_ci_failure"] {
             resolved += store.resolve_missing_signals(source, poll_ids)?;
