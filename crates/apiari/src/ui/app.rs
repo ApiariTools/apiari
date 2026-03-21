@@ -1621,48 +1621,78 @@ impl App {
         self.needs_redraw = true;
     }
 
-    pub fn append_assistant_token(&mut self, token: &str) {
-        if let Some(ws) = self.current_ws_mut() {
-            if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last_mut() {
-                s.push_str(token);
-            } else {
-                ws.chat_history
-                    .push(ChatLine::Assistant(token.to_string(), now_ts(), None));
-            }
-            ws.chat_scroll.scroll_to_bottom();
-            self.needs_redraw = true;
-        }
-    }
-
-    pub fn finish_assistant_message(&mut self) {
-        let is_chat_visible = matches!(self.view, View::Dashboard);
-        if let Some(ws) = self.current_ws_mut() {
-            ws.streaming = false;
-            ws.coordinator_turns += 1;
-            if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last() {
-                let _ = super::history::save_message(
-                    &ws.name,
-                    &super::history::ChatMessage {
-                        role: "assistant".into(),
-                        content: s.clone(),
-                        ts: Utc::now(),
-                        source: None,
-                    },
-                );
-                ws.coordinator_preview = Some(truncate_preview(s, 120));
-                if !is_chat_visible {
-                    ws.has_unread_response = true;
-                }
-            }
-            self.needs_redraw = true;
-        }
-    }
-
     pub fn push_system_message(&mut self, text: String) {
         if let Some(ws) = self.current_ws_mut() {
             ws.chat_history.push(ChatLine::System(text));
             ws.streaming = false;
             self.needs_redraw = true;
+        }
+    }
+
+    /// Find workspace index by name, falling back to active_tab when empty/missing.
+    fn ws_index(&self, workspace: &str) -> Option<usize> {
+        if workspace.is_empty() {
+            Some(self.active_tab)
+        } else {
+            self.workspaces
+                .iter()
+                .position(|ws| ws.name == workspace)
+                .or(Some(self.active_tab))
+        }
+    }
+
+    /// Append a streaming token to the correct workspace's chat history.
+    pub fn append_assistant_token_to(&mut self, workspace: &str, token: &str) {
+        if let Some(idx) = self.ws_index(workspace) {
+            if let Some(ws) = self.workspaces.get_mut(idx) {
+                if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last_mut() {
+                    s.push_str(token);
+                } else {
+                    ws.chat_history
+                        .push(ChatLine::Assistant(token.to_string(), now_ts(), None));
+                }
+                ws.chat_scroll.scroll_to_bottom();
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    /// Finish the assistant message on the correct workspace.
+    pub fn finish_assistant_message_for(&mut self, workspace: &str) {
+        let is_active = self.ws_index(workspace) == Some(self.active_tab);
+        let is_chat_visible = is_active && matches!(self.view, View::Dashboard);
+        if let Some(idx) = self.ws_index(workspace) {
+            if let Some(ws) = self.workspaces.get_mut(idx) {
+                ws.streaming = false;
+                ws.coordinator_turns += 1;
+                if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last() {
+                    let _ = super::history::save_message(
+                        &ws.name,
+                        &super::history::ChatMessage {
+                            role: "assistant".into(),
+                            content: s.clone(),
+                            ts: Utc::now(),
+                            source: None,
+                        },
+                    );
+                    ws.coordinator_preview = Some(truncate_preview(s, 120));
+                    if !is_chat_visible {
+                        ws.has_unread_response = true;
+                    }
+                }
+                self.needs_redraw = true;
+            }
+        }
+    }
+
+    /// Push a system/error message to the correct workspace's chat history.
+    pub fn push_system_message_to(&mut self, workspace: &str, text: String) {
+        if let Some(idx) = self.ws_index(workspace) {
+            if let Some(ws) = self.workspaces.get_mut(idx) {
+                ws.chat_history.push(ChatLine::System(text));
+                ws.streaming = false;
+                self.needs_redraw = true;
+            }
         }
     }
 
