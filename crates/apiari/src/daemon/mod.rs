@@ -327,6 +327,7 @@ async fn run_coordinator_task(
                     Ok(opts) => opts,
                     Err(e) => {
                         let _ = responder.send(socket::DaemonResponse::Error {
+                            workspace: ws_name.clone(),
                             text: format!("{e}"),
                         });
                         continue;
@@ -339,8 +340,10 @@ async fn run_coordinator_task(
                 let result = coordinator
                     .handle_message_with_options(&text, opts, |event| match event {
                         CoordinatorEvent::Token(t) => {
-                            let _ =
-                                responder_for_cb.send(socket::DaemonResponse::Token { text: t });
+                            let _ = responder_for_cb.send(socket::DaemonResponse::Token {
+                                workspace: name_for_cb.clone(),
+                                text: t,
+                            });
                         }
                         CoordinatorEvent::BashAudit {
                             command,
@@ -387,7 +390,9 @@ async fn run_coordinator_task(
                 match result {
                     Ok(response) => {
                         turn_count += 1;
-                        let _ = responder.send(socket::DaemonResponse::Done);
+                        let _ = responder.send(socket::DaemonResponse::Done {
+                            workspace: ws_name.clone(),
+                        });
                         if let Some(ref server) = socket_server {
                             server.broadcast_activity(
                                 "tui",
@@ -414,6 +419,7 @@ async fn run_coordinator_task(
                             turn_count = 0;
                         }
                         let _ = responder.send(socket::DaemonResponse::Error {
+                            workspace: ws_name.clone(),
                             text: format!("{e}"),
                         });
                     }
@@ -453,9 +459,12 @@ async fn run_coordinator_task(
                 }
                 if let Some(responder) = tui_responder {
                     let _ = responder.send(socket::DaemonResponse::Token {
+                        workspace: slot_name.clone(),
                         text: msg_text.to_string(),
                     });
-                    let _ = responder.send(socket::DaemonResponse::Done);
+                    let _ = responder.send(socket::DaemonResponse::Done {
+                        workspace: slot_name,
+                    });
                 }
             }
 
@@ -532,9 +541,12 @@ async fn run_coordinator_task(
                 }
                 if let Some(responder) = tui_responder {
                     let _ = responder.send(socket::DaemonResponse::Token {
+                        workspace: slot_name.clone(),
                         text: msg_text.to_string(),
                     });
-                    let _ = responder.send(socket::DaemonResponse::Done);
+                    let _ = responder.send(socket::DaemonResponse::Done {
+                        workspace: slot_name,
+                    });
                 }
             }
 
@@ -1408,6 +1420,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 // Not a built-in command — fall through to coordinator
                             }
 
+                            let ws_name_for_err = ws_name.clone();
                             let job = CoordinatorJob::TuiChat {
                                 text: user_text,
                                 responder: client_req.responder.clone(),
@@ -1416,11 +1429,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             };
                             if slot.coord_tx.send(job).is_err() {
                                 let _ = client_req.responder.send(socket::DaemonResponse::Error {
+                                    workspace: ws_name_for_err,
                                     text: "coordinator task shut down".to_string(),
                                 });
                             }
                         } else {
                             let _ = client_req.responder.send(socket::DaemonResponse::Error {
+                                workspace: ws_name.clone(),
                                 text: format!("workspace '{ws_name}' not found"),
                             });
                         }
@@ -1964,9 +1979,12 @@ async fn handle_tui_command(
         text: &str,
     ) {
         let _ = responder.send(socket::DaemonResponse::Token {
+            workspace: ws_name.to_string(),
             text: text.to_string(),
         });
-        let _ = responder.send(socket::DaemonResponse::Done);
+        let _ = responder.send(socket::DaemonResponse::Done {
+            workspace: ws_name.to_string(),
+        });
         if let Some(server) = socket_server {
             server.broadcast_activity("tui", ws_name, "assistant_message", text);
         }
@@ -2093,6 +2111,7 @@ async fn handle_tui_command(
         "update" => {
             // Send initial status as a streaming token (Done sent after completion)
             let _ = responder.send(socket::DaemonResponse::Token {
+                workspace: slot.name.clone(),
                 text: "Updating apiari + swarm from crates.io...\n".to_string(),
             });
 
@@ -2127,16 +2146,26 @@ async fn handle_tui_command(
                     if !tail.is_empty() {
                         text.push_str(&format!("\n```\n{tail}\n```"));
                     }
-                    let _ = responder.send(socket::DaemonResponse::Token { text: text.clone() });
-                    let _ = responder.send(socket::DaemonResponse::Done);
+                    let _ = responder.send(socket::DaemonResponse::Token {
+                        workspace: slot.name.clone(),
+                        text: text.clone(),
+                    });
+                    let _ = responder.send(socket::DaemonResponse::Done {
+                        workspace: slot.name.clone(),
+                    });
                     if let Some(server) = socket_server {
                         server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
                     }
                 }
                 Err(e) => {
                     let text = format!("❌ /update failed: {e}");
-                    let _ = responder.send(socket::DaemonResponse::Token { text: text.clone() });
-                    let _ = responder.send(socket::DaemonResponse::Done);
+                    let _ = responder.send(socket::DaemonResponse::Token {
+                        workspace: slot.name.clone(),
+                        text: text.clone(),
+                    });
+                    let _ = responder.send(socket::DaemonResponse::Done {
+                        workspace: slot.name.clone(),
+                    });
                     if let Some(server) = socket_server {
                         server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
                     }

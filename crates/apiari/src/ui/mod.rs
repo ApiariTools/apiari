@@ -43,9 +43,17 @@ enum UserMessage {
 
 /// Messages from the coordinator back to the TUI.
 enum CoordResponse {
-    Token(String),
-    Done,
-    Error(String),
+    Token {
+        workspace: String,
+        text: String,
+    },
+    Done {
+        workspace: String,
+    },
+    Error {
+        workspace: String,
+        text: String,
+    },
     /// Activity broadcast from daemon (Telegram or other TUI-originated).
     Activity {
         source: String,
@@ -473,14 +481,14 @@ async fn event_loop(
 
             Some(msg) = coord_rx.recv() => {
                 match msg {
-                    CoordResponse::Token(text) => {
-                        app.append_assistant_token(&text);
+                    CoordResponse::Token { workspace, text } => {
+                        app.append_assistant_token_to(&workspace, &text);
                     }
-                    CoordResponse::Done => {
-                        app.finish_assistant_message();
+                    CoordResponse::Done { workspace } => {
+                        app.finish_assistant_message_for(&workspace);
                     }
-                    CoordResponse::Error(e) => {
-                        app.push_system_message(format!("Error: {e}"));
+                    CoordResponse::Error { workspace, text } => {
+                        app.push_system_message_to(&workspace, format!("Error: {text}"));
                     }
                     CoordResponse::Activity { source, workspace, kind, text } => {
                         app.push_activity(&workspace, &source, &kind, &text);
@@ -1853,9 +1861,10 @@ async fn daemon_client_task(
         Some(c) => c,
         None => {
             let _ = coord_tx
-                .send(CoordResponse::Error(format!(
-                    "Failed to connect to daemon after 3 attempts: {last_err}"
-                )))
+                .send(CoordResponse::Error {
+                    workspace: String::new(),
+                    text: format!("Failed to connect to daemon after 3 attempts: {last_err}"),
+                })
                 .await;
             return;
         }
@@ -1868,7 +1877,10 @@ async fn daemon_client_task(
                     UserMessage::Chat { workspace_name, text } => {
                         if let Err(e) = client.send_chat(&workspace_name, &text).await {
                             let _ = coord_tx
-                                .send(CoordResponse::Error(format!("Socket send error: {e}")))
+                                .send(CoordResponse::Error {
+                                    workspace: workspace_name,
+                                    text: format!("Socket send error: {e}"),
+                                })
                                 .await;
                         }
                     }
@@ -1877,14 +1889,14 @@ async fn daemon_client_task(
 
             resp = client.next_response() => {
                 match resp {
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Token(text)).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Token { workspace, text }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Done)) => {
-                        let _ = coord_tx.send(CoordResponse::Done).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Done { workspace })) => {
+                        let _ = coord_tx.send(CoordResponse::Done { workspace }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Error(text)).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Error { workspace, text }).await;
                     }
                     Ok(Some(crate::daemon::socket::DaemonResponse::Activity { source, workspace, kind, text })) => {
                         // Skip our own echoed messages — we already have them
@@ -1899,13 +1911,13 @@ async fn daemon_client_task(
                     Ok(None) => {
                         // Daemon disconnected
                         let _ = coord_tx
-                            .send(CoordResponse::Error("Daemon disconnected".into()))
+                            .send(CoordResponse::Error { workspace: String::new(), text: "Daemon disconnected".into() })
                             .await;
                         break;
                     }
                     Err(e) => {
                         let _ = coord_tx
-                            .send(CoordResponse::Error(format!("Socket read error: {e}")))
+                            .send(CoordResponse::Error { workspace: String::new(), text: format!("Socket read error: {e}") })
                             .await;
                         break;
                     }
@@ -1930,10 +1942,13 @@ async fn daemon_client_task_tcp(
         Err(e) => {
             let _ = connected_host_tx.send(None);
             let _ = coord_tx
-                .send(CoordResponse::Error(format!(
-                    "Failed to connect to remote daemon (tried {} endpoints): {e}",
-                    endpoints.len()
-                )))
+                .send(CoordResponse::Error {
+                    workspace: String::new(),
+                    text: format!(
+                        "Failed to connect to remote daemon (tried {} endpoints): {e}",
+                        endpoints.len()
+                    ),
+                })
                 .await;
             return;
         }
@@ -1946,7 +1961,10 @@ async fn daemon_client_task_tcp(
                     UserMessage::Chat { workspace_name, text } => {
                         if let Err(e) = client.send_chat(&workspace_name, &text).await {
                             let _ = coord_tx
-                                .send(CoordResponse::Error(format!("TCP send error: {e}")))
+                                .send(CoordResponse::Error {
+                                    workspace: workspace_name,
+                                    text: format!("TCP send error: {e}"),
+                                })
                                 .await;
                         }
                     }
@@ -1955,14 +1973,14 @@ async fn daemon_client_task_tcp(
 
             resp = client.next_response() => {
                 match resp {
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Token(text)).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Token { workspace, text }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Done)) => {
-                        let _ = coord_tx.send(CoordResponse::Done).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Done { workspace })) => {
+                        let _ = coord_tx.send(CoordResponse::Done { workspace }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Error(text)).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Error { workspace, text }).await;
                     }
                     Ok(Some(crate::daemon::socket::DaemonResponse::Activity { source, workspace, kind, text })) => {
                         if source == "tui" {
@@ -1974,13 +1992,13 @@ async fn daemon_client_task_tcp(
                     }
                     Ok(None) => {
                         let _ = coord_tx
-                            .send(CoordResponse::Error("Remote daemon disconnected".into()))
+                            .send(CoordResponse::Error { workspace: String::new(), text: "Remote daemon disconnected".into() })
                             .await;
                         break;
                     }
                     Err(e) => {
                         let _ = coord_tx
-                            .send(CoordResponse::Error(format!("TCP read error: {e}")))
+                            .send(CoordResponse::Error { workspace: String::new(), text: format!("TCP read error: {e}") })
                             .await;
                         break;
                     }
@@ -2015,9 +2033,10 @@ async fn coordinator_task(
                         coordinators.insert(workspace_name.clone(), coord);
                     } else {
                         let _ = coord_tx
-                            .send(CoordResponse::Error(
-                                "Failed to initialize coordinator".to_string(),
-                            ))
+                            .send(CoordResponse::Error {
+                                workspace: workspace_name.clone(),
+                                text: "Failed to initialize coordinator".to_string(),
+                            })
                             .await;
                         continue;
                     }
@@ -2029,17 +2048,24 @@ async fn coordinator_task(
                     Ok(s) => s,
                     Err(e) => {
                         let _ = coord_tx
-                            .send(CoordResponse::Error(format!("DB error: {e}")))
+                            .send(CoordResponse::Error {
+                                workspace: workspace_name.clone(),
+                                text: format!("DB error: {e}"),
+                            })
                             .await;
                         continue;
                     }
                 };
 
+                let ws_for_cb = workspace_name.clone();
                 let token_tx = coord_tx.clone();
                 let handle_fut =
                     coordinator.handle_message(&text, &store, move |event| match event {
                         CoordinatorEvent::Token(t) => {
-                            let _ = token_tx.try_send(CoordResponse::Token(t));
+                            let _ = token_tx.try_send(CoordResponse::Token {
+                                workspace: ws_for_cb.clone(),
+                                text: t,
+                            });
                         }
                         CoordinatorEvent::FilesModified { files } => {
                             let file_list: Vec<String> = files
@@ -2054,32 +2080,50 @@ async fn coordinator_task(
                                     .collect::<Vec<_>>()
                                     .join("\n")
                             );
-                            let _ = token_tx.try_send(CoordResponse::Error(alert));
+                            let _ = token_tx.try_send(CoordResponse::Error {
+                                workspace: ws_for_cb.clone(),
+                                text: alert,
+                            });
                         }
                         CoordinatorEvent::BashAudit {
                             command,
                             matched_pattern,
                         } => {
-                            let _ = token_tx.try_send(CoordResponse::Error(format!(
-                                "Bash audit ({matched_pattern}): {command}"
-                            )));
+                            let _ = token_tx.try_send(CoordResponse::Error {
+                                workspace: ws_for_cb.clone(),
+                                text: format!("Bash audit ({matched_pattern}): {command}"),
+                            });
                         }
                     });
 
                 match tokio::time::timeout(Duration::from_secs(60), handle_fut).await {
                     Ok(Ok(_)) => {
-                        let _ = coord_tx.send(CoordResponse::Done).await;
+                        let _ = coord_tx
+                            .send(CoordResponse::Done {
+                                workspace: workspace_name.clone(),
+                            })
+                            .await;
                     }
                     Ok(Err(e)) => {
-                        let _ = coord_tx.send(CoordResponse::Error(format!("{e}"))).await;
+                        let _ = coord_tx
+                            .send(CoordResponse::Error {
+                                workspace: workspace_name.clone(),
+                                text: format!("{e}"),
+                            })
+                            .await;
                     }
                     Err(_) => {
                         let _ = coord_tx
-                            .send(CoordResponse::Error(
-                                "Coordinator timed out \u{2014} is the `claude` CLI installed and working?".to_string(),
-                            ))
+                            .send(CoordResponse::Error {
+                                workspace: workspace_name.clone(),
+                                text: "Coordinator timed out \u{2014} is the `claude` CLI installed and working?".to_string(),
+                            })
                             .await;
-                        let _ = coord_tx.send(CoordResponse::Done).await;
+                        let _ = coord_tx
+                            .send(CoordResponse::Done {
+                                workspace: workspace_name.clone(),
+                            })
+                            .await;
                     }
                 }
             }
@@ -2148,8 +2192,10 @@ mod tests {
             thoughts: Vec::new(),
             is_setup_placeholder: false,
         };
+        let ws_name = ws.name.clone();
         App {
             workspaces: vec![ws],
+            ws_name_index: std::collections::HashMap::from([(ws_name, 0)]),
             active_tab: 0,
             prefix_active: false,
             view: View::Dashboard,

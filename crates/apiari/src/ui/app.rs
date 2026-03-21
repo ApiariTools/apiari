@@ -6,6 +6,7 @@ use crate::buzz::signal::{Severity, SignalRecord};
 use apiari_tui::conversation::ConversationEntry;
 use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::{BufRead, Seek, SeekFrom};
 use std::path::Path;
 use std::time::Instant;
@@ -392,6 +393,8 @@ pub struct WorkspaceState {
 
 pub struct App {
     pub workspaces: Vec<WorkspaceState>,
+    /// Cached workspace name → index for O(1) lookup on hot path.
+    pub(super) ws_name_index: HashMap<String, usize>,
     pub active_tab: usize,
     pub prefix_active: bool,
     pub view: View,
@@ -505,6 +508,7 @@ impl App {
 
         let mut app = Self {
             workspaces: ws_states,
+            ws_name_index: HashMap::new(),
             active_tab,
             prefix_active: false,
             view: View::Dashboard,
@@ -558,6 +562,8 @@ impl App {
             ));
             ws.chat_scroll.scroll_to_bottom();
         }
+
+        app.rebuild_ws_name_index();
 
         // No I/O here — background tasks handle initial data load.
         app
@@ -621,6 +627,7 @@ impl App {
 
         let mut app = Self {
             workspaces: vec![ws_state],
+            ws_name_index: HashMap::new(),
             active_tab: 0,
             prefix_active: false,
             view: View::Dashboard,
@@ -661,6 +668,8 @@ impl App {
             last_worker_refresh: Instant::now(),
             last_signal_refresh: Instant::now(),
         };
+
+        app.rebuild_ws_name_index();
 
         // Inject first setup message
         if let Some(ws) = app.workspaces.get_mut(0) {
@@ -735,6 +744,7 @@ impl App {
         let prev_focused_panel = self.focused_panel;
 
         self.workspaces.push(ws_state);
+        self.rebuild_ws_name_index();
         let new_idx = self.workspaces.len() - 1;
         self.active_tab = new_idx;
         self.view = View::Dashboard;
@@ -923,6 +933,7 @@ impl App {
                 self.workspaces.push(ws_state);
                 self.active_tab = self.workspaces.len() - 1;
             }
+            self.rebuild_ws_name_index();
             self.focused_panel = Panel::Workers;
             self.chat_focused = false;
         } else {
@@ -972,6 +983,7 @@ impl App {
             ws_state.chat_history.splice(0..0, chat_history);
 
             self.workspaces = vec![ws_state];
+            self.rebuild_ws_name_index();
             self.active_tab = 0;
             self.onboarding = OnboardingState::completed();
             self.focused_panel = Panel::Chat;
@@ -1621,8 +1633,41 @@ impl App {
         self.needs_redraw = true;
     }
 
-    pub fn append_assistant_token(&mut self, token: &str) {
+    pub fn push_system_message(&mut self, text: String) {
         if let Some(ws) = self.current_ws_mut() {
+            ws.chat_history.push(ChatLine::System(text));
+            ws.streaming = false;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Rebuild the workspace name → index cache. Call after any mutation of
+    /// `self.workspaces` (push, remove, replace).
+    fn rebuild_ws_name_index(&mut self) {
+        self.ws_name_index.clear();
+        for (i, ws) in self.workspaces.iter().enumerate() {
+            self.ws_name_index.insert(ws.name.clone(), i);
+        }
+    }
+
+    /// Find workspace index by name (O(1) via cached HashMap).
+    /// Falls back to active_tab only when the workspace string is empty
+    /// (system-wide messages or old daemons without workspace field).
+    /// Returns `None` when a non-empty name doesn't match any workspace so
+    /// callers silently drop the message rather than mis-routing it.
+    fn ws_index(&self, workspace: &str) -> Option<usize> {
+        if workspace.is_empty() {
+            Some(self.active_tab)
+        } else {
+            self.ws_name_index.get(workspace).copied()
+        }
+    }
+
+    /// Append a streaming token to the correct workspace's chat history.
+    pub fn append_assistant_token_to(&mut self, workspace: &str, token: &str) {
+        if let Some(idx) = self.ws_index(workspace)
+            && let Some(ws) = self.workspaces.get_mut(idx)
+        {
             if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last_mut() {
                 s.push_str(token);
             } else {
@@ -1634,9 +1679,13 @@ impl App {
         }
     }
 
-    pub fn finish_assistant_message(&mut self) {
-        let is_chat_visible = matches!(self.view, View::Dashboard);
-        if let Some(ws) = self.current_ws_mut() {
+    /// Finish the assistant message on the correct workspace.
+    pub fn finish_assistant_message_for(&mut self, workspace: &str) {
+        if let Some(idx) = self.ws_index(workspace)
+            && let Some(ws) = self.workspaces.get_mut(idx)
+        {
+            let is_active = idx == self.active_tab;
+            let is_chat_visible = is_active && matches!(self.view, View::Dashboard);
             ws.streaming = false;
             ws.coordinator_turns += 1;
             if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last() {
@@ -1658,8 +1707,11 @@ impl App {
         }
     }
 
-    pub fn push_system_message(&mut self, text: String) {
-        if let Some(ws) = self.current_ws_mut() {
+    /// Push a system/error message to the correct workspace's chat history.
+    pub fn push_system_message_to(&mut self, workspace: &str, text: String) {
+        if let Some(idx) = self.ws_index(workspace)
+            && let Some(ws) = self.workspaces.get_mut(idx)
+        {
             ws.chat_history.push(ChatLine::System(text));
             ws.streaming = false;
             self.needs_redraw = true;
