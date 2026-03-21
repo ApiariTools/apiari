@@ -46,6 +46,8 @@ struct RepoPollResult {
     updated_merged_prs: Option<HashSet<u64>>,
     updated_ci_pass: HashSet<u64>,
     updated_bot_review_cursor: Option<String>,
+    /// Updated PR head SHA map (always set; replaces previous cursor for this repo).
+    updated_pr_push_cursors: HashMap<u64, String>,
 }
 
 /// Watches GitHub repositories via the `gh` CLI.
@@ -62,6 +64,9 @@ pub struct GithubWatcher {
     /// Last-seen bot review timestamp per repo (cursor: github_bot_review:{repo}).
     /// ISO 8601 string — only reviews newer than this are emitted.
     bot_review_cursors: HashMap<String, String>,
+    /// Last-seen head commit SHA per open PR per repo (cursor: github_pr_push:{repo}).
+    /// Used to detect new commits pushed to open PRs (useful for repos with no CI).
+    pr_push_cursors: HashMap<String, HashMap<u64, String>>,
     /// Cached rate-limit remaining count and when it was fetched.
     last_rate_check: Option<(Instant, u32)>,
 }
@@ -76,6 +81,7 @@ impl GithubWatcher {
             merged_pr_cursors: HashMap::new(),
             ci_pass_state: HashMap::new(),
             bot_review_cursors: HashMap::new(),
+            pr_push_cursors: HashMap::new(),
             last_rate_check: None,
         }
     }
@@ -111,6 +117,22 @@ impl GithubWatcher {
                 && !val.is_empty()
             {
                 self.bot_review_cursors.insert(repo.clone(), val);
+            }
+
+            let pk = format!("github_pr_push:{repo}");
+            if let Ok(Some(val)) = store.get_cursor(&pk)
+                && !val.is_empty()
+            {
+                let map: HashMap<u64, String> = val
+                    .split(',')
+                    .filter_map(|entry| {
+                        let (num, sha) = entry.split_once(':')?;
+                        Some((num.parse().ok()?, sha.to_string()))
+                    })
+                    .collect();
+                if !map.is_empty() {
+                    self.pr_push_cursors.insert(repo.clone(), map);
+                }
             }
         }
     }
@@ -198,8 +220,8 @@ impl GithubWatcher {
         }
     }
 
-    /// Fetch open pull requests for a repo. Returns (pr_number, pr_title, head_branch).
-    async fn fetch_open_prs(&self, repo: &str) -> Vec<(u64, String, String)> {
+    /// Fetch open pull requests for a repo. Returns (pr_number, pr_title, head_branch, head_sha).
+    async fn fetch_open_prs(&self, repo: &str) -> Vec<(u64, String, String, String)> {
         let mut result = Vec::new();
         if let Some(prs) = self
             .gh_api(&format!("repos/{repo}/pulls?state=open&per_page=20"))
@@ -213,8 +235,17 @@ impl GithubWatcher {
                         .get("head")
                         .and_then(|v| v.get("ref"))
                         .and_then(|v| v.as_str())
+                    && let Some(sha) = pr
+                        .get("head")
+                        .and_then(|v| v.get("sha"))
+                        .and_then(|v| v.as_str())
                 {
-                    result.push((number, title.to_string(), branch.to_string()));
+                    result.push((
+                        number,
+                        title.to_string(),
+                        branch.to_string(),
+                        sha.to_string(),
+                    ));
                 }
             }
         }
@@ -544,6 +575,36 @@ impl GithubWatcher {
         (signals, new_cursor)
     }
 
+    /// Detect new commits pushed to open PRs by comparing head SHAs against cursors.
+    /// Returns (signals, updated cursor map for this repo).
+    fn poll_pr_pushes(
+        repo: &str,
+        prs: &[(u64, String, String, String)],
+        prev_cursors: &HashMap<u64, String>,
+    ) -> (Vec<SignalUpdate>, HashMap<u64, String>) {
+        let mut signals = Vec::new();
+        let mut new_cursors = HashMap::new();
+
+        for (number, title, _branch, sha) in prs {
+            new_cursors.insert(*number, sha.clone());
+
+            // Only emit if we have a previous SHA and it differs (actual new push).
+            // On first run (empty cursors), we seed without emitting to avoid noise.
+            if let Some(prev_sha) = prev_cursors.get(number) {
+                if prev_sha != sha {
+                    let key = format!("pr-push-{repo}-{number}-{sha}");
+                    let msg = format!("New commits on PR #{number}: {title} ({repo})");
+                    let url = format!("https://github.com/{repo}/pull/{number}");
+                    let signal = SignalUpdate::new("github_pr_push", &key, &msg, Severity::Info)
+                        .with_url(url);
+                    signals.push(signal);
+                }
+            }
+        }
+
+        (signals, new_cursors)
+    }
+
     async fn poll_repo(&self, repo: &str) -> Vec<(String, SignalUpdate)> {
         let mut signals = Vec::new();
 
@@ -649,6 +710,7 @@ impl GithubWatcher {
         seen_merged_prs: HashSet<u64>,
         mut ci_pass_prs: HashSet<u64>,
         bot_review_cursor: Option<String>,
+        pr_push_prev: HashMap<u64, String>,
     ) -> RepoPollResult {
         // Run independent poll types concurrently within this repo.
         let (
@@ -670,17 +732,22 @@ impl GithubWatcher {
         signals.extend(merged_signals);
         signals.extend(bot_review_signals);
 
+        // Detect new commits pushed to open PRs.
+        let (pr_push_signals, updated_pr_push_cursors) =
+            Self::poll_pr_pushes(repo, &prs, &pr_push_prev);
+        signals.extend(pr_push_signals);
+
         // Fetch latest CI run for each open PR concurrently in bounded chunks.
-        let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _)| *n).collect();
+        let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _, _)| *n).collect();
 
         for chunk in prs.chunks(MAX_CONCURRENT_GH_CALLS) {
             let run_futures: Vec<_> = chunk
                 .iter()
-                .map(|(_, _, branch)| self.fetch_latest_run(repo, branch))
+                .map(|(_, _, branch, _)| self.fetch_latest_run(repo, branch))
                 .collect();
             let runs = join_all(run_futures).await;
 
-            for ((pr_number, pr_title, _), run) in chunk.iter().zip(runs) {
+            for ((pr_number, pr_title, _, _), run) in chunk.iter().zip(runs) {
                 if let Some(run) = run {
                     let conclusion = run.get("conclusion").and_then(|v| v.as_str());
                     let run_id = run.get("databaseId").and_then(|v| v.as_u64());
@@ -735,6 +802,7 @@ impl GithubWatcher {
             updated_merged_prs,
             updated_ci_pass: ci_pass_prs,
             updated_bot_review_cursor,
+            updated_pr_push_cursors,
         }
     }
 }
@@ -768,7 +836,8 @@ impl Watcher for GithubWatcher {
                     .unwrap_or_default();
                 let ci_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
                 let bot_cursor = self.bot_review_cursors.get(repo).cloned();
-                self.poll_repo_full(repo, last_seen, seen_prs, ci_prs, bot_cursor)
+                let pr_push = self.pr_push_cursors.get(repo).cloned().unwrap_or_default();
+                self.poll_repo_full(repo, last_seen, seen_prs, ci_prs, bot_cursor, pr_push)
             })
             .collect();
 
@@ -799,6 +868,11 @@ impl Watcher for GithubWatcher {
             if let Some(new_cursor) = result.updated_bot_review_cursor {
                 self.bot_review_cursors
                     .insert(result.repo.clone(), new_cursor);
+            }
+
+            if !result.updated_pr_push_cursors.is_empty() {
+                self.pr_push_cursors
+                    .insert(result.repo.clone(), result.updated_pr_push_cursors);
             }
         }
 
@@ -847,6 +921,17 @@ impl Watcher for GithubWatcher {
             let key = format!("github_bot_review:{repo}");
             if let Err(e) = store.set_cursor(&key, ts) {
                 warn!("failed to persist bot review cursor for {repo}: {e}");
+            }
+        }
+        for (repo, pr_shas) in &self.pr_push_cursors {
+            let key = format!("github_pr_push:{repo}");
+            let val: String = pr_shas
+                .iter()
+                .map(|(num, sha)| format!("{num}:{sha}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            if let Err(e) = store.set_cursor(&key, &val) {
+                warn!("failed to persist PR push cursor for {repo}: {e}");
             }
         }
 
@@ -1264,5 +1349,95 @@ mod tests {
         let (proceed, is_low) = rate_limit_decision(5000);
         assert!(proceed);
         assert!(!is_low);
+    }
+
+    #[test]
+    fn test_pr_push_first_run_no_signals() {
+        // On first run (empty cursors), should seed state but NOT emit signals.
+        let prs = vec![
+            (1, "Fix bug".into(), "fix-bug".into(), "abc123".into()),
+            (2, "Add feature".into(), "feat".into(), "def456".into()),
+        ];
+        let prev: HashMap<u64, String> = HashMap::new();
+
+        let (signals, new_cursors) = GithubWatcher::poll_pr_pushes("org/repo", &prs, &prev);
+
+        assert!(signals.is_empty(), "first run should not emit signals");
+        assert_eq!(new_cursors.len(), 2);
+        assert_eq!(new_cursors[&1], "abc123");
+        assert_eq!(new_cursors[&2], "def456");
+    }
+
+    #[test]
+    fn test_pr_push_new_commit_emits_signal() {
+        let prs = vec![(42, "My PR".into(), "my-branch".into(), "newsha999".into())];
+        let mut prev = HashMap::new();
+        prev.insert(42, "oldsha111".to_string());
+
+        let (signals, new_cursors) = GithubWatcher::poll_pr_pushes("org/repo", &prs, &prev);
+
+        assert_eq!(signals.len(), 1);
+        let signal = &signals[0];
+        assert_eq!(signal.source, "github_pr_push");
+        assert_eq!(signal.external_id, "pr-push-org/repo-42-newsha999");
+        assert_eq!(signal.severity, Severity::Info);
+        assert!(signal.title.contains("PR #42"));
+        assert!(signal.title.contains("My PR"));
+        assert!(signal.title.contains("org/repo"));
+        assert_eq!(
+            signal.url.as_deref(),
+            Some("https://github.com/org/repo/pull/42")
+        );
+        assert_eq!(new_cursors[&42], "newsha999");
+    }
+
+    #[test]
+    fn test_pr_push_same_sha_no_signal() {
+        let prs = vec![(10, "Stable".into(), "stable".into(), "sameSHA".into())];
+        let mut prev = HashMap::new();
+        prev.insert(10, "sameSHA".to_string());
+
+        let (signals, new_cursors) = GithubWatcher::poll_pr_pushes("org/repo", &prs, &prev);
+
+        assert!(signals.is_empty(), "unchanged SHA should not emit signal");
+        assert_eq!(new_cursors[&10], "sameSHA");
+    }
+
+    #[test]
+    fn test_pr_push_closed_pr_removed_from_cursors() {
+        // PR #5 was tracked before but is no longer in open PRs.
+        let prs = vec![(10, "Open PR".into(), "open".into(), "sha10".into())];
+        let mut prev = HashMap::new();
+        prev.insert(5, "old_sha".to_string());
+        prev.insert(10, "sha10".to_string());
+
+        let (_signals, new_cursors) = GithubWatcher::poll_pr_pushes("org/repo", &prs, &prev);
+
+        // Only open PRs should be in the new cursors.
+        assert_eq!(new_cursors.len(), 1);
+        assert!(!new_cursors.contains_key(&5));
+        assert_eq!(new_cursors[&10], "sha10");
+    }
+
+    #[test]
+    fn test_pr_push_multiple_prs_mixed() {
+        let prs = vec![
+            (1, "PR one".into(), "b1".into(), "new1".into()),
+            (2, "PR two".into(), "b2".into(), "same2".into()),
+            (3, "PR three".into(), "b3".into(), "new3".into()),
+        ];
+        let mut prev = HashMap::new();
+        prev.insert(1, "old1".to_string());
+        prev.insert(2, "same2".to_string());
+        prev.insert(3, "old3".to_string());
+
+        let (signals, new_cursors) = GithubWatcher::poll_pr_pushes("org/repo", &prs, &prev);
+
+        // PRs 1 and 3 changed, PR 2 unchanged
+        assert_eq!(signals.len(), 2);
+        assert!(signals.iter().any(|s| s.title.contains("PR #1")));
+        assert!(signals.iter().any(|s| s.title.contains("PR #3")));
+        assert!(!signals.iter().any(|s| s.title.contains("PR #2")));
+        assert_eq!(new_cursors.len(), 3);
     }
 }
