@@ -28,11 +28,11 @@ pub enum DaemonRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonResponse {
     /// Unicast: streaming token for YOUR request.
-    Token { text: String },
+    Token { workspace: String, text: String },
     /// Unicast: your request completed.
-    Done,
+    Done { workspace: String },
     /// Unicast: error on your request.
-    Error { text: String },
+    Error { workspace: String, text: String },
     /// Broadcast: activity from any source.
     Activity {
         source: String,
@@ -245,6 +245,7 @@ where
                             }
                             Err(e) => {
                                 let err = DaemonResponse::Error {
+                                    workspace: String::new(),
                                     text: format!("invalid request: {e}"),
                                 };
                                 let json = serde_json::to_string(&err).unwrap();
@@ -311,31 +312,41 @@ mod tests {
     #[test]
     fn test_daemon_response_token_serde() {
         let resp = DaemonResponse::Token {
+            workspace: "ws1".into(),
             text: "hello".into(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"type\":\"token\""));
+        assert!(json.contains("\"workspace\":\"ws1\""));
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, DaemonResponse::Token { text } if text == "hello"));
+        assert!(
+            matches!(parsed, DaemonResponse::Token { workspace, text } if workspace == "ws1" && text == "hello")
+        );
     }
 
     #[test]
     fn test_daemon_response_done_serde() {
-        let resp = DaemonResponse::Done;
+        let resp = DaemonResponse::Done {
+            workspace: "ws1".into(),
+        };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"type\":\"done\""));
+        assert!(json.contains("\"workspace\":\"ws1\""));
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, DaemonResponse::Done));
+        assert!(matches!(parsed, DaemonResponse::Done { workspace } if workspace == "ws1"));
     }
 
     #[test]
     fn test_daemon_response_error_serde() {
         let resp = DaemonResponse::Error {
+            workspace: "ws1".into(),
             text: "oops".into(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, DaemonResponse::Error { text } if text == "oops"));
+        assert!(
+            matches!(parsed, DaemonResponse::Error { workspace, text } if workspace == "ws1" && text == "oops")
+        );
     }
 
     #[tokio::test]
@@ -376,6 +387,7 @@ mod tests {
         client_req
             .responder
             .send(DaemonResponse::Token {
+                workspace: "test".into(),
                 text: "world".into(),
             })
             .unwrap();
@@ -387,7 +399,9 @@ mod tests {
             .await
             .unwrap();
         let resp: DaemonResponse = serde_json::from_str(buf.trim()).unwrap();
-        assert!(matches!(resp, DaemonResponse::Token { text } if text == "world"));
+        assert!(
+            matches!(resp, DaemonResponse::Token { workspace, text } if workspace == "test" && text == "world")
+        );
 
         // Drop the writer to close the connection
         drop(server_writer);
@@ -419,7 +433,7 @@ mod tests {
             .unwrap();
         let resp: DaemonResponse = serde_json::from_str(buf.trim()).unwrap();
         match resp {
-            DaemonResponse::Error { text } => {
+            DaemonResponse::Error { text, .. } => {
                 assert!(text.contains("invalid request"));
             }
             _ => panic!("expected Error response"),

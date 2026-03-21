@@ -1870,20 +1870,15 @@ async fn daemon_client_task(
         }
     };
 
-    // Track which workspace the most recent chat request targeted so we can
-    // tag the unicast Token/Done/Error responses with it.
-    let mut current_workspace = String::new();
-
     loop {
         tokio::select! {
             Some(msg) = user_rx.recv() => {
                 match msg {
                     UserMessage::Chat { workspace_name, text } => {
-                        current_workspace = workspace_name.clone();
                         if let Err(e) = client.send_chat(&workspace_name, &text).await {
                             let _ = coord_tx
                                 .send(CoordResponse::Error {
-                                    workspace: current_workspace.clone(),
+                                    workspace: workspace_name,
                                     text: format!("Socket send error: {e}"),
                                 })
                                 .await;
@@ -1894,14 +1889,14 @@ async fn daemon_client_task(
 
             resp = client.next_response() => {
                 match resp {
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Token { workspace: current_workspace.clone(), text }).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Token { workspace, text }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Done)) => {
-                        let _ = coord_tx.send(CoordResponse::Done { workspace: current_workspace.clone() }).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Done { workspace })) => {
+                        let _ = coord_tx.send(CoordResponse::Done { workspace }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Error { workspace: current_workspace.clone(), text }).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Error { workspace, text }).await;
                     }
                     Ok(Some(crate::daemon::socket::DaemonResponse::Activity { source, workspace, kind, text })) => {
                         // Skip our own echoed messages — we already have them
@@ -1959,19 +1954,15 @@ async fn daemon_client_task_tcp(
         }
     };
 
-    // Track which workspace the most recent chat request targeted.
-    let mut current_workspace = String::new();
-
     loop {
         tokio::select! {
             Some(msg) = user_rx.recv() => {
                 match msg {
                     UserMessage::Chat { workspace_name, text } => {
-                        current_workspace = workspace_name.clone();
                         if let Err(e) = client.send_chat(&workspace_name, &text).await {
                             let _ = coord_tx
                                 .send(CoordResponse::Error {
-                                    workspace: current_workspace.clone(),
+                                    workspace: workspace_name,
                                     text: format!("TCP send error: {e}"),
                                 })
                                 .await;
@@ -1982,14 +1973,14 @@ async fn daemon_client_task_tcp(
 
             resp = client.next_response() => {
                 match resp {
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Token { workspace: current_workspace.clone(), text }).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Token { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Token { workspace, text }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Done)) => {
-                        let _ = coord_tx.send(CoordResponse::Done { workspace: current_workspace.clone() }).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Done { workspace })) => {
+                        let _ = coord_tx.send(CoordResponse::Done { workspace }).await;
                     }
-                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { text })) => {
-                        let _ = coord_tx.send(CoordResponse::Error { workspace: current_workspace.clone(), text }).await;
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Error { workspace, text })) => {
+                        let _ = coord_tx.send(CoordResponse::Error { workspace, text }).await;
                     }
                     Ok(Some(crate::daemon::socket::DaemonResponse::Activity { source, workspace, kind, text })) => {
                         if source == "tui" {

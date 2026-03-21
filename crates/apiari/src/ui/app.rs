@@ -1629,15 +1629,15 @@ impl App {
         }
     }
 
-    /// Find workspace index by name, falling back to active_tab when empty/missing.
+    /// Find workspace index by name. Falls back to active_tab only when the
+    /// workspace string is empty (system-wide messages). Returns `None` when a
+    /// non-empty name doesn't match any workspace so callers silently drop the
+    /// message rather than mis-routing it.
     fn ws_index(&self, workspace: &str) -> Option<usize> {
         if workspace.is_empty() {
             Some(self.active_tab)
         } else {
-            self.workspaces
-                .iter()
-                .position(|ws| ws.name == workspace)
-                .or(Some(self.active_tab))
+            self.workspaces.iter().position(|ws| ws.name == workspace)
         }
     }
 
