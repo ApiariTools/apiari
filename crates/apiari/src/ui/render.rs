@@ -1744,12 +1744,26 @@ fn draw_worker_detail(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
         .split(chunks[1]);
 
     // ── Left: Activity log ──
-    draw_activity_log(frame, worker, body_cols[0]);
+    let activity_block = if app.worker_activity_focused {
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(theme::border_active())
+    } else {
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(theme::STEEL))
+    };
+    draw_activity_log_with_block(frame, worker, body_cols[0], activity_block);
 
     // ── Right: Conversation body ──
+    let conv_border_style = if !app.worker_activity_focused {
+        theme::border_active()
+    } else {
+        Style::default().fg(theme::STEEL)
+    };
     let conv_block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(Style::default().fg(theme::STEEL));
+        .borders(Borders::NONE)
+        .border_style(conv_border_style);
 
     if worker.conversation.is_empty() {
         let inner = conv_block.inner(body_cols[1]);
@@ -1820,7 +1834,7 @@ fn render_activity_lines<'a>(events: &'a [app::WorkerEvent]) -> Vec<Line<'a>> {
                 ("\u{2192}", Style::default().fg(theme::MINT)) // →
             }
             app::WorkerEventKind::UserToWorker => {
-                ("\u{2190}", Style::default().fg(theme::ICE)) // ←
+                ("\u{2192}", Style::default().fg(theme::ICE)) // →
             }
             app::WorkerEventKind::PrOpened => {
                 ("\u{2705}", Style::default().fg(theme::MINT)) // ✅
@@ -1869,10 +1883,13 @@ fn render_activity_lines<'a>(events: &'a [app::WorkerEvent]) -> Vec<Line<'a>> {
     lines
 }
 
-/// Draw the activity log panel (used in the left split of WorkerDetail).
-fn draw_activity_log(frame: &mut Frame, worker: &app::WorkerInfo, area: Rect) {
-    let block = Block::default();
-
+/// Draw the activity log panel with a custom block (used in the left split of WorkerDetail).
+fn draw_activity_log_with_block(
+    frame: &mut Frame,
+    worker: &app::WorkerInfo,
+    area: Rect,
+    block: Block<'_>,
+) {
     if worker.activity.is_empty() {
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -2525,6 +2542,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 vec![
                     Span::raw(" "),
+                    Span::styled("tab", theme::key_hint()),
+                    Span::styled(":pane  ", theme::key_desc()),
                     Span::styled("c", theme::key_hint()),
                     Span::styled(":activity  ", theme::key_desc()),
                     Span::styled("m", theme::key_hint()),

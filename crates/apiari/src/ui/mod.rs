@@ -445,7 +445,11 @@ async fn event_loop(
                                 if matches!(app.view, View::WorkerChat(_)) {
                                     app.scroll_worker_activity_up(3);
                                 } else if matches!(app.view, View::WorkerDetail(_)) {
-                                    app.scroll_worker_conv_up(3);
+                                    if app.worker_activity_focused {
+                                        app.scroll_worker_activity_up(3);
+                                    } else {
+                                        app.scroll_worker_conv_up(3);
+                                    }
                                 } else {
                                     app.scroll_chat_up(3);
                                 }
@@ -454,7 +458,11 @@ async fn event_loop(
                                 if matches!(app.view, View::WorkerChat(_)) {
                                     app.scroll_worker_activity_down(3);
                                 } else if matches!(app.view, View::WorkerDetail(_)) {
-                                    app.scroll_worker_conv_down(3);
+                                    if app.worker_activity_focused {
+                                        app.scroll_worker_activity_down(3);
+                                    } else {
+                                        app.scroll_worker_conv_down(3);
+                                    }
                                 } else {
                                     app.scroll_chat_down(3);
                                 }
@@ -500,7 +508,7 @@ async fn event_loop(
                     AppUpdate::Workers(data) => {
                         app.apply_worker_update(data);
                         // Refresh conversation in background when viewing worker detail
-                        if let View::WorkerDetail(idx) | View::WorkerChat(idx) = app.view
+                        if let View::WorkerDetail(idx) = app.view
                             && let Some(ws) = app.current_ws()
                             && let Some(worker) = ws.workers.get(idx)
                         {
@@ -1140,10 +1148,13 @@ fn handle_worker_detail_key(
     match key.code {
         KeyCode::Esc => app.back_to_dashboard(),
         KeyCode::Tab => {
-            cycle_fullscreen_next(app, idx);
+            // Toggle focus between activity (left) and conversation (right) panes
+            app.worker_activity_focused = !app.worker_activity_focused;
+            app.needs_redraw = true;
         }
         KeyCode::BackTab => {
-            cycle_fullscreen_prev(app, idx);
+            app.worker_activity_focused = !app.worker_activity_focused;
+            app.needs_redraw = true;
         }
         KeyCode::Char('c') => {
             app.view = View::WorkerChat(idx);
@@ -1154,13 +1165,33 @@ fn handle_worker_detail_key(
             app.worker_input.clear();
             app.needs_redraw = true;
         }
-        KeyCode::Char('j') | KeyCode::Down => app.scroll_worker_conv_up(3),
-        KeyCode::Char('k') | KeyCode::Up => app.scroll_worker_conv_down(3),
+        KeyCode::Char('j') | KeyCode::Down => {
+            if app.worker_activity_focused {
+                app.scroll_worker_activity_up(3);
+            } else {
+                app.scroll_worker_conv_up(3);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if app.worker_activity_focused {
+                app.scroll_worker_activity_down(3);
+            } else {
+                app.scroll_worker_conv_down(3);
+            }
+        }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_worker_conv_down(10);
+            if app.worker_activity_focused {
+                app.scroll_worker_activity_down(10);
+            } else {
+                app.scroll_worker_conv_down(10);
+            }
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_worker_conv_up(10);
+            if app.worker_activity_focused {
+                app.scroll_worker_activity_up(10);
+            } else {
+                app.scroll_worker_conv_up(10);
+            }
         }
         KeyCode::Char('o') => {
             if let Some(url) = app.selected_url() {
@@ -2200,6 +2231,7 @@ mod tests {
             chat_focused: false,
             worker_input: String::new(),
             worker_input_active: false,
+            worker_activity_focused: false,
             review_comment_active: false,
             review_comment_input: String::new(),
             review_comment_repo: String::new(),
@@ -2458,5 +2490,110 @@ mod tests {
         app.insert_char('X');
         assert_eq!(app.workspaces[0].input, "abXcd");
         assert_eq!(app.workspaces[0].cursor_pos, 3); // after 'X'
+    }
+
+    /// Create a test worker for WorkerDetail/WorkerChat tests.
+    fn test_worker() -> app::WorkerInfo {
+        app::WorkerInfo {
+            id: "test-worker".into(),
+            branch: "swarm/test".into(),
+            prompt: "Fix the bug".into(),
+            agent_kind: "claude".into(),
+            phase: Some("running".into()),
+            agent_session_status: None,
+            summary: None,
+            created_at: None,
+            pr: None,
+            last_activity: None,
+            conversation: Vec::new(),
+            conv_scroll: apiari_tui::scroll::ScrollState::new(),
+            activity: Vec::new(),
+            activity_scroll: apiari_tui::scroll::ScrollState::new(),
+        }
+    }
+
+    /// Set up a test app in WorkerDetail view with one worker.
+    fn test_app_worker_detail() -> App {
+        let mut app = test_app();
+        app.workspaces[0].workers.push(test_worker());
+        app.view = View::WorkerDetail(0);
+        app.worker_selection = 0;
+        app
+    }
+
+    #[test]
+    fn test_c_key_enters_worker_chat() {
+        let mut app = test_app_worker_detail();
+
+        handle_worker_detail_key(&mut app, key(KeyCode::Char('c')), 0);
+
+        assert_eq!(app.view, View::WorkerChat(0));
+    }
+
+    #[test]
+    fn test_esc_returns_from_worker_chat_to_detail() {
+        let mut app = test_app_worker_detail();
+        app.view = View::WorkerChat(0);
+
+        handle_worker_chat_key(&mut app, key(KeyCode::Esc), 0);
+
+        assert_eq!(app.view, View::WorkerDetail(0));
+    }
+
+    #[test]
+    fn test_c_returns_from_worker_chat_to_detail() {
+        let mut app = test_app_worker_detail();
+        app.view = View::WorkerChat(0);
+
+        handle_worker_chat_key(&mut app, key(KeyCode::Char('c')), 0);
+
+        assert_eq!(app.view, View::WorkerDetail(0));
+    }
+
+    #[test]
+    fn test_worker_chat_scroll_keys() {
+        let mut app = test_app_worker_detail();
+        app.view = View::WorkerChat(0);
+
+        // j scrolls activity
+        handle_worker_chat_key(&mut app, key(KeyCode::Char('j')), 0);
+        let scroll = &app.workspaces[0].workers[0].activity_scroll;
+        assert!(scroll.offset > 0 || !scroll.auto_scroll);
+
+        // k scrolls back
+        handle_worker_chat_key(&mut app, key(KeyCode::Char('k')), 0);
+        assert!(app.needs_redraw);
+    }
+
+    #[test]
+    fn test_worker_detail_tab_toggles_pane_focus() {
+        let mut app = test_app_worker_detail();
+        assert!(!app.worker_activity_focused);
+
+        handle_worker_detail_key(&mut app, key(KeyCode::Tab), 0);
+        assert!(app.worker_activity_focused);
+
+        handle_worker_detail_key(&mut app, key(KeyCode::Tab), 0);
+        assert!(!app.worker_activity_focused);
+    }
+
+    #[test]
+    fn test_worker_detail_scroll_respects_pane_focus() {
+        let mut app = test_app_worker_detail();
+
+        // Default: scroll goes to conversation
+        app.worker_activity_focused = false;
+        handle_worker_detail_key(&mut app, key(KeyCode::Char('j')), 0);
+        let conv_offset = app.workspaces[0].workers[0].conv_scroll.offset;
+        let act_offset = app.workspaces[0].workers[0].activity_scroll.offset;
+        // conv should have scrolled (offset > 0 means scrolled up from bottom)
+        assert!(conv_offset > 0 || !app.workspaces[0].workers[0].conv_scroll.auto_scroll);
+        assert_eq!(act_offset, 0);
+
+        // With activity focused: scroll goes to activity
+        app.worker_activity_focused = true;
+        handle_worker_detail_key(&mut app, key(KeyCode::Char('j')), 0);
+        let act_offset = app.workspaces[0].workers[0].activity_scroll.offset;
+        assert!(act_offset > 0 || !app.workspaces[0].workers[0].activity_scroll.auto_scroll);
     }
 }
