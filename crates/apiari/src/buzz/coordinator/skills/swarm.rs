@@ -47,6 +47,13 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
          - Send message: `swarm --dir {root} send {{worktree_id}} \"message\"`\n\
          - Close worker: `swarm --dir {root} close {{worktree_id}}`\n\n\
          {agent_line}\n\n\
+         ### Daemon Auto-Start\n\
+         Before running any `swarm create`, `send`, or `close` command, first ensure the swarm daemon is running.\n\
+         Run this helper (it will auto-start the daemon if needed):\n\
+         ```bash\n\
+         swarm --dir {root} status >/dev/null 2>&1 || (swarm --dir {root} daemon start &>/dev/null & sleep 2)\n\
+         ```\n\
+         Then proceed with your swarm command. This ensures the daemon is always ready before dispatch.\n\n\
          When dispatching, always include in the task prompt:\n\
          'Plan and implement this completely in one session — do not pause mid-task \
          for confirmation. Commit and open a PR when done.'\n\n\
