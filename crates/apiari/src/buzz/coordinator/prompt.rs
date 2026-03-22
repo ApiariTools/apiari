@@ -95,7 +95,9 @@ pub fn build_system_prompt(
             prompt.push('\n');
             if let Some(ref body) = signal.body {
                 let truncated = if body.len() > 200 {
-                    format!("{}...", &body[..200])
+                    // Find a char boundary at or before byte 200
+                    let end = body.floor_char_boundary(200);
+                    format!("{}...", &body[..end])
                 } else {
                     body.clone()
                 };

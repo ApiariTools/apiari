@@ -1227,7 +1227,7 @@ fn draw_signals_card(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
         }
         let max_url = (content_area.width as usize).saturating_sub(3);
         let display_url = if url.len() > max_url {
-            &url[..max_url]
+            &url[..url.floor_char_boundary(max_url)]
         } else {
             url.as_str()
         };
@@ -1375,7 +1375,7 @@ fn draw_reviews_pane(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
         }
         let max_url = (content_area.width as usize).saturating_sub(3);
         let display_url = if url.len() > max_url {
-            &url[..max_url]
+            &url[..url.floor_char_boundary(max_url)]
         } else {
             url.as_str()
         };
