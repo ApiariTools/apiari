@@ -842,6 +842,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 Box::new(SwarmWatcher::new(swarm_config.clone())),
                 swarm_config.interval_secs,
             );
+
+            // Auto-start the swarm daemon if it isn't running
+            ensure_swarm_daemon(&ws.config.root).await;
         }
 
         for email_config in &buzz_config.watchers.email {
@@ -1925,6 +1928,94 @@ pub fn ensure_daemon() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Ensure the swarm daemon is running for a workspace, starting it if needed.
+///
+/// Checks via `swarm --dir <root> status`. If the daemon is not running,
+/// starts it with `swarm --dir <root> daemon start` and waits up to ~2 seconds
+/// for it to come up. This mirrors `ensure_daemon()` for the apiari daemon.
+async fn ensure_swarm_daemon(workspace_root: &std::path::Path) {
+    let root_display = workspace_root.display();
+
+    // Check if swarm daemon is already running
+    let status = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(workspace_root)
+        .arg("status")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await;
+
+    match &status {
+        Ok(o) if o.status.success() => {
+            info!("swarm daemon already running for {}", root_display);
+            return;
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            tracing::debug!(
+                "swarm status failed for {}: {}",
+                root_display,
+                stderr.trim()
+            );
+        }
+        Err(e) => {
+            warn!("failed to run `swarm status` for {}: {}", root_display, e);
+            return;
+        }
+    }
+
+    // Daemon not running — start it
+    info!("swarm daemon not running for {}, starting...", root_display);
+    let result = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(workspace_root)
+        .args(["daemon", "start"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await;
+
+    match &result {
+        Ok(o) if !o.status.success() => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!(
+                "swarm daemon start returned {}: {}",
+                o.status,
+                stderr.trim()
+            );
+            return;
+        }
+        Err(e) => {
+            warn!("failed to start swarm daemon for {}: {}", root_display, e);
+            return;
+        }
+        _ => {}
+    }
+
+    // Wait up to ~2 seconds for daemon to come up
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let recheck = tokio::process::Command::new("swarm")
+            .arg("--dir")
+            .arg(workspace_root)
+            .arg("status")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .await;
+        if recheck.is_ok_and(|o| o.status.success()) {
+            info!("swarm daemon started for {}", root_display);
+            return;
+        }
+    }
+    warn!(
+        "swarm daemon may not have started in time for {}",
+        root_display
+    );
 }
 
 fn read_pid() -> Option<u32> {
