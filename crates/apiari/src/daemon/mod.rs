@@ -65,6 +65,9 @@ struct WorkspaceSlot {
     /// DB path for reopening SignalStore on coordinator respawn.
     db_path: std::path::PathBuf,
     max_session_turns: u32,
+    /// Respawn backoff: number of consecutive respawns and when the last one happened.
+    coord_respawn_count: u32,
+    coord_last_respawn: Option<std::time::Instant>,
 }
 
 /// Key for routing Telegram messages to workspaces.
@@ -988,6 +991,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             morning_brief: morning_brief_scheduler,
             db_path: db.clone(),
             max_session_turns,
+            coord_respawn_count: 0,
+            coord_last_respawn: None,
         });
     }
 
@@ -1119,6 +1124,81 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             }
 
             _ = poll_timer.tick() => {
+                // ── Coordinator health check (before watchers so hook dispatches don't get dropped) ──
+                for slot in &mut slots {
+                    if !slot.coord_handle.is_finished() {
+                        continue;
+                    }
+
+                    // Await the finished handle to extract panic info
+                    let old_handle = std::mem::replace(
+                        &mut slot.coord_handle,
+                        tokio::spawn(futures::future::pending()),
+                    );
+                    match old_handle.await {
+                        Ok(()) => {
+                            warn!("[{}] coordinator task exited unexpectedly", slot.name);
+                        }
+                        Err(e) if e.is_panic() => {
+                            let payload = e.into_panic();
+                            let msg = payload
+                                .downcast_ref::<&str>()
+                                .map(|s| s.to_string())
+                                .or_else(|| payload.downcast_ref::<String>().cloned())
+                                .unwrap_or_else(|| "(non-string panic)".to_string());
+                            error!("[{}] coordinator task panicked: {msg}", slot.name);
+                        }
+                        Err(e) => {
+                            error!("[{}] coordinator task cancelled: {e}", slot.name);
+                        }
+                    }
+
+                    // Backoff: if respawned recently, require exponential cooldown (15s, 30s, 60s, 120s, …)
+                    // Reset counter after 5 minutes of stability.
+                    if let Some(last) = slot.coord_last_respawn
+                        && last.elapsed() > std::time::Duration::from_secs(300)
+                    {
+                        slot.coord_respawn_count = 0;
+                    }
+                    let backoff_secs = 15u64.saturating_mul(1u64 << slot.coord_respawn_count.min(4));
+                    if let Some(last) = slot.coord_last_respawn
+                        && last.elapsed() < std::time::Duration::from_secs(backoff_secs)
+                    {
+                        warn!(
+                            "[{}] coordinator respawn backoff ({backoff_secs}s) — skipping this tick",
+                            slot.name
+                        );
+                        continue;
+                    }
+
+                    let mut coordinator = build_coordinator(&slot.name, &slot.config);
+
+                    let coord_store = match SignalStore::open(&slot.db_path, &slot.name) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("[{}] failed to reopen SignalStore for respawn: {e}", slot.name);
+                            continue;
+                        }
+                    };
+
+                    restore_coordinator_session(&mut coordinator, &coord_store, &slot.name);
+
+                    let (new_tx, new_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
+                    slot.coord_tx = new_tx;
+                    slot.coord_handle = tokio::spawn(run_coordinator_task(
+                        coordinator,
+                        coord_store,
+                        new_rx,
+                        slot.max_session_turns,
+                    ));
+                    slot.coord_respawn_count += 1;
+                    slot.coord_last_respawn = Some(std::time::Instant::now());
+                    info!(
+                        "[{}] coordinator task respawned (attempt {})",
+                        slot.name, slot.coord_respawn_count
+                    );
+                }
+
                 for slot in &mut slots {
                     // Morning brief check (independent of watchers — runs even
                     // for workspaces with no watcher registry entries).
@@ -1355,37 +1435,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                 }
 
-                // ── Coordinator health check ──
-                // If a coordinator task panicked or exited, respawn it.
-                for slot in &mut slots {
-                    if slot.coord_handle.is_finished() {
-                        warn!("[{}] coordinator task died — respawning", slot.name);
-
-                        let mut coordinator = build_coordinator(&slot.name, &slot.config);
-
-                        // Reopen SignalStore for the new coordinator task
-                        let coord_store = match SignalStore::open(&slot.db_path, &slot.name) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                error!("[{}] failed to reopen SignalStore for respawn: {e}", slot.name);
-                                continue;
-                            }
-                        };
-
-                        // Try to restore session so context isn't lost
-                        restore_coordinator_session(&mut coordinator, &coord_store, &slot.name);
-
-                        let (new_tx, new_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
-                        slot.coord_tx = new_tx;
-                        slot.coord_handle = tokio::spawn(run_coordinator_task(
-                            coordinator,
-                            coord_store,
-                            new_rx,
-                            slot.max_session_turns,
-                        ));
-                        info!("[{}] coordinator task respawned", slot.name);
-                    }
-                }
             }
 
             // ── TUI socket requests ──
