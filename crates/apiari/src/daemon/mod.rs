@@ -842,6 +842,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 Box::new(SwarmWatcher::new(swarm_config.clone())),
                 swarm_config.interval_secs,
             );
+
+            // Auto-start the swarm daemon if it isn't running
+            ensure_swarm_daemon(&ws.config.root);
         }
 
         for email_config in &buzz_config.watchers.email {
@@ -1925,6 +1928,58 @@ pub fn ensure_daemon() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Ensure the swarm daemon is running for a workspace, starting it if needed.
+///
+/// Checks via `swarm --dir <root> status`. If the daemon is not running,
+/// starts it with `swarm --dir <root> daemon start` and waits up to ~2 seconds
+/// for it to come up. This mirrors `ensure_daemon()` for the apiari daemon.
+fn ensure_swarm_daemon(workspace_root: &std::path::Path) {
+    let dir = workspace_root.display().to_string();
+
+    // Check if swarm daemon is already running
+    let status = std::process::Command::new("swarm")
+        .args(["--dir", &dir, "status"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    if status.is_ok_and(|o| o.status.success()) {
+        info!("swarm daemon already running for {}", dir);
+        return;
+    }
+
+    // Daemon not running — start it
+    info!("swarm daemon not running for {}, starting...", dir);
+    let result = std::process::Command::new("swarm")
+        .args(["--dir", &dir, "daemon", "start"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn();
+
+    match result {
+        Ok(_child) => {
+            // Wait up to ~2 seconds for daemon to come up
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let recheck = std::process::Command::new("swarm")
+                    .args(["--dir", &dir, "status"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .output();
+                if recheck.is_ok_and(|o| o.status.success()) {
+                    info!("swarm daemon started for {}", dir);
+                    return;
+                }
+            }
+            warn!("swarm daemon may not have started in time for {}", dir);
+        }
+        Err(e) => {
+            warn!("failed to start swarm daemon for {}: {}", dir, e);
+        }
+    }
 }
 
 fn read_pid() -> Option<u32> {
