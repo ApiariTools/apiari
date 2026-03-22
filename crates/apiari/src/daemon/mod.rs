@@ -58,9 +58,13 @@ struct WorkspaceSlot {
     config: WorkspaceConfig,
     registry: WatcherRegistry,
     coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
+    coord_handle: tokio::task::JoinHandle<()>,
     store: SignalStore,
     pipeline: Pipeline,
     morning_brief: Option<morning_brief::MorningBriefScheduler>,
+    /// DB path for reopening SignalStore on coordinator respawn.
+    db_path: std::path::PathBuf,
+    max_session_turns: u32,
 }
 
 /// Key for routing Telegram messages to workspaces.
@@ -918,25 +922,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             registry.add_with_interval(Box::new(watcher), linear_config.poll_interval_secs);
         }
 
-        let mut coordinator = Coordinator::new(
-            &ws.config.coordinator.model,
-            ws.config.coordinator.max_turns,
-        );
-        coordinator.set_name(ws.config.coordinator.name.clone());
-        let skill_ctx = build_skill_context(&ws.name, &ws.config);
-        coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
-        if let Some(ref preamble) = skill_ctx.prompt_preamble {
-            coordinator.set_prompt_preamble(preamble.clone());
-        }
-        coordinator.set_tools(default_coordinator_tools());
-        coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
-        coordinator.set_working_dir(ws.config.root.clone());
-        if let Some(settings) = config::coordinator_settings_json() {
-            coordinator.set_settings(settings);
-        }
-        coordinator.set_safety_hooks(Box::new(GitSafetyHooks {
-            workspace_root: ws.config.root.clone(),
-        }));
+        let mut coordinator = build_coordinator(&ws.name, &ws.config);
 
         // Build route key
         if let Some(tg) = &ws.config.telegram {
@@ -951,29 +937,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         let pipeline = Pipeline::new(pipeline_rules, ws.config.pipeline.batch_window_secs);
 
         // Restore session from DB if available
-        {
-            let conv = ConversationStore::new(store.conn(), &ws.name);
-            match conv.last_session() {
-                Ok(Some(token)) if token.provider == coordinator.provider() => {
-                    info!("[{}] restoring {} session from DB", ws.name, token.provider);
-                    coordinator.restore_session(token);
-                }
-                Ok(Some(token)) => {
-                    info!(
-                        "[{}] skipping session restore: provider mismatch (db={}, current={})",
-                        ws.name,
-                        token.provider,
-                        coordinator.provider()
-                    );
-                }
-                Ok(None) => {
-                    info!("[{}] no previous session to restore", ws.name);
-                }
-                Err(e) => {
-                    warn!("[{}] failed to query last session: {e}", ws.name);
-                }
-            }
-        }
+        restore_coordinator_session(&mut coordinator, &store, &ws.name);
 
         // Spawn dedicated coordinator task for this workspace
         let coord_store = match SignalStore::open(&db, &ws.name) {
@@ -982,7 +946,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         };
         let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
         let max_session_turns = ws.config.coordinator.max_session_turns;
-        tokio::spawn(run_coordinator_task(
+        let coord_handle = tokio::spawn(run_coordinator_task(
             coordinator,
             coord_store,
             coord_rx,
@@ -1018,9 +982,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             config: ws.config.clone(),
             registry,
             coord_tx,
+            coord_handle,
             store,
             pipeline,
             morning_brief: morning_brief_scheduler,
+            db_path: db.clone(),
+            max_session_turns,
         });
     }
 
@@ -1386,6 +1353,38 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         });
                     }
 
+                }
+
+                // ── Coordinator health check ──
+                // If a coordinator task panicked or exited, respawn it.
+                for slot in &mut slots {
+                    if slot.coord_handle.is_finished() {
+                        warn!("[{}] coordinator task died — respawning", slot.name);
+
+                        let mut coordinator = build_coordinator(&slot.name, &slot.config);
+
+                        // Reopen SignalStore for the new coordinator task
+                        let coord_store = match SignalStore::open(&slot.db_path, &slot.name) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                error!("[{}] failed to reopen SignalStore for respawn: {e}", slot.name);
+                                continue;
+                            }
+                        };
+
+                        // Try to restore session so context isn't lost
+                        restore_coordinator_session(&mut coordinator, &coord_store, &slot.name);
+
+                        let (new_tx, new_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
+                        slot.coord_tx = new_tx;
+                        slot.coord_handle = tokio::spawn(run_coordinator_task(
+                            coordinator,
+                            coord_store,
+                            new_rx,
+                            slot.max_session_turns,
+                        ));
+                        info!("[{}] coordinator task respawned", slot.name);
+                    }
                 }
             }
 
@@ -2040,6 +2039,51 @@ fn build_skill_context(workspace_name: &str, config: &WorkspaceConfig) -> SkillC
         );
     }
     ctx
+}
+
+/// Build a fresh Coordinator for a workspace (used at startup and on respawn).
+fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
+    let mut coordinator = Coordinator::new(&config.coordinator.model, config.coordinator.max_turns);
+    coordinator.set_name(config.coordinator.name.clone());
+    let skill_ctx = build_skill_context(ws_name, config);
+    coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
+    if let Some(ref preamble) = skill_ctx.prompt_preamble {
+        coordinator.set_prompt_preamble(preamble.clone());
+    }
+    coordinator.set_tools(default_coordinator_tools());
+    coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
+    coordinator.set_working_dir(config.root.clone());
+    if let Some(settings) = config::coordinator_settings_json() {
+        coordinator.set_settings(settings);
+    }
+    coordinator.set_safety_hooks(Box::new(GitSafetyHooks {
+        workspace_root: config.root.clone(),
+    }));
+    coordinator
+}
+
+/// Try to restore the last coordinator session from the database.
+fn restore_coordinator_session(coordinator: &mut Coordinator, store: &SignalStore, ws_name: &str) {
+    let conv = ConversationStore::new(store.conn(), ws_name);
+    match conv.last_session() {
+        Ok(Some(token)) if token.provider == coordinator.provider() => {
+            info!("[{ws_name}] restoring session from DB");
+            coordinator.restore_session(token);
+        }
+        Ok(Some(token)) => {
+            info!(
+                "[{ws_name}] skipping session restore: provider mismatch (db={}, current={})",
+                token.provider,
+                coordinator.provider()
+            );
+        }
+        Ok(None) => {
+            info!("[{ws_name}] no previous session to restore");
+        }
+        Err(e) => {
+            warn!("[{ws_name}] failed to query last session: {e}");
+        }
+    }
 }
 
 fn write_pid() -> Result<()> {
