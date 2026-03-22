@@ -58,7 +58,7 @@ struct WorkspaceSlot {
     config: WorkspaceConfig,
     registry: WatcherRegistry,
     coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
-    coord_handle: tokio::task::JoinHandle<()>,
+    coord_handle: Option<tokio::task::JoinHandle<()>>,
     store: SignalStore,
     pipeline: Pipeline,
     morning_brief: Option<morning_brief::MorningBriefScheduler>,
@@ -985,7 +985,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             config: ws.config.clone(),
             registry,
             coord_tx,
-            coord_handle,
+            coord_handle: Some(coord_handle),
             store,
             pipeline,
             morning_brief: morning_brief_scheduler,
@@ -1126,30 +1126,33 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             _ = poll_timer.tick() => {
                 // ── Coordinator health check (before watchers so hook dispatches don't get dropped) ──
                 for slot in &mut slots {
-                    if !slot.coord_handle.is_finished() {
+                    // Handle is None when awaiting backoff after a previous death
+                    let needs_respawn = match &slot.coord_handle {
+                        Some(h) => h.is_finished(),
+                        None => true,
+                    };
+                    if !needs_respawn {
                         continue;
                     }
 
-                    // Await the finished handle to extract panic info
-                    let old_handle = std::mem::replace(
-                        &mut slot.coord_handle,
-                        tokio::spawn(futures::future::pending()),
-                    );
-                    match old_handle.await {
-                        Ok(()) => {
-                            warn!("[{}] coordinator task exited unexpectedly", slot.name);
-                        }
-                        Err(e) if e.is_panic() => {
-                            let payload = e.into_panic();
-                            let msg = payload
-                                .downcast_ref::<&str>()
-                                .map(|s| s.to_string())
-                                .or_else(|| payload.downcast_ref::<String>().cloned())
-                                .unwrap_or_else(|| "(non-string panic)".to_string());
-                            error!("[{}] coordinator task panicked: {msg}", slot.name);
-                        }
-                        Err(e) => {
-                            error!("[{}] coordinator task cancelled: {e}", slot.name);
+                    // Await the finished handle to extract panic info (only if present)
+                    if let Some(old_handle) = slot.coord_handle.take() {
+                        match old_handle.await {
+                            Ok(()) => {
+                                warn!("[{}] coordinator task exited unexpectedly", slot.name);
+                            }
+                            Err(e) if e.is_panic() => {
+                                let payload = e.into_panic();
+                                let msg = payload
+                                    .downcast_ref::<&str>()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                                    .unwrap_or_else(|| "(non-string panic)".to_string());
+                                error!("[{}] coordinator task panicked: {msg}", slot.name);
+                            }
+                            Err(e) => {
+                                error!("[{}] coordinator task cancelled: {e}", slot.name);
+                            }
                         }
                     }
 
@@ -1185,12 +1188,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                     let (new_tx, new_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
                     slot.coord_tx = new_tx;
-                    slot.coord_handle = tokio::spawn(run_coordinator_task(
+                    slot.coord_handle = Some(tokio::spawn(run_coordinator_task(
                         coordinator,
                         coord_store,
                         new_rx,
                         slot.max_session_turns,
-                    ));
+                    )));
                     slot.coord_respawn_count += 1;
                     slot.coord_last_respawn = Some(std::time::Instant::now());
                     info!(
