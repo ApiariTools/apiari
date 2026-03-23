@@ -1,11 +1,12 @@
 //! Swarm watcher — monitors `.swarm/state.json` for worker state changes.
 //!
-//! Simplified from hive's SwarmWatcher: emits SignalUpdates for worker
-//! lifecycle events. The coordinator decides what to notify about.
+//! Uses the real types from `apiari-swarm` to deserialize state.
+//! Emits SignalUpdates for worker lifecycle events. The coordinator decides
+//! what to notify about.
 
+use apiari_swarm::core::state::{SwarmState, WorkerPhase};
 use async_trait::async_trait;
 use color_eyre::Result;
-use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::info;
 
@@ -14,45 +15,10 @@ use crate::buzz::config::SwarmWatcherConfig;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate};
 
-/// Minimal swarm state deserialization.
-#[derive(Debug, Clone, Deserialize)]
-struct SwarmState {
-    #[serde(default)]
-    worktrees: Vec<WorktreeEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct WorktreeEntry {
-    id: String,
-    #[serde(default)]
-    repo: Option<String>,
-    #[serde(default)]
-    branch: Option<String>,
-    #[serde(default)]
-    summary: Option<String>,
-    #[serde(default)]
-    pr: Option<PrInfo>,
-    #[serde(default)]
-    agent_kind: Option<String>,
-    #[serde(default)]
-    agent_session_status: Option<String>,
-    #[serde(default)]
-    created_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct PrInfo {
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-}
-
 /// Tracked state for a worktree between polls.
 #[derive(Debug, Clone)]
 struct TrackedWorker {
-    status: Option<String>,
+    phase: WorkerPhase,
     has_pr: bool,
 }
 
@@ -99,8 +65,8 @@ impl Watcher for SwarmWatcher {
                 self.tracked.insert(
                     wt.id.clone(),
                     TrackedWorker {
-                        status: wt.agent_session_status.clone(),
-                        has_pr: wt.pr.as_ref().and_then(|p| p.url.as_ref()).is_some(),
+                        phase: wt.phase.clone(),
+                        has_pr: wt.pr.is_some(),
                     },
                 );
             }
@@ -116,9 +82,12 @@ impl Watcher for SwarmWatcher {
         for wt in &state.worktrees {
             let id = &wt.id;
             let prev = self.tracked.get(id);
-            let current_status = wt.agent_session_status.as_deref();
-            let has_pr = wt.pr.as_ref().and_then(|p| p.url.as_ref()).is_some();
-            let repo = wt.repo.as_deref().unwrap_or("unknown");
+            let has_pr = wt.pr.is_some();
+            let repo = wt
+                .repo_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
             let summary = wt.summary.as_deref().unwrap_or("");
 
             if prev.is_none() {
@@ -136,12 +105,7 @@ impl Watcher for SwarmWatcher {
 
             // PR opened transition
             if has_pr && prev.is_some_and(|p| !p.has_pr) {
-                let pr_url = wt.pr.as_ref().and_then(|p| p.url.as_deref()).unwrap_or("");
-                let pr_title = wt
-                    .pr
-                    .as_ref()
-                    .and_then(|p| p.title.as_deref())
-                    .unwrap_or("PR opened");
+                let pr = wt.pr.as_ref().unwrap();
 
                 let mut signal = SignalUpdate::new(
                     "swarm",
@@ -149,38 +113,35 @@ impl Watcher for SwarmWatcher {
                     format!("PR opened: {id}"),
                     Severity::Info,
                 )
-                .with_body(format!("{pr_title}\n{pr_url}"));
+                .with_body(format!("{}\n{}", pr.title, pr.url));
 
-                if !pr_url.is_empty() {
-                    signal = signal.with_url(pr_url);
+                if !pr.url.is_empty() {
+                    signal = signal.with_url(&pr.url);
                 }
 
                 signals.push(signal);
             }
 
-            // Agent waiting transition
-            if current_status == Some("waiting")
-                && prev.is_some_and(|p| p.status.as_deref() != Some("waiting"))
+            // Agent waiting transition (using phase instead of agent_session_status)
+            if wt.phase == WorkerPhase::Waiting
+                && prev.is_some_and(|p| p.phase != WorkerPhase::Waiting)
             {
-                let is_tui = wt.agent_kind.as_deref() == Some("claude-tui");
-                if !is_tui {
-                    signals.push(
-                        SignalUpdate::new(
-                            "swarm",
-                            format!("swarm-waiting-{id}"),
-                            format!("Worker waiting: {id}"),
-                            Severity::Warning,
-                        )
-                        .with_body(format!("Agent in {id} is waiting for input\nrepo: {repo}")),
-                    );
-                }
+                signals.push(
+                    SignalUpdate::new(
+                        "swarm",
+                        format!("swarm-waiting-{id}"),
+                        format!("Worker waiting: {id}"),
+                        Severity::Warning,
+                    )
+                    .with_body(format!("Agent in {id} is waiting for input\nrepo: {repo}")),
+                );
             }
 
             // Update tracked state
             self.tracked.insert(
                 id.clone(),
                 TrackedWorker {
-                    status: wt.agent_session_status.clone(),
+                    phase: wt.phase.clone(),
                     has_pr,
                 },
             );
@@ -257,51 +218,66 @@ impl Watcher for SwarmWatcher {
 mod tests {
     use super::*;
 
+    /// Helper to build a minimal valid WorktreeState JSON object.
+    fn wt_json(id: &str, extras: &str) -> String {
+        let base = format!(
+            r#"{{
+                "id": "{id}",
+                "branch": "swarm/{id}",
+                "prompt": "test task",
+                "agent_kind": "claude",
+                "repo_path": "/tmp/myrepo",
+                "worktree_path": "/tmp/.swarm/wt/{id}",
+                "created_at": "2026-01-01T00:00:00-05:00"
+            }}"#
+        );
+        if extras.is_empty() {
+            return base;
+        }
+        // Insert extras before the closing brace
+        let trimmed = base.trim_end();
+        format!("{},\n{extras}\n}}", &trimmed[..trimmed.len() - 1])
+    }
+
+    /// Build a state.json string from a list of worktree JSON objects.
+    fn state_json(worktrees: &[String]) -> String {
+        format!(
+            r#"{{"session_name": "test", "worktrees": [{}]}}"#,
+            worktrees.join(",")
+        )
+    }
+
     #[test]
     fn test_parse_swarm_state() {
-        let json = r#"{
-            "worktrees": [
-                {
-                    "id": "hive-1",
-                    "repo": "hive",
-                    "branch": "swarm/fix-bug",
-                    "summary": "Fix a bug",
-                    "pr": {"url": "https://github.com/org/repo/pull/1", "title": "Fix bug"},
-                    "agent_kind": "claude",
-                    "agent_session_status": "running"
-                }
-            ]
-        }"#;
-        let state: SwarmState = serde_json::from_str(json).unwrap();
+        let wt = wt_json(
+            "hive-1",
+            r#""summary": "Fix a bug",
+                "pr": {"number": 1, "title": "Fix bug", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"},
+                "phase": "running""#,
+        );
+        let json = state_json(&[wt]);
+        let state: SwarmState = serde_json::from_str(&json).unwrap();
         assert_eq!(state.worktrees.len(), 1);
         let wt = &state.worktrees[0];
         assert_eq!(wt.id, "hive-1");
-        assert_eq!(wt.repo.as_deref(), Some("hive"));
-        assert!(wt.pr.as_ref().unwrap().url.is_some());
+        assert!(wt.pr.is_some());
     }
 
     #[test]
     fn test_parse_empty_state() {
-        let json = r#"{"worktrees": []}"#;
-        let state: SwarmState = serde_json::from_str(json).unwrap();
+        let json = r#"{"session_name": "test", "worktrees": []}"#;
+        let state: SwarmState = serde_json::from_str(&json).unwrap();
         assert!(state.worktrees.is_empty());
     }
 
     #[test]
     fn test_parse_state_missing_optional_fields() {
-        let json = r#"{
-            "worktrees": [
-                {
-                    "id": "wt-1",
-                    "repo": "test"
-                }
-            ]
-        }"#;
-        let state: SwarmState = serde_json::from_str(json).unwrap();
+        let wt = wt_json("wt-1", "");
+        let json = state_json(&[wt]);
+        let state: SwarmState = serde_json::from_str(&json).unwrap();
         let wt = &state.worktrees[0];
         assert!(wt.pr.is_none());
-        assert!(wt.agent_kind.is_none());
-        assert!(wt.agent_session_status.is_none());
+        assert_eq!(wt.phase, WorkerPhase::Running); // default
     }
 
     /// Parse a real state.json snapshot from swarm to guard against format drift.
@@ -346,19 +322,11 @@ mod tests {
 
         let wt = &state.worktrees[0];
         assert_eq!(wt.id, "swarm-042c");
-        assert_eq!(wt.repo.as_deref(), None); // swarm uses repo_path, not repo
-        assert_eq!(wt.agent_kind.as_deref(), Some("claude"));
-        assert_eq!(wt.agent_session_status.as_deref(), Some("waiting"));
+        assert_eq!(wt.phase, WorkerPhase::Waiting);
 
         let pr = wt.pr.as_ref().unwrap();
-        assert_eq!(
-            pr.url.as_deref(),
-            Some("https://github.com/ApiariTools/swarm/pull/64")
-        );
-        assert_eq!(
-            pr.title.as_deref(),
-            Some("fix(ci): add apiari-tui to workspace")
-        );
+        assert_eq!(pr.url, "https://github.com/ApiariTools/swarm/pull/64");
+        assert_eq!(pr.title, "fix(ci): add apiari-tui to workspace");
     }
 
     /// End-to-end: write state files, poll the watcher, verify signals emitted.
@@ -377,11 +345,8 @@ mod tests {
         let mut watcher = SwarmWatcher::new(config);
 
         // Phase 1: worker running — init poll, no signals
-        std::fs::write(
-            &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "running"}]}"#,
-        )
-        .unwrap();
+        let wt = wt_json("w1", r#""phase": "running""#);
+        std::fs::write(&state_path, state_json(&[wt])).unwrap();
         let signals = watcher.poll(&store).await.unwrap();
         assert!(signals.is_empty(), "init poll should emit nothing");
 
@@ -390,21 +355,19 @@ mod tests {
         assert!(signals.is_empty(), "no transition = no signals");
 
         // Phase 3: worker transitions to waiting — should emit
-        std::fs::write(
-            &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "waiting"}]}"#,
-        )
-        .unwrap();
+        let wt = wt_json("w1", r#""phase": "waiting""#);
+        std::fs::write(&state_path, state_json(&[wt])).unwrap();
         let signals = watcher.poll(&store).await.unwrap();
         assert_eq!(signals.len(), 1);
         assert!(signals[0].title.contains("waiting"));
 
         // Phase 4: PR opens — should emit
-        std::fs::write(
-            &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "waiting", "pr": {"url": "https://github.com/org/repo/pull/1", "title": "My PR"}}]}"#,
-        )
-        .unwrap();
+        let wt = wt_json(
+            "w1",
+            r#""phase": "waiting",
+                "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}"#,
+        );
+        std::fs::write(&state_path, state_json(&[wt])).unwrap();
         let signals = watcher.poll(&store).await.unwrap();
         assert_eq!(signals.len(), 1);
         assert!(signals[0].title.contains("PR opened"));
@@ -414,62 +377,26 @@ mod tests {
         );
 
         // Phase 5: new worker spawns — should emit
-        std::fs::write(
-            &state_path,
-            r#"{"worktrees": [
-                {"id": "w1", "repo": "myrepo", "agent_session_status": "waiting", "pr": {"url": "https://github.com/org/repo/pull/1", "title": "My PR"}},
-                {"id": "w2", "repo": "other", "agent_session_status": "running"}
-            ]}"#,
-        )
-        .unwrap();
+        let wt1 = wt_json(
+            "w1",
+            r#""phase": "waiting",
+                "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}"#,
+        );
+        let wt2 = wt_json("w2", r#""phase": "running""#);
+        std::fs::write(&state_path, state_json(&[wt1, wt2])).unwrap();
         let signals = watcher.poll(&store).await.unwrap();
         assert_eq!(signals.len(), 1);
         assert!(signals[0].title.contains("spawned"));
 
         // Phase 6: worker closed — should resolve spawned/waiting/pr + emit closed
-        std::fs::write(
-            &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "waiting", "pr": {"url": "https://github.com/org/repo/pull/1", "title": "My PR"}}]}"#,
-        )
-        .unwrap();
+        let wt1 = wt_json(
+            "w1",
+            r#""phase": "waiting",
+                "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}"#,
+        );
+        std::fs::write(&state_path, state_json(&[wt1])).unwrap();
         let signals = watcher.poll(&store).await.unwrap();
         assert_eq!(signals.len(), 4); // 3 resolved (spawned/waiting/pr) + 1 closed
         assert!(signals.iter().all(|s| s.title.contains("closed")));
-    }
-
-    /// claude-tui workers should NOT emit waiting signals.
-    #[tokio::test]
-    async fn test_poll_skips_tui_waiting() {
-        let dir = tempfile::tempdir().unwrap();
-        let state_path = dir.path().join("state.json");
-        let db_path = dir.path().join("test.db");
-
-        let store = SignalStore::open(&db_path, "test").unwrap();
-        let config = SwarmWatcherConfig {
-            enabled: true,
-            state_path: state_path.clone(),
-            interval_secs: 15,
-        };
-        let mut watcher = SwarmWatcher::new(config);
-
-        // Init: running
-        std::fs::write(
-            &state_path,
-            r#"{"worktrees": [{"id": "w1", "agent_kind": "claude-tui", "agent_session_status": "running"}]}"#,
-        )
-        .unwrap();
-        watcher.poll(&store).await.unwrap();
-
-        // Transition to waiting — should NOT emit because claude-tui
-        std::fs::write(
-            &state_path,
-            r#"{"worktrees": [{"id": "w1", "agent_kind": "claude-tui", "agent_session_status": "waiting"}]}"#,
-        )
-        .unwrap();
-        let signals = watcher.poll(&store).await.unwrap();
-        assert!(
-            signals.is_empty(),
-            "claude-tui waiting should be suppressed"
-        );
     }
 }
