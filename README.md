@@ -83,7 +83,7 @@ apiari status
 - **🤖 Swarm Watcher** — Tracks AI coding agent status, detects stalled workers, reports lifecycle events
 - **🔍 Sentry Watcher** — Surfaces unresolved production errors from Sentry
 - **💬 Telegram Notifications** — Real-time alerts with severity levels, batching, and rate limiting
-- **🧠 AI Coordinator** — Chat with your workspace from Telegram via Bee, powered by Claude, Codex, or Gemini — with full signal context
+- **🧠 AI Coordinator** — Chat with your workspace from Telegram via Bee, powered by Claude (Swarm agents can use Claude, Codex, or Gemini) — with full signal context
 - **📊 TUI Dashboard** — Terminal UI for viewing signals across all workspaces
 - **🗄️ Signal Store** — All events persisted to a local SQLite database for querying and history
 - **⚡ Custom Commands** — Define shell scripts as Telegram slash commands for remote ops
@@ -157,7 +157,7 @@ restart = false                     # restart daemon after script runs
 
 [[commands]]
 name = "update"
-script = "cd /app && git pull && cargo install --path crates/apiari && codesign -f -s - ~/.cargo/bin/apiari"  # codesign after install on macOS
+script = "cd /Users/you/projects/my-app && git pull && cargo install --path crates/apiari && if command -v codesign >/dev/null 2>&1; then codesign -f -s - ~/.cargo/bin/apiari; fi"
 description = "Pull latest and reinstall"
 restart = true
 ```
