@@ -30,4 +30,5 @@ apiari-common = "0.1.0"
 apiari-tui = "0.1.0"
 apiari-claude-sdk = "0.1.0"
 apiari-codex-sdk = "0.1.0"
+apiari-swarm = { path = "../swarm", version = "0.1.2" }
 chrono-tz = "0.9"

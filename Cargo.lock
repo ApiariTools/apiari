@@ -113,8 +113,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 name = "apiari"
 version = "0.1.8"
 dependencies = [
- "apiari-claude-sdk",
- "apiari-tui",
+ "apiari-claude-sdk 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "apiari-swarm",
+ "apiari-tui 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "async-imap",
  "async-native-tls",
  "async-trait",
@@ -144,6 +145,20 @@ dependencies = [
 [[package]]
 name = "apiari-claude-sdk"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "apiari-claude-sdk"
+version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcc19084bb2861ba4976032ce8c0e4fc72f650699c98bf3560a479118ae082b5"
 dependencies = [
@@ -158,6 +173,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "apiari-codex-sdk"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "apiari-common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "apiari-gemini-sdk"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "apiari-swarm"
+version = "0.1.2"
+dependencies = [
+ "apiari-claude-sdk 0.1.0",
+ "apiari-codex-sdk",
+ "apiari-common",
+ "apiari-gemini-sdk",
+ "apiari-tui 0.1.0",
+ "async-trait",
+ "chrono",
+ "clap",
+ "color-eyre",
+ "crossterm",
+ "dirs",
+ "futures",
+ "libc",
+ "pulldown-cmark 0.13.3",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "apiari-tui"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "pulldown-cmark 0.12.2",
+ "ratatui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "apiari-tui"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -165,7 +253,7 @@ checksum = "612f2e215d90aaaa077b5101f0c953e45527e5ae2298f9d099c1964e7a3d41d6"
 dependencies = [
  "chrono",
  "crossterm",
- "pulldown-cmark",
+ "pulldown-cmark 0.12.2",
  "ratatui",
  "serde",
  "serde_json",
@@ -624,6 +712,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -687,6 +784,15 @@ dependencies = [
  "darling_core",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "deranged"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+dependencies = [
+ "powerfmt",
 ]
 
 [[package]]
@@ -1592,6 +1698,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-conv"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf97ec579c3c42f953ef76dbf8d55ac91fb219dde70e49aa4a6b7d74e9919050"
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1838,6 +1950,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "powerfmt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1861,6 +1979,19 @@ name = "pulldown-cmark"
 version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags",
+ "getopts",
+ "memchr",
+ "pulldown-cmark-escape",
+ "unicase",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c3a14896dfa883796f1cb410461aef38810ea05f2b2c33c5aded3649095fdad"
 dependencies = [
  "bitflags",
  "getopts",
@@ -2487,6 +2618,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "time"
+version = "0.3.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
+dependencies = [
+ "deranged",
+ "itoa",
+ "num-conv",
+ "powerfmt",
+ "serde_core",
+ "time-core",
+ "time-macros",
+]
+
+[[package]]
+name = "time-core"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
+
+[[package]]
+name = "time-macros"
+version = "0.2.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
+dependencies = [
+ "num-conv",
+ "time-core",
+]
+
+[[package]]
 name = "tinystr"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2654,6 +2816,18 @@ dependencies = [
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-appender"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "786d480bce6247ab75f005b14ae1624ad978d3029d9113f0a22fa1ac773faeaf"
+dependencies = [
+ "crossbeam-channel",
+ "thiserror 2.0.18",
+ "time",
+ "tracing-subscriber",
 ]
 
 [[package]]

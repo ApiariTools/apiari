@@ -46,12 +46,10 @@ Apiari is a Rust CLI that runs a persistent daemon to watch your AI coding agent
 
 ## Install
 
-Apiari is installed from source (not yet on crates.io):
+Apiari is available on crates.io:
 
 ```sh
-git clone https://github.com/ApiariTools/apiari.git
-cd apiari
-cargo install --path crates/apiari
+cargo install apiari
 ```
 
 On macOS, codesign the binary so it can access the keychain and network:
