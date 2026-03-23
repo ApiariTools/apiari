@@ -62,6 +62,9 @@ pub struct WatchersConfig {
     /// Linear watchers.
     #[serde(default)]
     pub linear: Vec<LinearWatcherConfig>,
+    /// Script watchers.
+    #[serde(default)]
+    pub script: Vec<ScriptWatcherConfig>,
 }
 
 /// GitHub watcher configuration.
@@ -195,6 +198,33 @@ pub struct LinearReviewQueueEntry {
     pub name: String,
     /// Query predicate string (e.g. "assignee:me state:active").
     pub query: String,
+}
+
+/// Script/command watcher configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptWatcherConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default = "default_script_interval")]
+    pub interval_secs: u64,
+    #[serde(default)]
+    pub emit_on_change: bool,
+    #[serde(default = "default_severity_on_fail")]
+    pub severity_on_fail: String,
+    #[serde(default = "default_script_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_script_interval() -> u64 {
+    60
+}
+
+fn default_severity_on_fail() -> String {
+    "warning".to_string()
+}
+
+fn default_script_timeout() -> u64 {
+    30
 }
 
 fn default_linear_interval() -> u64 {

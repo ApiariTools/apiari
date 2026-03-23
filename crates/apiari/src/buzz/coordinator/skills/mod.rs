@@ -10,6 +10,7 @@ mod github;
 mod linear;
 mod memory;
 mod notion;
+mod scripts;
 mod sentry;
 mod signals;
 mod swarm;
@@ -32,6 +33,8 @@ pub struct SkillContext {
     pub email_names: Vec<String>,
     pub has_notion: bool,
     pub notion_names: Vec<String>,
+    pub has_scripts: bool,
+    pub script_names: Vec<String>,
     pub has_telegram: bool,
     /// Custom prompt preamble loaded from prompt_file.
     /// If set, replaces the default identity/role sections in the system prompt.
@@ -69,6 +72,9 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
         sections.push(s);
     }
     if let Some(s) = notion::build_prompt(ctx) {
+        sections.push(s);
+    }
+    if let Some(s) = scripts::build_prompt(ctx) {
         sections.push(s);
     }
 
@@ -143,6 +149,8 @@ mod tests {
             email_names: vec![],
             has_notion: false,
             notion_names: vec![],
+            has_scripts: false,
+            script_names: vec![],
             has_telegram: false,
             prompt_preamble: None,
             default_agent: "claude".to_string(),
