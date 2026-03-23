@@ -39,7 +39,7 @@ pub struct SkillContext {
     /// Custom prompt preamble loaded from prompt_file.
     /// If set, replaces the default identity/role sections in the system prompt.
     pub prompt_preamble: Option<String>,
-    /// Default swarm agent: "claude", "codex", or "auto".
+    /// Default swarm agent: "claude", "codex", "gemini", or "auto".
     pub default_agent: String,
 }
 

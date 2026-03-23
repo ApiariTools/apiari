@@ -25,9 +25,14 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
         "codex" => "Default agent is codex. Use `--agent codex` for autonomous tasks, \
                     or `--agent codex-tui` for persistent sessions."
             .to_string(),
-        "auto" => "Agent selection: auto. If `claude` is available, use `--agent claude`; \
-                   otherwise use `--agent codex`. For persistent sessions, append `-tui`."
+        "gemini" => "Default agent is gemini. Use `--agent gemini` for autonomous tasks, \
+                     or `--agent gemini-tui` for persistent sessions."
             .to_string(),
+        "auto" => {
+            "Agent selection: auto. Use `--agent claude`, `--agent codex`, or `--agent gemini` — \
+                   whichever is available. For persistent sessions, append `-tui`."
+                .to_string()
+        }
         _ => "Default agent is claude. Use `--agent claude` for autonomous tasks, \
               or `--agent claude-tui` for persistent sessions."
             .to_string(),
@@ -36,7 +41,7 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
     Some(format!(
         "## Swarm Workers\n\
          You dispatch coding tasks to swarm workers. Workers run in their own git worktrees \
-         with a Claude agent that writes code, commits, and opens PRs.\n\n\
+         with an LLM agent that writes code, commits, and opens PRs.\n\n\
          IMPORTANT: When the user asks you to implement, fix, build, or code anything, \
          use `swarm create` to dispatch it. Do NOT write code yourself — \
          not via Edit/Write tools, and not via Bash (no echo, sed, curl -o, etc.).\n\n\

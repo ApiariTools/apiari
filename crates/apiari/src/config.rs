@@ -842,8 +842,8 @@ pub struct PipelineRuleConfig {
 /// Swarm agent configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmConfig {
-    /// Default agent for swarm workers: "claude", "codex", or "auto".
-    /// When "auto", prefers claude if both binaries are available.
+    /// Default agent for swarm workers: "claude", "codex", "gemini", or "auto".
+    /// When "auto", selects an available agent automatically based on the environment.
     #[serde(default = "default_swarm_agent")]
     pub default_agent: String,
 }
