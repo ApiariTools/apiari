@@ -1,8 +1,8 @@
 # apiari
 
-**Your AI coding fleet, managed from your pocket.**
+**Bee is your AI ops coordinator — all the coordination, zero babysitting.**
 
-Apiari is a Rust CLI that runs a persistent daemon to watch your AI coding agents and GitHub repos, then keeps you in the loop via Telegram. When CI breaks, a worker stalls, or a PR lands — you'll know instantly, and you can respond right from your phone through an AI-powered coordinator.
+Apiari runs a persistent daemon that dispatches and monitors AI coding agents (Claude Code, Codex, Gemini), watches your GitHub repos, and pings you on Telegram when something needs attention. CI failures, code reviews, PR status — signals route automatically. You can respond right from your phone through Bee, an AI-powered coordinator that has full context on your workspace.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -83,7 +83,7 @@ apiari status
 - **🤖 Swarm Watcher** — Tracks AI coding agent status, detects stalled workers, reports lifecycle events
 - **🔍 Sentry Watcher** — Surfaces unresolved production errors from Sentry
 - **💬 Telegram Notifications** — Real-time alerts with severity levels, batching, and rate limiting
-- **🧠 AI Coordinator** — Chat with your workspace from Telegram using a Claude-powered assistant that has full signal context
+- **🧠 AI Coordinator** — Chat with your workspace from Telegram via Bee, powered by Claude, Codex, or Gemini — with full signal context
 - **📊 TUI Dashboard** — Terminal UI for viewing signals across all workspaces
 - **🗄️ Signal Store** — All events persisted to a local SQLite database for querying and history
 - **⚡ Custom Commands** — Define shell scripts as Telegram slash commands for remote ops
@@ -157,7 +157,7 @@ restart = false                     # restart daemon after script runs
 
 [[commands]]
 name = "update"
-script = "cd /app && git pull && cargo install --path crates/apiari"
+script = "cd /app && git pull && cargo install --path crates/apiari && codesign -f -s - ~/.cargo/bin/apiari"  # codesign after install on macOS
 description = "Pull latest and reinstall"
 restart = true
 ```
@@ -196,6 +196,8 @@ Apiari is part of a toolkit for managing AI coding workflows:
 | [**apiari-common**](https://crates.io/crates/apiari-common) | Shared IPC and state primitives |
 | [**apiari-tui**](https://crates.io/crates/apiari-tui) | Shared TUI design system (built on ratatui) |
 | [**apiari-claude-sdk**](https://crates.io/crates/apiari-claude-sdk) | Claude API SDK for the coordinator |
+| [**apiari-codex-sdk**](https://crates.io/crates/apiari-codex-sdk) | Codex API SDK for the coordinator |
+| [**apiari-gemini-sdk**](https://crates.io/crates/apiari-gemini-sdk) | Gemini API SDK for the coordinator |
 
 ## License
 
