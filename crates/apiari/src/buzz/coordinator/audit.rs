@@ -295,6 +295,10 @@ fn is_allowed_write_target(path: &str) -> bool {
         || path.starts_with("/home/")
         || path.starts_with("$HOME/");
     let in_apiari_config = path.contains("/.config/apiari/") || path.ends_with("/.config/apiari");
+    // Block writes to the devmode state file (prevent privilege escalation).
+    if path.ends_with("/.devmode") {
+        return false;
+    }
     (is_home_anchored && in_apiari_config) || path == "~/.config/apiari"
 }
 
@@ -822,22 +826,15 @@ if len(data) > 0:
     // -- Dev-mode aware classification tests --
     //
     // These tests use APIARI_DEVMODE_PATH to isolate the devmode file per test,
-    // serialized via a mutex since env vars are process-global.
-
-    use std::sync::Mutex;
-    static DEVMODE_ENV_LOCK: Mutex<()> = Mutex::new(());
+    // serialized via a shared mutex + RAII guard from the devmode module.
 
     /// Helper: run a closure with devmode on or off, using a temp file.
     fn with_devmode<F: FnOnce()>(enabled: bool, f: F) {
-        let _guard = DEVMODE_ENV_LOCK.lock().unwrap();
-        let tmp = tempfile::tempdir().unwrap();
-        let devmode_file = tmp.path().join(".devmode");
-        unsafe { std::env::set_var("APIARI_DEVMODE_PATH", &devmode_file) };
+        let _guard = super::super::devmode::setup_test_env();
         if enabled {
-            super::super::devmode::enable();
+            super::super::devmode::enable().unwrap();
         }
         f();
-        unsafe { std::env::remove_var("APIARI_DEVMODE_PATH") };
     }
 
     #[test]
@@ -960,7 +957,7 @@ if len(data) > 0:
     fn test_devmode_expired_blocks_commands() {
         with_devmode(false, || {
             // Enable with 0 minutes (immediately expired)
-            super::super::devmode::enable_with_duration(0);
+            super::super::devmode::enable_with_duration(0).unwrap();
             let result = classify_bash_command_with_devmode("mkdir -p new-project");
             assert!(
                 result.is_mutating(),

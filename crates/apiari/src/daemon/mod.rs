@@ -1698,36 +1698,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
                                     "devmode" => {
-                                        use crate::buzz::coordinator::devmode;
-                                        let text = match args.trim() {
-                                            "on" => {
-                                                let state = devmode::enable();
-                                                format!(
-                                                    "\u{1f513} Dev mode enabled for {}.",
-                                                    devmode::remaining_str(&state)
-                                                )
-                                            }
-                                            "off" => {
-                                                devmode::disable();
-                                                "\u{1f512} Dev mode disabled.".to_string()
-                                            }
-                                            "status" => {
-                                                if let Some(state) = devmode::read_state() {
-                                                    if chrono::Utc::now() < state.expires_at {
-                                                        format!(
-                                                            "\u{1f513} Dev mode is ON — {} remaining.",
-                                                            devmode::remaining_str(&state)
-                                                        )
-                                                    } else {
-                                                        devmode::disable();
-                                                        "\u{1f512} Dev mode is OFF (expired).".to_string()
-                                                    }
-                                                } else {
-                                                    "\u{1f512} Dev mode is OFF.".to_string()
-                                                }
-                                            }
-                                            _ => "Usage: /devmode on | off | status".to_string(),
-                                        };
+                                        let text = crate::buzz::coordinator::devmode::handle_command(&args);
                                         if let Some(ref server) = socket_server {
                                             server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
                                         }
@@ -2321,36 +2292,7 @@ async fn handle_tui_command(
             true
         }
         "devmode" => {
-            use crate::buzz::coordinator::devmode;
-            let text = match args {
-                "on" => {
-                    let state = devmode::enable();
-                    format!(
-                        "\u{1f513} Dev mode enabled for {}.",
-                        devmode::remaining_str(&state)
-                    )
-                }
-                "off" => {
-                    devmode::disable();
-                    "\u{1f512} Dev mode disabled.".to_string()
-                }
-                "status" => {
-                    if let Some(state) = devmode::read_state() {
-                        if chrono::Utc::now() < state.expires_at {
-                            format!(
-                                "\u{1f513} Dev mode is ON — {} remaining.",
-                                devmode::remaining_str(&state)
-                            )
-                        } else {
-                            devmode::disable();
-                            "\u{1f512} Dev mode is OFF (expired).".to_string()
-                        }
-                    } else {
-                        "\u{1f512} Dev mode is OFF.".to_string()
-                    }
-                }
-                _ => "Usage: /devmode on | off | status".to_string(),
-            };
+            let text = crate::buzz::coordinator::devmode::handle_command(args);
             reply(responder, socket_server, &slot.name, &text);
             true
         }
