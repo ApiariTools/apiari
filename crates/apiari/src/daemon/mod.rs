@@ -1628,9 +1628,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         };
                                         let _ = channel.send_message(&updating_msg).await;
 
-                                        let script = "source /Users/josh/.cargo/env 2>/dev/null; \
-                                            /Users/josh/.cargo/bin/cargo install --force apiari 2>&1 && \
-                                            /Users/josh/.cargo/bin/cargo install --force swarm 2>&1";
+                                        let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
+                                            cargo install --force apiari 2>&1 && \
+                                            cargo install --force apiari-swarm 2>&1";
 
                                         let output = tokio::process::Command::new("sh")
                                             .arg("-c")
@@ -2326,9 +2326,9 @@ async fn handle_tui_command(
                 text: "Updating apiari + swarm from crates.io...\n".to_string(),
             });
 
-            let script = "source /Users/josh/.cargo/env 2>/dev/null; \
-                /Users/josh/.cargo/bin/cargo install --force apiari 2>&1 && \
-                /Users/josh/.cargo/bin/cargo install --force swarm 2>&1";
+            let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
+                cargo install --force apiari 2>&1 && \
+                cargo install --force apiari-swarm 2>&1";
 
             let output = tokio::process::Command::new("sh")
                 .arg("-c")
