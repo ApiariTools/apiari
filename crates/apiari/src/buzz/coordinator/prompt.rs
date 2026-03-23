@@ -33,7 +33,7 @@ pub fn default_preamble(name: &str) -> String {
            create a new repo or needs to write files. Always turn it off when done: `/devmode off`. \
            Check status with `/devmode` (no args) or `/devmode status`. \
            State file: `~/.local/state/apiari/.devmode` (JSON with `enabled_at` and `expires_at` UTC ISO 8601) — \
-           intentionally outside `~/.config/apiari/` to prevent self-enabling.\n\
+           you can also `cat` it directly. Intentionally outside `~/.config/apiari/` to prevent self-enabling.\n\
          - You CAN read code, investigate issues, check PR status, query signals, \
            and answer questions about the codebase.\n\
          - You already know your workspace context from this prompt. Do NOT use tools \
