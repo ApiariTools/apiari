@@ -12,11 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout apiari-swarm
-        uses: actions/checkout@v4
-        with:
-          repository: ApiariTools/swarm
-          path: swarm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

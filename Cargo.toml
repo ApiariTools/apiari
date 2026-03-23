@@ -30,6 +30,5 @@ apiari-common = "0.1.0"
 apiari-tui = "0.1.0"
 apiari-claude-sdk = "0.1.0"
 apiari-codex-sdk = "0.1.0"
-apiari-gemini-sdk = { git = "https://github.com/ApiariTools/gemini-sdk.git" }
 chrono-tz = "0.9"
-apiari-swarm = { path = "swarm", version = "0.1.2", default-features = false }
+apiari-swarm = { version = "0.1.3", default-features = false }
