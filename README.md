@@ -46,12 +46,8 @@ Apiari runs a persistent daemon that dispatches and monitors AI coding agents (C
 
 ## Install
 
-Apiari is installed from source (not yet on crates.io):
-
 ```sh
-git clone https://github.com/ApiariTools/apiari.git
-cd apiari
-cargo install --path crates/apiari
+cargo install apiari
 ```
 
 On macOS, codesign the binary so it can access the keychain and network:
