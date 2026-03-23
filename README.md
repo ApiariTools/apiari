@@ -52,11 +52,6 @@ Apiari is available on crates.io:
 cargo install apiari
 ```
 
-On macOS, codesign the binary so it can access the keychain and network:
-
-```sh
-codesign -f -s - ~/.cargo/bin/apiari
-```
 
 ## Quick Start
 

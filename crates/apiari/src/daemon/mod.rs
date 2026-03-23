@@ -1630,10 +1630,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                                         let script = "source /Users/josh/.cargo/env 2>/dev/null; \
                                             /Users/josh/.cargo/bin/cargo install --force apiari 2>&1 && \
-                                            codesign -f -s - /Users/josh/.cargo/bin/apiari 2>&1 && \
-                                            /Users/josh/.cargo/bin/cargo install --force swarm 2>&1 && \
-                                            codesign -f -s - /Users/josh/.cargo/bin/swarm 2>&1";
-
+                                            /Users/josh/.cargo/bin/cargo install --force swarm 2>&1";
                                         let output = tokio::process::Command::new("sh")
                                             .arg("-c")
                                             .arg(script)
@@ -2330,10 +2327,7 @@ async fn handle_tui_command(
 
             let script = "source /Users/josh/.cargo/env 2>/dev/null; \
                 /Users/josh/.cargo/bin/cargo install --force apiari 2>&1 && \
-                codesign -f -s - /Users/josh/.cargo/bin/apiari 2>&1 && \
-                /Users/josh/.cargo/bin/cargo install --force swarm 2>&1 && \
-                codesign -f -s - /Users/josh/.cargo/bin/swarm 2>&1";
-
+                /Users/josh/.cargo/bin/cargo install --force swarm 2>&1";
             let output = tokio::process::Command::new("sh")
                 .arg("-c")
                 .arg(script)
