@@ -50,12 +50,6 @@ Apiari runs a persistent daemon that dispatches and monitors AI coding agents (C
 cargo install apiari
 ```
 
-On macOS, codesign the binary so it can access the keychain and network:
-
-```sh
-codesign -f -s - ~/.cargo/bin/apiari
-```
-
 ## Quick Start
 
 ```sh
@@ -153,7 +147,7 @@ restart = false                     # restart daemon after script runs
 
 [[commands]]
 name = "update"
-script = "cd /Users/you/projects/my-app && git pull && cargo install --path crates/apiari && if command -v codesign >/dev/null 2>&1; then codesign -f -s - ~/.cargo/bin/apiari; fi"
+script = "cd /Users/you/projects/my-app && git pull && cargo install --path crates/apiari"
 description = "Pull latest and reinstall"
 restart = true
 ```
