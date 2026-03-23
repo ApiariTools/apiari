@@ -2,7 +2,7 @@
 
 **Bee is your AI ops coordinator — all the coordination, zero babysitting.**
 
-Apiari runs a persistent daemon that dispatches and monitors AI coding agents (Claude Code, Codex, Gemini), watches your GitHub repos, and pings you on Telegram when something needs attention. CI failures, code reviews, PR status — signals route automatically. You can respond right from your phone through Bee, an AI-powered coordinator that has full context on your workspace.
+Apiari is a Rust CLI that runs a persistent daemon to watch your AI coding agents and GitHub repos, then keeps you in the loop via Telegram. Tell Bee what to build. She dispatches AI coding agents, monitors CI, forwards code reviews, and can ping you on Telegram when your PR is ready to merge. Signal-driven automation — CI failures, code reviews, and PR status route automatically.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -46,12 +46,10 @@ Apiari runs a persistent daemon that dispatches and monitors AI coding agents (C
 
 ## Install
 
-Apiari is installed from source (not yet on crates.io):
+Apiari is available on crates.io:
 
 ```sh
-git clone https://github.com/ApiariTools/apiari.git
-cd apiari
-cargo install --path crates/apiari
+cargo install apiari
 ```
 
 On macOS, codesign the binary so it can access the keychain and network:
@@ -83,7 +81,7 @@ apiari status
 - **🤖 Swarm Watcher** — Tracks AI coding agent status, detects stalled workers, reports lifecycle events
 - **🔍 Sentry Watcher** — Surfaces unresolved production errors from Sentry
 - **💬 Telegram Notifications** — Real-time alerts with severity levels, batching, and rate limiting
-- **🧠 AI Coordinator** — Chat with your workspace from Telegram via Bee, powered by Claude (Swarm agents can use Claude, Codex, or Gemini) — with full signal context
+- **🧠 AI Coordinator** — Chat with your workspace from Telegram using an AI-powered assistant (Claude, Codex, or Gemini) that has full signal context
 - **📊 TUI Dashboard** — Terminal UI for viewing signals across all workspaces
 - **🗄️ Signal Store** — All events persisted to a local SQLite database for querying and history
 - **⚡ Custom Commands** — Define shell scripts as Telegram slash commands for remote ops
@@ -157,7 +155,8 @@ restart = false                     # restart daemon after script runs
 
 [[commands]]
 name = "update"
-script = "cd /Users/you/projects/my-app && git pull && cargo install --path crates/apiari && if command -v codesign >/dev/null 2>&1; then codesign -f -s - ~/.cargo/bin/apiari; fi"
+script = "cd /app && git pull && cargo install --path crates/apiari"
+# After any cargo install, run: codesign -f -s - ~/.cargo/bin/apiari
 description = "Pull latest and reinstall"
 restart = true
 ```

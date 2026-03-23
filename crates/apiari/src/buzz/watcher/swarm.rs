@@ -5,7 +5,6 @@
 
 use async_trait::async_trait;
 use color_eyre::Result;
-use serde::Deserialize;
 use std::collections::HashMap;
 use tracing::info;
 
@@ -13,41 +12,7 @@ use super::Watcher;
 use crate::buzz::config::SwarmWatcherConfig;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate};
-
-/// Minimal swarm state deserialization.
-#[derive(Debug, Clone, Deserialize)]
-struct SwarmState {
-    #[serde(default)]
-    worktrees: Vec<WorktreeEntry>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-struct WorktreeEntry {
-    id: String,
-    #[serde(default)]
-    repo: Option<String>,
-    #[serde(default)]
-    branch: Option<String>,
-    #[serde(default)]
-    summary: Option<String>,
-    #[serde(default)]
-    pr: Option<PrInfo>,
-    #[serde(default)]
-    agent_kind: Option<String>,
-    #[serde(default)]
-    agent_session_status: Option<String>,
-    #[serde(default)]
-    created_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct PrInfo {
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-}
+use apiari_swarm::core::state::SwarmState;
 
 /// Tracked state for a worktree between polls.
 #[derive(Debug, Clone)]
@@ -100,7 +65,7 @@ impl Watcher for SwarmWatcher {
                     wt.id.clone(),
                     TrackedWorker {
                         status: wt.agent_session_status.clone(),
-                        has_pr: wt.pr.as_ref().and_then(|p| p.url.as_ref()).is_some(),
+                        has_pr: wt.pr.is_some(),
                     },
                 );
             }
@@ -117,8 +82,12 @@ impl Watcher for SwarmWatcher {
             let id = &wt.id;
             let prev = self.tracked.get(id);
             let current_status = wt.agent_session_status.as_deref();
-            let has_pr = wt.pr.as_ref().and_then(|p| p.url.as_ref()).is_some();
-            let repo = wt.repo.as_deref().unwrap_or("unknown");
+            let has_pr = wt.pr.is_some();
+            let repo = wt
+                .repo_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
             let summary = wt.summary.as_deref().unwrap_or("");
 
             if prev.is_none() {
@@ -136,11 +105,11 @@ impl Watcher for SwarmWatcher {
 
             // PR opened transition
             if has_pr && prev.is_some_and(|p| !p.has_pr) {
-                let pr_url = wt.pr.as_ref().and_then(|p| p.url.as_deref()).unwrap_or("");
+                let pr_url = wt.pr.as_ref().map(|p| p.url.as_str()).unwrap_or("");
                 let pr_title = wt
                     .pr
                     .as_ref()
-                    .and_then(|p| p.title.as_deref())
+                    .map(|p| p.title.as_str())
                     .unwrap_or("PR opened");
 
                 let mut signal = SignalUpdate::new(
@@ -162,7 +131,7 @@ impl Watcher for SwarmWatcher {
             if current_status == Some("waiting")
                 && prev.is_some_and(|p| p.status.as_deref() != Some("waiting"))
             {
-                let is_tui = wt.agent_kind.as_deref() == Some("claude-tui");
+                let is_tui = matches!(wt.agent_kind, apiari_swarm::core::agent::AgentKind::Claude);
                 if !is_tui {
                     signals.push(
                         SignalUpdate::new(
@@ -263,11 +232,15 @@ mod tests {
             "worktrees": [
                 {
                     "id": "hive-1",
-                    "repo": "hive",
                     "branch": "swarm/fix-bug",
-                    "summary": "Fix a bug",
-                    "pr": {"url": "https://github.com/org/repo/pull/1", "title": "Fix bug"},
+                    "prompt": "Fix a bug",
                     "agent_kind": "claude",
+                    "repo_path": "/tmp/hive",
+                    "worktree_path": "/tmp/hive/.swarm/wt/hive-1",
+                    "created_at": "2026-03-13T11:51:21.270284-05:00",
+                    "agent": null,
+                    "summary": "Fix a bug",
+                    "pr": {"number": 1, "title": "Fix bug", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"},
                     "agent_session_status": "running"
                 }
             ]
@@ -276,8 +249,10 @@ mod tests {
         assert_eq!(state.worktrees.len(), 1);
         let wt = &state.worktrees[0];
         assert_eq!(wt.id, "hive-1");
-        assert_eq!(wt.repo.as_deref(), Some("hive"));
-        assert!(wt.pr.as_ref().unwrap().url.is_some());
+        assert_eq!(
+            wt.pr.as_ref().unwrap().url,
+            "https://github.com/org/repo/pull/1"
+        );
     }
 
     #[test]
@@ -293,14 +268,20 @@ mod tests {
             "worktrees": [
                 {
                     "id": "wt-1",
-                    "repo": "test"
+                    "branch": "main",
+                    "prompt": "test",
+                    "agent_kind": "claude",
+                    "repo_path": "/tmp/test",
+                    "worktree_path": "/tmp/test/.swarm/wt/wt-1",
+                    "created_at": "2026-03-13T11:51:21.270284-05:00",
+                    "agent": null
                 }
             ]
         }"#;
         let state: SwarmState = serde_json::from_str(json).unwrap();
         let wt = &state.worktrees[0];
         assert!(wt.pr.is_none());
-        assert!(wt.agent_kind.is_none());
+        assert_eq!(wt.agent_kind, AgentKind::Claude);
         assert!(wt.agent_session_status.is_none());
     }
 
@@ -346,17 +327,16 @@ mod tests {
 
         let wt = &state.worktrees[0];
         assert_eq!(wt.id, "swarm-042c");
-        assert_eq!(wt.repo.as_deref(), None); // swarm uses repo_path, not repo
-        assert_eq!(wt.agent_kind.as_deref(), Some("claude"));
+        assert_eq!(wt.agent_kind, AgentKind::Claude);
         assert_eq!(wt.agent_session_status.as_deref(), Some("waiting"));
 
         let pr = wt.pr.as_ref().unwrap();
         assert_eq!(
-            pr.url.as_deref(),
+            pr.url.as_str(),
             Some("https://github.com/ApiariTools/swarm/pull/64")
         );
         assert_eq!(
-            pr.title.as_deref(),
+            pr.title.as_str(),
             Some("fix(ci): add apiari-tui to workspace")
         );
     }
@@ -379,7 +359,20 @@ mod tests {
         // Phase 1: worker running — init poll, no signals
         std::fs::write(
             &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "running"}]}"#,
+            r#"{
+    "session_name": "test",
+    "worktrees": [{
+    "id": "w1",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/repo",
+    "worktree_path": "/tmp/repo/.swarm/wt/w1",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "running"
+}]
+}"#,
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
@@ -392,7 +385,20 @@ mod tests {
         // Phase 3: worker transitions to waiting — should emit
         std::fs::write(
             &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "waiting"}]}"#,
+            r#"{
+    "session_name": "test",
+    "worktrees": [{
+    "id": "w1",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/repo",
+    "worktree_path": "/tmp/repo/.swarm/wt/w1",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "waiting"
+}]
+}"#,
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
@@ -402,7 +408,21 @@ mod tests {
         // Phase 4: PR opens — should emit
         std::fs::write(
             &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "waiting", "pr": {"url": "https://github.com/org/repo/pull/1", "title": "My PR"}}]}"#,
+            r#"{
+    "session_name": "test",
+    "worktrees": [{
+    "id": "w1",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/repo",
+    "worktree_path": "/tmp/repo/.swarm/wt/w1",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "waiting",
+    "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}
+}]
+}"#,
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
@@ -416,10 +436,31 @@ mod tests {
         // Phase 5: new worker spawns — should emit
         std::fs::write(
             &state_path,
-            r#"{"worktrees": [
-                {"id": "w1", "repo": "myrepo", "agent_session_status": "waiting", "pr": {"url": "https://github.com/org/repo/pull/1", "title": "My PR"}},
-                {"id": "w2", "repo": "other", "agent_session_status": "running"}
-            ]}"#,
+            r#"{
+    "session_name": "test",
+    "worktrees": [{
+    "id": "w1",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/repo",
+    "worktree_path": "/tmp/repo/.swarm/wt/w1",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "waiting",
+    "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}
+}, {
+    "id": "w2",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/other",
+    "worktree_path": "/tmp/other/.swarm/wt/w2",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "running"
+}]
+}"#,
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
@@ -429,7 +470,21 @@ mod tests {
         // Phase 6: worker closed — should resolve spawned/waiting/pr + emit closed
         std::fs::write(
             &state_path,
-            r#"{"worktrees": [{"id": "w1", "repo": "myrepo", "agent_session_status": "waiting", "pr": {"url": "https://github.com/org/repo/pull/1", "title": "My PR"}}]}"#,
+            r#"{
+    "session_name": "test",
+    "worktrees": [{
+    "id": "w1",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/repo",
+    "worktree_path": "/tmp/repo/.swarm/wt/w1",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "waiting",
+    "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}
+}]
+}"#,
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
@@ -455,7 +510,20 @@ mod tests {
         // Init: running
         std::fs::write(
             &state_path,
-            r#"{"worktrees": [{"id": "w1", "agent_kind": "claude-tui", "agent_session_status": "running"}]}"#,
+            r#"{
+    "session_name": "test",
+    "worktrees": [{
+    "id": "w1",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/repo",
+    "worktree_path": "/tmp/repo/.swarm/wt/w1",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "running"
+}]
+}"#,
         )
         .unwrap();
         watcher.poll(&store).await.unwrap();
@@ -463,7 +531,20 @@ mod tests {
         // Transition to waiting — should NOT emit because claude-tui
         std::fs::write(
             &state_path,
-            r#"{"worktrees": [{"id": "w1", "agent_kind": "claude-tui", "agent_session_status": "waiting"}]}"#,
+            r#"{
+    "session_name": "test",
+    "worktrees": [{
+    "id": "w1",
+    "branch": "main",
+    "prompt": "test",
+    "agent_kind": "claude",
+    "repo_path": "/tmp/repo",
+    "worktree_path": "/tmp/repo/.swarm/wt/w1",
+    "created_at": "2026-03-13T11:51:21.270284-05:00",
+    "agent": null,
+    "agent_session_status": "waiting"
+}]
+}"#,
         )
         .unwrap();
         let signals = watcher.poll(&store).await.unwrap();
