@@ -5,6 +5,7 @@
 //! and can proactively notify about signal changes.
 
 pub mod audit;
+pub mod devmode;
 pub mod memory;
 pub mod prompt;
 pub mod skills;
