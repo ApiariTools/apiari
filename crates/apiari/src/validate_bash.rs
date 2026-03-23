@@ -27,7 +27,7 @@ pub fn run() -> i32 {
         }
     };
 
-    match audit::classify_bash_command(&command) {
+    match audit::classify_bash_command_with_devmode(&command) {
         BashClassification::ReadOnly => 0,
         BashClassification::PotentiallyMutating { matched_pattern } => {
             eprintln!(

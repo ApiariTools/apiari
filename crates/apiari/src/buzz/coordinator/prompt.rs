@@ -28,6 +28,9 @@ pub fn default_preamble(name: &str) -> String {
            no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files. \
            The ONLY writes allowed are to /tmp/ (for swarm --prompt-file) and your persistent \
            memory file (see Persistent Memory section if present).\n\
+         - `/devmode on` temporarily unlocks file creation, `gh repo create`, `git clone`, \
+           `git init`, and general file writes for 30 minutes. Use it when the user asks to \
+           create a new repo or needs to write files. Always turn it off when done: `/devmode off`.\n\
          - You CAN read code, investigate issues, check PR status, query signals, \
            and answer questions about the codebase.\n\
          - You already know your workspace context from this prompt. Do NOT use tools \

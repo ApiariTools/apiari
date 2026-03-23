@@ -1457,12 +1457,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                             // Check for slash commands in TUI chat
                             if let Some(rest) = user_text.strip_prefix('/') {
-                                let (command, _args) = match rest.split_once(' ') {
+                                let (command, args) = match rest.split_once(' ') {
                                     Some((cmd, args)) => (cmd, args.trim()),
                                     None => (rest, ""),
                                 };
                                 let handled = handle_tui_command(
                                     command,
+                                    args,
                                     slot,
                                     &client_req.responder,
                                     &socket_server,
@@ -1531,7 +1532,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         }
                     }
 
-                    ChannelEvent::Command { chat_id, command, topic_id, .. } => {
+                    ChannelEvent::Command { chat_id, command, args, topic_id, .. } => {
                         let key = RouteKey { chat_id, topic_id };
                         let slot_idx = route_map.get(&key).copied()
                             .or_else(|| route_map.get(&RouteKey { chat_id, topic_id: None }).copied());
@@ -1696,8 +1697,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         }
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
+                                    "devmode" => {
+                                        let text = crate::buzz::coordinator::devmode::handle_command(&args);
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+                                    }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -2153,6 +2161,7 @@ fn remove_pid() {
 /// Handle a TUI slash command. Returns `true` if the command was handled.
 async fn handle_tui_command(
     command: &str,
+    args: &str,
     slot: &mut WorkspaceSlot,
     responder: &mpsc::UnboundedSender<socket::DaemonResponse>,
     socket_server: &Option<Arc<socket::DaemonSocketServer>>,
@@ -2282,8 +2291,13 @@ async fn handle_tui_command(
             reply(responder, socket_server, &slot.name, &text);
             true
         }
+        "devmode" => {
+            let text = crate::buzz::coordinator::devmode::handle_command(args);
+            reply(responder, socket_server, &slot.name, &text);
+            true
+        }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");

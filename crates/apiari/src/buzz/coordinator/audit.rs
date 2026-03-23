@@ -51,7 +51,44 @@ const GIT_MUTATING: &[&str] = &[
     "git branch -D",
     "git stash",
     "git cherry-pick",
+    "git clone",
+    "git init",
 ];
+
+/// Commands that require dev-mode to run (blocked by default).
+const DEVMODE_ONLY: &[&str] = &["gh repo create"];
+
+/// Classify a Bash command, taking dev-mode into account.
+///
+/// When dev-mode is active, additional commands are allowed:
+/// `gh repo create`, `git clone`, `git init`, `mkdir`, and general file writes.
+pub fn classify_bash_command_with_devmode(command: &str) -> BashClassification {
+    let result = classify_bash_command(command);
+    if result.is_mutating()
+        && super::devmode::is_active()
+        && let BashClassification::PotentiallyMutating {
+            ref matched_pattern,
+        } = result
+    {
+        // Patterns unlocked in dev-mode: file creation, repo setup, writes
+        let devmode_unlocked = [
+            "mkdir ",
+            "touch ",
+            "cp ",
+            "mv ",
+            "output redirect",
+            "tee",
+            "curl download",
+            "git clone",
+            "git init",
+            "gh repo create",
+        ];
+        if devmode_unlocked.iter().any(|p| matched_pattern == p) {
+            return BashClassification::ReadOnly;
+        }
+    }
+    result
+}
 
 /// Classify a Bash command as read-only or potentially mutating.
 ///
@@ -112,6 +149,15 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "curl download".to_string(),
         };
+    }
+
+    // Dev-mode-only commands (blocked by default, allowed in dev-mode)
+    for &pattern in DEVMODE_ONLY {
+        if contains_pattern(check, pattern) {
+            return BashClassification::PotentiallyMutating {
+                matched_pattern: pattern.to_string(),
+            };
+        }
     }
 
     BashClassification::ReadOnly
@@ -249,6 +295,10 @@ fn is_allowed_write_target(path: &str) -> bool {
         || path.starts_with("/home/")
         || path.starts_with("$HOME/");
     let in_apiari_config = path.contains("/.config/apiari/") || path.ends_with("/.config/apiari");
+    // Block writes to the devmode state file (prevent privilege escalation).
+    if path.ends_with("/.devmode") {
+        return false;
+    }
     (is_home_anchored && in_apiari_config) || path == "~/.config/apiari"
 }
 
@@ -771,5 +821,148 @@ if len(data) > 0:
             result.is_mutating(),
             "writing to non-apiari config dir should be mutating"
         );
+    }
+
+    // -- Dev-mode aware classification tests --
+    //
+    // These tests use APIARI_DEVMODE_PATH to isolate the devmode file per test,
+    // serialized via a shared mutex + RAII guard from the devmode module.
+
+    /// Helper: run a closure with devmode on or off, using a temp file.
+    fn with_devmode<F: FnOnce()>(enabled: bool, f: F) {
+        let _guard = super::super::devmode::setup_test_env();
+        if enabled {
+            super::super::devmode::enable().unwrap();
+        }
+        f();
+    }
+
+    #[test]
+    fn test_devmode_on_allows_gh_repo_create() {
+        with_devmode(true, || {
+            let result = classify_bash_command_with_devmode("gh repo create my-repo --public");
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "gh repo create should be allowed in dev-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn test_devmode_on_allows_git_clone() {
+        with_devmode(true, || {
+            let result =
+                classify_bash_command_with_devmode("git clone https://github.com/example/repo.git");
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "git clone should be allowed in dev-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn test_devmode_on_allows_git_init() {
+        with_devmode(true, || {
+            let result = classify_bash_command_with_devmode("git init");
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "git init should be allowed in dev-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn test_devmode_on_allows_mkdir() {
+        with_devmode(true, || {
+            let result = classify_bash_command_with_devmode("mkdir -p new-project/src");
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "mkdir should be allowed in dev-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn test_devmode_on_allows_file_redirect() {
+        with_devmode(true, || {
+            let result = classify_bash_command_with_devmode("echo 'hello' > src/main.rs");
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "file redirect should be allowed in dev-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn test_devmode_off_blocks_commands() {
+        with_devmode(false, || {
+            let result = classify_bash_command_with_devmode("gh repo create my-repo");
+            assert!(
+                result.is_mutating(),
+                "gh repo create should be blocked when dev-mode is off"
+            );
+
+            let result = classify_bash_command_with_devmode("git clone https://github.com/a/b");
+            assert!(
+                result.is_mutating(),
+                "git clone should be blocked when dev-mode is off"
+            );
+
+            let result = classify_bash_command_with_devmode("git init");
+            assert!(
+                result.is_mutating(),
+                "git init should be blocked when dev-mode is off"
+            );
+
+            let result = classify_bash_command_with_devmode("mkdir -p new-project");
+            assert!(
+                result.is_mutating(),
+                "mkdir should be blocked when dev-mode is off"
+            );
+        });
+    }
+
+    #[test]
+    fn test_devmode_on_still_blocks_dangerous_commands() {
+        with_devmode(true, || {
+            // cargo install should still be blocked even in dev-mode
+            let result = classify_bash_command_with_devmode("cargo install --path .");
+            assert!(
+                result.is_mutating(),
+                "cargo install should still be blocked in dev-mode"
+            );
+
+            // rm should still be blocked
+            let result = classify_bash_command_with_devmode("rm -rf /important");
+            assert!(
+                result.is_mutating(),
+                "rm should still be blocked in dev-mode"
+            );
+
+            // git push should still be blocked
+            let result = classify_bash_command_with_devmode("git push origin main");
+            assert!(
+                result.is_mutating(),
+                "git push should still be blocked in dev-mode"
+            );
+        });
+    }
+
+    #[test]
+    fn test_devmode_expired_blocks_commands() {
+        with_devmode(false, || {
+            // Enable with 0 minutes (immediately expired)
+            super::super::devmode::enable_with_duration(0).unwrap();
+            let result = classify_bash_command_with_devmode("mkdir -p new-project");
+            assert!(
+                result.is_mutating(),
+                "mkdir should be blocked when dev-mode is expired"
+            );
+        });
     }
 }
