@@ -140,7 +140,7 @@ pub fn handle_command(args: &str) -> String {
             disable();
             "\u{1f512} Dev mode disabled.".to_string()
         }
-        "status" | "" => {
+        "" | "status" => {
             if let Some(state) = read_state() {
                 if Utc::now() < state.expires_at {
                     format!(
@@ -277,10 +277,10 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_command_empty_args_same_as_status() {
+    fn test_handle_command_no_args_shows_status() {
         let _guard = setup_test_env();
         let text = handle_command("");
-        assert!(text.contains("OFF"), "empty args should show status");
+        assert!(text.contains("OFF"), "no-arg should show status: {text}");
     }
 
     #[test]
