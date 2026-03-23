@@ -13,6 +13,7 @@ pub mod github;
 pub mod linear;
 pub mod notion;
 pub mod review_queue;
+pub mod script;
 pub mod sentry;
 pub mod swarm;
 

@@ -252,6 +252,9 @@ pub struct WatchersConfig {
     /// Linear watchers via `[[watchers.linear]]`.
     #[serde(default)]
     pub linear: Vec<LinearWatcherConfig>,
+    /// Script watchers via `[[watchers.script]]`.
+    #[serde(default)]
+    pub script: Vec<ScriptWatcherConfig>,
 }
 
 /// Email mailbox configuration.
@@ -314,6 +317,33 @@ pub struct LinearWatcherConfig {
 pub struct LinearReviewQueueEntry {
     pub name: String,
     pub query: String,
+}
+
+/// Script/command watcher configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptWatcherConfig {
+    pub name: String,
+    pub command: String,
+    #[serde(default = "default_script_interval")]
+    pub interval_secs: u64,
+    #[serde(default)]
+    pub emit_on_change: bool,
+    #[serde(default = "default_severity_on_fail")]
+    pub severity_on_fail: String,
+    #[serde(default = "default_script_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_script_interval() -> u64 {
+    60
+}
+
+fn default_severity_on_fail() -> String {
+    "warning".to_string()
+}
+
+fn default_script_timeout() -> u64 {
+    30
 }
 
 fn default_linear_interval() -> u64 {
@@ -593,6 +623,12 @@ pub fn build_skill_context(
         .iter()
         .map(|n| n.name.clone())
         .collect();
+    let script_names: Vec<String> = config
+        .watchers
+        .script
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
     crate::buzz::coordinator::skills::SkillContext {
         workspace_name: workspace_name.to_string(),
         workspace_root: config.root.clone(),
@@ -608,6 +644,8 @@ pub fn build_skill_context(
         email_names,
         has_notion: !notion_names.is_empty(),
         notion_names,
+        has_scripts: !script_names.is_empty(),
+        script_names,
         has_telegram: config.telegram.is_some(),
         prompt_preamble: config.coordinator.prompt.clone(),
         default_agent: config.swarm.default_agent.clone(),
@@ -721,6 +759,19 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                             query: e.query.clone(),
                         })
                         .collect(),
+                })
+                .collect(),
+            script: ws
+                .watchers
+                .script
+                .iter()
+                .map(|s| crate::buzz::config::ScriptWatcherConfig {
+                    name: s.name.clone(),
+                    command: s.command.clone(),
+                    interval_secs: s.interval_secs,
+                    emit_on_change: s.emit_on_change,
+                    severity_on_fail: s.severity_on_fail.clone(),
+                    timeout_secs: s.timeout_secs,
                 })
                 .collect(),
         },

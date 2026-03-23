@@ -34,6 +34,7 @@ use crate::buzz::watcher::github::GithubWatcher;
 use crate::buzz::watcher::linear::LinearWatcher;
 use crate::buzz::watcher::notion::NotionWatcher;
 use crate::buzz::watcher::review_queue::ReviewQueueWatcher;
+use crate::buzz::watcher::script::ScriptWatcher;
 use crate::buzz::watcher::sentry::SentryWatcher;
 use crate::buzz::watcher::swarm::SwarmWatcher;
 
@@ -923,6 +924,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 query_names.join(", ")
             );
             registry.add_with_interval(Box::new(watcher), linear_config.poll_interval_secs);
+        }
+
+        for script_config in &buzz_config.watchers.script {
+            info!(
+                "[{}] enabling script watcher '{}'",
+                ws.name, script_config.name
+            );
+            registry.add_with_interval(
+                Box::new(ScriptWatcher::new(script_config.clone())),
+                script_config.interval_secs,
+            );
         }
 
         let mut coordinator = build_coordinator(&ws.name, &ws.config);

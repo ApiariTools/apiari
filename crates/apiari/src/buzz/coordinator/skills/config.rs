@@ -286,6 +286,8 @@ mod tests {
             email_names: vec!["gmail".to_string()],
             has_notion: true,
             notion_names: vec!["notion".to_string()],
+            has_scripts: false,
+            script_names: vec![],
             has_telegram: true,
             prompt_preamble: None,
             default_agent: "claude".to_string(),
@@ -309,6 +311,8 @@ mod tests {
             has_notion: false,
             has_telegram: false,
             notion_names: vec![],
+            has_scripts: false,
+            script_names: vec![],
             prompt_preamble: None,
             default_agent: "claude".to_string(),
         }
