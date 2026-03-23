@@ -64,27 +64,27 @@ const DEVMODE_ONLY: &[&str] = &["gh repo create"];
 /// `gh repo create`, `git clone`, `git init`, `mkdir`, and general file writes.
 pub fn classify_bash_command_with_devmode(command: &str) -> BashClassification {
     let result = classify_bash_command(command);
-    if result.is_mutating() && super::devmode::is_active() {
-        if let BashClassification::PotentiallyMutating {
+    if result.is_mutating()
+        && super::devmode::is_active()
+        && let BashClassification::PotentiallyMutating {
             ref matched_pattern,
         } = result
-        {
-            // Patterns unlocked in dev-mode: file creation, repo setup, writes
-            let devmode_unlocked = [
-                "mkdir ",
-                "touch ",
-                "cp ",
-                "mv ",
-                "output redirect",
-                "tee",
-                "curl download",
-                "git clone",
-                "git init",
-                "gh repo create",
-            ];
-            if devmode_unlocked.iter().any(|p| matched_pattern == p) {
-                return BashClassification::ReadOnly;
-            }
+    {
+        // Patterns unlocked in dev-mode: file creation, repo setup, writes
+        let devmode_unlocked = [
+            "mkdir ",
+            "touch ",
+            "cp ",
+            "mv ",
+            "output redirect",
+            "tee",
+            "curl download",
+            "git clone",
+            "git init",
+            "gh repo create",
+        ];
+        if devmode_unlocked.iter().any(|p| matched_pattern == p) {
+            return BashClassification::ReadOnly;
         }
     }
     result
