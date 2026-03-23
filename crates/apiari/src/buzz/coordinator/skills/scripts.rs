@@ -2,14 +2,23 @@
 
 use super::SkillContext;
 
-pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
-    if !ctx.has_scripts {
-        return None;
-    }
-
+pub fn build_prompt(ctx: &SkillContext) -> String {
     let scripts_dir = dirs::home_dir()
         .unwrap_or_else(|| ".".into())
         .join(".config/apiari/scripts");
+
+    if !ctx.has_scripts {
+        return format!(
+            "## Scripts\n\
+             No script watchers are configured yet. You can set up user-defined script watchers \
+             by adding `[[watchers.script]]` entries to the workspace config and creating scripts \
+             in `{}`.\n\
+             Scripts should document `# Requires:` and `# Params:` at the top, \
+             exit 0 on success / non-zero on failure, and be `chmod +x`.\n\
+             Ask the user if they'd like to set one up.\n",
+            scripts_dir.display(),
+        );
+    }
 
     let mut prompt = format!(
         "## Scripts\n\
@@ -32,5 +41,5 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
         "\nTo read a script's description, check the first few comment lines of the script file.\n",
     );
 
-    Some(prompt)
+    prompt
 }

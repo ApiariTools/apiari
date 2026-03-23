@@ -48,12 +48,13 @@ pub struct SkillContext {
 /// Each skill checks whether it's applicable (e.g. Sentry skill only
 /// included when `has_sentry` is true) and contributes instructions.
 pub fn build_skills_prompt(ctx: &SkillContext) -> String {
-    let mut sections = Vec::new();
-
     // Always-on skills
-    sections.push(config::build_prompt(ctx));
-    sections.push(signals::build_prompt(ctx));
-    sections.push(memory::build_prompt(ctx));
+    let mut sections = vec![
+        config::build_prompt(ctx),
+        signals::build_prompt(ctx),
+        memory::build_prompt(ctx),
+        scripts::build_prompt(ctx),
+    ];
 
     // Conditional skills
     if let Some(s) = github::build_prompt(ctx) {
@@ -74,10 +75,6 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
     if let Some(s) = notion::build_prompt(ctx) {
         sections.push(s);
     }
-    if let Some(s) = scripts::build_prompt(ctx) {
-        sections.push(s);
-    }
-
     let mut prompt = format!(
         "## Workspace\n\
          Name: {}\n\
