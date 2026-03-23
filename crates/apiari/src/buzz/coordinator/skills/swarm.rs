@@ -25,8 +25,11 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
         "codex" => "Default agent is codex. Use `--agent codex` for autonomous tasks, \
                     or `--agent codex-tui` for persistent sessions."
             .to_string(),
+        "gemini" => "Default agent is gemini. Use `--agent gemini` for autonomous tasks, \
+                     or `--agent gemini-tui` for persistent sessions."
+            .to_string(),
         "auto" => "Agent selection: auto. If `claude` is available, use `--agent claude`; \
-                   otherwise use `--agent codex`. For persistent sessions, append `-tui`."
+                   otherwise use `--agent codex` or `--agent gemini`. For persistent sessions, append `-tui`."
             .to_string(),
         _ => "Default agent is claude. Use `--agent claude` for autonomous tasks, \
               or `--agent claude-tui` for persistent sessions."
