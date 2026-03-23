@@ -928,8 +928,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
         for script_config in &buzz_config.watchers.script {
             info!(
-                "[{}] enabling script watcher '{}' ({})",
-                ws.name, script_config.name, script_config.command
+                "[{}] enabling script watcher '{}'",
+                ws.name, script_config.name
             );
             registry.add_with_interval(
                 Box::new(ScriptWatcher::new(script_config.clone())),

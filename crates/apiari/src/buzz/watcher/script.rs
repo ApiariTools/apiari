@@ -1,10 +1,13 @@
 //! Script watcher — runs arbitrary shell commands on a configurable interval
 //! and emits signals based on the result.
 
+use std::process::Stdio;
+
 use async_trait::async_trait;
 use color_eyre::Result;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::Watcher;
 use crate::buzz::config::ScriptWatcherConfig;
@@ -43,17 +46,29 @@ impl ScriptWatcher {
         path.to_string()
     }
 
-    /// Truncate output to MAX_OUTPUT_BYTES, preserving valid UTF-8.
-    fn truncate_output(s: &str) -> &str {
-        if s.len() <= MAX_OUTPUT_BYTES {
-            return s;
+    /// Read up to `MAX_OUTPUT_BYTES` from an async reader into a String.
+    async fn read_capped(
+        reader: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> std::io::Result<String> {
+        let mut buf = vec![0u8; MAX_OUTPUT_BYTES + 1];
+        let mut total = 0;
+        loop {
+            let remaining = buf.len() - total;
+            if remaining == 0 {
+                break;
+            }
+            let n = reader.read(&mut buf[total..total + remaining]).await?;
+            if n == 0 {
+                break;
+            }
+            total += n;
+            if total > MAX_OUTPUT_BYTES {
+                total = MAX_OUTPUT_BYTES;
+                break;
+            }
         }
-        // Find a valid char boundary at or before MAX_OUTPUT_BYTES
-        let mut end = MAX_OUTPUT_BYTES;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        &s[..end]
+        buf.truncate(total);
+        Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 }
 
@@ -67,23 +82,70 @@ impl Watcher for ScriptWatcher {
         &self.source
     }
 
+    /// Disable auto-reconciliation — script watchers intentionally skip emitting
+    /// signals on unchanged polls, so the framework should not resolve prior signals.
+    fn reconcile(
+        &self,
+        _source: &str,
+        _poll_ids: &[String],
+        _store: &SignalStore,
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
         let command = Self::expand_tilde(&self.config.command);
+        debug!("script '{}': running command", self.config.name);
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(self.config.timeout_secs),
-            Command::new("sh").arg("-c").arg(&command).output(),
-        )
-        .await;
+        let child_result = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn();
 
-        let output = match result {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                warn!("script '{}': failed to execute: {e}", self.config.name);
+        let mut child = match child_result {
+            Ok(child) => child,
+            Err(e) => {
+                warn!("script '{}': failed to spawn: {e}", self.config.name);
                 let signal = SignalUpdate::new(
                     &self.source,
                     format!("{}_error", self.source),
                     format!("Script '{}' failed to execute", self.config.name),
+                    Severity::from_str_loose(&self.config.severity_on_fail),
+                )
+                .with_body(format!("Error: {e}"));
+                return Ok(vec![signal]);
+            }
+        };
+
+        // Take ownership of stdout/stderr pipes before waiting
+        let mut stdout_pipe = child.stdout.take().expect("stdout piped");
+        let mut stderr_pipe = child.stderr.take().expect("stderr piped");
+
+        let timeout = std::time::Duration::from_secs(self.config.timeout_secs);
+
+        // Read stdout and stderr concurrently, capped at MAX_OUTPUT_BYTES each
+        let io_future = async {
+            let (stdout_res, stderr_res) = tokio::join!(
+                Self::read_capped(&mut stdout_pipe),
+                Self::read_capped(&mut stderr_pipe),
+            );
+            let status = child.wait().await?;
+            Ok::<_, std::io::Error>((stdout_res?, stderr_res?, status))
+        };
+
+        let (stdout_raw, stderr_raw, status) = match tokio::time::timeout(timeout, io_future).await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => {
+                warn!("script '{}': I/O error: {e}", self.config.name);
+                // kill_on_drop handles cleanup
+                let signal = SignalUpdate::new(
+                    &self.source,
+                    format!("{}_error", self.source),
+                    format!("Script '{}' failed", self.config.name),
                     Severity::from_str_loose(&self.config.severity_on_fail),
                 )
                 .with_body(format!("Error: {e}"));
@@ -94,6 +156,10 @@ impl Watcher for ScriptWatcher {
                     "script '{}': timed out after {}s",
                     self.config.name, self.config.timeout_secs
                 );
+                // Explicitly kill and reap the child to avoid zombies.
+                // kill_on_drop is a safety net, but explicit is better.
+                let _ = child.kill().await;
+                let _ = child.wait().await;
                 let signal = SignalUpdate::new(
                     &self.source,
                     format!("{}_timeout", self.source),
@@ -108,23 +174,21 @@ impl Watcher for ScriptWatcher {
             }
         };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout_trimmed = Self::truncate_output(stdout.trim());
-        let stderr_trimmed = Self::truncate_output(stderr.trim());
-        let exit_code = output.status.code().unwrap_or(-1);
+        let stdout_trimmed = stdout_raw.trim().to_string();
+        let stderr_trimmed = stderr_raw.trim().to_string();
+        let exit_code = status.code().unwrap_or(-1);
 
         // Exit code != 0 → always emit with severity_on_fail
         if exit_code != 0 {
             let mut body = String::new();
             if !stdout_trimmed.is_empty() {
-                body.push_str(stdout_trimmed);
+                body.push_str(&stdout_trimmed);
             }
             if !stderr_trimmed.is_empty() {
                 if !body.is_empty() {
                     body.push_str("\n---\n");
                 }
-                body.push_str(stderr_trimmed);
+                body.push_str(&stderr_trimmed);
             }
             if body.is_empty() {
                 body = format!("Exit code: {exit_code}");
@@ -138,8 +202,7 @@ impl Watcher for ScriptWatcher {
             )
             .with_body(body);
 
-            // Update last_output even on failure
-            self.last_output = Some(stdout_trimmed.to_string());
+            self.last_output = Some(stdout_trimmed);
 
             info!(
                 "script '{}': exit code {exit_code}, emitting failure signal",
@@ -149,26 +212,22 @@ impl Watcher for ScriptWatcher {
         }
 
         // Exit code 0 — check emit_on_change
-        let current_output = stdout_trimmed.to_string();
-
         if self.config.emit_on_change {
             let changed = match &self.last_output {
                 None => {
                     // First poll — store output, don't emit
-                    self.last_output = Some(current_output);
+                    self.last_output = Some(stdout_trimmed);
                     return Ok(Vec::new());
                 }
-                Some(prev) => prev != &current_output,
+                Some(prev) => *prev != stdout_trimmed,
             };
 
-            self.last_output = Some(current_output.clone());
+            self.last_output = Some(stdout_trimmed.clone());
 
             if !changed {
-                // Silent heartbeat — no signal
                 return Ok(Vec::new());
             }
 
-            // Output changed → emit info signal
             info!(
                 "script '{}': output changed, emitting signal",
                 self.config.name
@@ -179,14 +238,14 @@ impl Watcher for ScriptWatcher {
                 format!("Script '{}' output changed", self.config.name),
                 Severity::Info,
             )
-            .with_body(current_output);
+            .with_body(stdout_trimmed);
 
             Ok(vec![signal])
         } else {
             // emit_on_change = false → always emit
-            self.last_output = Some(current_output.clone());
+            self.last_output = Some(stdout_trimmed.clone());
 
-            if current_output.is_empty() {
+            if stdout_trimmed.is_empty() {
                 return Ok(Vec::new());
             }
 
@@ -196,7 +255,7 @@ impl Watcher for ScriptWatcher {
                 format!("Script '{}'", self.config.name),
                 Severity::Info,
             )
-            .with_body(current_output);
+            .with_body(stdout_trimmed);
 
             Ok(vec![signal])
         }
@@ -221,27 +280,19 @@ mod tests {
     #[test]
     fn test_expand_tilde() {
         let expanded = ScriptWatcher::expand_tilde("~/scripts/test.sh");
-        assert!(!expanded.starts_with('~'));
-        assert!(expanded.ends_with("/scripts/test.sh"));
+        if dirs::home_dir().is_some() {
+            assert!(!expanded.starts_with('~'));
+            assert!(expanded.ends_with("/scripts/test.sh"));
+        } else {
+            // No home dir available (e.g. CI container) — returns unchanged
+            assert_eq!(expanded, "~/scripts/test.sh");
+        }
     }
 
     #[test]
     fn test_expand_tilde_no_tilde() {
         let path = "/usr/bin/test";
         assert_eq!(ScriptWatcher::expand_tilde(path), path);
-    }
-
-    #[test]
-    fn test_truncate_output_short() {
-        let s = "hello world";
-        assert_eq!(ScriptWatcher::truncate_output(s), s);
-    }
-
-    #[test]
-    fn test_truncate_output_long() {
-        let s = "a".repeat(20_000);
-        let truncated = ScriptWatcher::truncate_output(&s);
-        assert_eq!(truncated.len(), MAX_OUTPUT_BYTES);
     }
 
     #[test]
@@ -307,5 +358,30 @@ mod tests {
         let signals = watcher.poll(&store).await.unwrap();
         assert_eq!(signals.len(), 1);
         assert!(signals[0].title.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_read_capped_limits_output() {
+        // Generate output larger than MAX_OUTPUT_BYTES
+        let big_cmd = format!("python3 -c \"print('x' * {})\"", MAX_OUTPUT_BYTES + 5000);
+        let mut config = test_config();
+        config.command = big_cmd;
+        let mut watcher = ScriptWatcher::new(config);
+        let store = SignalStore::open_memory("test").unwrap();
+
+        let signals = watcher.poll(&store).await.unwrap();
+        assert_eq!(signals.len(), 1);
+        let body = signals[0].body.as_ref().unwrap();
+        assert!(body.len() <= MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn test_reconcile_returns_zero() {
+        let watcher = ScriptWatcher::new(test_config());
+        let store = SignalStore::open_memory("test").unwrap();
+        let result = watcher
+            .reconcile("script_test-script", &[], &store)
+            .unwrap();
+        assert_eq!(result, 0);
     }
 }
