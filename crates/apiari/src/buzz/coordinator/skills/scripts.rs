@@ -31,7 +31,7 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          - Use `# Params:` to list environment variables the script uses\n\
          - Scripts must be executable (`chmod +x`)\n\
          - Scripts should exit 0 on success, non-zero on failure\n\
-         - stdout and stderr are each captured up to 10KB independently\n\
+         - stdout and stderr are each capped at 10KB independently (up to 20KB combined)\n\
          - When `emit_on_change = true`, signals are only emitted when output changes\n",
         scripts_dir.display(),
         ctx.script_names.join(", "),

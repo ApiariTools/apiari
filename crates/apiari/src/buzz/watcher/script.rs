@@ -14,7 +14,7 @@ use crate::buzz::config::ScriptWatcherConfig;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalUpdate};
 
-/// Maximum bytes of stdout/stderr to capture per script execution.
+/// Maximum bytes of stdout/stderr to retain per stream per script execution.
 const MAX_OUTPUT_BYTES: usize = 10 * 1024;
 
 /// Watches by running a shell command and emitting signals based on output/exit code.
@@ -46,29 +46,26 @@ impl ScriptWatcher {
         path.to_string()
     }
 
-    /// Read up to `MAX_OUTPUT_BYTES` from an async reader into a String.
+    /// Read from an async reader, retaining up to `MAX_OUTPUT_BYTES` but draining
+    /// to EOF so the child process never blocks on a full pipe.
     async fn read_capped(
         reader: &mut (impl tokio::io::AsyncRead + Unpin),
     ) -> std::io::Result<String> {
-        let mut buf = vec![0u8; MAX_OUTPUT_BYTES + 1];
-        let mut total = 0;
+        let mut retained = Vec::with_capacity(MAX_OUTPUT_BYTES);
+        let mut buf = [0u8; 8192];
         loop {
-            let remaining = buf.len() - total;
-            if remaining == 0 {
-                break;
-            }
-            let n = reader.read(&mut buf[total..total + remaining]).await?;
+            let n = reader.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
-            total += n;
-            if total > MAX_OUTPUT_BYTES {
-                total = MAX_OUTPUT_BYTES;
-                break;
+            let remaining = MAX_OUTPUT_BYTES.saturating_sub(retained.len());
+            if remaining > 0 {
+                let take = n.min(remaining);
+                retained.extend_from_slice(&buf[..take]);
             }
+            // Keep reading (and discarding) until EOF to prevent pipe blocking
         }
-        buf.truncate(total);
-        Ok(String::from_utf8_lossy(&buf).into_owned())
+        Ok(String::from_utf8_lossy(&retained).into_owned())
     }
 }
 
@@ -82,15 +79,16 @@ impl Watcher for ScriptWatcher {
         &self.source
     }
 
-    /// Disable auto-reconciliation — script watchers intentionally skip emitting
-    /// signals on unchanged polls, so the framework should not resolve prior signals.
+    /// Suppress auto-reconciliation — script watchers intentionally skip emitting
+    /// signals on unchanged polls, so the framework must not resolve prior signals.
+    /// Returns Ok(1) to indicate custom reconcile handled it (skips auto-reconcile).
     fn reconcile(
         &self,
         _source: &str,
         _poll_ids: &[String],
         _store: &SignalStore,
     ) -> Result<usize> {
-        Ok(0)
+        Ok(1)
     }
 
     async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
@@ -362,26 +360,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_capped_limits_output() {
-        // Generate output larger than MAX_OUTPUT_BYTES
-        let big_cmd = format!("python3 -c \"print('x' * {})\"", MAX_OUTPUT_BYTES + 5000);
-        let mut config = test_config();
-        config.command = big_cmd;
-        let mut watcher = ScriptWatcher::new(config);
-        let store = SignalStore::open_memory("test").unwrap();
+        let data = vec![b'x'; MAX_OUTPUT_BYTES + 5000];
+        let mut cursor = std::io::Cursor::new(data);
+        let result = ScriptWatcher::read_capped(&mut cursor).await.unwrap();
+        assert_eq!(result.len(), MAX_OUTPUT_BYTES);
+        assert!(result.chars().all(|c| c == 'x'));
+    }
 
-        let signals = watcher.poll(&store).await.unwrap();
-        assert_eq!(signals.len(), 1);
-        let body = signals[0].body.as_ref().unwrap();
-        assert!(body.len() <= MAX_OUTPUT_BYTES);
+    #[tokio::test]
+    async fn test_read_capped_small_input() {
+        let data = b"hello world";
+        let mut cursor = std::io::Cursor::new(data.to_vec());
+        let result = ScriptWatcher::read_capped(&mut cursor).await.unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_read_capped_empty() {
+        let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+        let result = ScriptWatcher::read_capped(&mut cursor).await.unwrap();
+        assert!(result.is_empty());
     }
 
     #[test]
-    fn test_reconcile_returns_zero() {
+    fn test_reconcile_suppresses_auto_reconcile() {
         let watcher = ScriptWatcher::new(test_config());
         let store = SignalStore::open_memory("test").unwrap();
         let result = watcher
             .reconcile("script_test-script", &[], &store)
             .unwrap();
-        assert_eq!(result, 0);
+        // Must return > 0 to suppress auto-reconcile in ThrottledWatcher
+        assert!(result > 0);
     }
 }
