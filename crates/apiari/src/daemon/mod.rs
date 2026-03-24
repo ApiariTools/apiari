@@ -569,19 +569,26 @@ async fn run_coordinator_task(
                 socket_server,
                 slot_name,
             } => {
+                let has_session = coordinator.has_session();
                 info!(
-                    "[{slot_name}] processing signal follow-through model={}",
+                    "[follow-through] hook matched: source={source} signal_count={} has_session={has_session} ttl_secs={ttl_secs} model={}",
+                    signals.len(),
                     coordinator.model()
                 );
                 let elapsed = queued_at.elapsed().as_secs();
                 if elapsed >= ttl_secs {
                     info!(
-                        "[{slot_name}] dropping stale signal follow-through ({source}, queued {elapsed}s ago)"
+                        "[follow-through] skipped (TTL expired): source={source} signal_count={} queued_ago_secs={elapsed} ttl_secs={ttl_secs}",
+                        signals.len()
                     );
                     continue;
                 }
 
-                if !coordinator.has_session() {
+                if !has_session {
+                    info!(
+                        "[follow-through] skipped (no active coordinator session): source={source} signal_count={}",
+                        signals.len()
+                    );
                     continue;
                 }
 
@@ -631,10 +638,13 @@ async fn run_coordinator_task(
                 // as a side-effect).
                 let saved_session_token = coordinator.session_token().cloned();
 
+                let action_snippet = action
+                    .as_deref()
+                    .map(|a| a.chars().take(80).collect::<String>())
+                    .unwrap_or_default();
                 info!(
-                    "[{slot_name}] signal follow-through START source={source} signals={} has_action={} disallowed_tools={:?}",
+                    "[follow-through] executing: source={source} signal_count={} action=\"{action_snippet}\" disallowed_tools={:?}",
                     signals.len(),
-                    action.is_some(),
                     opts.disallowed_tools
                 );
 
@@ -671,7 +681,8 @@ async fn run_coordinator_task(
                     Ok(response) => {
                         let response = response.trim().to_string();
                         info!(
-                            "[{slot_name}] signal follow-through DONE source={source} response_len={} empty={}",
+                            "[follow-through] completed: source={source} signal_count={} response_len={} empty={}",
+                            signals.len(),
                             response.len(),
                             response.is_empty()
                         );
@@ -709,7 +720,10 @@ async fn run_coordinator_task(
                         }
                     }
                     Err(e) => {
-                        warn!("[{slot_name}] coordinator follow-through failed: {e}");
+                        warn!(
+                            "[follow-through] error: source={source} signal_count={} err={e}",
+                            signals.len()
+                        );
                     }
                 }
 
@@ -1504,13 +1518,32 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     // Periodically evict old notification log entries
                     slot.pipeline.evict_old_log_entries();
 
+                    // Broadcast watcher poll heartbeat to TUI clients so remote
+                    // clients can update their "last updated" display even without
+                    // direct SQLite access.
+                    if let Some(ref server) = socket_server
+                        && let Ok(cursors) = slot.store.get_watcher_cursors()
+                    {
+                        let cursor_summary: Vec<String> = cursors
+                            .iter()
+                            .map(|(name, ts)| format!("{name}={ts}"))
+                            .collect();
+                        server.broadcast_activity(
+                            "daemon",
+                            &slot.name,
+                            "watcher_poll_complete",
+                            &cursor_summary.join(","),
+                        );
+                    }
+
                     // Coordinator follow-through for signal hook events (non-blocking)
                     for (source, (signals, hook)) in &hook_events {
                         info!(
-                            "[{}] dispatching signal follow-through source={source} events={} has_action={}",
+                            "[follow-through] dispatching: workspace={} source={source} signal_count={} has_action={} ttl_secs={}",
                             slot.name,
                             signals.len(),
-                            hook.action.is_some()
+                            hook.action.is_some(),
+                            hook.ttl_secs,
                         );
                     }
                     for (source, (signals, hook)) in hook_events {
