@@ -1904,6 +1904,36 @@ impl App {
                     ws.coordinator_preview = Some(truncate_preview(text, 120));
                     ws.has_unread_response = true;
                 }
+                "watcher_poll_complete" => {
+                    // Update feed heartbeat timestamps from daemon's watcher cursors.
+                    // Text format: "watcher1=2024-01-01T00:00:00Z,watcher2=..."
+                    let now_utc = Utc::now();
+                    for entry in text.split(',') {
+                        if let Some((watcher, ts_str)) = entry.split_once('=') {
+                            if !is_top_level_watcher(watcher) {
+                                continue;
+                            }
+                            let when = chrono::DateTime::parse_from_rfc3339(ts_str)
+                                .map(|dt| dt.with_timezone(&Utc))
+                                .unwrap_or(now_utc);
+                            // Update or insert the heartbeat feed item for this watcher
+                            let feed_text = format!("{watcher} checked");
+                            if let Some(existing) = ws.feed.iter_mut().find(|item| {
+                                matches!(&item.kind, FeedKind::Heartbeat) && item.text == feed_text
+                            }) {
+                                existing.when = when;
+                            } else {
+                                ws.feed.push(FeedItem {
+                                    when,
+                                    kind: FeedKind::Heartbeat,
+                                    text: feed_text,
+                                });
+                            }
+                        }
+                    }
+                    // Re-sort so newest items are first
+                    ws.feed.sort_by(|a, b| b.when.cmp(&a.when));
+                }
                 _ => {
                     ws.chat_history.push(ChatLine::System(text.to_string()));
                 }
