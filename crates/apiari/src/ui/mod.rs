@@ -88,6 +88,9 @@ enum KeyAction {
         body: String,
     },
     SnoozeSignal(i64, chrono::DateTime<chrono::Utc>),
+    AttachShell(String),
+    CreateShell(String),
+    KillShell(String),
     SetupComplete,
     AddWorkspace,
     OpenSettings,
@@ -514,7 +517,21 @@ async fn event_loop(
             Some(update) = update_rx.recv() => {
                 match update {
                     AppUpdate::Workers(data) => {
-                        app.apply_worker_update(data);
+                        let shell_ops = app.apply_worker_update(data);
+                        if !shell_ops.is_empty() {
+                            tokio::task::spawn_blocking(move || {
+                                for op in shell_ops {
+                                    match op {
+                                        app::PendingShellOp::Create { tmux, name, working_dir } => {
+                                            tmux.create_window(&name, &working_dir);
+                                        }
+                                        app::PendingShellOp::Kill { tmux, name } => {
+                                            tmux.kill_window(&name);
+                                        }
+                                    }
+                                }
+                            });
+                        }
                         // Refresh conversation in background when viewing worker detail
                         if let View::WorkerDetail(idx) = app.view
                             && let Some(ws) = app.current_ws()
@@ -536,6 +553,45 @@ async fn event_loop(
                     }
                     AppUpdate::Signals(data) => {
                         app.apply_signal_update(data);
+                    }
+                    AppUpdate::ShellWindows(data) => {
+                        for (name, windows) in &data {
+                            if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == *name) {
+                                ws.shell_windows = windows.clone();
+                            }
+                        }
+                        app.shell_selection = app.shell_selection.min(
+                            app.current_ws()
+                                .map_or(0, |ws| ws.shell_windows.len().saturating_sub(1)),
+                        );
+                        // Lazily capture preview for the selected window only
+                        if let Some(ws) = app.current_ws()
+                            && let Some(shell) = ws.shell_windows.get(app.shell_selection)
+                            && let Some(ref tmux) = ws.tmux
+                            && tmux.is_available()
+                        {
+                            let tmux = tmux.clone();
+                            let ws_name = ws.name.clone();
+                            let win_name = shell.name.clone();
+                            let tx = update_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let preview = tmux.capture_preview(&win_name).unwrap_or_default();
+                                let _ = tx.blocking_send(AppUpdate::ShellPreview {
+                                    workspace_name: ws_name,
+                                    window_name: win_name,
+                                    preview,
+                                });
+                            });
+                        }
+                        app.needs_redraw = true;
+                    }
+                    AppUpdate::ShellPreview { workspace_name, window_name, preview } => {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == workspace_name)
+                            && let Some(shell) = ws.shell_windows.iter_mut().find(|s| s.name == window_name)
+                        {
+                            shell.preview = preview;
+                        }
+                        app.needs_redraw = true;
                     }
                     AppUpdate::Extras { daemon_alive, daemon_uptime_secs, per_workspace } => {
                         app.apply_extras_update(daemon_alive, daemon_uptime_secs, per_workspace);
@@ -709,6 +765,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
                         PendingAction::ApproveReview { repo, pr_number } => {
                             return KeyAction::ApproveReview { repo, pr_number };
                         }
+                        PendingAction::KillShell(name) => return KeyAction::KillShell(name),
                         PendingAction::SnoozeSignal(_) => unreachable!(),
                     }
                 }
@@ -726,6 +783,11 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
     // ── Review comment input ──
     if app.review_comment_active {
         return handle_review_comment_key(app, key);
+    }
+
+    // ── Shell name input ──
+    if app.shell_input_active {
+        return handle_shell_input_key(app, key);
     }
 
     // ── Help overlay ──
@@ -757,6 +819,8 @@ fn handle_paste(app: &mut App, text: &str) {
         app.worker_input.push_str(text);
     } else if app.review_comment_active {
         app.review_comment_input.push_str(text);
+    } else if app.shell_input_active {
+        app.shell_input.push_str(&sanitize_shell_name_input(text));
     }
     app.needs_redraw = true;
 }
@@ -811,6 +875,37 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 app.needs_redraw = true;
             }
             return KeyAction::Redraw;
+        }
+    }
+
+    // Shells panel: intercept Enter/n/d/Delete
+    if app.focused_panel == Panel::Shells {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(ws) = app.current_ws()
+                    && let Some(shell) = ws.shell_windows.get(app.shell_selection)
+                {
+                    return KeyAction::AttachShell(shell.name.clone());
+                }
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('n') if app.current_ws_tmux_available() => {
+                app.shell_input_active = true;
+                app.shell_input.clear();
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if let Some(ws) = app.current_ws()
+                    && let Some(shell) = ws.shell_windows.get(app.shell_selection)
+                {
+                    let name = shell.name.clone();
+                    app.pending_action = Some(PendingAction::KillShell(name));
+                    app.mode = Mode::Confirm;
+                }
+                return KeyAction::Redraw;
+            }
+            _ => {} // fall through to common dashboard keys
         }
     }
 
@@ -1331,6 +1426,49 @@ fn handle_review_comment_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
     KeyAction::Redraw
 }
 
+// ── Shell name input keys ─────────────────────────────────
+
+/// Characters that are invalid in tmux window names:
+/// ':', '.' (session:window separators), and control/whitespace chars.
+fn is_valid_shell_name_char(c: char) -> bool {
+    !c.is_control() && c != ':' && c != '.'
+}
+
+/// Strip control chars and tmux-special chars from pasted text for shell names.
+fn sanitize_shell_name_input(text: &str) -> String {
+    text.chars()
+        .filter(|c| is_valid_shell_name_char(*c))
+        .collect()
+}
+
+fn handle_shell_input_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
+    match key.code {
+        KeyCode::Enter => {
+            let name = std::mem::take(&mut app.shell_input);
+            app.shell_input_active = false;
+            app.needs_redraw = true;
+            if !name.trim().is_empty() {
+                return KeyAction::CreateShell(name.trim().to_string());
+            }
+        }
+        KeyCode::Esc => {
+            app.shell_input.clear();
+            app.shell_input_active = false;
+            app.needs_redraw = true;
+        }
+        KeyCode::Backspace => {
+            app.shell_input.pop();
+            app.needs_redraw = true;
+        }
+        KeyCode::Char(c) if is_valid_shell_name_char(c) => {
+            app.shell_input.push(c);
+            app.needs_redraw = true;
+        }
+        _ => {}
+    }
+    KeyAction::Redraw
+}
+
 // ── Signal detail keys ───────────────────────────────────
 
 fn handle_signal_detail_key(
@@ -1786,6 +1924,76 @@ async fn handle_action(
                 }
             }
         }
+        KeyAction::AttachShell(name) => {
+            if let Some(ws) = app.current_ws()
+                && let Some(ref tmux) = ws.tmux
+                && tmux.is_available()
+            {
+                let args = tmux.attach_args(&name);
+                // Suspend TUI, run tmux attach, then resume
+                disable_raw_mode().ok();
+                stdout()
+                    .execute(crossterm::event::DisableBracketedPaste)
+                    .ok();
+                stdout().execute(crossterm::event::DisableMouseCapture).ok();
+                stdout().execute(LeaveAlternateScreen).ok();
+
+                let _ = std::process::Command::new("tmux").args(&args).status();
+
+                stdout().execute(EnterAlternateScreen).ok();
+                stdout().execute(crossterm::event::EnableMouseCapture).ok();
+                stdout()
+                    .execute(crossterm::event::EnableBracketedPaste)
+                    .ok();
+                enable_raw_mode().ok();
+            }
+        }
+        KeyAction::CreateShell(name) => {
+            if let Some(ws) = app.current_ws()
+                && let Some(ref tmux) = ws.tmux
+                && tmux.is_available()
+            {
+                let tmux = tmux.clone();
+                let root = ws.config.root.clone();
+                let create_name = name.clone();
+                // Run blocking tmux commands off the async thread
+                let created = tokio::task::spawn_blocking(move || {
+                    tmux.ensure_session();
+                    tmux.create_window(&create_name, &root)
+                })
+                .await
+                .unwrap_or(false);
+                if created {
+                    app.flash(format!("Created shell: {name}"));
+                } else {
+                    app.flash("Failed to create shell");
+                }
+                // Let periodic refresh pick up the new window list
+            }
+        }
+        KeyAction::KillShell(name) => {
+            if let Some(ws) = app.current_ws()
+                && let Some(ref tmux) = ws.tmux
+                && tmux.is_available()
+            {
+                let tmux = tmux.clone();
+                let kill_name = name.clone();
+                let killed = tokio::task::spawn_blocking(move || tmux.kill_window(&kill_name))
+                    .await
+                    .unwrap_or(false);
+                if killed {
+                    app.flash(format!("Killed shell: {name}"));
+                    // Remove from local list immediately for responsive UI
+                    if let Some(ws) = app.current_ws_mut() {
+                        ws.shell_windows.retain(|w| w.name != name);
+                    }
+                    let count = app.current_ws().map_or(0, |ws| ws.shell_windows.len());
+                    app.shell_selection = app.shell_selection.min(count.saturating_sub(1));
+                } else {
+                    app.flash("Failed to kill shell");
+                }
+            }
+        }
         KeyAction::OpenSettings
         | KeyAction::SetupComplete
         | KeyAction::AddWorkspace
@@ -1818,8 +2026,12 @@ async fn background_refresh_task(
         });
     }
 
+    // Cache tmux availability across refresh ticks
+    let mut tmux_available: Option<bool> = None;
+
     // Do initial data refresh immediately
     do_worker_refresh(&update_tx, &workspace_infos).await;
+    do_shell_refresh(&update_tx, &workspace_infos, &mut tmux_available).await;
     do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
     do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
 
@@ -1842,6 +2054,7 @@ async fn background_refresh_task(
         tokio::select! {
             _ = worker_interval.tick() => {
                 do_worker_refresh(&update_tx, &workspace_infos).await;
+                do_shell_refresh(&update_tx, &workspace_infos, &mut tmux_available).await;
             }
             _ = signal_interval.tick() => {
                 do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
@@ -1859,6 +2072,51 @@ async fn do_worker_refresh(tx: &mpsc::Sender<AppUpdate>, infos: &[app::Workspace
         tokio::task::spawn_blocking(move || app::load_all_workers_blocking(&infos)).await
     {
         let _ = tx.send(AppUpdate::Workers(result)).await;
+    }
+}
+
+async fn do_shell_refresh(
+    tx: &mpsc::Sender<AppUpdate>,
+    infos: &[app::WorkspaceRefreshInfo],
+    tmux_available: &mut Option<bool>,
+) {
+    // Cache tmux availability across ticks to avoid repeated `which tmux` calls.
+    let available = match *tmux_available {
+        Some(v) => v,
+        None => {
+            let v = tokio::task::spawn_blocking(|| {
+                std::process::Command::new("which")
+                    .arg("tmux")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+            .await
+            .unwrap_or(false);
+            *tmux_available = Some(v);
+            v
+        }
+    };
+    if !available {
+        return;
+    }
+
+    let infos = infos.to_vec();
+    if let Ok(result) = tokio::task::spawn_blocking(move || {
+        infos
+            .iter()
+            .filter_map(|info| {
+                let session = info.tmux_session.as_ref()?;
+                let mgr = crate::shells::TmuxManager::with_availability(session, true);
+                let windows = mgr.list_windows();
+                Some((info.name.clone(), windows))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+        && !result.is_empty()
+    {
+        let _ = tx.send(AppUpdate::ShellWindows(result)).await;
     }
 }
 
@@ -2259,6 +2517,8 @@ mod tests {
             feed_scroll: apiari_tui::scroll::ScrollState::new(),
             thoughts: Vec::new(),
             is_setup_placeholder: false,
+            tmux: None,
+            shell_windows: Vec::new(),
         };
         let ws_name = ws.name.clone();
         App {
@@ -2304,6 +2564,9 @@ mod tests {
             last_signal_refresh: std::time::Instant::now(),
             snooze_selection: 0,
             signals_debug_mode: false,
+            shell_selection: 0,
+            shell_input_active: false,
+            shell_input: String::new(),
         }
     }
 
@@ -2641,5 +2904,157 @@ mod tests {
         handle_worker_detail_key(&mut app, key(KeyCode::Char('j')), 0);
         let act_offset = app.workspaces[0].workers[0].activity_scroll.offset;
         assert!(act_offset > 0 || !app.workspaces[0].workers[0].activity_scroll.auto_scroll);
+    }
+
+    // ── Shell panel tests ────────────────────────────────
+
+    #[test]
+    fn test_current_ws_has_shells_false_by_default() {
+        let app = test_app();
+        // Default test app has shells disabled and tmux=None
+        assert!(!app.current_ws_has_shells());
+    }
+
+    #[test]
+    fn test_current_ws_has_shells_only_checks_config() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        // Panel shows even without tmux — config is all that matters
+        assert!(app.current_ws_has_shells());
+    }
+
+    #[test]
+    fn test_current_ws_tmux_available() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        // tmux is None → not available
+        assert!(!app.current_ws_tmux_available());
+
+        // Set tmux but with available=false
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", false));
+        assert!(!app.current_ws_tmux_available());
+
+        // Set tmux with available=true
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
+        assert!(app.current_ws_tmux_available());
+    }
+
+    #[test]
+    fn test_next_panel_skips_shells_when_disabled() {
+        let mut app = test_app();
+        // shells disabled (default) — Workers should skip to Signals
+        app.focused_panel = Panel::Workers;
+        app.next_panel();
+        assert_ne!(app.focused_panel, Panel::Shells);
+    }
+
+    #[test]
+    fn test_next_panel_includes_shells_when_enabled() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+
+        app.focused_panel = Panel::Workers;
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::Shells);
+    }
+
+    #[test]
+    fn test_prev_panel_includes_shells_when_enabled() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+
+        app.focused_panel = Panel::Signals;
+        app.prev_panel();
+        // Should go to Reviews or Shells depending on review queue — no reviews, so Shells
+        assert_eq!(app.focused_panel, Panel::Shells);
+    }
+
+    #[test]
+    fn test_shell_selection_nav() {
+        let mut app = test_app();
+        app.workspaces[0].shell_windows = vec![
+            crate::shells::ShellWindow {
+                name: "a".into(),
+                working_dir: "/tmp".into(),
+                preview: String::new(),
+            },
+            crate::shells::ShellWindow {
+                name: "b".into(),
+                working_dir: "/tmp".into(),
+                preview: String::new(),
+            },
+            crate::shells::ShellWindow {
+                name: "c".into(),
+                working_dir: "/tmp".into(),
+                preview: String::new(),
+            },
+        ];
+        app.focused_panel = Panel::Shells;
+        assert_eq!(app.shell_selection, 0);
+
+        app.select_next_in_panel();
+        assert_eq!(app.shell_selection, 1);
+
+        app.select_next_in_panel();
+        assert_eq!(app.shell_selection, 2);
+
+        // Should not go past last item
+        app.select_next_in_panel();
+        assert_eq!(app.shell_selection, 2);
+
+        app.select_prev_in_panel();
+        assert_eq!(app.shell_selection, 1);
+
+        app.select_prev_in_panel();
+        assert_eq!(app.shell_selection, 0);
+
+        // Should not go below 0
+        app.select_prev_in_panel();
+        assert_eq!(app.shell_selection, 0);
+    }
+
+    #[test]
+    fn test_shell_panel_d_key_triggers_kill_confirm() {
+        let mut app = test_app();
+        app.workspaces[0].shell_windows = vec![crate::shells::ShellWindow {
+            name: "my-shell".into(),
+            working_dir: "/tmp".into(),
+            preview: String::new(),
+        }];
+        app.focused_panel = Panel::Shells;
+
+        let action = handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+
+        assert!(matches!(action, KeyAction::Redraw));
+        assert!(matches!(
+            app.pending_action,
+            Some(PendingAction::KillShell(ref name)) if name == "my-shell"
+        ));
+        assert!(matches!(app.mode, Mode::Confirm));
+    }
+
+    #[test]
+    fn test_shell_panel_n_key_activates_input() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
+        app.focused_panel = Panel::Shells;
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('n')));
+
+        assert!(app.shell_input_active);
+        assert!(app.shell_input.is_empty());
+    }
+
+    #[test]
+    fn test_shell_panel_n_key_noop_without_tmux() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        // tmux not available
+        app.focused_panel = Panel::Shells;
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('n')));
+
+        assert!(!app.shell_input_active, "n should be ignored without tmux");
     }
 }

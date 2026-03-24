@@ -102,6 +102,10 @@ pub struct WorkspaceConfig {
     /// The TUI tries each in order, using the first that responds.
     #[serde(default)]
     pub daemon_endpoints: Vec<DaemonEndpoint>,
+
+    /// Shell management configuration (tmux integration).
+    #[serde(default)]
+    pub shells: ShellsConfig,
 }
 
 /// A single daemon TCP endpoint (host + port).
@@ -135,6 +139,20 @@ impl WorkspaceConfig {
         }
         Vec::new()
     }
+}
+
+/// Shell management configuration (tmux integration).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ShellsConfig {
+    /// Whether shell management is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Tmux session name. Defaults to "apiari-{workspace_name}".
+    #[serde(default)]
+    pub tmux_session: Option<String>,
+    /// Automatically create/kill tmux windows with workers.
+    #[serde(default)]
+    pub auto_worker_shells: bool,
 }
 
 /// Telegram bot configuration.
@@ -1069,6 +1087,7 @@ max_session_turns = 0
             daemon_host: None,
             daemon_port: None,
             daemon_endpoints: vec![],
+            shells: ShellsConfig::default(),
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -1091,6 +1110,7 @@ max_session_turns = 0
             daemon_host: None,
             daemon_port: None,
             daemon_endpoints: vec![],
+            shells: ShellsConfig::default(),
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -1117,6 +1137,7 @@ max_session_turns = 0
             daemon_host: None,
             daemon_port: None,
             daemon_endpoints: vec![],
+            shells: ShellsConfig::default(),
         };
 
         let buzz = to_buzz_config(&ws);
@@ -1368,6 +1389,7 @@ max_session_turns = 0
             daemon_host: None,
             daemon_port: None,
             daemon_endpoints: vec![],
+            shells: ShellsConfig::default(),
         }
     }
 
