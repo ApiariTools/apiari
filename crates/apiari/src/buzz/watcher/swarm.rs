@@ -1,17 +1,24 @@
-//! Swarm watcher — monitors `.swarm/state.json` for worker state changes.
+//! Swarm watcher — monitors worker state via daemon socket subscription.
 //!
-//! Uses the real types from `apiari-swarm` to deserialize state.
-//! Emits SignalUpdates for worker lifecycle events. The coordinator decides
-//! what to notify about.
+//! Uses `apiari_swarm::daemon` IPC to subscribe to real-time `StateChanged`
+//! events from the swarm daemon. Falls back to `ListWorkers` for full state
+//! sync (PR detection, new/closed workers, reconnection).
+//!
+//! Replaces the previous approach of polling `.swarm/state.json` on disk.
 
-use apiari_swarm::core::state::{SwarmState, WorkerPhase};
+use apiari_swarm::core::ipc::{global_socket_path, socket_path};
+use apiari_swarm::core::state::WorkerPhase;
+use apiari_swarm::daemon::ipc_client::send_daemon_request;
+use apiari_swarm::daemon::protocol::{DaemonRequest, DaemonResponse, WorkerInfo};
 use async_trait::async_trait;
 use color_eyre::Result;
 use std::collections::HashMap;
-use tracing::info;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tracing::{info, warn};
 
 use super::Watcher;
-use crate::buzz::config::SwarmWatcherConfig;
 use crate::buzz::signal::store::SignalStore;
 use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate};
 
@@ -22,73 +29,101 @@ struct TrackedWorker {
     has_pr: bool,
 }
 
-/// Watches swarm state.json for worker changes.
+/// Watches swarm daemon for worker state changes via socket subscription.
 pub struct SwarmWatcher {
-    config: SwarmWatcherConfig,
+    work_dir: PathBuf,
     /// Previous state of each worktree.
     tracked: HashMap<String, TrackedWorker>,
     initialized: bool,
+    /// Buffered StateChanged events from the subscription task.
+    events: Arc<Mutex<Vec<(String, WorkerPhase)>>>,
+    /// Whether the subscription task has been spawned.
+    subscription_started: Arc<AtomicBool>,
 }
 
 impl SwarmWatcher {
-    pub fn new(config: SwarmWatcherConfig) -> Self {
+    pub fn new(work_dir: PathBuf) -> Self {
         Self {
-            config,
+            work_dir,
             tracked: HashMap::new(),
             initialized: false,
+            events: Arc::new(Mutex::new(Vec::new())),
+            subscription_started: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    fn read_state(&self) -> Option<SwarmState> {
-        let contents = std::fs::read_to_string(&self.config.state_path).ok()?;
-        serde_json::from_str(&contents).ok()
+    /// Query the daemon for the current list of workers.
+    fn list_workers(&self) -> Option<Vec<WorkerInfo>> {
+        let req = DaemonRequest::ListWorkers {
+            workspace: Some(self.work_dir.clone()),
+        };
+        match send_daemon_request(&self.work_dir, &req) {
+            Ok(DaemonResponse::Workers { workers }) => Some(workers),
+            Ok(DaemonResponse::Error { message }) => {
+                warn!("swarm: list_workers error: {message}");
+                None
+            }
+            Ok(_) => None,
+            Err(e) => {
+                tracing::debug!("swarm: daemon unreachable: {e}");
+                None
+            }
+        }
     }
-}
 
-#[async_trait]
-impl Watcher for SwarmWatcher {
-    fn name(&self) -> &str {
-        "swarm"
+    /// Spawn the background subscription task (once).
+    fn ensure_subscription(&self) {
+        if self
+            .subscription_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let work_dir = self.work_dir.clone();
+            let events = Arc::clone(&self.events);
+            tokio::spawn(subscription_loop(work_dir, events));
+        }
     }
 
-    async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
-        let state = match self.read_state() {
-            Some(s) => s,
-            None => return Ok(Vec::new()),
+    /// Drain buffered subscription events and apply phase transitions.
+    fn drain_events(&mut self, signals: &mut Vec<SignalUpdate>) {
+        let events: Vec<(String, WorkerPhase)> = {
+            let mut buf = self.events.lock().unwrap();
+            std::mem::take(&mut *buf)
         };
 
-        let mut signals = Vec::new();
+        for (id, phase) in events {
+            let prev = self.tracked.get(&id);
 
-        if !self.initialized {
-            // First poll: just record current state, don't emit
-            for wt in &state.worktrees {
-                self.tracked.insert(
-                    wt.id.clone(),
-                    TrackedWorker {
-                        phase: wt.phase.clone(),
-                        has_pr: wt.pr.is_some(),
-                    },
+            // Waiting transition
+            if phase == WorkerPhase::Waiting
+                && prev.is_some_and(|p| p.phase != WorkerPhase::Waiting)
+            {
+                signals.push(
+                    SignalUpdate::new(
+                        "swarm",
+                        format!("swarm-waiting-{id}"),
+                        format!("Worker waiting: {id}"),
+                        Severity::Warning,
+                    )
+                    .with_body(format!("Agent in {id} is waiting for input")),
                 );
             }
-            self.initialized = true;
-            info!(
-                "swarm: initialized with {} worktree(s)",
-                state.worktrees.len()
-            );
-            return Ok(Vec::new());
-        }
 
-        // Detect new worktrees
-        for wt in &state.worktrees {
-            let id = &wt.id;
+            // Update tracked phase (preserve has_pr since StateChanged doesn't carry it)
+            if let Some(tracked) = self.tracked.get_mut(&id) {
+                tracked.phase = phase;
+            }
+        }
+    }
+
+    /// Diff the full worker list against tracked state.
+    fn diff_workers(&mut self, workers: &[WorkerInfo]) -> Vec<SignalUpdate> {
+        let mut signals = Vec::new();
+
+        for w in workers {
+            let id = &w.id;
             let prev = self.tracked.get(id);
-            let has_pr = wt.pr.is_some();
-            let repo = wt
-                .repo_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-            let summary = wt.summary.as_deref().unwrap_or("");
+            let has_pr = w.pr_url.is_some();
 
             if prev.is_none() {
                 // New worktree spawned
@@ -99,13 +134,18 @@ impl Watcher for SwarmWatcher {
                         format!("Worker spawned: {id}"),
                         Severity::Info,
                     )
-                    .with_body(format!("repo: {repo}\n{summary}")),
+                    .with_body(format!(
+                        "agent: {}\n{}",
+                        w.agent,
+                        truncate_prompt(&w.prompt)
+                    )),
                 );
             }
 
             // PR opened transition
             if has_pr && prev.is_some_and(|p| !p.has_pr) {
-                let pr = wt.pr.as_ref().unwrap();
+                let title = w.pr_title.as_deref().unwrap_or("");
+                let url = w.pr_url.as_deref().unwrap_or("");
 
                 let mut signal = SignalUpdate::new(
                     "swarm",
@@ -113,17 +153,16 @@ impl Watcher for SwarmWatcher {
                     format!("PR opened: {id}"),
                     Severity::Info,
                 )
-                .with_body(format!("{}\n{}", pr.title, pr.url));
+                .with_body(format!("{title}\n{url}"));
 
-                if !pr.url.is_empty() {
-                    signal = signal.with_url(&pr.url);
+                if !url.is_empty() {
+                    signal = signal.with_url(url);
                 }
-
                 signals.push(signal);
             }
 
-            // Agent waiting transition (using phase instead of agent_session_status)
-            if wt.phase == WorkerPhase::Waiting
+            // Waiting transition (from ListWorkers, in case subscription missed it)
+            if w.phase == WorkerPhase::Waiting
                 && prev.is_some_and(|p| p.phase != WorkerPhase::Waiting)
             {
                 signals.push(
@@ -133,7 +172,7 @@ impl Watcher for SwarmWatcher {
                         format!("Worker waiting: {id}"),
                         Severity::Warning,
                     )
-                    .with_body(format!("Agent in {id} is waiting for input\nrepo: {repo}")),
+                    .with_body(format!("Agent in {id} is waiting for input")),
                 );
             }
 
@@ -141,7 +180,7 @@ impl Watcher for SwarmWatcher {
             self.tracked.insert(
                 id.clone(),
                 TrackedWorker {
-                    phase: wt.phase.clone(),
+                    phase: w.phase.clone(),
                     has_pr,
                 },
             );
@@ -149,7 +188,7 @@ impl Watcher for SwarmWatcher {
 
         // Detect closed worktrees — resolve all related signals
         let current_ids: std::collections::HashSet<&String> =
-            state.worktrees.iter().map(|wt| &wt.id).collect();
+            workers.iter().map(|w| &w.id).collect();
         let closed: Vec<String> = self
             .tracked
             .keys()
@@ -158,7 +197,6 @@ impl Watcher for SwarmWatcher {
             .collect();
 
         for id in &closed {
-            // Resolve the lifecycle signals for this worker
             for prefix in &["swarm-spawned", "swarm-waiting", "swarm-pr"] {
                 signals.push(
                     SignalUpdate::new(
@@ -182,6 +220,51 @@ impl Watcher for SwarmWatcher {
             self.tracked.remove(id);
         }
 
+        signals
+    }
+}
+
+#[async_trait]
+impl Watcher for SwarmWatcher {
+    fn name(&self) -> &str {
+        "swarm"
+    }
+
+    async fn poll(&mut self, _store: &SignalStore) -> Result<Vec<SignalUpdate>> {
+        // Start the subscription task on first poll.
+        self.ensure_subscription();
+
+        let workers = match self.list_workers() {
+            Some(w) => w,
+            None => return Ok(Vec::new()),
+        };
+
+        if !self.initialized {
+            // First poll: record current state, don't emit
+            for w in &workers {
+                self.tracked.insert(
+                    w.id.clone(),
+                    TrackedWorker {
+                        phase: w.phase.clone(),
+                        has_pr: w.pr_url.is_some(),
+                    },
+                );
+            }
+            self.initialized = true;
+            info!("swarm: initialized with {} worker(s)", workers.len());
+            // Drain and discard any subscription events from before initialization
+            self.events.lock().unwrap().clear();
+            return Ok(Vec::new());
+        }
+
+        let mut signals = Vec::new();
+
+        // Process subscription events first (real-time phase changes)
+        self.drain_events(&mut signals);
+
+        // Then diff the full worker list (PRs, new/closed workers)
+        signals.extend(self.diff_workers(&workers));
+
         if !signals.is_empty() {
             info!("swarm: {} signal(s)", signals.len());
         }
@@ -193,8 +276,6 @@ impl Watcher for SwarmWatcher {
         if !self.initialized {
             return Ok(0);
         }
-        // Build the set of signal IDs that should remain open:
-        // for each currently-tracked worker, its spawned/waiting/pr signals.
         let current_ids: Vec<String> = self
             .tracked
             .keys()
@@ -214,9 +295,86 @@ impl Watcher for SwarmWatcher {
     }
 }
 
+/// Truncate a prompt string for signal bodies.
+fn truncate_prompt(prompt: &str) -> &str {
+    let end = prompt
+        .char_indices()
+        .nth(120)
+        .map_or(prompt.len(), |(i, _)| i);
+    &prompt[..end]
+}
+
+/// Background subscription loop — reconnects with backoff on disconnect.
+async fn subscription_loop(work_dir: PathBuf, events: Arc<Mutex<Vec<(String, WorkerPhase)>>>) {
+    let mut backoff_secs = 1u64;
+
+    loop {
+        match connect_and_subscribe(&work_dir, &events).await {
+            Ok(()) => {
+                // Clean disconnect — reset backoff
+                backoff_secs = 1;
+            }
+            Err(e) => {
+                tracing::debug!("swarm subscription error: {e}");
+                backoff_secs = (backoff_secs * 2).min(60);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+    }
+}
+
+/// Connect to the daemon socket and subscribe to state change events.
+async fn connect_and_subscribe(
+    work_dir: &Path,
+    events: &Mutex<Vec<(String, WorkerPhase)>>,
+) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    // Try per-workspace socket first, then global
+    let local = socket_path(work_dir);
+    let global = global_socket_path();
+    let stream = if local.exists() {
+        UnixStream::connect(&local).await
+    } else {
+        UnixStream::connect(&global).await
+    }
+    .map_err(|e| color_eyre::eyre::eyre!("failed to connect to daemon: {e}"))?;
+
+    let (reader, mut writer) = stream.into_split();
+
+    // Send Subscribe request
+    let req = DaemonRequest::Subscribe {
+        worktree_id: None,
+        workspace: Some(work_dir.to_path_buf()),
+    };
+    let mut line = serde_json::to_string(&req)?;
+    line.push('\n');
+    writer.write_all(line.as_bytes()).await?;
+
+    // Read events
+    let mut reader = BufReader::new(reader);
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        let n = reader.read_line(&mut buf).await?;
+        if n == 0 {
+            break; // EOF — daemon disconnected
+        }
+        if let Ok(DaemonResponse::StateChanged { worktree_id, phase }) =
+            serde_json::from_str::<DaemonResponse>(buf.trim())
+        {
+            events.lock().unwrap().push((worktree_id, phase));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apiari_swarm::core::state::{SwarmState, WorkerPhase};
 
     /// Helper to build a minimal valid WorktreeState JSON object.
     fn wt_json(id: &str, extras: &str) -> String {
@@ -283,8 +441,6 @@ mod tests {
     /// Parse a real state.json snapshot from swarm to guard against format drift.
     #[test]
     fn test_parse_real_state_snapshot() {
-        // This is a verbatim snapshot from a real `.swarm/state.json` produced by swarm.
-        // If swarm's serialization format changes, this test should break first.
         let json = r#"{
           "session_name": "swarm-apiari",
           "sidebar_pane_id": null,
@@ -329,74 +485,113 @@ mod tests {
         assert_eq!(pr.title, "fix(ci): add apiari-tui to workspace");
     }
 
-    /// End-to-end: write state files, poll the watcher, verify signals emitted.
-    #[tokio::test]
-    async fn test_poll_detects_transitions() {
-        let dir = tempfile::tempdir().unwrap();
-        let state_path = dir.path().join("state.json");
-        let db_path = dir.path().join("test.db");
+    /// Test the diff_workers logic by feeding WorkerInfo directly.
+    #[test]
+    fn test_diff_workers_new_worker() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
 
-        let store = SignalStore::open(&db_path, "test").unwrap();
-        let config = SwarmWatcherConfig {
-            enabled: true,
-            state_path: state_path.clone(),
-            interval_secs: 15,
-        };
-        let mut watcher = SwarmWatcher::new(config);
-
-        // Phase 1: worker running — init poll, no signals
-        let wt = wt_json("w1", r#""phase": "running""#);
-        std::fs::write(&state_path, state_json(&[wt])).unwrap();
-        let signals = watcher.poll(&store).await.unwrap();
-        assert!(signals.is_empty(), "init poll should emit nothing");
-
-        // Phase 2: same state — no change, no signals
-        let signals = watcher.poll(&store).await.unwrap();
-        assert!(signals.is_empty(), "no transition = no signals");
-
-        // Phase 3: worker transitions to waiting — should emit
-        let wt = wt_json("w1", r#""phase": "waiting""#);
-        std::fs::write(&state_path, state_json(&[wt])).unwrap();
-        let signals = watcher.poll(&store).await.unwrap();
+        let workers = vec![make_worker("w1", WorkerPhase::Running, None)];
+        let signals = watcher.diff_workers(&workers);
         assert_eq!(signals.len(), 1);
-        assert!(signals[0].title.contains("waiting"));
+        assert!(signals[0].title.contains("spawned"));
+    }
 
-        // Phase 4: PR opens — should emit
-        let wt = wt_json(
-            "w1",
-            r#""phase": "waiting",
-                "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}"#,
+    #[test]
+    fn test_diff_workers_pr_opened() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
+        watcher.tracked.insert(
+            "w1".to_string(),
+            TrackedWorker {
+                phase: WorkerPhase::Running,
+                has_pr: false,
+            },
         );
-        std::fs::write(&state_path, state_json(&[wt])).unwrap();
-        let signals = watcher.poll(&store).await.unwrap();
+
+        let workers = vec![make_worker(
+            "w1",
+            WorkerPhase::Running,
+            Some("https://github.com/org/repo/pull/1"),
+        )];
+        let signals = watcher.diff_workers(&workers);
         assert_eq!(signals.len(), 1);
         assert!(signals[0].title.contains("PR opened"));
         assert_eq!(
             signals[0].url.as_deref(),
             Some("https://github.com/org/repo/pull/1")
         );
+    }
 
-        // Phase 5: new worker spawns — should emit
-        let wt1 = wt_json(
-            "w1",
-            r#""phase": "waiting",
-                "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}"#,
+    #[test]
+    fn test_diff_workers_waiting_transition() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
+        watcher.tracked.insert(
+            "w1".to_string(),
+            TrackedWorker {
+                phase: WorkerPhase::Running,
+                has_pr: false,
+            },
         );
-        let wt2 = wt_json("w2", r#""phase": "running""#);
-        std::fs::write(&state_path, state_json(&[wt1, wt2])).unwrap();
-        let signals = watcher.poll(&store).await.unwrap();
+
+        let workers = vec![make_worker("w1", WorkerPhase::Waiting, None)];
+        let signals = watcher.diff_workers(&workers);
         assert_eq!(signals.len(), 1);
-        assert!(signals[0].title.contains("spawned"));
+        assert!(signals[0].title.contains("waiting"));
+    }
 
-        // Phase 6: worker closed — should resolve spawned/waiting/pr + emit closed
-        let wt1 = wt_json(
-            "w1",
-            r#""phase": "waiting",
-                "pr": {"number": 1, "title": "My PR", "state": "OPEN", "url": "https://github.com/org/repo/pull/1"}"#,
+    #[test]
+    fn test_diff_workers_closed() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
+        watcher.tracked.insert(
+            "w1".to_string(),
+            TrackedWorker {
+                phase: WorkerPhase::Running,
+                has_pr: false,
+            },
         );
-        std::fs::write(&state_path, state_json(&[wt1])).unwrap();
-        let signals = watcher.poll(&store).await.unwrap();
-        assert_eq!(signals.len(), 4); // 3 resolved (spawned/waiting/pr) + 1 closed
+
+        let workers = vec![]; // w1 is gone
+        let signals = watcher.diff_workers(&workers);
+        // 3 resolved (spawned/waiting/pr) + 1 closed
+        assert_eq!(signals.len(), 4);
         assert!(signals.iter().all(|s| s.title.contains("closed")));
+    }
+
+    #[test]
+    fn test_diff_workers_no_change() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
+        watcher.tracked.insert(
+            "w1".to_string(),
+            TrackedWorker {
+                phase: WorkerPhase::Running,
+                has_pr: false,
+            },
+        );
+
+        let workers = vec![make_worker("w1", WorkerPhase::Running, None)];
+        let signals = watcher.diff_workers(&workers);
+        assert!(signals.is_empty(), "no transition = no signals");
+    }
+
+    /// Helper to build a WorkerInfo for testing.
+    fn make_worker(id: &str, phase: WorkerPhase, pr_url: Option<&str>) -> WorkerInfo {
+        WorkerInfo {
+            id: id.to_string(),
+            branch: format!("swarm/{id}"),
+            prompt: "test task".to_string(),
+            agent: "claude".to_string(),
+            phase,
+            session_id: None,
+            pr_url: pr_url.map(String::from),
+            pr_number: pr_url.map(|_| 1),
+            pr_title: pr_url.map(|_| "Test PR".to_string()),
+            pr_state: pr_url.map(|_| "OPEN".to_string()),
+            restart_count: 0,
+            created_at: None,
+        }
     }
 }

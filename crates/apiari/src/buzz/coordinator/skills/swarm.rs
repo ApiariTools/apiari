@@ -52,14 +52,10 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
          - Send message: `swarm --dir {root} send {{worktree_id}} \"message\"`\n\
          - Close worker: `swarm --dir {root} close {{worktree_id}}`\n\n\
          {agent_line}\n\n\
-         ## Daemon Auto-Start\n\
-         If any swarm command fails with \"daemon not running\" or a connection error, \
-         start the daemon first:\n\
-         ```\n\
-         swarm --dir {root} daemon start\n\
-         ```\n\
-         Wait ~2 seconds, then retry the original command. Do not ask the user about this — \
-         just handle it silently.\n\n\
+         ## Daemon\n\
+         The swarm daemon is managed automatically — it is started on launch and \
+         monitored via a persistent socket connection. You should not need to start it \
+         manually. If a swarm command fails, retry once — the daemon may be restarting.\n\n\
          When dispatching, always include in the task prompt:\n\
          'Plan and implement this completely in one session — do not pause mid-task \
          for confirmation. Commit and open a PR when done.'\n\n\

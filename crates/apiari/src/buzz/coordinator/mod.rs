@@ -9,6 +9,7 @@ pub mod devmode;
 pub mod memory;
 pub mod prompt;
 pub mod skills;
+pub mod swarm_client;
 
 use std::path::PathBuf;
 

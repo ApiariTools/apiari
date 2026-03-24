@@ -907,18 +907,18 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         if let Some(swarm_config) = &buzz_config.watchers.swarm
             && swarm_config.enabled
         {
-            info!(
-                "[{}] enabling swarm watcher ({})",
-                ws.name,
-                swarm_config.state_path.display()
-            );
-            registry.add_with_interval(
-                Box::new(SwarmWatcher::new(swarm_config.clone())),
-                swarm_config.interval_secs,
-            );
-
             // Auto-start the swarm daemon if it isn't running
             ensure_swarm_daemon(&ws.config.root).await;
+
+            info!(
+                "[{}] enabling swarm watcher (daemon IPC, workspace: {})",
+                ws.name,
+                ws.config.root.display()
+            );
+            registry.add_with_interval(
+                Box::new(SwarmWatcher::new(ws.config.root.clone())),
+                swarm_config.interval_secs,
+            );
         }
 
         for email_config in &buzz_config.watchers.email {
@@ -2095,39 +2095,23 @@ pub fn ensure_daemon() -> Result<()> {
 
 /// Ensure the swarm daemon is running for a workspace, starting it if needed.
 ///
-/// Checks via `swarm --dir <root> status`. If the daemon is not running,
-/// starts it with `swarm --dir <root> daemon start` and waits up to ~2 seconds
-/// for it to come up. This mirrors `ensure_daemon()` for the apiari daemon.
+/// Pings the daemon over its Unix socket. If unreachable, starts it with
+/// `swarm --dir <root> daemon start` and waits up to ~2 seconds for it
+/// to respond to ping.
 async fn ensure_swarm_daemon(workspace_root: &std::path::Path) {
+    use crate::buzz::coordinator::swarm_client::SwarmClient;
+
     let root_display = workspace_root.display();
 
-    // Check if swarm daemon is already running
-    let status = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(workspace_root)
-        .arg("status")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await;
+    // Check if swarm daemon is already running via socket ping
+    let dir = workspace_root.to_path_buf();
+    let is_running = tokio::task::spawn_blocking(move || SwarmClient::ping_sync(&dir))
+        .await
+        .unwrap_or(false);
 
-    match &status {
-        Ok(o) if o.status.success() => {
-            info!("swarm daemon already running for {}", root_display);
-            return;
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            tracing::debug!(
-                "swarm status failed for {}: {}",
-                root_display,
-                stderr.trim()
-            );
-        }
-        Err(e) => {
-            warn!("failed to run `swarm status` for {}: {}", root_display, e);
-            return;
-        }
+    if is_running {
+        info!("swarm daemon already running for {}", root_display);
+        return;
     }
 
     // Daemon not running — start it
@@ -2159,18 +2143,14 @@ async fn ensure_swarm_daemon(workspace_root: &std::path::Path) {
         _ => {}
     }
 
-    // Wait up to ~2 seconds for daemon to come up
+    // Wait up to ~2 seconds for daemon to respond to ping
     for _ in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let recheck = tokio::process::Command::new("swarm")
-            .arg("--dir")
-            .arg(workspace_root)
-            .arg("status")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await;
-        if recheck.is_ok_and(|o| o.status.success()) {
+        let dir = workspace_root.to_path_buf();
+        let alive = tokio::task::spawn_blocking(move || SwarmClient::ping_sync(&dir))
+            .await
+            .unwrap_or(false);
+        if alive {
             info!("swarm daemon started for {}", root_display);
             return;
         }
