@@ -78,20 +78,298 @@ fn parse_gh_include_response(raw: &str) -> (u16, Vec<(&str, &str)>, &str) {
     (status, headers, body)
 }
 
-/// Parse open PRs JSON array into (number, title, branch, sha) tuples.
-fn parse_open_prs(value: &serde_json::Value) -> Vec<(u64, String, String, String)> {
-    let Some(prs) = value.as_array() else {
+// --- GraphQL result types for the consolidated per-repo query ---
+
+struct GraphqlReview {
+    database_id: u64,
+    author_login: String,
+    author_type: String,
+    state: String,
+    body: String,
+    submitted_at: String,
+    url: String,
+}
+
+struct GraphqlCheckSuite {
+    conclusion: Option<String>,
+    url: String,
+    check_runs: Vec<GraphqlCheckRun>,
+}
+
+struct GraphqlCheckRun {
+    conclusion: Option<String>,
+    details_url: String,
+}
+
+struct GraphqlPr {
+    number: u64,
+    title: String,
+    head_ref_name: String,
+    head_sha: String,
+    reviews: Vec<GraphqlReview>,
+    check_suites: Vec<GraphqlCheckSuite>,
+}
+
+struct GraphqlMergedPr {
+    number: u64,
+    title: String,
+    url: String,
+    merged_at: String,
+}
+
+struct GraphqlIssue {
+    number: u64,
+    title: String,
+    url: String,
+    labels: Vec<String>,
+}
+
+struct RepoPollGraphqlResult {
+    open_prs: Vec<GraphqlPr>,
+    merged_prs: Vec<GraphqlMergedPr>,
+    assigned_issues: Vec<GraphqlIssue>,
+}
+
+fn parse_graphql_result(response: &serde_json::Value) -> Option<RepoPollGraphqlResult> {
+    let repo = response.pointer("/data/repository")?;
+
+    let open_prs = repo
+        .pointer("/openPRs/nodes")
+        .map(parse_graphql_open_prs)
+        .unwrap_or_default();
+    let merged_prs = repo
+        .pointer("/mergedPRs/nodes")
+        .map(parse_graphql_merged_prs)
+        .unwrap_or_default();
+    let assigned_issues = repo
+        .pointer("/assignedIssues/nodes")
+        .map(parse_graphql_issues)
+        .unwrap_or_default();
+
+    Some(RepoPollGraphqlResult {
+        open_prs,
+        merged_prs,
+        assigned_issues,
+    })
+}
+
+fn parse_graphql_open_prs(nodes: &serde_json::Value) -> Vec<GraphqlPr> {
+    let Some(arr) = nodes.as_array() else {
         return Vec::new();
     };
-    prs.iter()
-        .filter_map(|pr| {
-            let number = pr.get("number")?.as_u64()?;
-            let title = pr.get("title")?.as_str()?.to_string();
-            let branch = pr.get("head")?.get("ref")?.as_str()?.to_string();
-            let sha = pr.get("head")?.get("sha")?.as_str()?.to_string();
-            Some((number, title, branch, sha))
+    arr.iter()
+        .filter_map(|node| {
+            let number = node.get("number")?.as_u64()?;
+            let title = node.get("title")?.as_str()?.to_string();
+            let head_ref_name = node.get("headRefName")?.as_str()?.to_string();
+
+            let head_sha = node
+                .pointer("/commits/nodes/0/commit/oid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let reviews = node
+                .pointer("/reviews/nodes")
+                .and_then(|v| v.as_array())
+                .map(|arr| parse_graphql_reviews(arr))
+                .unwrap_or_default();
+
+            let check_suites = node
+                .pointer("/commits/nodes/0/commit/checkSuites/nodes")
+                .and_then(|v| v.as_array())
+                .map(|arr| parse_graphql_check_suites(arr))
+                .unwrap_or_default();
+
+            Some(GraphqlPr {
+                number,
+                title,
+                head_ref_name,
+                head_sha,
+                reviews,
+                check_suites,
+            })
         })
         .collect()
+}
+
+fn parse_graphql_reviews(nodes: &[serde_json::Value]) -> Vec<GraphqlReview> {
+    nodes
+        .iter()
+        .filter_map(|review| {
+            let author = review.get("author")?;
+            if author.is_null() {
+                return None;
+            }
+
+            Some(GraphqlReview {
+                database_id: review
+                    .get("databaseId")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                author_login: author
+                    .get("login")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                author_type: author
+                    .get("__typename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                state: review
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("COMMENTED")
+                    .to_string(),
+                body: review
+                    .get("body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                submitted_at: review
+                    .get("submittedAt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                url: review
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_graphql_check_suites(nodes: &[serde_json::Value]) -> Vec<GraphqlCheckSuite> {
+    nodes
+        .iter()
+        .filter_map(|suite| {
+            let conclusion = suite
+                .get("conclusion")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let url = suite
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let check_runs = suite
+                .pointer("/checkRuns/nodes")
+                .and_then(|v| v.as_array())
+                .map(|arr| parse_graphql_check_runs(arr))
+                .unwrap_or_default();
+
+            Some(GraphqlCheckSuite {
+                conclusion,
+                url,
+                check_runs,
+            })
+        })
+        .collect()
+}
+
+fn parse_graphql_check_runs(nodes: &[serde_json::Value]) -> Vec<GraphqlCheckRun> {
+    nodes
+        .iter()
+        .filter_map(|run| {
+            Some(GraphqlCheckRun {
+                conclusion: run
+                    .get("conclusion")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                details_url: run
+                    .get("detailsUrl")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_graphql_merged_prs(nodes: &serde_json::Value) -> Vec<GraphqlMergedPr> {
+    let Some(arr) = nodes.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|node| {
+            Some(GraphqlMergedPr {
+                number: node.get("number")?.as_u64()?,
+                title: node.get("title")?.as_str()?.to_string(),
+                url: node.get("url")?.as_str()?.to_string(),
+                merged_at: node.get("mergedAt")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_graphql_issues(nodes: &serde_json::Value) -> Vec<GraphqlIssue> {
+    let Some(arr) = nodes.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|node| {
+            let labels = node
+                .pointer("/labels/nodes")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|l| l.get("name").and_then(|v| v.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            Some(GraphqlIssue {
+                number: node.get("number")?.as_u64()?,
+                title: node.get("title")?.as_str()?.to_string(),
+                url: node.get("url")?.as_str()?.to_string(),
+                labels,
+            })
+        })
+        .collect()
+}
+
+/// Evaluate check suites for a PR to determine overall CI status.
+/// Returns (has_failure, has_success, all_concluded).
+fn evaluate_check_suites(check_suites: &[GraphqlCheckSuite]) -> (bool, bool, bool) {
+    if check_suites.is_empty() {
+        return (false, false, false);
+    }
+
+    let mut has_failure = false;
+    let mut has_success = false;
+    let mut all_concluded = true;
+
+    for suite in check_suites {
+        match suite.conclusion.as_deref() {
+            Some("FAILURE") => has_failure = true,
+            Some("SUCCESS") => has_success = true,
+            Some(_) => {} // NEUTRAL, CANCELLED, etc.
+            None => all_concluded = false,
+        }
+    }
+
+    (has_failure, has_success, all_concluded)
+}
+
+/// Find the URL of the first failing check run across all check suites.
+fn first_failing_url(check_suites: &[GraphqlCheckSuite]) -> Option<String> {
+    for suite in check_suites {
+        if suite.conclusion.as_deref() == Some("FAILURE") {
+            for run in &suite.check_runs {
+                if run.conclusion.as_deref() == Some("FAILURE") && !run.details_url.is_empty() {
+                    return Some(run.details_url.clone());
+                }
+            }
+            if !suite.url.is_empty() {
+                return Some(suite.url.clone());
+            }
+        }
+    }
+    None
 }
 
 /// Snapshot of per-repo cursor state passed into `poll_repo_full`.
@@ -102,8 +380,7 @@ struct RepoPollParams {
     ci_pass_prs: HashSet<u64>,
     bot_review_cursor: Option<String>,
     pr_push_prev: HashMap<u64, String>,
-    open_prs_etag: Option<String>,
-    cached_open_prs: Vec<(u64, String, String, String)>,
+    release_etag: Option<String>,
 }
 
 /// Per-repo poll results collected concurrently, then merged into watcher state.
@@ -114,13 +391,8 @@ struct RepoPollResult {
     updated_merged_prs: Option<HashSet<u64>>,
     updated_ci_pass: HashSet<u64>,
     updated_bot_review_cursor: Option<String>,
-    /// Updated PR head SHA map. `Some` replaces previous cursor; `None` preserves it
-    /// (e.g. when `fetch_open_prs` fails due to a transient API error).
     updated_pr_push_cursors: Option<HashMap<u64, String>>,
-    /// New ETag for the open-PRs endpoint (update cache on fresh data).
-    new_open_prs_etag: Option<String>,
-    /// Fresh open PR list to cache (only set when we got a 200, not 304).
-    fresh_open_prs: Option<Vec<(u64, String, String, String)>>,
+    new_release_etag: Option<String>,
 }
 
 /// Watches GitHub repositories via the `gh` CLI.
@@ -142,10 +414,8 @@ pub struct GithubWatcher {
     pr_push_cursors: HashMap<String, HashMap<u64, String>>,
     /// Cached rate-limit remaining count and when it was fetched.
     last_rate_check: Option<(Instant, u32)>,
-    /// ETag per repo for the open-PRs endpoint (avoids rate-limit charge on 304).
-    open_prs_etags: HashMap<String, String>,
-    /// Cached open PR list per repo (used when ETag yields 304).
-    cached_open_prs: HashMap<String, Vec<(u64, String, String, String)>>,
+    /// ETag per repo for the release-runs endpoint (avoids rate-limit charge on 304).
+    release_etags: HashMap<String, String>,
 }
 
 impl GithubWatcher {
@@ -160,8 +430,7 @@ impl GithubWatcher {
             bot_review_cursors: HashMap::new(),
             pr_push_cursors: HashMap::new(),
             last_rate_check: None,
-            open_prs_etags: HashMap::new(),
-            cached_open_prs: HashMap::new(),
+            release_etags: HashMap::new(),
         }
     }
 
@@ -354,57 +623,28 @@ impl GithubWatcher {
         }
     }
 
-    /// Fetch open pull requests with ETag caching support.
-    /// Returns an `EtagApiResponse` whose `Fresh` variant body is the raw JSON array.
-    async fn fetch_open_prs(&self, repo: &str, etag: Option<&str>) -> EtagApiResponse {
-        let endpoint = format!("repos/{repo}/pulls?state=open&per_page=20");
-        self.gh_api_etag(&endpoint, etag).await
-    }
-
-    /// Fetch all completed workflow runs for a repo in a single API call.
-    /// Returns a map of branch name → latest completed run (most recent per branch).
-    async fn fetch_completed_runs(&self, repo: &str) -> HashMap<String, serde_json::Value> {
-        let endpoint = format!("repos/{repo}/actions/runs?per_page=20&status=completed");
-        let Some(response) = self.gh_api(&endpoint).await else {
-            return HashMap::new();
-        };
-        let Some(runs) = response.get("workflow_runs").and_then(|v| v.as_array()) else {
-            return HashMap::new();
-        };
-
-        // API returns newest first — first run per branch is the most recent.
-        let mut by_branch: HashMap<String, serde_json::Value> = HashMap::new();
-        for run in runs {
-            let branch = run
-                .get("head_branch")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if branch.is_empty() {
-                continue;
-            }
-            by_branch
-                .entry(branch.to_string())
-                .or_insert_with(|| run.clone());
-        }
-
-        by_branch
-    }
-
-    /// Poll for completed Release workflow runs on a repo.
-    /// Returns (signals, optional new max run ID for cursor update).
+    /// Poll for completed Release workflow runs on a repo (ETag-protected REST).
+    /// Returns (signals, optional new max run ID, optional new ETag).
     async fn poll_release_runs(
         &self,
         repo: &str,
         last_seen_id: u64,
-    ) -> (Vec<SignalUpdate>, Option<u64>) {
+        etag: Option<&str>,
+    ) -> (Vec<SignalUpdate>, Option<u64>, Option<String>) {
         let mut signals = Vec::new();
 
         let endpoint = format!("repos/{repo}/actions/runs?per_page=10&status=completed");
-        let Some(response) = self.gh_api(&endpoint).await else {
-            return (signals, None);
+        let (response, new_etag) = match self.gh_api_etag(&endpoint, etag).await {
+            EtagApiResponse::Fresh {
+                etag: new_etag,
+                body,
+            } => (body, new_etag),
+            EtagApiResponse::NotModified => return (signals, None, None),
+            EtagApiResponse::Error => return (signals, None, None),
         };
+
         let Some(runs) = response.get("workflow_runs").and_then(|v| v.as_array()) else {
-            return (signals, None);
+            return (signals, None, new_etag);
         };
 
         let mut max_id = last_seen_id;
@@ -459,104 +699,21 @@ impl GithubWatcher {
             None
         };
 
-        (signals, new_cursor)
+        (signals, new_cursor, new_etag)
     }
 
-    /// Poll for recently merged PRs on a repo.
-    /// Returns (signals, optional updated seen set for cursor update).
-    async fn poll_merged_prs(
-        &self,
-        repo: &str,
-        seen_prs: &HashSet<u64>,
-    ) -> (Vec<SignalUpdate>, Option<HashSet<u64>>) {
-        let mut signals = Vec::new();
-
-        let output = tokio::process::Command::new("gh")
-            .args([
-                "pr",
-                "list",
-                "--repo",
-                repo,
-                "--state",
-                "merged",
-                "--limit",
-                "10",
-                "--json",
-                "number,title,mergedAt,url",
-            ])
-            .output()
-            .await;
-
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            _ => return (signals, None),
-        };
-
-        let body = String::from_utf8_lossy(&output.stdout);
-        let prs: Vec<serde_json::Value> = match serde_json::from_str(&body) {
-            Ok(v) => v,
-            Err(_) => return (signals, None),
-        };
-
-        let mut new_seen = seen_prs.clone();
-
-        for pr in &prs {
-            let number = pr.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
-            if number == 0 || seen_prs.contains(&number) {
-                continue;
-            }
-
-            // Always mark as seen to prevent future re-emission
-            new_seen.insert(number);
-
-            // On first run (empty cursor), only emit for recently merged PRs
-            // to avoid flooding with old already-merged PRs.
-            if seen_prs.is_empty()
-                && !is_recent_merge(
-                    pr.get("mergedAt").and_then(|v| v.as_str()).unwrap_or(""),
-                    self.config.interval_secs,
-                )
-            {
-                continue;
-            }
-
-            let title = pr.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let url = pr.get("url").and_then(|v| v.as_str()).unwrap_or("");
-
-            let key = format!("merged-{repo}-{number}");
-            let msg = format!("\u{2705} Merged: {title} #{number}");
-            let mut signal = SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info);
-            if !url.is_empty() {
-                signal = signal.with_url(url);
-            }
-            signals.push(signal);
-        }
-
-        if new_seen != *seen_prs {
-            (signals, Some(new_seen))
-        } else {
-            (signals, None)
-        }
-    }
-
-    /// Poll for bot/automated code reviews on open PRs using a single GraphQL query.
-    /// Returns (signals, optional new cursor timestamp).
-    async fn poll_bot_reviews(
-        &self,
-        repo: &str,
-        cursor_ts: Option<&str>,
-    ) -> (Vec<SignalUpdate>, Option<String>) {
-        let mut signals = Vec::new();
-        let mut max_ts = cursor_ts.map(|s| s.to_string());
-
+    /// Execute a consolidated GraphQL query for a repo, fetching open PRs (with
+    /// reviews and CI check suites), merged PRs, and assigned issues in one call.
+    async fn poll_repo_graphql(&self, repo: &str) -> Option<RepoPollGraphqlResult> {
         let Some((owner, name)) = repo.split_once('/') else {
             warn!("invalid repo format for GraphQL query: {repo}");
-            return (signals, None);
+            return None;
         };
 
-        // Single GraphQL query fetches all open PRs and their reviews at once.
+        let username = self.username.as_deref().unwrap_or("");
+
         let query = format!(
-            r#"{{ repository(owner: "{owner}", name: "{name}") {{ pullRequests(states: OPEN, first: 20) {{ nodes {{ number title reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} }} }}"#
+            r#"{{ repository(owner: "{owner}", name: "{name}") {{ openPRs: pullRequests(states: [OPEN], first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url headRefName updatedAt commits(last: 1) {{ nodes {{ commit {{ oid checkSuites(first: 10) {{ nodes {{ conclusion url checkRuns(first: 10) {{ nodes {{ name conclusion detailsUrl }} }} }} }} }} }} }} reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} mergedPRs: pullRequests(states: [MERGED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url mergedAt }} }} assignedIssues: issues(states: [OPEN], first: 10, filterBy: {{assignee: "{username}"}}) {{ nodes {{ number title url updatedAt labels(first: 5) {{ nodes {{ name }} }} }} }} }} }}"#
         );
         let query_arg = format!("query={query}");
 
@@ -568,14 +725,14 @@ impl GithubWatcher {
             Ok(o) => o,
             Err(e) => {
                 warn!("failed to run GraphQL query for {repo}: {e}");
-                return (signals, None);
+                return None;
             }
         };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!("GraphQL query for {repo} failed: {}", stderr.trim());
-            return (signals, None);
+            return None;
         }
 
         let body = String::from_utf8_lossy(&output.stdout);
@@ -583,129 +740,18 @@ impl GithubWatcher {
             Ok(v) => v,
             Err(e) => {
                 warn!("failed to parse GraphQL response for {repo}: {e}");
-                return (signals, None);
+                return None;
             }
         };
 
-        let Some(pr_nodes) = response
-            .pointer("/data/repository/pullRequests/nodes")
-            .and_then(|v| v.as_array())
-        else {
-            // Could be a permissions error or empty repo
-            if let Some(errors) = response.get("errors").and_then(|v| v.as_array()) {
-                for err in errors {
-                    let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    warn!("GraphQL error for {repo}: {msg}");
-                }
-            }
-            return (signals, None);
-        };
-
-        for pr_node in pr_nodes {
-            let pr_number = pr_node.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
-            let pr_title = pr_node.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            if pr_number == 0 {
-                continue;
-            }
-
-            let Some(review_nodes) = pr_node.pointer("/reviews/nodes").and_then(|v| v.as_array())
-            else {
-                continue;
-            };
-
-            for review in review_nodes {
-                let Some(author) = review.get("author") else {
-                    continue;
-                };
-                if author.is_null() {
-                    continue;
-                }
-                let login = author.get("login").and_then(|v| v.as_str()).unwrap_or("");
-                let author_type = author
-                    .get("__typename")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                let is_bot = author_type == "Bot" || login.ends_with("[bot]");
-                if !is_bot {
-                    continue;
-                }
-
-                let submitted_at = review
-                    .get("submittedAt")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if submitted_at.is_empty() {
-                    continue;
-                }
-
-                // Skip reviews older than or equal to cursor
-                if let Some(cursor) = cursor_ts
-                    && submitted_at <= cursor
-                {
-                    continue;
-                }
-
-                let state = review
-                    .get("state")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("COMMENTED");
-                let body = review.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                let review_id = review
-                    .get("databaseId")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let review_url = review.get("url").and_then(|v| v.as_str()).unwrap_or("");
-
-                let truncated_body: String = body.chars().take(500).collect();
-
-                let metadata = serde_json::json!({
-                    "pr_number": pr_number,
-                    "pr_title": pr_title,
-                    "repo": repo,
-                    "bot_name": login,
-                    "review_state": state,
-                    "review_body": truncated_body,
-                });
-
-                let severity = match state {
-                    "CHANGES_REQUESTED" => Severity::Warning,
-                    "APPROVED" => Severity::Info,
-                    _ => Severity::Info,
-                };
-
-                let bot_display = login.strip_suffix("[bot]").unwrap_or(login);
-                let key = format!("bot-review-{repo}-{pr_number}-{review_id}");
-                let title = format!("{bot_display} reviewed PR #{pr_number}: {state}");
-                let mut signal = SignalUpdate::new("github_bot_review", &key, &title, severity)
-                    .with_metadata(metadata.to_string());
-                if !truncated_body.is_empty() {
-                    signal = signal.with_body(&truncated_body);
-                }
-                if !review_url.is_empty() {
-                    signal = signal.with_url(review_url);
-                }
-                signals.push(signal);
-
-                match &max_ts {
-                    Some(ts) if submitted_at > ts.as_str() => {
-                        max_ts = Some(submitted_at.to_string());
-                    }
-                    None => {
-                        max_ts = Some(submitted_at.to_string());
-                    }
-                    _ => {}
-                }
+        if let Some(errors) = response.get("errors").and_then(|v| v.as_array()) {
+            for err in errors {
+                let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                warn!("GraphQL error for {repo}: {msg}");
             }
         }
 
-        let new_cursor = if max_ts.as_deref() != cursor_ts {
-            max_ts
-        } else {
-            None
-        };
-
-        (signals, new_cursor)
+        parse_graphql_result(&response)
     }
 
     /// Detect new commits pushed to open PRs by comparing head SHAs against cursors.
@@ -738,26 +784,9 @@ impl GithubWatcher {
         (signals, new_cursors)
     }
 
-    async fn poll_repo(&self, repo: &str) -> Vec<(String, SignalUpdate)> {
+    /// Poll watched labels via REST (not available in GraphQL mega-query).
+    async fn poll_watched_labels(&self, repo: &str) -> Vec<(String, SignalUpdate)> {
         let mut signals = Vec::new();
-
-        // Open issues assigned to user
-        if let Some(ref username) = self.username
-            && let Some(issues_value) = self
-                .gh_api(&format!(
-                    "repos/{repo}/issues?state=open&assignee={username}&per_page=10"
-                ))
-                .await
-            && let Some(issues) = issues_value.as_array()
-        {
-            for issue in issues {
-                if let Some((key, signal)) = issue_to_signal(repo, issue) {
-                    signals.push((key, signal));
-                }
-            }
-        }
-
-        // Watched labels
         for label in &self.config.watch_labels {
             if let Some(issues_value) = self
                 .gh_api(&format!(
@@ -773,22 +802,6 @@ impl GithubWatcher {
                 }
             }
         }
-
-        // Failed CI checks
-        if let Some(response) = self
-            .gh_api(&format!(
-                "repos/{repo}/commits/HEAD/check-runs?status=completed&per_page=10"
-            ))
-            .await
-            && let Some(check_runs) = response.get("check_runs").and_then(|v| v.as_array())
-        {
-            for run in check_runs {
-                if let Some((key, signal)) = check_run_to_signal(repo, run) {
-                    signals.push((key, signal));
-                }
-            }
-        }
-
         signals
     }
 
@@ -833,9 +846,9 @@ impl GithubWatcher {
         }
     }
 
-    /// Poll everything for a single repo concurrently: issues, labels, CI checks,
-    /// release runs, merged PRs, and PR CI status. Returns a self-contained result
-    /// that the caller merges back into watcher state.
+    /// Poll everything for a single repo: one GraphQL mega-query for PRs/reviews/
+    /// issues/CI, one ETag-protected REST call for release runs, plus optional
+    /// REST calls for watched labels.
     async fn poll_repo_full(&self, params: RepoPollParams) -> RepoPollResult {
         let RepoPollParams {
             repo,
@@ -844,106 +857,193 @@ impl GithubWatcher {
             mut ci_pass_prs,
             bot_review_cursor,
             pr_push_prev,
-            open_prs_etag,
-            cached_open_prs,
+            release_etag,
         } = params;
 
-        // Run independent poll types concurrently within this repo.
+        // Run GraphQL mega-query, release runs (REST+ETag), and watched labels concurrently.
         let (
-            repo_signals,
-            (release_signals, new_release_cursor),
-            (merged_signals, updated_merged_prs),
-            open_prs_response,
-            (bot_review_signals, updated_bot_review_cursor),
-            completed_runs,
+            graphql_result,
+            (release_signals, new_release_cursor, new_release_etag),
+            label_signals,
         ) = tokio::join!(
-            self.poll_repo(&repo),
-            self.poll_release_runs(&repo, last_seen_release_id),
-            self.poll_merged_prs(&repo, &seen_merged_prs),
-            self.fetch_open_prs(&repo, open_prs_etag.as_deref()),
-            self.poll_bot_reviews(&repo, bot_review_cursor.as_deref()),
-            self.fetch_completed_runs(&repo),
+            self.poll_repo_graphql(&repo),
+            self.poll_release_runs(&repo, last_seen_release_id, release_etag.as_deref()),
+            self.poll_watched_labels(&repo),
         );
 
-        let mut signals: Vec<SignalUpdate> = repo_signals.into_iter().map(|(_, s)| s).collect();
+        let mut signals: Vec<SignalUpdate> = label_signals.into_iter().map(|(_, s)| s).collect();
         signals.extend(release_signals);
-        signals.extend(merged_signals);
-        signals.extend(bot_review_signals);
 
-        // Resolve open PRs from ETag response: Fresh → parse new data, NotModified → use cache.
-        let (prs, new_open_prs_etag, fresh_open_prs) = match open_prs_response {
-            EtagApiResponse::Fresh { etag, body } => {
-                let parsed = parse_open_prs(&body);
-                let cached = parsed.clone();
-                (Some(parsed), etag, Some(cached))
+        let mut updated_bot_review_cursor = None;
+        let mut updated_merged_prs = None;
+        let mut updated_pr_push_cursors = None;
+
+        if let Some(gql) = graphql_result {
+            // --- Assigned issue signals ---
+            for issue in &gql.assigned_issues {
+                let severity = if issue.labels.iter().any(|l| l == "critical" || l == "P0") {
+                    Severity::Critical
+                } else if issue.labels.iter().any(|l| l == "bug" || l == "P1") {
+                    Severity::Warning
+                } else {
+                    Severity::Info
+                };
+                let key = format!("gh-issue-{repo}-{}", issue.number);
+                let signal = SignalUpdate::new(
+                    "github",
+                    &key,
+                    format!("[{repo}] issue #{}: {}", issue.number, issue.title),
+                    severity,
+                )
+                .with_url(&issue.url);
+                signals.push(signal);
             }
-            EtagApiResponse::NotModified => {
-                // Use cached PRs from the previous poll.
-                (Some(cached_open_prs), open_prs_etag, None)
-            }
-            EtagApiResponse::Error => (None, None, None),
-        };
 
-        // If fetch_open_prs failed (transient API error), preserve previous cursors
-        // and skip PR-dependent polling (CI status, push detection).
-        let (prs, updated_pr_push_cursors) = match prs {
-            Some(prs) => {
-                let (pr_push_signals, cursors) = Self::poll_pr_pushes(&repo, &prs, &pr_push_prev);
-                signals.extend(pr_push_signals);
-                (prs, Some(cursors))
-            }
-            None => (Vec::new(), None),
-        };
+            // --- Bot review signals (same cursor-based dedup as before) ---
+            let cursor_ts = bot_review_cursor.as_deref();
+            let mut max_ts = cursor_ts.map(|s| s.to_string());
 
-        // Match completed runs to open PRs by branch (single batch fetch instead of per-PR).
-        let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _, _)| *n).collect();
-
-        for (pr_number, pr_title, branch, _) in &prs {
-            if let Some(run) = completed_runs.get(branch) {
-                let conclusion = run.get("conclusion").and_then(|v| v.as_str());
-                let run_id = run.get("id").and_then(|v| v.as_u64());
-                let run_url = run.get("html_url").and_then(|v| v.as_str());
-
-                match conclusion {
-                    Some("failure") => {
-                        ci_pass_prs.remove(pr_number);
-                        if let Some(run_id) = run_id {
-                            let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
-                            let mut signal = SignalUpdate::new(
-                                "github_ci_failure",
-                                &key,
-                                format!("CI failed: {pr_title} (#{pr_number})"),
-                                Severity::Error,
-                            );
-                            if let Some(url) = run_url {
-                                signal = signal.with_body(url).with_url(url);
-                            }
-                            signals.push(signal);
+            for pr in &gql.open_prs {
+                for review in &pr.reviews {
+                    let is_bot =
+                        review.author_type == "Bot" || review.author_login.ends_with("[bot]");
+                    if !is_bot || review.submitted_at.is_empty() {
+                        continue;
+                    }
+                    if let Some(cursor) = cursor_ts {
+                        if review.submitted_at.as_str() <= cursor {
+                            continue;
                         }
                     }
-                    Some("success") => {
-                        if !ci_pass_prs.contains(pr_number) {
-                            ci_pass_prs.insert(*pr_number);
-                            let rid = run_id.unwrap_or(0);
-                            let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
-                            let mut signal = SignalUpdate::new(
-                                "github_ci_pass",
-                                &key,
-                                format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
-                                Severity::Info,
-                            );
-                            if let Some(url) = run_url {
-                                signal = signal.with_url(url);
-                            }
-                            signals.push(signal);
-                        }
+
+                    let truncated_body: String = review.body.chars().take(500).collect();
+                    let metadata = serde_json::json!({
+                        "pr_number": pr.number,
+                        "pr_title": pr.title,
+                        "repo": repo,
+                        "bot_name": review.author_login,
+                        "review_state": review.state,
+                        "review_body": truncated_body,
+                    });
+                    let severity = match review.state.as_str() {
+                        "CHANGES_REQUESTED" => Severity::Warning,
+                        _ => Severity::Info,
+                    };
+                    let bot_display = review
+                        .author_login
+                        .strip_suffix("[bot]")
+                        .unwrap_or(&review.author_login);
+                    let key = format!("bot-review-{repo}-{}-{}", pr.number, review.database_id);
+                    let title =
+                        format!("{bot_display} reviewed PR #{}: {}", pr.number, review.state);
+                    let mut signal = SignalUpdate::new("github_bot_review", &key, &title, severity)
+                        .with_metadata(metadata.to_string());
+                    if !truncated_body.is_empty() {
+                        signal = signal.with_body(&truncated_body);
                     }
-                    _ => {}
+                    if !review.url.is_empty() {
+                        signal = signal.with_url(&review.url);
+                    }
+                    signals.push(signal);
+
+                    match &max_ts {
+                        Some(ts) if review.submitted_at.as_str() > ts.as_str() => {
+                            max_ts = Some(review.submitted_at.clone());
+                        }
+                        None => {
+                            max_ts = Some(review.submitted_at.clone());
+                        }
+                        _ => {}
+                    }
                 }
             }
-        }
+            if max_ts.as_deref() != cursor_ts {
+                updated_bot_review_cursor = max_ts;
+            }
 
-        ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
+            // --- Merged PR signals (same seen-set dedup as before) ---
+            let mut new_seen = seen_merged_prs.clone();
+            for pr in &gql.merged_prs {
+                if pr.number == 0 || seen_merged_prs.contains(&pr.number) {
+                    continue;
+                }
+                new_seen.insert(pr.number);
+                if seen_merged_prs.is_empty()
+                    && !is_recent_merge(&pr.merged_at, self.config.interval_secs)
+                {
+                    continue;
+                }
+                let key = format!("merged-{repo}-{}", pr.number);
+                let msg = format!("\u{2705} Merged: {} #{}", pr.title, pr.number);
+                let mut signal = SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info);
+                if !pr.url.is_empty() {
+                    signal = signal.with_url(&pr.url);
+                }
+                signals.push(signal);
+            }
+            if new_seen != seen_merged_prs {
+                updated_merged_prs = Some(new_seen);
+            }
+
+            // --- PR push detection ---
+            let prs: Vec<(u64, String, String, String)> = gql
+                .open_prs
+                .iter()
+                .map(|pr| {
+                    (
+                        pr.number,
+                        pr.title.clone(),
+                        pr.head_ref_name.clone(),
+                        pr.head_sha.clone(),
+                    )
+                })
+                .collect();
+            let (pr_push_signals, cursors) = Self::poll_pr_pushes(&repo, &prs, &pr_push_prev);
+            signals.extend(pr_push_signals);
+            updated_pr_push_cursors = Some(cursors);
+
+            // --- CI pass/fail signals from per-PR check suites ---
+            let open_pr_numbers: HashSet<u64> = gql.open_prs.iter().map(|pr| pr.number).collect();
+
+            for pr in &gql.open_prs {
+                let (has_failure, has_success, all_concluded) =
+                    evaluate_check_suites(&pr.check_suites);
+
+                if has_failure {
+                    ci_pass_prs.remove(&pr.number);
+                    let sha_short = &pr.head_sha[..7.min(pr.head_sha.len())];
+                    let key = format!("ci-failure-{repo}-{}-{sha_short}", pr.number);
+                    let mut signal = SignalUpdate::new(
+                        "github_ci_failure",
+                        &key,
+                        format!("CI failed: {} (#{})", pr.title, pr.number),
+                        Severity::Error,
+                    );
+                    if let Some(url) = first_failing_url(&pr.check_suites) {
+                        signal = signal.with_body(&url).with_url(&url);
+                    }
+                    signals.push(signal);
+                } else if has_success && all_concluded && !ci_pass_prs.contains(&pr.number) {
+                    ci_pass_prs.insert(pr.number);
+                    let sha_short = &pr.head_sha[..7.min(pr.head_sha.len())];
+                    let key = format!("ci-pass-{repo}-{}-{sha_short}", pr.number);
+                    let mut signal = SignalUpdate::new(
+                        "github_ci_pass",
+                        &key,
+                        format!("\u{2705} CI passed on PR #{}: {}", pr.number, pr.title),
+                        Severity::Info,
+                    );
+                    if let Some(suite) = pr.check_suites.first() {
+                        if !suite.url.is_empty() {
+                            signal = signal.with_url(&suite.url);
+                        }
+                    }
+                    signals.push(signal);
+                }
+            }
+
+            ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
+        }
 
         RepoPollResult {
             repo,
@@ -953,8 +1053,7 @@ impl GithubWatcher {
             updated_ci_pass: ci_pass_prs,
             updated_bot_review_cursor,
             updated_pr_push_cursors,
-            new_open_prs_etag,
-            fresh_open_prs,
+            new_release_etag,
         }
     }
 }
@@ -989,8 +1088,7 @@ impl Watcher for GithubWatcher {
                 let ci_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
                 let bot_cursor = self.bot_review_cursors.get(repo).cloned();
                 let pr_push = self.pr_push_cursors.get(repo).cloned().unwrap_or_default();
-                let etag = self.open_prs_etags.get(repo).cloned();
-                let cached = self.cached_open_prs.get(repo).cloned().unwrap_or_default();
+                let rel_etag = self.release_etags.get(repo).cloned();
                 self.poll_repo_full(RepoPollParams {
                     repo: repo.clone(),
                     last_seen_release_id: last_seen,
@@ -998,8 +1096,7 @@ impl Watcher for GithubWatcher {
                     ci_pass_prs: ci_prs,
                     bot_review_cursor: bot_cursor,
                     pr_push_prev: pr_push,
-                    open_prs_etag: etag,
-                    cached_open_prs: cached,
+                    release_etag: rel_etag,
                 })
             })
             .collect();
@@ -1037,11 +1134,8 @@ impl Watcher for GithubWatcher {
                 self.pr_push_cursors.insert(result.repo.clone(), pr_push);
             }
 
-            if let Some(etag) = result.new_open_prs_etag {
-                self.open_prs_etags.insert(result.repo.clone(), etag);
-            }
-            if let Some(prs) = result.fresh_open_prs {
-                self.cached_open_prs.insert(result.repo.clone(), prs);
+            if let Some(etag) = result.new_release_etag {
+                self.release_etags.insert(result.repo.clone(), etag);
             }
         }
 
@@ -1117,47 +1211,6 @@ impl Watcher for GithubWatcher {
     }
 }
 
-fn has_label(issue: &serde_json::Value, label_name: &str) -> bool {
-    issue
-        .get("labels")
-        .and_then(|v| v.as_array())
-        .is_some_and(|labels| {
-            labels
-                .iter()
-                .any(|l| l.get("name").and_then(|n| n.as_str()) == Some(label_name))
-        })
-}
-
-fn issue_to_signal(repo: &str, issue: &serde_json::Value) -> Option<(String, SignalUpdate)> {
-    let number = issue.get("number")?.as_u64()?;
-    let title = issue.get("title")?.as_str()?;
-    let html_url = issue.get("html_url")?.as_str()?;
-    let body = issue.get("body").and_then(|v| v.as_str()).unwrap_or("");
-
-    let is_pr = issue.get("pull_request").is_some();
-    let kind = if is_pr { "pr" } else { "issue" };
-
-    let severity = if has_label(issue, "critical") || has_label(issue, "P0") {
-        Severity::Critical
-    } else if has_label(issue, "bug") || has_label(issue, "P1") {
-        Severity::Warning
-    } else {
-        Severity::Info
-    };
-
-    let key = format!("gh-{kind}-{repo}-{number}");
-    let signal = SignalUpdate::new(
-        "github",
-        &key,
-        format!("[{repo}] {kind} #{number}: {title}"),
-        severity,
-    )
-    .with_body(body)
-    .with_url(html_url);
-
-    Some((key, signal))
-}
-
 fn labeled_issue_to_signal(
     repo: &str,
     issue: &serde_json::Value,
@@ -1191,32 +1244,6 @@ fn labeled_issue_to_signal(
     Some((key, signal))
 }
 
-fn check_run_to_signal(repo: &str, run: &serde_json::Value) -> Option<(String, SignalUpdate)> {
-    let conclusion = run.get("conclusion")?.as_str()?;
-    if conclusion != "failure" {
-        return None;
-    }
-
-    let name = run.get("name")?.as_str()?;
-    let html_url = run.get("html_url").and_then(|v| v.as_str()).unwrap_or("");
-    let id = run.get("id")?.as_u64()?;
-
-    let key = format!("gh-ci-{repo}-{id}");
-    let mut signal = SignalUpdate::new(
-        "github_ci_failure",
-        &key,
-        format!("[{repo}] CI failed: {name}"),
-        Severity::Warning,
-    )
-    .with_body(format!("Check run '{name}' failed on {repo}"));
-
-    if !html_url.is_empty() {
-        signal = signal.with_url(html_url);
-    }
-
-    Some((key, signal))
-}
-
 /// Check if a merged PR is recent enough to emit a signal on first run.
 fn is_recent_merge(merged_at_str: &str, interval_secs: u64) -> bool {
     chrono::DateTime::parse_from_rfc3339(merged_at_str)
@@ -1246,75 +1273,14 @@ mod tests {
     }
 
     #[test]
-    fn test_issue_to_signal() {
-        let issue = serde_json::json!({
-            "number": 42,
-            "title": "Something broke",
-            "html_url": "https://github.com/org/repo/issues/42",
-            "body": "It's broken",
-            "labels": [{"name": "bug"}],
-        });
-        let (key, signal) = issue_to_signal("org/repo", &issue).unwrap();
-        assert_eq!(key, "gh-issue-org/repo-42");
-        assert_eq!(signal.severity, Severity::Warning); // "bug" label
-        assert!(signal.title.contains("#42"));
-    }
-
-    #[test]
-    fn test_issue_to_signal_pr() {
-        let issue = serde_json::json!({
-            "number": 10,
-            "title": "Add feature",
-            "html_url": "https://github.com/org/repo/pull/10",
-            "pull_request": {},
-            "labels": [],
-        });
-        let (key, _) = issue_to_signal("org/repo", &issue).unwrap();
-        assert!(key.starts_with("gh-pr-"));
-    }
-
-    #[test]
-    fn test_check_run_failure() {
-        let run = serde_json::json!({
-            "id": 999,
-            "name": "CI Build",
-            "conclusion": "failure",
-            "html_url": "https://github.com/org/repo/actions/runs/999",
-        });
-        let (key, signal) = check_run_to_signal("org/repo", &run).unwrap();
-        assert_eq!(key, "gh-ci-org/repo-999");
-        assert!(signal.title.contains("CI failed"));
-    }
-
-    #[test]
-    fn test_check_run_success_ignored() {
-        let run = serde_json::json!({
-            "id": 999,
-            "name": "CI Build",
-            "conclusion": "success",
-        });
-        assert!(check_run_to_signal("org/repo", &run).is_none());
-    }
-
-    #[test]
-    fn test_has_label() {
-        let issue = serde_json::json!({
-            "labels": [{"name": "bug"}, {"name": "P1"}],
-        });
-        assert!(has_label(&issue, "bug"));
-        assert!(has_label(&issue, "P1"));
-        assert!(!has_label(&issue, "P0"));
-    }
-
-    #[test]
     fn test_ci_failure_signal() {
-        let run_id = 456u64;
         let pr_title = "Add feature X";
         let pr_number = 42u64;
         let repo = "org/repo";
+        let sha_short = "abc1234";
         let run_url = "https://github.com/org/repo/actions/runs/456";
 
-        let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
+        let key = format!("ci-failure-{repo}-{pr_number}-{sha_short}");
         let signal = SignalUpdate::new(
             "github_ci_failure",
             &key,
@@ -1324,7 +1290,7 @@ mod tests {
         .with_body(run_url)
         .with_url(run_url);
 
-        assert_eq!(signal.external_id, "ci-failure-org/repo-42-456");
+        assert_eq!(signal.external_id, "ci-failure-org/repo-42-abc1234");
         assert_eq!(signal.severity, Severity::Error);
         assert!(signal.title.contains("CI failed"));
         assert!(signal.title.contains("#42"));
@@ -1336,21 +1302,19 @@ mod tests {
     fn test_ci_pass_signal() {
         let pr_title = "Add feature X";
         let pr_number = 42u64;
-        let run_id = 789u64;
         let repo = "org/repo";
-        let run_url = "https://github.com/org/repo/actions/runs/789";
+        let sha_short = "def5678";
 
-        let key = format!("ci-pass-{repo}-{pr_number}-{run_id}");
+        let key = format!("ci-pass-{repo}-{pr_number}-{sha_short}");
         let signal = SignalUpdate::new(
             "github_ci_pass",
             &key,
             format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
             Severity::Info,
-        )
-        .with_url(run_url);
+        );
 
         assert_eq!(signal.source, "github_ci_pass");
-        assert_eq!(signal.external_id, "ci-pass-org/repo-42-789");
+        assert_eq!(signal.external_id, "ci-pass-org/repo-42-def5678");
         assert_eq!(signal.severity, Severity::Info);
         assert!(signal.title.contains("CI passed on PR #42"));
         assert!(signal.title.contains("Add feature X"));
@@ -1625,5 +1589,223 @@ mod tests {
         assert!(signals.iter().any(|s| s.title.contains("PR #3")));
         assert!(!signals.iter().any(|s| s.title.contains("PR #2")));
         assert_eq!(new_cursors.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_graphql_open_prs() {
+        let nodes = serde_json::json!([
+            {
+                "number": 42,
+                "title": "Add feature",
+                "url": "https://github.com/org/repo/pull/42",
+                "headRefName": "feat-branch",
+                "updatedAt": "2024-01-01T00:00:00Z",
+                "commits": { "nodes": [{ "commit": {
+                    "oid": "abc123def456",
+                    "checkSuites": { "nodes": [
+                        {
+                            "conclusion": "SUCCESS",
+                            "url": "https://github.com/org/repo/check-suite/1",
+                            "checkRuns": { "nodes": [
+                                { "name": "build", "conclusion": "SUCCESS", "detailsUrl": "https://example.com/build" }
+                            ]}
+                        }
+                    ]}
+                }}]},
+                "reviews": { "nodes": [
+                    {
+                        "databaseId": 100,
+                        "state": "APPROVED",
+                        "body": "LGTM",
+                        "submittedAt": "2024-01-01T12:00:00Z",
+                        "url": "https://github.com/org/repo/pull/42#review-100",
+                        "author": { "__typename": "Bot", "login": "copilot[bot]" }
+                    }
+                ]}
+            }
+        ]);
+
+        let prs = parse_graphql_open_prs(&nodes);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 42);
+        assert_eq!(prs[0].title, "Add feature");
+        assert_eq!(prs[0].head_ref_name, "feat-branch");
+        assert_eq!(prs[0].head_sha, "abc123def456");
+        assert_eq!(prs[0].check_suites.len(), 1);
+        assert_eq!(
+            prs[0].check_suites[0].conclusion.as_deref(),
+            Some("SUCCESS")
+        );
+        assert_eq!(prs[0].reviews.len(), 1);
+        assert_eq!(prs[0].reviews[0].author_login, "copilot[bot]");
+        assert_eq!(prs[0].reviews[0].author_type, "Bot");
+    }
+
+    #[test]
+    fn test_parse_graphql_merged_prs() {
+        let nodes = serde_json::json!([
+            {
+                "number": 10,
+                "title": "Fix bug",
+                "url": "https://github.com/org/repo/pull/10",
+                "mergedAt": "2024-01-15T08:00:00Z"
+            }
+        ]);
+        let prs = parse_graphql_merged_prs(&nodes);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 10);
+        assert_eq!(prs[0].merged_at, "2024-01-15T08:00:00Z");
+    }
+
+    #[test]
+    fn test_parse_graphql_issues() {
+        let nodes = serde_json::json!([
+            {
+                "number": 5,
+                "title": "Bug report",
+                "url": "https://github.com/org/repo/issues/5",
+                "updatedAt": "2024-01-01T00:00:00Z",
+                "labels": { "nodes": [{ "name": "bug" }, { "name": "P1" }] }
+            }
+        ]);
+        let issues = parse_graphql_issues(&nodes);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].number, 5);
+        assert_eq!(issues[0].labels, vec!["bug", "P1"]);
+    }
+
+    #[test]
+    fn test_evaluate_check_suites_all_pass() {
+        let suites = vec![
+            GraphqlCheckSuite {
+                conclusion: Some("SUCCESS".into()),
+                url: String::new(),
+                check_runs: vec![],
+            },
+            GraphqlCheckSuite {
+                conclusion: Some("SUCCESS".into()),
+                url: String::new(),
+                check_runs: vec![],
+            },
+        ];
+        let (fail, success, all) = evaluate_check_suites(&suites);
+        assert!(!fail);
+        assert!(success);
+        assert!(all);
+    }
+
+    #[test]
+    fn test_evaluate_check_suites_has_failure() {
+        let suites = vec![
+            GraphqlCheckSuite {
+                conclusion: Some("SUCCESS".into()),
+                url: String::new(),
+                check_runs: vec![],
+            },
+            GraphqlCheckSuite {
+                conclusion: Some("FAILURE".into()),
+                url: String::new(),
+                check_runs: vec![],
+            },
+        ];
+        let (fail, success, all) = evaluate_check_suites(&suites);
+        assert!(fail);
+        assert!(success);
+        assert!(all);
+    }
+
+    #[test]
+    fn test_evaluate_check_suites_in_progress() {
+        let suites = vec![
+            GraphqlCheckSuite {
+                conclusion: Some("SUCCESS".into()),
+                url: String::new(),
+                check_runs: vec![],
+            },
+            GraphqlCheckSuite {
+                conclusion: None,
+                url: String::new(),
+                check_runs: vec![],
+            },
+        ];
+        let (fail, success, all) = evaluate_check_suites(&suites);
+        assert!(!fail);
+        assert!(success);
+        assert!(!all);
+    }
+
+    #[test]
+    fn test_evaluate_check_suites_empty() {
+        let (fail, success, all) = evaluate_check_suites(&[]);
+        assert!(!fail);
+        assert!(!success);
+        assert!(!all);
+    }
+
+    #[test]
+    fn test_first_failing_url_finds_check_run() {
+        let suites = vec![GraphqlCheckSuite {
+            conclusion: Some("FAILURE".into()),
+            url: "https://suite-url".into(),
+            check_runs: vec![
+                GraphqlCheckRun {
+                    conclusion: Some("SUCCESS".into()),
+                    details_url: "https://pass-url".into(),
+                },
+                GraphqlCheckRun {
+                    conclusion: Some("FAILURE".into()),
+                    details_url: "https://fail-url".into(),
+                },
+            ],
+        }];
+        assert_eq!(
+            first_failing_url(&suites).as_deref(),
+            Some("https://fail-url")
+        );
+    }
+
+    #[test]
+    fn test_first_failing_url_falls_back_to_suite() {
+        let suites = vec![GraphqlCheckSuite {
+            conclusion: Some("FAILURE".into()),
+            url: "https://suite-url".into(),
+            check_runs: vec![],
+        }];
+        assert_eq!(
+            first_failing_url(&suites).as_deref(),
+            Some("https://suite-url")
+        );
+    }
+
+    #[test]
+    fn test_parse_graphql_result_full() {
+        let response = serde_json::json!({
+            "data": {
+                "repository": {
+                    "openPRs": { "nodes": [
+                        {
+                            "number": 1,
+                            "title": "PR 1",
+                            "url": "https://example.com/pr/1",
+                            "headRefName": "branch-1",
+                            "updatedAt": "2024-01-01T00:00:00Z",
+                            "commits": { "nodes": [{ "commit": { "oid": "sha1", "checkSuites": { "nodes": [] } } }] },
+                            "reviews": { "nodes": [] }
+                        }
+                    ]},
+                    "mergedPRs": { "nodes": [
+                        { "number": 2, "title": "PR 2", "url": "https://example.com/pr/2", "mergedAt": "2024-01-01T00:00:00Z" }
+                    ]},
+                    "assignedIssues": { "nodes": [
+                        { "number": 3, "title": "Issue 3", "url": "https://example.com/issue/3", "updatedAt": "2024-01-01T00:00:00Z", "labels": { "nodes": [] } }
+                    ]}
+                }
+            }
+        });
+
+        let result = parse_graphql_result(&response).unwrap();
+        assert_eq!(result.open_prs.len(), 1);
+        assert_eq!(result.merged_prs.len(), 1);
+        assert_eq!(result.assigned_issues.len(), 1);
     }
 }
