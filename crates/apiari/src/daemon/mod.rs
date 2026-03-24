@@ -609,10 +609,15 @@ async fn run_coordinator_task(
                 };
 
                 // Restrict to read-only for signal follow-throughs — no Bash allowed.
-                // Push directly into opts so coordinator state is never mutated.
+                // Modify opts directly so coordinator state is never mutated.
                 if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
                     opts.disallowed_tools.push("Bash".to_string());
                 }
+                // Also remove Bash from allowed_tools to avoid conflicting CLI
+                // flags (--allowedTools and --disallowedTools both containing Bash),
+                // which can cause Claude Code to persistently block Bash in the
+                // resumed session.
+                opts.allowed_tools.retain(|t| t != "Bash");
 
                 info!(
                     "[{slot_name}] signal follow-through START source={source} signals={} has_action={} disallowed_tools={:?}",
@@ -1939,8 +1944,13 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    coordinator.set_tools(default_coordinator_tools());
-    coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
+    let allowed = default_coordinator_tools();
+    let disallowed = default_coordinator_disallowed_tools();
+    info!(
+        "[{workspace_name}] coordinator allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}"
+    );
+    coordinator.set_tools(allowed);
+    coordinator.set_disallowed_tools(disallowed);
     coordinator.set_working_dir(ws.config.root.clone());
     if let Some(settings) = config::coordinator_settings_json() {
         coordinator.set_settings(settings);
@@ -2171,8 +2181,11 @@ fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    coordinator.set_tools(default_coordinator_tools());
-    coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
+    let allowed = default_coordinator_tools();
+    let disallowed = default_coordinator_disallowed_tools();
+    info!("[{ws_name}] coordinator allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}");
+    coordinator.set_tools(allowed);
+    coordinator.set_disallowed_tools(disallowed);
     coordinator.set_working_dir(config.root.clone());
     if let Some(settings) = config::coordinator_settings_json() {
         coordinator.set_settings(settings);
