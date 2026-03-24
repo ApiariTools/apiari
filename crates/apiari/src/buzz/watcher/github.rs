@@ -703,10 +703,16 @@ impl GithubWatcher {
             return None;
         };
 
-        let username = self.username.as_deref().unwrap_or("");
+        let issues_fragment = if let Some(username) = &self.username {
+            format!(
+                r#"assignedIssues: issues(states: [OPEN], first: 10, filterBy: {{assignee: "{username}"}}) {{ nodes {{ number title url updatedAt labels(first: 5) {{ nodes {{ name }} }} }} }}"#
+            )
+        } else {
+            String::new()
+        };
 
         let query = format!(
-            r#"{{ repository(owner: "{owner}", name: "{name}") {{ openPRs: pullRequests(states: [OPEN], first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url headRefName updatedAt commits(last: 1) {{ nodes {{ commit {{ oid checkSuites(first: 10) {{ nodes {{ conclusion url checkRuns(first: 10) {{ nodes {{ name conclusion detailsUrl }} }} }} }} }} }} }} reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} mergedPRs: pullRequests(states: [MERGED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url mergedAt }} }} assignedIssues: issues(states: [OPEN], first: 10, filterBy: {{assignee: "{username}"}}) {{ nodes {{ number title url updatedAt labels(first: 5) {{ nodes {{ name }} }} }} }} }} }}"#
+            r#"{{ repository(owner: "{owner}", name: "{name}") {{ openPRs: pullRequests(states: [OPEN], first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url headRefName updatedAt commits(last: 1) {{ nodes {{ commit {{ oid checkSuites(first: 10) {{ nodes {{ conclusion url checkRuns(first: 10) {{ nodes {{ name conclusion detailsUrl }} }} }} }} }} }} }} reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} mergedPRs: pullRequests(states: [MERGED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url mergedAt }} }} {issues_fragment} }} }}"#
         );
         let query_arg = format!("query={query}");
 

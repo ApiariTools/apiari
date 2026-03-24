@@ -103,6 +103,14 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
         return BashClassification::ReadOnly;
     }
 
+    // Shell passthrough commands (bash -c, sh -c, ...) execute arbitrary code
+    // inside their quoted argument — always classify as mutating.
+    if is_shell_passthrough(trimmed) {
+        return BashClassification::PotentiallyMutating {
+            matched_pattern: "shell passthrough".to_string(),
+        };
+    }
+
     // Strip heredoc bodies and quoted string contents so their text doesn't
     // trigger pattern matches or false-positive redirect detection.
     let stripped = strip_heredoc_bodies(trimmed);
@@ -224,6 +232,23 @@ fn strip_heredoc_bodies(command: &str) -> String {
     }
 
     result
+}
+
+/// Returns true if the command is a shell passthrough (e.g. `bash -c "..."`,
+/// `sh -c "..."`). These commands must NOT have their quoted strings stripped
+/// because the quoted content is the actual command to audit.
+fn is_shell_passthrough(command: &str) -> bool {
+    let shells = ["bash", "sh", "zsh", "fish"];
+    for shell in shells {
+        // Match "bash -c", "bash  -c", "/bin/bash -c", "/usr/bin/env bash -c"
+        if let Some(pos) = command.find(shell) {
+            let after = command[pos + shell.len()..].trim_start();
+            if after.starts_with("-c") || after.starts_with("--") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Replace the contents of quoted strings (single and double) with empty
@@ -797,6 +822,25 @@ if len(data) > 0:
             result,
             BashClassification::ReadOnly,
             "jq filter with > inside single quotes should not trigger redirect detection"
+        );
+    }
+
+    #[test]
+    fn test_shell_passthrough_not_stripped() {
+        // bash -c with dangerous content must still be blocked
+        let result = classify_bash_command(r#"bash -c "rm -rf /important""#);
+        assert!(
+            result.is_mutating(),
+            "bash -c with rm -rf should still be blocked"
+        );
+    }
+
+    #[test]
+    fn test_sh_passthrough_not_stripped() {
+        let result = classify_bash_command(r#"sh -c "cp /etc/passwd /tmp/stolen""#);
+        assert!(
+            result.is_mutating(),
+            "sh -c with cp should still be blocked"
         );
     }
 

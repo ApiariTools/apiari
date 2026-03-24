@@ -24,6 +24,12 @@ If a `.task/` directory exists, read ALL files before writing any code:
 
 **Do NOT commit `.task/` to git.** These are pipeline artifacts, not source code.
 
+## Crate Structure
+There is one crate in this repo: `crates/apiari`. The `hive` crate no longer exists. Do NOT create or modify anything in a `crates/hive/` directory.
+
+- All TUI code is in `crates/apiari/src/ui/`
+- All daemon code is in `crates/apiari/src/daemon/`
+
 ## Pre-Commit Checks
 Before every commit, run **both** of these and fix any issues:
 - `cargo fmt -p apiari`
