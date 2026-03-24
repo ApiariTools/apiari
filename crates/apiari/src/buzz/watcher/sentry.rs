@@ -4,12 +4,16 @@
 //! stale issues that reorder in Sentry's date-sorted results.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+
+/// HTTP request timeout for Sentry API calls.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::Watcher;
 use crate::buzz::config::SentryWatcherConfig;
@@ -38,7 +42,15 @@ impl SentryWatcher {
     pub fn new(config: SentryWatcherConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_else(|e| {
+                    warn!(
+                        "failed to build reqwest client with timeout: {e}, falling back to default"
+                    );
+                    reqwest::Client::new()
+                }),
             seen_issues: HashMap::new(),
             fetched_ids: None,
         }

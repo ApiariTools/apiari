@@ -5,10 +5,14 @@
 //! priority) wins. Source: `github_review_queue`.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use color_eyre::Result;
 use tracing::{info, warn};
+
+/// HTTP request timeout for GitHub API calls.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::Watcher;
 use crate::buzz::config::{GithubWatcherConfig, ReviewQueueEntry};
@@ -55,7 +59,15 @@ impl ReviewQueueWatcher {
     pub fn new(config: &GithubWatcherConfig) -> Self {
         Self {
             queries: config.review_queue.clone(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_else(|e| {
+                    warn!(
+                        "failed to build reqwest client with timeout: {e}, falling back to default"
+                    );
+                    reqwest::Client::new()
+                }),
             token: None,
         }
     }
