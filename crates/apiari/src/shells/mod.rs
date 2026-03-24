@@ -80,21 +80,21 @@ impl TmuxManager {
     }
 
     /// Create a new tmux window with the given name in the given working directory.
+    /// Returns `false` if tmux is unavailable or the path is not valid UTF-8.
     pub fn create_window(&self, name: &str, working_dir: &Path) -> bool {
         if !self.available {
             return false;
         }
+        let Some(dir_str) = working_dir.to_str() else {
+            tracing::warn!(
+                path = ?working_dir,
+                "cannot create tmux window: working directory is not valid UTF-8"
+            );
+            return false;
+        };
         self.ensure_session();
         Command::new("tmux")
-            .args([
-                "new-window",
-                "-t",
-                &self.session,
-                "-n",
-                name,
-                "-c",
-                &working_dir.to_string_lossy(),
-            ])
+            .args(["new-window", "-t", &self.session, "-n", name, "-c", dir_str])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -113,14 +113,14 @@ impl TmuxManager {
             .unwrap_or(false)
     }
 
-    /// Capture a preview of the pane contents (last visible lines).
+    /// Capture a preview of the pane contents (last 5 lines only).
     pub fn capture_preview(&self, name: &str) -> Option<String> {
         if !self.available {
             return None;
         }
         let target = format!("{}:{}", self.session, name);
         let output = Command::new("tmux")
-            .args(["capture-pane", "-t", &target, "-p"])
+            .args(["capture-pane", "-t", &target, "-p", "-S", "-5"])
             .output()
             .ok()?;
         if !output.status.success() {

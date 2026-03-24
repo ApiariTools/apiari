@@ -12,6 +12,20 @@ use std::path::Path;
 use std::time::Instant;
 
 use apiari_tui::scroll::ScrollState;
+use std::path::PathBuf;
+
+/// A tmux operation to be executed asynchronously after apply_worker_update.
+pub(super) enum PendingShellOp {
+    Create {
+        tmux: crate::shells::TmuxManager,
+        name: String,
+        working_dir: PathBuf,
+    },
+    Kill {
+        tmux: crate::shells::TmuxManager,
+        name: String,
+    },
+}
 
 use crate::buzz::conversation::ConversationStore;
 use crate::config::{self, Workspace};
@@ -1379,10 +1393,16 @@ impl App {
         })
     }
 
+    /// Whether the current workspace has shells enabled in config.
+    /// The panel is shown even if tmux is not installed (with a helpful message).
     pub fn current_ws_has_shells(&self) -> bool {
-        self.current_ws().is_some_and(|ws| {
-            ws.config.shells.enabled && ws.tmux.as_ref().is_some_and(|tmux| tmux.is_available())
-        })
+        self.current_ws().is_some_and(|ws| ws.config.shells.enabled)
+    }
+
+    /// Whether tmux is actually available for the current workspace.
+    pub fn current_ws_tmux_available(&self) -> bool {
+        self.current_ws()
+            .is_some_and(|ws| ws.tmux.as_ref().is_some_and(|tmux| tmux.is_available()))
     }
 
     pub fn back_to_dashboard(&mut self) {
@@ -2093,7 +2113,12 @@ impl App {
     }
 
     /// Apply worker data from background refresh.
-    pub(super) fn apply_worker_update(&mut self, data: Vec<(String, Vec<WorkerInfo>)>) {
+    /// Returns any pending tmux operations that should be executed off the main thread.
+    pub(super) fn apply_worker_update(
+        &mut self,
+        data: Vec<(String, Vec<WorkerInfo>)>,
+    ) -> Vec<PendingShellOp> {
+        let mut shell_ops = Vec::new();
         for (name, new_workers) in data {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
                 // Detect state changes and inject chat notifications
@@ -2145,9 +2170,7 @@ impl App {
                     }
                 }
 
-                // Tmux auto-worker-shells: create/kill windows on worker lifecycle.
-                // Note: create_window/kill_window are brief synchronous tmux CLI calls.
-                // The heavier list_windows is handled by the periodic async refresh.
+                // Tmux auto-worker-shells: collect create/kill ops for async execution.
                 if ws.config.shells.enabled
                     && ws.config.shells.auto_worker_shells
                     && !is_first_load
@@ -2159,18 +2182,25 @@ impl App {
                     let new_ids: std::collections::HashSet<&String> =
                         new_workers.iter().map(|w| &w.id).collect();
 
-                    // New workers: create tmux windows
+                    // New workers: queue create ops
                     for worker in &new_workers {
                         if !old_ids.contains(&worker.id) {
                             let wt_path = ws.config.root.join(".swarm").join("wt").join(&worker.id);
-                            tmux.create_window(&worker.id, &wt_path);
+                            shell_ops.push(PendingShellOp::Create {
+                                tmux: tmux.clone(),
+                                name: worker.id.clone(),
+                                working_dir: wt_path,
+                            });
                         }
                     }
 
-                    // Closed workers: kill tmux windows
+                    // Closed workers: queue kill ops
                     for old_id in &old_ids {
                         if !new_ids.contains(*old_id) {
-                            tmux.kill_window(old_id);
+                            shell_ops.push(PendingShellOp::Kill {
+                                tmux: tmux.clone(),
+                                name: (*old_id).clone(),
+                            });
                         }
                     }
                 }
@@ -2192,6 +2222,7 @@ impl App {
         self.last_worker_refresh = Instant::now();
         self.clamp_selections();
         self.needs_redraw = true;
+        shell_ops
     }
 
     /// Apply signal data from background refresh.

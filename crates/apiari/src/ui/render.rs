@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use apiari_tui::conversation;
+use unicode_width::UnicodeWidthChar;
 
 use super::app::{self, App, ChatLine, Mode, Panel, PendingAction, View};
 use super::theme;
@@ -1082,8 +1083,9 @@ fn draw_workers_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, ar
 
 fn draw_shells_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
     let panel_focused = app.focused_panel == Panel::Shells;
+    let tmux_available = ws.tmux.as_ref().is_some_and(|tmux| tmux.is_available());
 
-    let hint = if panel_focused {
+    let hint = if panel_focused && tmux_available {
         Some("n:new  enter:attach  d:kill")
     } else {
         None
@@ -1092,6 +1094,24 @@ fn draw_shells_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let block = panel_block(&title, panel_focused, hint);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    if !tmux_available {
+        let lines = vec![
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled("tmux not found", Style::default().fg(theme::NECTAR)),
+            ]),
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled("Install tmux to manage shells", theme::muted()),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+        if !panel_focused {
+            dim_area(frame, inner);
+        }
+        return;
+    }
 
     if ws.shell_windows.is_empty() {
         let lines = vec![
@@ -1127,19 +1147,20 @@ fn draw_shells_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
             Span::styled(&shell.name, name_style),
         ]));
 
-        // Show preview line (trimmed to fit, char-aware to avoid UTF-8 panic)
+        // Show preview line (trimmed to fit using display column width)
         if !shell.preview.is_empty() {
             let max_w = inner.width.saturating_sub(4) as usize;
-            let preview: &str = if shell.preview.chars().count() > max_w {
-                let end = shell
-                    .preview
-                    .char_indices()
-                    .nth(max_w)
-                    .map_or(shell.preview.len(), |(i, _)| i);
-                &shell.preview[..end]
-            } else {
-                &shell.preview
-            };
+            let mut width = 0;
+            let mut end_byte = shell.preview.len();
+            for (i, ch) in shell.preview.char_indices() {
+                let cw = ch.width().unwrap_or(0);
+                if width + cw > max_w {
+                    end_byte = i;
+                    break;
+                }
+                width += cw;
+            }
+            let preview = &shell.preview[..end_byte];
             lines.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled(preview, preview_style),

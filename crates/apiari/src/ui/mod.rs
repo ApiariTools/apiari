@@ -517,7 +517,21 @@ async fn event_loop(
             Some(update) = update_rx.recv() => {
                 match update {
                     AppUpdate::Workers(data) => {
-                        app.apply_worker_update(data);
+                        let shell_ops = app.apply_worker_update(data);
+                        if !shell_ops.is_empty() {
+                            tokio::task::spawn_blocking(move || {
+                                for op in shell_ops {
+                                    match op {
+                                        app::PendingShellOp::Create { tmux, name, working_dir } => {
+                                            tmux.create_window(&name, &working_dir);
+                                        }
+                                        app::PendingShellOp::Kill { tmux, name } => {
+                                            tmux.kill_window(&name);
+                                        }
+                                    }
+                                }
+                            });
+                        }
                         // Refresh conversation in background when viewing worker detail
                         if let View::WorkerDetail(idx) = app.view
                             && let Some(ws) = app.current_ws()
@@ -848,7 +862,7 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 }
                 return KeyAction::Redraw;
             }
-            KeyCode::Char('n') => {
+            KeyCode::Char('n') if app.current_ws_tmux_available() => {
                 app.shell_input_active = true;
                 app.shell_input.clear();
                 app.needs_redraw = true;
@@ -2862,19 +2876,27 @@ mod tests {
     }
 
     #[test]
-    fn test_current_ws_has_shells_requires_available_tmux() {
+    fn test_current_ws_has_shells_only_checks_config() {
         let mut app = test_app();
         app.workspaces[0].config.shells.enabled = true;
-        // tmux is None → should be false
-        assert!(!app.current_ws_has_shells());
+        // Panel shows even without tmux — config is all that matters
+        assert!(app.current_ws_has_shells());
+    }
+
+    #[test]
+    fn test_current_ws_tmux_available() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        // tmux is None → not available
+        assert!(!app.current_ws_tmux_available());
 
         // Set tmux but with available=false
         app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", false));
-        assert!(!app.current_ws_has_shells());
+        assert!(!app.current_ws_tmux_available());
 
         // Set tmux with available=true
         app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
-        assert!(app.current_ws_has_shells());
+        assert!(app.current_ws_tmux_available());
     }
 
     #[test]
@@ -2890,7 +2912,6 @@ mod tests {
     fn test_next_panel_includes_shells_when_enabled() {
         let mut app = test_app();
         app.workspaces[0].config.shells.enabled = true;
-        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
 
         app.focused_panel = Panel::Workers;
         app.next_panel();
@@ -2901,7 +2922,6 @@ mod tests {
     fn test_prev_panel_includes_shells_when_enabled() {
         let mut app = test_app();
         app.workspaces[0].config.shells.enabled = true;
-        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
 
         app.focused_panel = Panel::Signals;
         app.prev_panel();
@@ -2976,11 +2996,25 @@ mod tests {
     #[test]
     fn test_shell_panel_n_key_activates_input() {
         let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
         app.focused_panel = Panel::Shells;
 
         handle_dashboard_key(&mut app, key(KeyCode::Char('n')));
 
         assert!(app.shell_input_active);
         assert!(app.shell_input.is_empty());
+    }
+
+    #[test]
+    fn test_shell_panel_n_key_noop_without_tmux() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        // tmux not available
+        app.focused_panel = Panel::Shells;
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('n')));
+
+        assert!(!app.shell_input_active, "n should be ignored without tmux");
     }
 }
