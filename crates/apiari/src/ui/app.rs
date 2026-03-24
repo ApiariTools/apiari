@@ -2337,8 +2337,32 @@ impl App {
                     });
                 }
 
+                // Sort newest-first, then dedup heartbeats by text so only
+                // the freshest entry for each watcher survives.  This
+                // prevents stale heartbeat items from persisting across
+                // refresh cycles.
                 feed.sort_by(|a, b| b.when.cmp(&a.when));
+                let mut seen_heartbeats = std::collections::HashSet::new();
+                feed.retain(|item| {
+                    if matches!(item.kind, FeedKind::Heartbeat) {
+                        seen_heartbeats.insert(item.text.clone())
+                    } else {
+                        true
+                    }
+                });
                 feed.truncate(20);
+
+                for item in &feed {
+                    if matches!(item.kind, FeedKind::Heartbeat) {
+                        tracing::debug!(
+                            workspace = %name,
+                            text = %item.text,
+                            when = %item.when,
+                            "heartbeat feed item applied"
+                        );
+                    }
+                }
+
                 ws.feed = feed;
             }
         }
