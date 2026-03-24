@@ -569,6 +569,10 @@ async fn run_coordinator_task(
                 socket_server,
                 slot_name,
             } => {
+                info!(
+                    "[{slot_name}] processing signal follow-through model={}",
+                    coordinator.model()
+                );
                 let elapsed = queued_at.elapsed().as_secs();
                 if elapsed >= ttl_secs {
                     info!(
@@ -592,9 +596,19 @@ async fn run_coordinator_task(
                     notification.push_str("\n\n[Action] ");
                     notification.push_str(action_str);
                 }
+                // Restrict to read-only for signal follow-throughs — no Bash allowed
+                let saved_disallowed = coordinator.disallowed_tools().to_vec();
+                let mut restricted = saved_disallowed.clone();
+                if !restricted.iter().any(|t| t == "Bash") {
+                    restricted.push("Bash".to_string());
+                }
+                coordinator.set_disallowed_tools(restricted);
+
                 info!(
-                    "[{slot_name}] triggering coordinator follow-through ({source}, {} event(s))",
-                    signals.len()
+                    "[{slot_name}] signal follow-through START source={source} signals={} has_action={} disallowed_tools={:?}",
+                    signals.len(),
+                    action.is_some(),
+                    coordinator.disallowed_tools()
                 );
 
                 let saved_turns = coordinator.max_turns();
@@ -605,16 +619,43 @@ async fn run_coordinator_task(
                     Err(e) => {
                         warn!("[{slot_name}] failed to build coordinator options: {e}");
                         coordinator.set_max_turns(saved_turns);
+                        coordinator.set_disallowed_tools(saved_disallowed);
                         continue;
                     }
                 };
 
+                let name_for_cb = slot_name.clone();
+                let source_for_cb = source.clone();
                 match coordinator
-                    .handle_message_with_options(&notification, opts, |_| {})
+                    .handle_message_with_options(&notification, opts, |event| match event {
+                        CoordinatorEvent::BashAudit {
+                            command,
+                            matched_pattern,
+                        } => {
+                            warn!(
+                                "[{name_for_cb}] signal follow-through bash MUTATING ({matched_pattern}): {command}"
+                            );
+                        }
+                        CoordinatorEvent::FilesModified { files } => {
+                            let file_list: Vec<String> = files
+                                .iter()
+                                .map(|(repo, file)| format!("{repo}/{file}"))
+                                .collect();
+                            warn!(
+                                "[{name_for_cb}] signal follow-through MUTATED FILES source={source_for_cb} files={file_list:?}"
+                            );
+                        }
+                        _ => {}
+                    })
                     .await
                 {
                     Ok(response) => {
                         let response = response.trim().to_string();
+                        info!(
+                            "[{slot_name}] signal follow-through DONE source={source} response_len={} empty={}",
+                            response.len(),
+                            response.is_empty()
+                        );
                         if !response.is_empty() && response.to_lowercase() != "ack" {
                             // TUI-first: try broadcasting to TUI clients.
                             // If nobody received it (0 receivers), fall back to Telegram.
@@ -654,6 +695,7 @@ async fn run_coordinator_task(
                 }
 
                 coordinator.set_max_turns(saved_turns);
+                coordinator.set_disallowed_tools(saved_disallowed);
             }
         }
     }
@@ -1424,6 +1466,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     slot.pipeline.evict_old_log_entries();
 
                     // Coordinator follow-through for signal hook events (non-blocking)
+                    for (source, (signals, hook)) in &hook_events {
+                        info!(
+                            "[{}] dispatching signal follow-through source={source} events={} has_action={}",
+                            slot.name,
+                            signals.len(),
+                            hook.action.is_some()
+                        );
+                    }
                     for (source, (signals, hook)) in hook_events {
                         let telegram_info = slot.config.telegram.as_ref().and_then(|tg| {
                             telegram_channels.get(&tg.bot_token).map(|ch| {

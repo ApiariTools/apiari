@@ -149,6 +149,16 @@ impl Coordinator {
         self.session_token = Some(token);
     }
 
+    /// Get current disallowed tools.
+    pub fn disallowed_tools(&self) -> &[String] {
+        &self.disallowed_tools
+    }
+
+    /// Get the model name.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
     /// Get current max turns.
     pub fn max_turns(&self) -> u32 {
         self.max_turns
