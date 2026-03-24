@@ -21,6 +21,7 @@ use settings::SettingsState;
 use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::info;
 
 use crate::buzz::coordinator::skills::{
     build_skills_prompt, default_coordinator_disallowed_tools, default_coordinator_tools,
@@ -2473,8 +2474,13 @@ fn build_coordinator(workspace_name: &str) -> Option<Coordinator> {
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    coordinator.set_tools(default_coordinator_tools());
-    coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
+    let allowed = default_coordinator_tools();
+    let disallowed = default_coordinator_disallowed_tools();
+    info!(
+        "[{workspace_name}] coordinator allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}"
+    );
+    coordinator.set_tools(allowed);
+    coordinator.set_disallowed_tools(disallowed);
     coordinator.set_working_dir(ws.config.root.clone());
     if let Some(settings) = config::coordinator_settings_json() {
         coordinator.set_settings(settings);
