@@ -1301,7 +1301,20 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             continue;
                         }
                         let watcher_name = throttled.watcher().name().to_string();
-                        match throttled.watcher_mut().poll(&slot.store).await {
+                        let poll_result = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            throttled.watcher_mut().poll(&slot.store),
+                        )
+                        .await;
+                        let poll_result = match poll_result {
+                            Ok(inner) => inner,
+                            Err(_) => {
+                                error!("[{}] [{}] poll timed out after 30s", slot.name, watcher_name);
+                                throttled.mark_polled();
+                                continue;
+                            }
+                        };
+                        match poll_result {
                             Ok(updates) => {
                                 if !updates.is_empty() {
                                     info!("[{}] [{}] polled {} update(s)", slot.name, watcher_name, updates.len());
@@ -1402,6 +1415,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             }
                             Err(e) => {
                                 error!("[{}] [{}] poll failed: {e}", slot.name, watcher_name);
+                                let _ = slot.store.set_cursor(&watcher_name, &format!("error: {e}"));
                                 // Still mark polled on error to avoid hammering a failing source
                                 throttled.mark_polled();
                             }

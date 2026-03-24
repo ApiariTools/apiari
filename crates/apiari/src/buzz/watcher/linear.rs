@@ -8,10 +8,14 @@
 //! Read-only: no Linear mutation API calls are ever made.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use color_eyre::Result;
 use tracing::{info, warn};
+
+/// HTTP request timeout for Linear API calls.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::Watcher;
 use crate::buzz::config::{LinearReviewQueueEntry, LinearWatcherConfig};
@@ -198,7 +202,10 @@ impl LinearWatcher {
         let cursor_key = format!("linear_{}_seen", config.name);
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             watcher_name,
             cursor_key,
             seen: HashMap::new(),
