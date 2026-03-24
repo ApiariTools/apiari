@@ -361,10 +361,10 @@ async fn connect_and_subscribe(
         if n == 0 {
             break; // EOF — daemon disconnected
         }
-        if let Ok(resp) = serde_json::from_str::<DaemonResponse>(buf.trim()) {
-            if let DaemonResponse::StateChanged { worktree_id, phase } = resp {
-                events.lock().unwrap().push((worktree_id, phase));
-            }
+        if let Ok(DaemonResponse::StateChanged { worktree_id, phase }) =
+            serde_json::from_str::<DaemonResponse>(buf.trim())
+        {
+            events.lock().unwrap().push((worktree_id, phase));
         }
     }
 
