@@ -1080,6 +1080,10 @@ impl App {
                     self.signal_selection = 0;
                 }
             }
+            // Clamp: if focused on Reviews but new workspace has no review queue, fall back
+            if self.focused_panel == Panel::Reviews && !self.has_review_queue() {
+                self.focused_panel = Panel::Signals;
+            }
             self.needs_redraw = true;
         }
     }
