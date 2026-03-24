@@ -614,7 +614,9 @@ async fn run_coordinator_task(
                 opts.resume = None;
 
                 // Restrict to read-only for signal follow-throughs — no Bash allowed.
-                // Modify opts directly so coordinator state is never mutated.
+                // Apply this restriction via opts so the coordinator's persistent
+                // configuration is not changed; other session-level side effects
+                // are handled via the save/restore logic below.
                 if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
                     opts.disallowed_tools.push("Bash".to_string());
                 }
