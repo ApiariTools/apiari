@@ -22,41 +22,50 @@ use crate::config::MorningBriefConfig;
 
 use super::socket;
 
-// ── Swarm state types (minimal, for reading .swarm/state.json) ──
+use crate::buzz::coordinator::swarm_client::SwarmClient;
 
-#[derive(Debug, Deserialize)]
-struct SwarmState {
-    #[serde(default)]
-    worktrees: Vec<WorktreeEntry>,
-}
+// ── Worker types for the morning brief prompt ──
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct WorktreeEntry {
     pub id: String,
-    #[serde(default)]
     pub branch: Option<String>,
-    #[serde(default)]
     pub summary: Option<String>,
-    #[serde(default)]
     pub pr: Option<PrInfo>,
-    #[serde(default)]
     pub agent_kind: Option<String>,
-    #[serde(default)]
     pub agent_session_status: Option<String>,
-    #[serde(default)]
     pub phase: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct PrInfo {
-    #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
     pub title: Option<String>,
-    #[serde(default)]
     pub state: Option<String>,
+}
+
+impl From<apiari_swarm::WorkerInfo> for WorktreeEntry {
+    fn from(w: apiari_swarm::WorkerInfo) -> Self {
+        WorktreeEntry {
+            id: w.id,
+            branch: Some(w.branch),
+            summary: None, // WorkerInfo doesn't carry summary
+            pr: if w.pr_url.is_some() {
+                Some(PrInfo {
+                    url: w.pr_url,
+                    title: w.pr_title,
+                    state: w.pr_state,
+                })
+            } else {
+                None
+            },
+            agent_kind: Some(w.agent),
+            agent_session_status: None,
+            phase: Some(format!("{:?}", w.phase).to_lowercase()),
+        }
+    }
 }
 
 // ── Persistence ──
@@ -254,17 +263,13 @@ pub fn build_brief_prompt(
 
 // ── Worker loader ──
 
-/// Load worker entries from a swarm state.json file.
-pub fn load_workers(state_path: &Path) -> Vec<WorktreeEntry> {
-    let contents = match std::fs::read_to_string(state_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    let state: SwarmState = match serde_json::from_str(&contents) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    state.worktrees
+/// Load workers from the swarm daemon via IPC.
+async fn load_workers_ipc(workspace_root: &Path) -> Vec<WorktreeEntry> {
+    let client = SwarmClient::new(workspace_root.to_path_buf());
+    match client.list_workers().await {
+        Ok(workers) => workers.into_iter().map(WorktreeEntry::from).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 // ── Executor ──
@@ -276,7 +281,7 @@ const BRIEF_MAX_TURNS: u64 = 5;
 pub struct BriefParams {
     pub model: String,
     pub signals: Vec<SignalRecord>,
-    pub swarm_state_path: Option<PathBuf>,
+    pub workspace_root: Option<PathBuf>,
     pub workspace: String,
     pub channel: TelegramChannel,
     pub chat_id: i64,
@@ -286,11 +291,11 @@ pub struct BriefParams {
 
 /// Run the morning brief: invoke a fresh coordinator and send result via Telegram.
 pub async fn execute_brief(params: BriefParams) {
-    let workers = params
-        .swarm_state_path
-        .as_deref()
-        .map(load_workers)
-        .unwrap_or_default();
+    let workers = if let Some(ref root) = params.workspace_root {
+        load_workers_ipc(root).await
+    } else {
+        Vec::new()
+    };
     let prompt = build_brief_prompt(&params.signals, &workers, &params.workspace);
     let workspace = &params.workspace;
 

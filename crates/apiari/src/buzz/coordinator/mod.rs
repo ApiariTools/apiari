@@ -9,6 +9,7 @@ pub mod devmode;
 pub mod memory;
 pub mod prompt;
 pub mod skills;
+pub mod swarm_client;
 
 use std::path::PathBuf;
 
@@ -61,6 +62,7 @@ pub struct Coordinator {
     disallowed_tools: Vec<String>,
     working_dir: Option<PathBuf>,
     settings: Option<String>,
+    mcp_config: Vec<String>,
     safety_hooks: Option<Box<dyn SafetyHooks>>,
 }
 
@@ -79,6 +81,7 @@ impl Coordinator {
             disallowed_tools: Vec::new(),
             working_dir: None,
             settings: None,
+            mcp_config: Vec::new(),
             safety_hooks: None,
         }
     }
@@ -116,6 +119,11 @@ impl Coordinator {
     /// Set custom settings JSON (e.g. PreToolUse hooks).
     pub fn set_settings(&mut self, settings: String) {
         self.settings = Some(settings);
+    }
+
+    /// Set MCP config file paths for custom tool servers.
+    pub fn set_mcp_config(&mut self, paths: Vec<String>) {
+        self.mcp_config = paths;
     }
 
     /// Install safety hooks for pre/post-turn workspace checks.
@@ -198,6 +206,7 @@ impl Coordinator {
             disallowed_tools: self.disallowed_tools.clone(),
             working_dir: self.working_dir.clone(),
             settings: self.settings.clone(),
+            mcp_config: self.mcp_config.clone(),
             ..Default::default()
         };
 

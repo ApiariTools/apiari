@@ -3,6 +3,7 @@ mod config;
 mod config_set;
 mod daemon;
 mod git_safety;
+mod mcp_swarm;
 pub mod shells;
 mod ui;
 mod validate_bash;
@@ -88,6 +89,14 @@ enum Command {
     /// PreToolUse hook: validate Bash commands (used internally by coordinator)
     #[command(hide = true)]
     ValidateBash,
+
+    /// MCP server for swarm worker management (used internally by coordinator)
+    #[command(hide = true)]
+    McpSwarm {
+        /// Workspace root directory
+        #[arg(long)]
+        workspace_root: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -214,6 +223,9 @@ async fn main() -> Result<()> {
         },
         Some(Command::ValidateBash) => {
             std::process::exit(validate_bash::run());
+        }
+        Some(Command::McpSwarm { workspace_root }) => {
+            std::process::exit(mcp_swarm::run(workspace_root));
         }
     }
 

@@ -1,4 +1,5 @@
-//! Swarm worker management skill — teaches the coordinator how to use `swarm`.
+//! Swarm worker management skill — teaches the coordinator how to use swarm
+//! via MCP tools (no shell commands needed).
 
 use super::SkillContext;
 
@@ -7,9 +8,7 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
         return None;
     }
 
-    let root = ctx.workspace_root.display();
-
-    // Build repo list for the --repo flag hint
+    // Build repo list hint
     let repo_hint = if ctx.repos.is_empty() {
         String::new()
     } else {
@@ -22,19 +21,17 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
     };
 
     let agent_line = match ctx.default_agent.as_str() {
-        "codex" => "Default agent is codex. Use `--agent codex` for autonomous tasks, \
-                    or `--agent codex-tui` for persistent sessions."
+        "codex" => "Default agent is codex. Use `codex` for autonomous tasks, \
+                    or `codex-tui` for persistent sessions."
             .to_string(),
-        "gemini" => "Default agent is gemini. Use `--agent gemini` for autonomous tasks, \
-                     or `--agent gemini-tui` for persistent sessions."
+        "gemini" => "Default agent is gemini. Use `gemini` for autonomous tasks, \
+                     or `gemini-tui` for persistent sessions."
             .to_string(),
-        "auto" => {
-            "Agent selection: auto. Use `--agent claude`, `--agent codex`, or `--agent gemini` — \
+        "auto" => "Agent selection: auto. Use `claude`, `codex`, or `gemini` — \
                    whichever is available. For persistent sessions, append `-tui`."
-                .to_string()
-        }
-        _ => "Default agent is claude. Use `--agent claude` for autonomous tasks, \
-              or `--agent claude-tui` for persistent sessions."
+            .to_string(),
+        _ => "Default agent is claude. Use `claude` for autonomous tasks, \
+              or `claude-tui` for persistent sessions."
             .to_string(),
     };
 
@@ -43,23 +40,14 @@ pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
          You dispatch coding tasks to swarm workers. Workers run in their own git worktrees \
          with an LLM agent that writes code, commits, and opens PRs.\n\n\
          IMPORTANT: When the user asks you to implement, fix, build, or code anything, \
-         use `swarm create` to dispatch it. Do NOT write code yourself — \
+         use `swarm_create_worker` to dispatch it. Do NOT write code yourself — \
          not via Edit/Write tools, and not via Bash (no echo, sed, curl -o, etc.).\n\n\
-         Commands (always use `--dir {root}`):\n\
-         - List workers: `swarm --dir {root} status`\n\
-         - Spawn worker: `swarm --dir {root} create --repo {{repo}} --prompt-file /tmp/task.txt`\n\
-           (Write the task prompt to a file first, then pass --prompt-file. Never inline long prompts.){repo_hint}\n\
-         - Send message: `swarm --dir {root} send {{worktree_id}} \"message\"`\n\
-         - Close worker: `swarm --dir {root} close {{worktree_id}}`\n\n\
+         Tools (MCP — call directly, no Bash needed):\n\
+         - `swarm_create_worker` — Spawn a new worker with a task prompt.{repo_hint}\n\
+         - `swarm_send_message` — Send a message to a waiting worker.\n\
+         - `swarm_close_worker` — Close and clean up a worker.\n\
+         - `swarm_list_workers` — List workers with status, phase, and PR info.\n\n\
          {agent_line}\n\n\
-         ## Daemon Auto-Start\n\
-         If any swarm command fails with \"daemon not running\" or a connection error, \
-         start the daemon first:\n\
-         ```\n\
-         swarm --dir {root} daemon start\n\
-         ```\n\
-         Wait ~2 seconds, then retry the original command. Do not ask the user about this — \
-         just handle it silently.\n\n\
          When dispatching, always include in the task prompt:\n\
          'Plan and implement this completely in one session — do not pause mid-task \
          for confirmation. Commit and open a PR when done.'\n\n\

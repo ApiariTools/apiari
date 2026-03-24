@@ -23,6 +23,7 @@ use crate::buzz::coordinator::skills::{
     SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
     default_coordinator_tools,
 };
+use crate::buzz::coordinator::swarm_client::SwarmClient;
 use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
 use crate::buzz::daemon::config as buzz_daemon_config;
 use crate::buzz::pipeline::Pipeline;
@@ -889,13 +890,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         if let Some(swarm_config) = &buzz_config.watchers.swarm
             && swarm_config.enabled
         {
-            info!(
-                "[{}] enabling swarm watcher ({})",
-                ws.name,
-                swarm_config.state_path.display()
-            );
+            info!("[{}] enabling swarm watcher (IPC subscription)", ws.name,);
             registry.add_with_interval(
-                Box::new(SwarmWatcher::new(swarm_config.clone())),
+                Box::new(SwarmWatcher::new(ws.config.root.clone())),
                 swarm_config.interval_secs,
             );
 
@@ -1274,8 +1271,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             let params = morning_brief::BriefParams {
                                 model: slot.config.coordinator.model.clone(),
                                 signals: slot.store.get_open_signals().unwrap_or_default(),
-                                swarm_state_path: slot.config.watchers.swarm.as_ref()
-                                    .map(|s| s.state_path.clone()),
+                                workspace_root: Some(slot.config.root.clone()),
                                 workspace: slot.name.clone(),
                                 channel: channel.clone(),
                                 chat_id: tg.chat_id,
@@ -1760,8 +1756,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let params = morning_brief::BriefParams {
                                             model: slot.config.coordinator.model.clone(),
                                             signals: slot.store.get_open_signals().unwrap_or_default(),
-                                            swarm_state_path: slot.config.watchers.swarm.as_ref()
-                                                .map(|s| s.state_path.clone()),
+                                            workspace_root: Some(slot.config.root.clone()),
                                             workspace: slot.name.clone(),
                                             channel: channel.clone(),
                                             chat_id,
@@ -1959,8 +1954,24 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    let allowed = default_coordinator_tools();
+    let mut allowed = default_coordinator_tools();
     let disallowed = default_coordinator_disallowed_tools();
+
+    // If swarm is enabled, add MCP config and auto-approve swarm MCP tools
+    if ws.config.watchers.swarm.is_some() {
+        if let Some(mcp_path) = swarm_mcp_config_path(&ws.config.root) {
+            coordinator.set_mcp_config(vec![mcp_path]);
+            for tool in &[
+                "mcp__apiari-swarm__swarm_create_worker",
+                "mcp__apiari-swarm__swarm_send_message",
+                "mcp__apiari-swarm__swarm_close_worker",
+                "mcp__apiari-swarm__swarm_list_workers",
+            ] {
+                allowed.push(tool.to_string());
+            }
+        }
+    }
+
     info!(
         "[{workspace_name}] coordinator allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}"
     );
@@ -2077,42 +2088,20 @@ pub fn ensure_daemon() -> Result<()> {
 
 /// Ensure the swarm daemon is running for a workspace, starting it if needed.
 ///
-/// Checks via `swarm --dir <root> status`. If the daemon is not running,
-/// starts it with `swarm --dir <root> daemon start` and waits up to ~2 seconds
-/// for it to come up. This mirrors `ensure_daemon()` for the apiari daemon.
+/// Pings the daemon via IPC socket. If unreachable, starts it with
+/// `swarm --dir <root> daemon start` and waits up to ~2 seconds for it
+/// to respond to ping.
 async fn ensure_swarm_daemon(workspace_root: &std::path::Path) {
     let root_display = workspace_root.display();
+    let client = SwarmClient::new(workspace_root.to_path_buf());
 
-    // Check if swarm daemon is already running
-    let status = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(workspace_root)
-        .arg("status")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await;
-
-    match &status {
-        Ok(o) if o.status.success() => {
-            info!("swarm daemon already running for {}", root_display);
-            return;
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            tracing::debug!(
-                "swarm status failed for {}: {}",
-                root_display,
-                stderr.trim()
-            );
-        }
-        Err(e) => {
-            warn!("failed to run `swarm status` for {}: {}", root_display, e);
-            return;
-        }
+    // Check if swarm daemon is already running via IPC ping
+    if client.ping().await.is_ok() {
+        info!("swarm daemon already running for {}", root_display);
+        return;
     }
 
-    // Daemon not running — start it
+    // Daemon not running — start it (still requires shell since daemon isn't up)
     info!("swarm daemon not running for {}, starting...", root_display);
     let result = tokio::process::Command::new("swarm")
         .arg("--dir")
@@ -2141,18 +2130,10 @@ async fn ensure_swarm_daemon(workspace_root: &std::path::Path) {
         _ => {}
     }
 
-    // Wait up to ~2 seconds for daemon to come up
+    // Wait up to ~2 seconds for daemon to come up (IPC ping)
     for _ in 0..20 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let recheck = tokio::process::Command::new("swarm")
-            .arg("--dir")
-            .arg(workspace_root)
-            .arg("status")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await;
-        if recheck.is_ok_and(|o| o.status.success()) {
+        if client.ping().await.is_ok() {
             info!("swarm daemon started for {}", root_display);
             return;
         }
@@ -2196,8 +2177,25 @@ fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    let allowed = default_coordinator_tools();
+    let mut allowed = default_coordinator_tools();
     let disallowed = default_coordinator_disallowed_tools();
+
+    // If swarm is enabled, add MCP config and auto-approve swarm MCP tools
+    if config.watchers.swarm.is_some() {
+        if let Some(mcp_path) = swarm_mcp_config_path(&config.root) {
+            coordinator.set_mcp_config(vec![mcp_path]);
+            // Auto-approve all swarm MCP tools
+            for tool in &[
+                "mcp__apiari-swarm__swarm_create_worker",
+                "mcp__apiari-swarm__swarm_send_message",
+                "mcp__apiari-swarm__swarm_close_worker",
+                "mcp__apiari-swarm__swarm_list_workers",
+            ] {
+                allowed.push(tool.to_string());
+            }
+        }
+    }
+
     info!("[{ws_name}] coordinator allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}");
     coordinator.set_tools(allowed);
     coordinator.set_disallowed_tools(disallowed);
@@ -2209,6 +2207,40 @@ fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
         workspace_root: config.root.clone(),
     }));
     coordinator
+}
+
+/// Generate an MCP config JSON file for the swarm MCP server and return its path.
+///
+/// The config file is written to `~/.config/apiari/mcp_swarm_<hash>.json` where
+/// `<hash>` is derived from the workspace root to allow multiple workspaces.
+fn swarm_mcp_config_path(workspace_root: &std::path::Path) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let exe_str = exe.to_string_lossy();
+    let root_str = workspace_root.to_string_lossy();
+
+    // Use a simple hash of the workspace root to create a unique config file
+    let hash: u64 = root_str
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let config_dir = config::config_dir();
+    std::fs::create_dir_all(&config_dir).ok()?;
+    let config_path = config_dir.join(format!("mcp_swarm_{hash:x}.json"));
+
+    let mcp_config = serde_json::json!({
+        "mcpServers": {
+            "apiari-swarm": {
+                "command": exe_str,
+                "args": ["mcp-swarm", "--workspace-root", root_str]
+            }
+        }
+    });
+
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&mcp_config).ok()?,
+    )
+    .ok()?;
+    Some(config_path.to_string_lossy().to_string())
 }
 
 /// Try to restore the last coordinator session from the database.
@@ -2337,12 +2369,7 @@ async fn handle_tui_command(
                     let params = morning_brief::BriefParams {
                         model: slot.config.coordinator.model.clone(),
                         signals: slot.store.get_open_signals().unwrap_or_default(),
-                        swarm_state_path: slot
-                            .config
-                            .watchers
-                            .swarm
-                            .as_ref()
-                            .map(|s| s.state_path.clone()),
+                        workspace_root: Some(slot.config.root.clone()),
                         workspace: slot.name.clone(),
                         channel: channel.clone(),
                         chat_id: tg.chat_id,
@@ -2515,41 +2542,36 @@ async fn build_full_status(slot: &WorkspaceSlot) -> String {
     let signals = slot.store.get_open_signals().unwrap_or_default();
     let mut summary = format_signal_summary(&signals);
 
-    // Worker states from swarm state file
-    if let Some(ref swarm_cfg) = slot.config.watchers.swarm
-        && let Ok(contents) = tokio::fs::read_to_string(&swarm_cfg.state_path).await
-        && let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents)
-        && let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array())
-        && !worktrees.is_empty()
-    {
-        summary.push_str(&format!("\n{} worker(s):\n", worktrees.len()));
-        for wt in worktrees {
-            let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-            let phase = wt
-                .get("phase")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let branch = wt.get("branch").and_then(|v| v.as_str()).unwrap_or("");
-            let has_pr = wt.get("pr").and_then(|v| v.as_object()).is_some();
-            let pr_str = if has_pr { " [PR]" } else { "" };
-            summary.push_str(&format!("  [{phase}] {id} ({branch}){pr_str}\n"));
-        }
+    // Worker states via swarm daemon IPC
+    if slot.config.watchers.swarm.is_some() {
+        let client = SwarmClient::new(slot.config.root.clone());
+        if let Ok(workers) = client.list_workers().await {
+            if !workers.is_empty() {
+                summary.push_str(&format!("\n{} worker(s):\n", workers.len()));
+                for w in &workers {
+                    let phase = format!("{:?}", w.phase).to_lowercase();
+                    let has_pr = w.pr_url.is_some();
+                    let pr_str = if has_pr { " [PR]" } else { "" };
+                    summary.push_str(&format!("  [{phase}] {} ({}){pr_str}\n", w.id, w.branch));
+                }
 
-        // PR queue
-        let prs: Vec<_> = worktrees
-            .iter()
-            .filter_map(|wt| {
-                let pr = wt.get("pr")?.as_object()?;
-                let number = pr.get("number")?.as_u64()?;
-                let title = pr.get("title")?.as_str()?;
-                let state = pr.get("state").and_then(|v| v.as_str()).unwrap_or("open");
-                Some((number, title.to_string(), state.to_string()))
-            })
-            .collect();
-        if !prs.is_empty() {
-            summary.push_str(&format!("\n{} PR(s):\n", prs.len()));
-            for (number, title, state) in &prs {
-                summary.push_str(&format!("  #{number} [{state}] {title}\n"));
+                // PR queue
+                let prs: Vec<_> = workers
+                    .iter()
+                    .filter_map(|w| {
+                        let url = w.pr_url.as_ref()?;
+                        let number = w.pr_number?;
+                        let title = w.pr_title.as_deref().unwrap_or("");
+                        let state = w.pr_state.as_deref().unwrap_or("open");
+                        Some((number, title.to_string(), state.to_string(), url.clone()))
+                    })
+                    .collect();
+                if !prs.is_empty() {
+                    summary.push_str(&format!("\n{} PR(s):\n", prs.len()));
+                    for (number, title, state, _url) in &prs {
+                        summary.push_str(&format!("  #{number} [{state}] {title}\n"));
+                    }
+                }
             }
         }
     }
