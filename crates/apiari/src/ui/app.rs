@@ -36,6 +36,7 @@ pub enum View {
 pub enum Panel {
     Home,
     Workers,
+    Shells,
     Signals,
     Reviews,
     Feed,
@@ -70,6 +71,7 @@ pub enum PendingAction {
     ResolveSignal(i64),  // signal db id
     ApproveReview { repo: String, pr_number: u64 },
     SnoozeSignal(i64), // signal db id
+    KillShell(String), // shell window name
 }
 
 /// Snooze duration options for the duration picker.
@@ -114,6 +116,8 @@ pub(super) struct WorkspaceRefreshInfo {
     pub(super) has_github_watcher: bool,
     pub(super) has_sentry_watcher: bool,
     pub(super) has_swarm_watcher: bool,
+    /// Tmux session name (Some if shells enabled).
+    pub(super) tmux_session: Option<String>,
 }
 
 /// Data returned from background extras refresh (per workspace).
@@ -129,6 +133,7 @@ pub(super) struct WorkspaceExtrasData {
 pub(super) enum AppUpdate {
     Workers(Vec<(String, Vec<WorkerInfo>)>),
     Signals(Vec<(String, Vec<SignalRecord>)>),
+    ShellWindows(Vec<(String, Vec<crate::shells::ShellWindow>)>),
     Extras {
         daemon_alive: bool,
         daemon_uptime_secs: Option<u64>,
@@ -279,6 +284,7 @@ impl OnboardingState {
             revealed_panels: [
                 Panel::Home,
                 Panel::Workers,
+                Panel::Shells,
                 Panel::Signals,
                 Panel::Reviews,
                 Panel::Feed,
@@ -416,6 +422,10 @@ pub struct WorkspaceState {
     pub thoughts: Vec<(String, String)>, // (category, content)
     /// True when this tab is a temporary placeholder for the add-workspace flow.
     pub is_setup_placeholder: bool,
+    /// Tmux shell manager (Some if shells are enabled for this workspace).
+    pub tmux: Option<crate::shells::TmuxManager>,
+    /// Cached shell windows (refreshed periodically).
+    pub shell_windows: Vec<crate::shells::ShellWindow>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -439,6 +449,10 @@ pub struct App {
     // Worker detail
     pub worker_input: String,
     pub worker_input_active: bool,
+    // Shell management
+    pub shell_selection: usize,
+    pub shell_input_active: bool,
+    pub shell_input: String,
     /// When true, scroll/focus targets the activity pane (left) in WorkerDetail split.
     pub worker_activity_focused: bool,
     // Review comment input
@@ -492,28 +506,39 @@ impl App {
     ) -> Self {
         let ws_states: Vec<WorkspaceState> = workspaces
             .into_iter()
-            .map(|ws| WorkspaceState {
-                name: ws.name,
-                config: ws.config,
-                signals: Vec::new(),
-                workers: Vec::new(),
-                chat_history: Vec::new(),
-                input: String::new(),
-                cursor_pos: 0,
-                chat_scroll: ScrollState::new(),
-                streaming: false,
-                coordinator_preview: None,
-                has_unread_response: false,
-                coordinator_turns: 0,
-                sparkline_data: vec![0; 24],
-                watcher_health: Vec::new(),
-                feed: Vec::new(),
-                prev_worker_phases: std::collections::HashMap::new(),
-                prev_signal_ids: std::collections::HashSet::new(),
-                prev_pr_workers: std::collections::HashSet::new(),
-                feed_scroll: ScrollState::new(),
-                thoughts: Vec::new(),
-                is_setup_placeholder: false,
+            .map(|ws| {
+                let tmux = if ws.config.shells.enabled {
+                    let session =
+                        crate::shells::TmuxManager::session_name_for(&ws.name, &ws.config.shells);
+                    Some(crate::shells::TmuxManager::new(&session))
+                } else {
+                    None
+                };
+                WorkspaceState {
+                    name: ws.name,
+                    config: ws.config,
+                    signals: Vec::new(),
+                    workers: Vec::new(),
+                    chat_history: Vec::new(),
+                    input: String::new(),
+                    cursor_pos: 0,
+                    chat_scroll: ScrollState::new(),
+                    streaming: false,
+                    coordinator_preview: None,
+                    has_unread_response: false,
+                    coordinator_turns: 0,
+                    sparkline_data: vec![0; 24],
+                    watcher_health: Vec::new(),
+                    feed: Vec::new(),
+                    prev_worker_phases: std::collections::HashMap::new(),
+                    prev_signal_ids: std::collections::HashSet::new(),
+                    prev_pr_workers: std::collections::HashSet::new(),
+                    feed_scroll: ScrollState::new(),
+                    thoughts: Vec::new(),
+                    is_setup_placeholder: false,
+                    tmux,
+                    shell_windows: Vec::new(),
+                }
             })
             .collect();
 
@@ -553,6 +578,9 @@ impl App {
             chat_focused,
             worker_input: String::new(),
             worker_input_active: false,
+            shell_selection: 0,
+            shell_input_active: false,
+            shell_input: String::new(),
             worker_activity_focused: false,
             review_comment_active: false,
             review_comment_input: String::new(),
@@ -643,6 +671,8 @@ impl App {
             feed_scroll: ScrollState::new(),
             thoughts: Vec::new(),
             is_setup_placeholder: true,
+            tmux: None,
+            shell_windows: Vec::new(),
         };
 
         let setup = SetupState {
@@ -673,6 +703,9 @@ impl App {
             chat_focused: true,
             worker_input: String::new(),
             worker_input_active: false,
+            shell_selection: 0,
+            shell_input_active: false,
+            shell_input: String::new(),
             worker_activity_focused: false,
             review_comment_active: false,
             review_comment_input: String::new(),
@@ -760,6 +793,8 @@ impl App {
             feed_scroll: ScrollState::new(),
             thoughts: Vec::new(),
             is_setup_placeholder: true,
+            tmux: None,
+            shell_windows: Vec::new(),
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -920,6 +955,12 @@ impl App {
         };
 
         // Build real workspace state
+        let tmux = if ws.config.shells.enabled {
+            let session = crate::shells::TmuxManager::session_name_for(&ws.name, &ws.config.shells);
+            Some(crate::shells::TmuxManager::new(&session))
+        } else {
+            None
+        };
         let mut ws_state = WorkspaceState {
             name: ws.name,
             config: ws.config,
@@ -942,6 +983,8 @@ impl App {
             feed_scroll: ScrollState::new(),
             is_setup_placeholder: false,
             thoughts: Vec::new(),
+            tmux,
+            shell_windows: Vec::new(),
         };
 
         if is_add {
@@ -1094,9 +1137,19 @@ impl App {
     }
 
     pub fn next_panel(&mut self) {
+        let has_shells = self.current_ws_has_shells();
         self.focused_panel = match self.focused_panel {
             Panel::Home => Panel::Workers,
             Panel::Workers => {
+                if has_shells {
+                    Panel::Shells
+                } else if self.has_review_queue() {
+                    Panel::Reviews
+                } else {
+                    Panel::Signals
+                }
+            }
+            Panel::Shells => {
                 if self.has_review_queue() {
                     Panel::Reviews
                 } else {
@@ -1113,13 +1166,23 @@ impl App {
     }
 
     pub fn prev_panel(&mut self) {
+        let has_shells = self.current_ws_has_shells();
         self.focused_panel = match self.focused_panel {
             Panel::Home => Panel::Chat,
             Panel::Workers => Panel::Home,
-            Panel::Reviews => Panel::Workers,
+            Panel::Shells => Panel::Workers,
+            Panel::Reviews => {
+                if has_shells {
+                    Panel::Shells
+                } else {
+                    Panel::Workers
+                }
+            }
             Panel::Signals => {
                 if self.has_review_queue() {
                     Panel::Reviews
+                } else if has_shells {
+                    Panel::Shells
                 } else {
                     Panel::Workers
                 }
@@ -1138,6 +1201,12 @@ impl App {
                 let count = self.current_ws().map_or(0, |ws| ws.workers.len());
                 if count > 0 && self.worker_selection + 1 < count {
                     self.worker_selection += 1;
+                }
+            }
+            Panel::Shells => {
+                let count = self.current_ws().map_or(0, |ws| ws.shell_windows.len());
+                if count > 0 && self.shell_selection + 1 < count {
+                    self.shell_selection += 1;
                 }
             }
             Panel::Signals => {
@@ -1167,6 +1236,9 @@ impl App {
             Panel::Home => {}
             Panel::Workers => {
                 self.worker_selection = self.worker_selection.saturating_sub(1);
+            }
+            Panel::Shells => {
+                self.shell_selection = self.shell_selection.saturating_sub(1);
             }
             Panel::Signals => {
                 // Horizontal carousel: k/up = swipe right (next card)
@@ -1255,6 +1327,13 @@ impl App {
         } else if self.feed_selection >= feed_count {
             self.feed_selection = feed_count - 1;
         }
+
+        let shell_count = self.current_ws().map_or(0, |ws| ws.shell_windows.len());
+        if shell_count == 0 {
+            self.shell_selection = 0;
+        } else if self.shell_selection >= shell_count {
+            self.shell_selection = shell_count - 1;
+        }
     }
 
     // ── View transitions ──────────────────────────────────
@@ -1298,6 +1377,11 @@ impl App {
                 .as_ref()
                 .is_some_and(|gh| !gh.review_queue.is_empty())
         })
+    }
+
+    pub fn current_ws_has_shells(&self) -> bool {
+        self.current_ws()
+            .is_some_and(|ws| ws.config.shells.enabled && ws.tmux.is_some())
     }
 
     pub fn back_to_dashboard(&mut self) {
@@ -1347,7 +1431,7 @@ impl App {
     /// Drill into the currently selected panel item.
     pub fn drill_in(&mut self) {
         match self.focused_panel {
-            Panel::Home => {} // Home has no drill-in
+            Panel::Home | Panel::Shells => {} // Handled elsewhere or no drill-in
             Panel::Workers => {
                 if let Some(ws) = self.current_ws()
                     && self.worker_selection < ws.workers.len()
@@ -2060,6 +2144,33 @@ impl App {
                     }
                 }
 
+                // Tmux auto-worker-shells: create/kill windows on worker lifecycle
+                if ws.config.shells.enabled && ws.config.shells.auto_worker_shells && !is_first_load
+                {
+                    if let Some(ref tmux) = ws.tmux {
+                        let old_ids: std::collections::HashSet<&String> =
+                            ws.prev_worker_phases.keys().collect();
+                        let new_ids: std::collections::HashSet<&String> =
+                            new_workers.iter().map(|w| &w.id).collect();
+
+                        // New workers: create tmux windows
+                        for worker in &new_workers {
+                            if !old_ids.contains(&worker.id) {
+                                let wt_path =
+                                    ws.config.root.join(".swarm").join("wt").join(&worker.id);
+                                tmux.create_window(&worker.id, &wt_path);
+                            }
+                        }
+
+                        // Closed workers: kill tmux windows
+                        for old_id in &old_ids {
+                            if !new_ids.contains(*old_id) {
+                                tmux.kill_window(old_id);
+                            }
+                        }
+                    }
+                }
+
                 // Update tracking state
                 ws.prev_worker_phases = new_workers
                     .iter()
@@ -2262,6 +2373,14 @@ impl App {
                 has_github_watcher: ws.config.watchers.github.is_some(),
                 has_sentry_watcher: ws.config.watchers.sentry.is_some(),
                 has_swarm_watcher: ws.config.watchers.swarm.is_some(),
+                tmux_session: if ws.config.shells.enabled {
+                    Some(crate::shells::TmuxManager::session_name_for(
+                        &ws.name,
+                        &ws.config.shells,
+                    ))
+                } else {
+                    None
+                },
             })
             .collect()
     }
@@ -3353,6 +3472,8 @@ mod tests {
             feed_scroll: ScrollState::new(),
             thoughts: Vec::new(),
             is_setup_placeholder: false,
+            tmux: None,
+            shell_windows: Vec::new(),
         };
         app.workspaces = vec![ws];
         app.setup = None;

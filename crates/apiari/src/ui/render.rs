@@ -117,6 +117,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.review_comment_active {
         draw_review_comment_input(frame, size, app);
     }
+
+    // Shell name input overlay
+    if app.shell_input_active {
+        draw_shell_name_input(frame, size, app);
+    }
 }
 
 // ── Tab bar ──────────────────────────────────────────────
@@ -180,6 +185,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         match panel {
             Panel::Home => draw_home_panel(frame, app, ws, area),
             Panel::Workers => draw_workers_panel(frame, app, ws, area),
+            Panel::Shells => draw_shells_panel(frame, app, ws, area),
             Panel::Signals => draw_signals_card(frame, app, ws, area),
             Panel::Reviews => draw_reviews_pane(frame, app, ws, area),
             Panel::Feed => draw_feed_panel(frame, app, ws, area),
@@ -225,6 +231,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     let wide = items.width >= 80;
     let medium = items.width >= 60;
     let has_reviews = app.has_review_queue();
+    let has_shells = app.current_ws_has_shells();
 
     if medium {
         let cols = Layout::default()
@@ -233,8 +240,20 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
             .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(items);
 
-        draw_workers_panel(frame, app, ws, cols[0]);
-        dim_areas.push((Panel::Workers, cols[0]));
+        // Left column: Workers, and optionally Shells below
+        if has_shells {
+            let left_rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .split(cols[0]);
+            draw_workers_panel(frame, app, ws, left_rows[0]);
+            dim_areas.push((Panel::Workers, left_rows[0]));
+            draw_shells_panel(frame, app, ws, left_rows[1]);
+            dim_areas.push((Panel::Shells, left_rows[1]));
+        } else {
+            draw_workers_panel(frame, app, ws, cols[0]);
+            dim_areas.push((Panel::Workers, cols[0]));
+        }
 
         if wide {
             if has_reviews {
@@ -1052,6 +1071,77 @@ fn draw_workers_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, ar
         let is_sel = panel_focused && app.worker_selection == i;
         render_worker_item(&mut lines, worker, is_sel, i, inner.width as usize);
     }
+    frame.render_widget(Paragraph::new(lines), inner);
+
+    if !panel_focused {
+        dim_area(frame, inner);
+    }
+}
+
+// ── Shells panel ──────────────────────────────────────────
+
+fn draw_shells_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
+    let panel_focused = app.focused_panel == Panel::Shells;
+
+    let hint = if panel_focused {
+        Some("n:new  enter:attach  d:kill")
+    } else {
+        None
+    };
+    let title = format!("Shells ({})", ws.shell_windows.len());
+    let block = panel_block(&title, panel_focused, hint);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if ws.shell_windows.is_empty() {
+        let lines = vec![
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled("No shell windows", theme::muted()),
+            ]),
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled("Press n to create one", theme::key_desc()),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines), inner);
+        if !panel_focused {
+            dim_area(frame, inner);
+        }
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, shell) in ws.shell_windows.iter().enumerate() {
+        let is_sel = panel_focused && app.shell_selection == i;
+        let marker = if is_sel { "> " } else { "  " };
+        let name_style = if is_sel {
+            theme::highlight()
+        } else {
+            Style::default().fg(theme::POLLEN)
+        };
+        let preview_style = theme::muted();
+
+        lines.push(Line::from(vec![
+            Span::raw(marker),
+            Span::styled(&shell.name, name_style),
+        ]));
+
+        // Show preview line (trimmed to fit)
+        if !shell.preview.is_empty() {
+            let max_w = inner.width.saturating_sub(4) as usize;
+            let preview = if shell.preview.len() > max_w {
+                &shell.preview[..max_w]
+            } else {
+                &shell.preview
+            };
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(preview, preview_style),
+            ]));
+        }
+    }
+
     frame.render_widget(Paragraph::new(lines), inner);
 
     if !panel_focused {
@@ -2461,6 +2551,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 let panel_name = match app.focused_panel {
                     Panel::Home => "Home",
                     Panel::Workers => "Workers",
+                    Panel::Shells => "Shells",
                     Panel::Signals => "Signals",
                     Panel::Reviews => "Reviews",
                     Panel::Feed => "Feed",
@@ -2886,6 +2977,7 @@ fn draw_confirm_overlay(frame: &mut Frame, area: Rect, action: &PendingAction, a
                 PendingAction::ApproveReview { repo, pr_number } => {
                     format!("Approve PR #{pr_number} in {repo}?")
                 }
+                PendingAction::KillShell(name) => format!("Kill shell '{name}'?"),
                 PendingAction::SnoozeSignal(_) => unreachable!(),
             };
 
@@ -3006,6 +3098,39 @@ fn draw_review_comment_input(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  enter", theme::key_hint()),
             Span::styled(":send  ", theme::key_desc()),
+            Span::styled("esc", theme::key_hint()),
+            Span::styled(":cancel", theme::key_desc()),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+fn draw_shell_name_input(frame: &mut Frame, area: Rect, app: &App) {
+    let w = (area.width.saturating_sub(4)).min(40);
+    let h = 5u16;
+    let x = (area.width.saturating_sub(w)) / 2;
+    let y = (area.height.saturating_sub(h)) / 2;
+    let popup = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(theme::border_active())
+        .title(Span::styled(" New Shell ", theme::accent()));
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let input_text = format!(" {}_", app.shell_input);
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(input_text, theme::text())]),
+        Line::from(vec![
+            Span::styled("  enter", theme::key_hint()),
+            Span::styled(":create  ", theme::key_desc()),
             Span::styled("esc", theme::key_hint()),
             Span::styled(":cancel", theme::key_desc()),
         ]),

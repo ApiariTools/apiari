@@ -3,6 +3,7 @@ mod config;
 mod config_set;
 mod daemon;
 mod git_safety;
+pub mod shells;
 mod ui;
 mod validate_bash;
 

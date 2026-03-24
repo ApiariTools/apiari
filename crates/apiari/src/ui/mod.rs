@@ -88,6 +88,9 @@ enum KeyAction {
         body: String,
     },
     SnoozeSignal(i64, chrono::DateTime<chrono::Utc>),
+    AttachShell(String),
+    CreateShell(String),
+    KillShell(String),
     SetupComplete,
     AddWorkspace,
     OpenSettings,
@@ -537,6 +540,18 @@ async fn event_loop(
                     AppUpdate::Signals(data) => {
                         app.apply_signal_update(data);
                     }
+                    AppUpdate::ShellWindows(data) => {
+                        for (name, windows) in data {
+                            if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == name) {
+                                ws.shell_windows = windows;
+                            }
+                        }
+                        app.shell_selection = app.shell_selection.min(
+                            app.current_ws()
+                                .map_or(0, |ws| ws.shell_windows.len().saturating_sub(1)),
+                        );
+                        app.needs_redraw = true;
+                    }
                     AppUpdate::Extras { daemon_alive, daemon_uptime_secs, per_workspace } => {
                         app.apply_extras_update(daemon_alive, daemon_uptime_secs, per_workspace);
                     }
@@ -709,6 +724,7 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
                         PendingAction::ApproveReview { repo, pr_number } => {
                             return KeyAction::ApproveReview { repo, pr_number };
                         }
+                        PendingAction::KillShell(name) => return KeyAction::KillShell(name),
                         PendingAction::SnoozeSignal(_) => unreachable!(),
                     }
                 }
@@ -726,6 +742,11 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
     // ── Review comment input ──
     if app.review_comment_active {
         return handle_review_comment_key(app, key);
+    }
+
+    // ── Shell name input ──
+    if app.shell_input_active {
+        return handle_shell_input_key(app, key);
     }
 
     // ── Help overlay ──
@@ -757,6 +778,8 @@ fn handle_paste(app: &mut App, text: &str) {
         app.worker_input.push_str(text);
     } else if app.review_comment_active {
         app.review_comment_input.push_str(text);
+    } else if app.shell_input_active {
+        app.shell_input.push_str(text);
     }
     app.needs_redraw = true;
 }
@@ -811,6 +834,37 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 app.needs_redraw = true;
             }
             return KeyAction::Redraw;
+        }
+    }
+
+    // Shells panel: intercept Enter/n/d/Delete
+    if app.focused_panel == Panel::Shells {
+        match key.code {
+            KeyCode::Enter => {
+                if let Some(ws) = app.current_ws() {
+                    if let Some(shell) = ws.shell_windows.get(app.shell_selection) {
+                        return KeyAction::AttachShell(shell.name.clone());
+                    }
+                }
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('n') => {
+                app.shell_input_active = true;
+                app.shell_input.clear();
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                if let Some(ws) = app.current_ws() {
+                    if let Some(shell) = ws.shell_windows.get(app.shell_selection) {
+                        let name = shell.name.clone();
+                        app.pending_action = Some(PendingAction::KillShell(name));
+                        app.mode = Mode::Confirm;
+                    }
+                }
+                return KeyAction::Redraw;
+            }
+            _ => {} // fall through to common dashboard keys
         }
     }
 
@@ -1331,6 +1385,36 @@ fn handle_review_comment_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
     KeyAction::Redraw
 }
 
+// ── Shell name input keys ─────────────────────────────────
+
+fn handle_shell_input_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
+    match key.code {
+        KeyCode::Enter => {
+            let name = std::mem::take(&mut app.shell_input);
+            app.shell_input_active = false;
+            app.needs_redraw = true;
+            if !name.trim().is_empty() {
+                return KeyAction::CreateShell(name.trim().to_string());
+            }
+        }
+        KeyCode::Esc => {
+            app.shell_input.clear();
+            app.shell_input_active = false;
+            app.needs_redraw = true;
+        }
+        KeyCode::Backspace => {
+            app.shell_input.pop();
+            app.needs_redraw = true;
+        }
+        KeyCode::Char(c) => {
+            app.shell_input.push(c);
+            app.needs_redraw = true;
+        }
+        _ => {}
+    }
+    KeyAction::Redraw
+}
+
 // ── Signal detail keys ───────────────────────────────────
 
 fn handle_signal_detail_key(
@@ -1786,6 +1870,67 @@ async fn handle_action(
                 }
             }
         }
+        KeyAction::AttachShell(name) => {
+            if let Some(ws) = app.current_ws() {
+                if let Some(ref tmux) = ws.tmux {
+                    let args = tmux.attach_args(&name);
+                    // Suspend TUI, run tmux attach, then resume
+                    disable_raw_mode().ok();
+                    stdout()
+                        .execute(crossterm::event::DisableBracketedPaste)
+                        .ok();
+                    stdout().execute(crossterm::event::DisableMouseCapture).ok();
+                    stdout().execute(LeaveAlternateScreen).ok();
+
+                    let _ = std::process::Command::new("tmux").args(&args).status();
+
+                    stdout().execute(EnterAlternateScreen).ok();
+                    stdout().execute(crossterm::event::EnableMouseCapture).ok();
+                    stdout()
+                        .execute(crossterm::event::EnableBracketedPaste)
+                        .ok();
+                    enable_raw_mode().ok();
+                }
+            }
+        }
+        KeyAction::CreateShell(name) => {
+            if let Some(ws) = app.current_ws() {
+                if let Some(ref tmux) = ws.tmux {
+                    let root = ws.config.root.clone();
+                    tmux.ensure_session();
+                    if tmux.create_window(&name, &root) {
+                        app.flash(format!("Created shell: {name}"));
+                    } else {
+                        app.flash("Failed to create shell");
+                    }
+                    // Refresh shell list
+                    if let Some(ws) = app.current_ws_mut() {
+                        if let Some(ref tmux) = ws.tmux {
+                            ws.shell_windows = tmux.list_windows();
+                        }
+                    }
+                }
+            }
+        }
+        KeyAction::KillShell(name) => {
+            if let Some(ws) = app.current_ws() {
+                if let Some(ref tmux) = ws.tmux {
+                    if tmux.kill_window(&name) {
+                        app.flash(format!("Killed shell: {name}"));
+                    } else {
+                        app.flash("Failed to kill shell");
+                    }
+                    // Refresh shell list
+                    if let Some(ws) = app.current_ws_mut() {
+                        if let Some(ref tmux) = ws.tmux {
+                            ws.shell_windows = tmux.list_windows();
+                        }
+                    }
+                    let count = app.current_ws().map_or(0, |ws| ws.shell_windows.len());
+                    app.shell_selection = app.shell_selection.min(count.saturating_sub(1));
+                }
+            }
+        }
         KeyAction::OpenSettings
         | KeyAction::SetupComplete
         | KeyAction::AddWorkspace
@@ -1820,6 +1965,7 @@ async fn background_refresh_task(
 
     // Do initial data refresh immediately
     do_worker_refresh(&update_tx, &workspace_infos).await;
+    do_shell_refresh(&update_tx, &workspace_infos).await;
     do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
     do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
 
@@ -1842,6 +1988,7 @@ async fn background_refresh_task(
         tokio::select! {
             _ = worker_interval.tick() => {
                 do_worker_refresh(&update_tx, &workspace_infos).await;
+                do_shell_refresh(&update_tx, &workspace_infos).await;
             }
             _ = signal_interval.tick() => {
                 do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
@@ -1859,6 +2006,27 @@ async fn do_worker_refresh(tx: &mpsc::Sender<AppUpdate>, infos: &[app::Workspace
         tokio::task::spawn_blocking(move || app::load_all_workers_blocking(&infos)).await
     {
         let _ = tx.send(AppUpdate::Workers(result)).await;
+    }
+}
+
+async fn do_shell_refresh(tx: &mpsc::Sender<AppUpdate>, infos: &[app::WorkspaceRefreshInfo]) {
+    let infos = infos.to_vec();
+    if let Ok(result) = tokio::task::spawn_blocking(move || {
+        infos
+            .iter()
+            .filter_map(|info| {
+                let session = info.tmux_session.as_ref()?;
+                let mgr = crate::shells::TmuxManager::new(session);
+                let windows = mgr.list_windows();
+                Some((info.name.clone(), windows))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    {
+        if !result.is_empty() {
+            let _ = tx.send(AppUpdate::ShellWindows(result)).await;
+        }
     }
 }
 
