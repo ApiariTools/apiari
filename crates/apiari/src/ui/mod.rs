@@ -2426,6 +2426,8 @@ mod tests {
             feed_scroll: apiari_tui::scroll::ScrollState::new(),
             thoughts: Vec::new(),
             is_setup_placeholder: false,
+            tmux: None,
+            shell_windows: Vec::new(),
         };
         let ws_name = ws.name.clone();
         App {
@@ -2471,6 +2473,9 @@ mod tests {
             last_signal_refresh: std::time::Instant::now(),
             snooze_selection: 0,
             signals_debug_mode: false,
+            shell_selection: 0,
+            shell_input_active: false,
+            shell_input: String::new(),
         }
     }
 
