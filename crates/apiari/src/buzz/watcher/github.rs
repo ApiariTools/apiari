@@ -245,7 +245,7 @@ fn parse_graphql_reviews(nodes: &[serde_json::Value]) -> Vec<GraphqlReview> {
 fn parse_graphql_check_suites(nodes: &[serde_json::Value]) -> Vec<GraphqlCheckSuite> {
     nodes
         .iter()
-        .filter_map(|suite| {
+        .map(|suite| {
             let conclusion = suite
                 .get("conclusion")
                 .and_then(|v| v.as_str())
@@ -262,11 +262,11 @@ fn parse_graphql_check_suites(nodes: &[serde_json::Value]) -> Vec<GraphqlCheckSu
                 .map(|arr| parse_graphql_check_runs(arr))
                 .unwrap_or_default();
 
-            Some(GraphqlCheckSuite {
+            GraphqlCheckSuite {
                 conclusion,
                 url,
                 check_runs,
-            })
+            }
         })
         .collect()
 }
@@ -274,18 +274,16 @@ fn parse_graphql_check_suites(nodes: &[serde_json::Value]) -> Vec<GraphqlCheckSu
 fn parse_graphql_check_runs(nodes: &[serde_json::Value]) -> Vec<GraphqlCheckRun> {
     nodes
         .iter()
-        .filter_map(|run| {
-            Some(GraphqlCheckRun {
-                conclusion: run
-                    .get("conclusion")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
-                details_url: run
-                    .get("detailsUrl")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            })
+        .map(|run| GraphqlCheckRun {
+            conclusion: run
+                .get("conclusion")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            details_url: run
+                .get("detailsUrl")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         })
         .collect()
 }
@@ -910,10 +908,10 @@ impl GithubWatcher {
                     if !is_bot || review.submitted_at.is_empty() {
                         continue;
                     }
-                    if let Some(cursor) = cursor_ts {
-                        if review.submitted_at.as_str() <= cursor {
-                            continue;
-                        }
+                    if let Some(cursor) = cursor_ts
+                        && review.submitted_at.as_str() <= cursor
+                    {
+                        continue;
                     }
 
                     let truncated_body: String = review.body.chars().take(500).collect();
@@ -1033,10 +1031,10 @@ impl GithubWatcher {
                         format!("\u{2705} CI passed on PR #{}: {}", pr.number, pr.title),
                         Severity::Info,
                     );
-                    if let Some(suite) = pr.check_suites.first() {
-                        if !suite.url.is_empty() {
-                            signal = signal.with_url(&suite.url);
-                        }
+                    if let Some(suite) = pr.check_suites.first()
+                        && !suite.url.is_empty()
+                    {
+                        signal = signal.with_url(&suite.url);
                     }
                     signals.push(signal);
                 }
