@@ -4,7 +4,7 @@
 //! review queue entry. Deduplicates across queries: lowest index (highest
 //! priority) wins. Source: `github_review_queue`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -53,6 +53,8 @@ pub struct ReviewQueueWatcher {
     client: reqwest::Client,
     /// Lazy-init: `None` = untried, `Some(None)` = failed, `Some(Some(t))` = resolved.
     token: Option<Option<String>>,
+    /// ETag cache per query: query string → (etag, cached PR results).
+    etag_cache: HashMap<String, (String, Vec<PrResult>)>,
 }
 
 impl ReviewQueueWatcher {
@@ -69,6 +71,7 @@ impl ReviewQueueWatcher {
                     reqwest::Client::new()
                 }),
             token: None,
+            etag_cache: HashMap::new(),
         }
     }
 
@@ -84,55 +87,88 @@ impl ReviewQueueWatcher {
         self.token.as_ref().unwrap().as_deref()
     }
 
-    /// Run a single query via the GitHub REST Search API and return parsed PR results.
-    async fn search_prs(&self, query: &str, token: &str) -> Vec<PrResult> {
-        let resp = match self
+    /// Run a single query via the GitHub REST Search API with ETag support.
+    /// Returns `Fresh` with results on 200, `NotModified` on 304, or `Error` on failure.
+    async fn search_prs(&self, query: &str, token: &str, etag: Option<&str>) -> SearchResult {
+        let mut request = self
             .client
             .get("https://api.github.com/search/issues")
             .query(&[("q", query), ("per_page", "30")])
             .header("Authorization", format!("Bearer {token}"))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "apiari-buzz")
-            .send()
-            .await
-        {
+            .header("User-Agent", "apiari-buzz");
+
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+
+        let resp = match request.send().await {
             Ok(r) => r,
             Err(e) => {
                 warn!("GitHub search request failed: {e}");
-                return Vec::new();
+                return SearchResult::Error;
             }
         };
 
         let status = resp.status();
+
+        // Extract ETag before consuming the response body.
+        let new_etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            return SearchResult::NotModified;
+        }
+
         if status == reqwest::StatusCode::FORBIDDEN
             || status == reqwest::StatusCode::TOO_MANY_REQUESTS
         {
             warn!("GitHub search rate limited (HTTP {status})");
-            return Vec::new();
+            return SearchResult::Error;
         }
         if !status.is_success() {
             warn!("GitHub search returned HTTP {status}");
-            return Vec::new();
+            return SearchResult::Error;
         }
 
         let body: serde_json::Value = match resp.json().await {
             Ok(v) => v,
             Err(e) => {
                 warn!("failed to parse GitHub search response: {e}");
-                return Vec::new();
+                return SearchResult::Error;
             }
         };
 
         let Some(items) = body.get("items").and_then(|v| v.as_array()) else {
             warn!("GitHub search response missing `items` array");
-            return Vec::new();
+            return SearchResult::Error;
         };
 
-        items.iter().filter_map(parse_pr_result).collect()
+        SearchResult::Fresh {
+            etag: new_etag,
+            prs: items.iter().filter_map(parse_pr_result).collect(),
+        }
     }
 }
 
+/// Result of an ETag-aware search query.
+enum SearchResult {
+    /// HTTP 200 with fresh data and optional ETag.
+    Fresh {
+        etag: Option<String>,
+        prs: Vec<PrResult>,
+    },
+    /// HTTP 304 — data not modified.
+    NotModified,
+    /// Request failed.
+    Error,
+}
+
 /// Parsed PR from GitHub search result.
+#[derive(Clone)]
 struct PrResult {
     number: u64,
     title: String,
@@ -198,7 +234,28 @@ impl Watcher for ReviewQueueWatcher {
         let mut seen_keys: HashSet<String> = HashSet::new();
 
         for (priority, entry) in self.queries.iter().enumerate() {
-            let prs = self.search_prs(&entry.query, &token).await;
+            let cached_etag = self.etag_cache.get(&entry.query).map(|(e, _)| e.clone());
+            let result = self
+                .search_prs(&entry.query, &token, cached_etag.as_deref())
+                .await;
+
+            let prs = match result {
+                SearchResult::Fresh { etag, prs } => {
+                    if let Some(etag) = etag {
+                        self.etag_cache
+                            .insert(entry.query.clone(), (etag, prs.clone()));
+                    }
+                    prs
+                }
+                SearchResult::NotModified => {
+                    match self.etag_cache.get(&entry.query) {
+                        Some((_, cached)) => cached.clone(),
+                        None => continue, // No cache available, skip this query.
+                    }
+                }
+                SearchResult::Error => continue,
+            };
+
             for pr in prs {
                 let key = external_id(&pr.repo, pr.number);
                 if seen_keys.contains(&key) {

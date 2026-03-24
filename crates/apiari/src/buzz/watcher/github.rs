@@ -38,6 +38,74 @@ fn rate_limit_decision(remaining: u32) -> (bool, bool) {
 /// Max concurrent `gh` subprocess calls per poll (per-PR CI lookups, per-repo fanout).
 const MAX_CONCURRENT_GH_CALLS: usize = 8;
 
+/// Result of a `gh api --include` call with optional ETag support.
+enum EtagApiResponse {
+    /// HTTP 200 with fresh data and optional ETag header.
+    Fresh {
+        etag: Option<String>,
+        body: serde_json::Value,
+    },
+    /// HTTP 304 — data not modified since the provided ETag.
+    NotModified,
+    /// Request failed (network error, 4xx/5xx).
+    Error,
+}
+
+/// Parse a `gh api --include` response into (status_code, headers, body_str).
+fn parse_gh_include_response(raw: &str) -> (u16, Vec<(&str, &str)>, &str) {
+    let (headers_str, body) = if let Some(pos) = raw.find("\r\n\r\n") {
+        (&raw[..pos], &raw[pos + 4..])
+    } else if let Some(pos) = raw.find("\n\n") {
+        (&raw[..pos], &raw[pos + 2..])
+    } else {
+        (raw, "")
+    };
+
+    let mut lines = headers_str.lines();
+
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1)?.parse::<u16>().ok())
+        .unwrap_or(0);
+
+    let headers: Vec<(&str, &str)> = lines
+        .filter_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            Some((key.trim(), value.trim()))
+        })
+        .collect();
+
+    (status, headers, body)
+}
+
+/// Parse open PRs JSON array into (number, title, branch, sha) tuples.
+fn parse_open_prs(value: &serde_json::Value) -> Vec<(u64, String, String, String)> {
+    let Some(prs) = value.as_array() else {
+        return Vec::new();
+    };
+    prs.iter()
+        .filter_map(|pr| {
+            let number = pr.get("number")?.as_u64()?;
+            let title = pr.get("title")?.as_str()?.to_string();
+            let branch = pr.get("head")?.get("ref")?.as_str()?.to_string();
+            let sha = pr.get("head")?.get("sha")?.as_str()?.to_string();
+            Some((number, title, branch, sha))
+        })
+        .collect()
+}
+
+/// Snapshot of per-repo cursor state passed into `poll_repo_full`.
+struct RepoPollParams {
+    repo: String,
+    last_seen_release_id: u64,
+    seen_merged_prs: HashSet<u64>,
+    ci_pass_prs: HashSet<u64>,
+    bot_review_cursor: Option<String>,
+    pr_push_prev: HashMap<u64, String>,
+    open_prs_etag: Option<String>,
+    cached_open_prs: Vec<(u64, String, String, String)>,
+}
+
 /// Per-repo poll results collected concurrently, then merged into watcher state.
 struct RepoPollResult {
     repo: String,
@@ -49,6 +117,10 @@ struct RepoPollResult {
     /// Updated PR head SHA map. `Some` replaces previous cursor; `None` preserves it
     /// (e.g. when `fetch_open_prs` fails due to a transient API error).
     updated_pr_push_cursors: Option<HashMap<u64, String>>,
+    /// New ETag for the open-PRs endpoint (update cache on fresh data).
+    new_open_prs_etag: Option<String>,
+    /// Fresh open PR list to cache (only set when we got a 200, not 304).
+    fresh_open_prs: Option<Vec<(u64, String, String, String)>>,
 }
 
 /// Watches GitHub repositories via the `gh` CLI.
@@ -70,6 +142,10 @@ pub struct GithubWatcher {
     pr_push_cursors: HashMap<String, HashMap<u64, String>>,
     /// Cached rate-limit remaining count and when it was fetched.
     last_rate_check: Option<(Instant, u32)>,
+    /// ETag per repo for the open-PRs endpoint (avoids rate-limit charge on 304).
+    open_prs_etags: HashMap<String, String>,
+    /// Cached open PR list per repo (used when ETag yields 304).
+    cached_open_prs: HashMap<String, Vec<(u64, String, String, String)>>,
 }
 
 impl GithubWatcher {
@@ -84,6 +160,8 @@ impl GithubWatcher {
             bot_review_cursors: HashMap::new(),
             pr_push_cursors: HashMap::new(),
             last_rate_check: None,
+            open_prs_etags: HashMap::new(),
+            cached_open_prs: HashMap::new(),
         }
     }
 
@@ -221,68 +299,95 @@ impl GithubWatcher {
         }
     }
 
-    /// Fetch open pull requests for a repo. Returns (pr_number, pr_title, head_branch, head_sha).
-    /// Returns `None` on API failure so callers can distinguish "no open PRs" from "fetch failed".
-    async fn fetch_open_prs(&self, repo: &str) -> Option<Vec<(u64, String, String, String)>> {
-        let prs_value = self
-            .gh_api(&format!("repos/{repo}/pulls?state=open&per_page=20"))
-            .await?;
-        let prs = prs_value.as_array()?;
-        let mut result = Vec::new();
-        for pr in prs {
-            if let Some(number) = pr.get("number").and_then(|v| v.as_u64())
-                && let Some(title) = pr.get("title").and_then(|v| v.as_str())
-                && let Some(branch) = pr
-                    .get("head")
-                    .and_then(|v| v.get("ref"))
-                    .and_then(|v| v.as_str())
-                && let Some(sha) = pr
-                    .get("head")
-                    .and_then(|v| v.get("sha"))
-                    .and_then(|v| v.as_str())
-            {
-                result.push((
-                    number,
-                    title.to_string(),
-                    branch.to_string(),
-                    sha.to_string(),
-                ));
-            }
+    /// Execute `gh api --include` with optional ETag (If-None-Match) support.
+    /// Returns `Fresh` with body on 200, `NotModified` on 304, or `Error` on failure.
+    async fn gh_api_etag(&self, endpoint: &str, etag: Option<&str>) -> EtagApiResponse {
+        let mut args = vec!["api".to_string(), "--include".to_string()];
+        if let Some(etag) = etag {
+            args.push("--header".to_string());
+            args.push(format!("If-None-Match: {etag}"));
         }
-        Some(result)
-    }
+        args.push(endpoint.to_string());
 
-    /// Fetch the latest workflow run for a branch using `gh run list`.
-    async fn fetch_latest_run(&self, repo: &str, branch: &str) -> Option<serde_json::Value> {
-        let output = tokio::process::Command::new("gh")
-            .args([
-                "run",
-                "list",
-                "--json",
-                "status,conclusion,headBranch,databaseId,url",
-                "--repo",
-                repo,
-                "--branch",
-                branch,
-                "--limit",
-                "1",
-            ])
+        let output = match tokio::process::Command::new("gh")
+            .args(&args)
             .output()
             .await
-            .ok()?;
+        {
+            Ok(o) => o,
+            Err(e) => {
+                warn!("failed to run `gh api {endpoint}`: {e}");
+                return EtagApiResponse::Error;
+            }
+        };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
-                "`gh run list` for {repo}@{branch} failed: {}",
-                stderr.trim()
-            );
-            return None;
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let (status, headers, body_str) = parse_gh_include_response(&raw);
+
+        if status == 304 {
+            return EtagApiResponse::NotModified;
         }
 
-        let body = String::from_utf8_lossy(&output.stdout);
-        let runs: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
-        runs.into_iter().next()
+        if status == 0 || status >= 400 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "`gh api {endpoint}` failed (HTTP {status}): {}",
+                stderr.trim()
+            );
+            return EtagApiResponse::Error;
+        }
+
+        let new_etag = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("etag"))
+            .map(|(_, v)| v.to_string());
+
+        match serde_json::from_str::<serde_json::Value>(body_str) {
+            Ok(body) => EtagApiResponse::Fresh {
+                etag: new_etag,
+                body,
+            },
+            Err(e) => {
+                warn!("failed to parse JSON from `gh api {endpoint}`: {e}");
+                EtagApiResponse::Error
+            }
+        }
+    }
+
+    /// Fetch open pull requests with ETag caching support.
+    /// Returns an `EtagApiResponse` whose `Fresh` variant body is the raw JSON array.
+    async fn fetch_open_prs(&self, repo: &str, etag: Option<&str>) -> EtagApiResponse {
+        let endpoint = format!("repos/{repo}/pulls?state=open&per_page=20");
+        self.gh_api_etag(&endpoint, etag).await
+    }
+
+    /// Fetch all completed workflow runs for a repo in a single API call.
+    /// Returns a map of branch name → latest completed run (most recent per branch).
+    async fn fetch_completed_runs(&self, repo: &str) -> HashMap<String, serde_json::Value> {
+        let endpoint = format!("repos/{repo}/actions/runs?per_page=20&status=completed");
+        let Some(response) = self.gh_api(&endpoint).await else {
+            return HashMap::new();
+        };
+        let Some(runs) = response.get("workflow_runs").and_then(|v| v.as_array()) else {
+            return HashMap::new();
+        };
+
+        // API returns newest first — first run per branch is the most recent.
+        let mut by_branch: HashMap<String, serde_json::Value> = HashMap::new();
+        for run in runs {
+            let branch = run
+                .get("head_branch")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if branch.is_empty() {
+                continue;
+            }
+            by_branch
+                .entry(branch.to_string())
+                .or_insert_with(|| run.clone());
+        }
+
+        by_branch
     }
 
     /// Poll for completed Release workflow runs on a repo.
@@ -434,7 +539,7 @@ impl GithubWatcher {
         }
     }
 
-    /// Poll for bot/automated code reviews on open PRs.
+    /// Poll for bot/automated code reviews on open PRs using a single GraphQL query.
     /// Returns (signals, optional new cursor timestamp).
     async fn poll_bot_reviews(
         &self,
@@ -444,124 +549,152 @@ impl GithubWatcher {
         let mut signals = Vec::new();
         let mut max_ts = cursor_ts.map(|s| s.to_string());
 
-        // Fetch open PRs (up to 20) and their reviews
-        let endpoint = format!("repos/{repo}/pulls?state=open&per_page=20");
-        let Some(prs_value) = self.gh_api(&endpoint).await else {
-            return (signals, None);
-        };
-        let Some(prs) = prs_value.as_array() else {
+        let Some((owner, name)) = repo.split_once('/') else {
+            warn!("invalid repo format for GraphQL query: {repo}");
             return (signals, None);
         };
 
-        // Collect PR numbers + titles for review lookup
-        let pr_infos: Vec<(u64, String)> = prs
-            .iter()
-            .filter_map(|pr| {
-                let number = pr.get("number")?.as_u64()?;
-                let title = pr.get("title")?.as_str()?.to_string();
-                Some((number, title))
-            })
-            .collect();
+        // Single GraphQL query fetches all open PRs and their reviews at once.
+        let query = format!(
+            r#"{{ repository(owner: "{owner}", name: "{name}") {{ pullRequests(states: OPEN, first: 20) {{ nodes {{ number title reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} }} }}"#
+        );
+        let query_arg = format!("query={query}");
 
-        // Fetch reviews for each PR concurrently in bounded chunks
-        for chunk in pr_infos.chunks(MAX_CONCURRENT_GH_CALLS) {
-            let endpoints: Vec<String> = chunk
-                .iter()
-                .map(|(number, _)| format!("repos/{repo}/pulls/{number}/reviews?per_page=30"))
-                .collect();
-            let review_futures: Vec<_> = endpoints.iter().map(|ep| self.gh_api(ep)).collect();
-            let results = futures::future::join_all(review_futures).await;
+        let output = match tokio::process::Command::new("gh")
+            .args(["api", "graphql", "-f", &query_arg])
+            .output()
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                warn!("failed to run GraphQL query for {repo}: {e}");
+                return (signals, None);
+            }
+        };
 
-            for ((pr_number, pr_title), reviews_opt) in chunk.iter().zip(results) {
-                let Some(reviews_value) = reviews_opt else {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("GraphQL query for {repo} failed: {}", stderr.trim());
+            return (signals, None);
+        }
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        let response: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("failed to parse GraphQL response for {repo}: {e}");
+                return (signals, None);
+            }
+        };
+
+        let Some(pr_nodes) = response
+            .pointer("/data/repository/pullRequests/nodes")
+            .and_then(|v| v.as_array())
+        else {
+            // Could be a permissions error or empty repo
+            if let Some(errors) = response.get("errors").and_then(|v| v.as_array()) {
+                for err in errors {
+                    let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                    warn!("GraphQL error for {repo}: {msg}");
+                }
+            }
+            return (signals, None);
+        };
+
+        for pr_node in pr_nodes {
+            let pr_number = pr_node.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+            let pr_title = pr_node.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            if pr_number == 0 {
+                continue;
+            }
+
+            let Some(review_nodes) = pr_node.pointer("/reviews/nodes").and_then(|v| v.as_array())
+            else {
+                continue;
+            };
+
+            for review in review_nodes {
+                let Some(author) = review.get("author") else {
                     continue;
                 };
-                let Some(reviews) = reviews_value.as_array() else {
+                if author.is_null() {
                     continue;
+                }
+                let login = author.get("login").and_then(|v| v.as_str()).unwrap_or("");
+                let author_type = author
+                    .get("__typename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let is_bot = author_type == "Bot" || login.ends_with("[bot]");
+                if !is_bot {
+                    continue;
+                }
+
+                let submitted_at = review
+                    .get("submittedAt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if submitted_at.is_empty() {
+                    continue;
+                }
+
+                // Skip reviews older than or equal to cursor
+                if let Some(cursor) = cursor_ts
+                    && submitted_at <= cursor
+                {
+                    continue;
+                }
+
+                let state = review
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("COMMENTED");
+                let body = review.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                let review_id = review
+                    .get("databaseId")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let review_url = review.get("url").and_then(|v| v.as_str()).unwrap_or("");
+
+                let truncated_body: String = body.chars().take(500).collect();
+
+                let metadata = serde_json::json!({
+                    "pr_number": pr_number,
+                    "pr_title": pr_title,
+                    "repo": repo,
+                    "bot_name": login,
+                    "review_state": state,
+                    "review_body": truncated_body,
+                });
+
+                let severity = match state {
+                    "CHANGES_REQUESTED" => Severity::Warning,
+                    "APPROVED" => Severity::Info,
+                    _ => Severity::Info,
                 };
 
-                for review in reviews {
-                    let Some(user) = review.get("user") else {
-                        continue;
-                    };
-                    let login = user.get("login").and_then(|v| v.as_str()).unwrap_or("");
-                    let user_type = user.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let bot_display = login.strip_suffix("[bot]").unwrap_or(login);
+                let key = format!("bot-review-{repo}-{pr_number}-{review_id}");
+                let title = format!("{bot_display} reviewed PR #{pr_number}: {state}");
+                let mut signal = SignalUpdate::new("github_bot_review", &key, &title, severity)
+                    .with_metadata(metadata.to_string());
+                if !truncated_body.is_empty() {
+                    signal = signal.with_body(&truncated_body);
+                }
+                if !review_url.is_empty() {
+                    signal = signal.with_url(review_url);
+                }
+                signals.push(signal);
 
-                    // Only bot reviews: GitHub App bots have type "Bot",
-                    // or users with [bot] suffix in login
-                    let is_bot = user_type == "Bot" || login.ends_with("[bot]");
-                    if !is_bot {
-                        continue;
+                match &max_ts {
+                    Some(ts) if submitted_at > ts.as_str() => {
+                        max_ts = Some(submitted_at.to_string());
                     }
-
-                    let submitted_at = review
-                        .get("submitted_at")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if submitted_at.is_empty() {
-                        continue;
+                    None => {
+                        max_ts = Some(submitted_at.to_string());
                     }
-
-                    // Skip reviews older than or equal to cursor
-                    if let Some(cursor) = cursor_ts
-                        && submitted_at <= cursor
-                    {
-                        continue;
-                    }
-
-                    let state = review
-                        .get("state")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("COMMENTED");
-                    let body = review.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                    let review_id = review.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let html_url = review
-                        .get("html_url")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-
-                    // Truncate body to 500 chars
-                    let truncated_body: String = body.chars().take(500).collect();
-
-                    // Build metadata JSON
-                    let metadata = serde_json::json!({
-                        "pr_number": pr_number,
-                        "pr_title": pr_title,
-                        "repo": repo,
-                        "bot_name": login,
-                        "review_state": state,
-                        "review_body": truncated_body,
-                    });
-
-                    let severity = match state {
-                        "CHANGES_REQUESTED" => Severity::Warning,
-                        "APPROVED" => Severity::Info,
-                        _ => Severity::Info,
-                    };
-
-                    let bot_display = login.strip_suffix("[bot]").unwrap_or(login);
-                    let key = format!("bot-review-{repo}-{pr_number}-{review_id}");
-                    let title = format!("{bot_display} reviewed PR #{pr_number}: {state}");
-                    let mut signal = SignalUpdate::new("github_bot_review", &key, &title, severity)
-                        .with_metadata(metadata.to_string());
-                    if !truncated_body.is_empty() {
-                        signal = signal.with_body(&truncated_body);
-                    }
-                    if !html_url.is_empty() {
-                        signal = signal.with_url(html_url);
-                    }
-                    signals.push(signal);
-
-                    // Track max timestamp
-                    match &max_ts {
-                        Some(ts) if submitted_at > ts.as_str() => {
-                            max_ts = Some(submitted_at.to_string());
-                        }
-                        None => {
-                            max_ts = Some(submitted_at.to_string());
-                        }
-                        _ => {}
-                    }
+                    _ => {}
                 }
             }
         }
@@ -703,28 +836,33 @@ impl GithubWatcher {
     /// Poll everything for a single repo concurrently: issues, labels, CI checks,
     /// release runs, merged PRs, and PR CI status. Returns a self-contained result
     /// that the caller merges back into watcher state.
-    async fn poll_repo_full(
-        &self,
-        repo: &str,
-        last_seen_release_id: u64,
-        seen_merged_prs: HashSet<u64>,
-        mut ci_pass_prs: HashSet<u64>,
-        bot_review_cursor: Option<String>,
-        pr_push_prev: HashMap<u64, String>,
-    ) -> RepoPollResult {
+    async fn poll_repo_full(&self, params: RepoPollParams) -> RepoPollResult {
+        let RepoPollParams {
+            repo,
+            last_seen_release_id,
+            seen_merged_prs,
+            mut ci_pass_prs,
+            bot_review_cursor,
+            pr_push_prev,
+            open_prs_etag,
+            cached_open_prs,
+        } = params;
+
         // Run independent poll types concurrently within this repo.
         let (
             repo_signals,
             (release_signals, new_release_cursor),
             (merged_signals, updated_merged_prs),
-            prs,
+            open_prs_response,
             (bot_review_signals, updated_bot_review_cursor),
+            completed_runs,
         ) = tokio::join!(
-            self.poll_repo(repo),
-            self.poll_release_runs(repo, last_seen_release_id),
-            self.poll_merged_prs(repo, &seen_merged_prs),
-            self.fetch_open_prs(repo),
-            self.poll_bot_reviews(repo, bot_review_cursor.as_deref()),
+            self.poll_repo(&repo),
+            self.poll_release_runs(&repo, last_seen_release_id),
+            self.poll_merged_prs(&repo, &seen_merged_prs),
+            self.fetch_open_prs(&repo, open_prs_etag.as_deref()),
+            self.poll_bot_reviews(&repo, bot_review_cursor.as_deref()),
+            self.fetch_completed_runs(&repo),
         );
 
         let mut signals: Vec<SignalUpdate> = repo_signals.into_iter().map(|(_, s)| s).collect();
@@ -732,69 +870,75 @@ impl GithubWatcher {
         signals.extend(merged_signals);
         signals.extend(bot_review_signals);
 
+        // Resolve open PRs from ETag response: Fresh → parse new data, NotModified → use cache.
+        let (prs, new_open_prs_etag, fresh_open_prs) = match open_prs_response {
+            EtagApiResponse::Fresh { etag, body } => {
+                let parsed = parse_open_prs(&body);
+                let cached = parsed.clone();
+                (Some(parsed), etag, Some(cached))
+            }
+            EtagApiResponse::NotModified => {
+                // Use cached PRs from the previous poll.
+                (Some(cached_open_prs), open_prs_etag, None)
+            }
+            EtagApiResponse::Error => (None, None, None),
+        };
+
         // If fetch_open_prs failed (transient API error), preserve previous cursors
         // and skip PR-dependent polling (CI status, push detection).
         let (prs, updated_pr_push_cursors) = match prs {
             Some(prs) => {
-                let (pr_push_signals, cursors) = Self::poll_pr_pushes(repo, &prs, &pr_push_prev);
+                let (pr_push_signals, cursors) = Self::poll_pr_pushes(&repo, &prs, &pr_push_prev);
                 signals.extend(pr_push_signals);
                 (prs, Some(cursors))
             }
             None => (Vec::new(), None),
         };
 
-        // Fetch latest CI run for each open PR concurrently in bounded chunks.
+        // Match completed runs to open PRs by branch (single batch fetch instead of per-PR).
         let open_pr_numbers: HashSet<u64> = prs.iter().map(|(n, _, _, _)| *n).collect();
 
-        for chunk in prs.chunks(MAX_CONCURRENT_GH_CALLS) {
-            let run_futures: Vec<_> = chunk
-                .iter()
-                .map(|(_, _, branch, _)| self.fetch_latest_run(repo, branch))
-                .collect();
-            let runs = join_all(run_futures).await;
+        for (pr_number, pr_title, branch, _) in &prs {
+            if let Some(run) = completed_runs.get(branch) {
+                let conclusion = run.get("conclusion").and_then(|v| v.as_str());
+                let run_id = run.get("id").and_then(|v| v.as_u64());
+                let run_url = run.get("html_url").and_then(|v| v.as_str());
 
-            for ((pr_number, pr_title, _, _), run) in chunk.iter().zip(runs) {
-                if let Some(run) = run {
-                    let conclusion = run.get("conclusion").and_then(|v| v.as_str());
-                    let run_id = run.get("databaseId").and_then(|v| v.as_u64());
-                    let run_url = run.get("url").and_then(|v| v.as_str());
-
-                    match conclusion {
-                        Some("failure") => {
-                            ci_pass_prs.remove(pr_number);
-                            if let Some(run_id) = run_id {
-                                let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
-                                let mut signal = SignalUpdate::new(
-                                    "github_ci_failure",
-                                    &key,
-                                    format!("CI failed: {pr_title} (#{pr_number})"),
-                                    Severity::Error,
-                                );
-                                if let Some(url) = run_url {
-                                    signal = signal.with_body(url).with_url(url);
-                                }
-                                signals.push(signal);
+                match conclusion {
+                    Some("failure") => {
+                        ci_pass_prs.remove(pr_number);
+                        if let Some(run_id) = run_id {
+                            let key = format!("ci-failure-{repo}-{pr_number}-{run_id}");
+                            let mut signal = SignalUpdate::new(
+                                "github_ci_failure",
+                                &key,
+                                format!("CI failed: {pr_title} (#{pr_number})"),
+                                Severity::Error,
+                            );
+                            if let Some(url) = run_url {
+                                signal = signal.with_body(url).with_url(url);
                             }
+                            signals.push(signal);
                         }
-                        Some("success") => {
-                            if !ci_pass_prs.contains(pr_number) {
-                                ci_pass_prs.insert(*pr_number);
-                                let rid = run_id.unwrap_or(0);
-                                let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
-                                let mut signal = SignalUpdate::new(
-                                    "github_ci_pass",
-                                    &key,
-                                    format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
-                                    Severity::Info,
-                                );
-                                if let Some(url) = run_url {
-                                    signal = signal.with_url(url);
-                                }
-                                signals.push(signal);
-                            }
-                        }
-                        _ => {}
                     }
+                    Some("success") => {
+                        if !ci_pass_prs.contains(pr_number) {
+                            ci_pass_prs.insert(*pr_number);
+                            let rid = run_id.unwrap_or(0);
+                            let key = format!("ci-pass-{repo}-{pr_number}-{rid}");
+                            let mut signal = SignalUpdate::new(
+                                "github_ci_pass",
+                                &key,
+                                format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
+                                Severity::Info,
+                            );
+                            if let Some(url) = run_url {
+                                signal = signal.with_url(url);
+                            }
+                            signals.push(signal);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -802,13 +946,15 @@ impl GithubWatcher {
         ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
 
         RepoPollResult {
-            repo: repo.to_string(),
+            repo,
             signals,
             new_release_cursor,
             updated_merged_prs,
             updated_ci_pass: ci_pass_prs,
             updated_bot_review_cursor,
             updated_pr_push_cursors,
+            new_open_prs_etag,
+            fresh_open_prs,
         }
     }
 }
@@ -843,7 +989,18 @@ impl Watcher for GithubWatcher {
                 let ci_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
                 let bot_cursor = self.bot_review_cursors.get(repo).cloned();
                 let pr_push = self.pr_push_cursors.get(repo).cloned().unwrap_or_default();
-                self.poll_repo_full(repo, last_seen, seen_prs, ci_prs, bot_cursor, pr_push)
+                let etag = self.open_prs_etags.get(repo).cloned();
+                let cached = self.cached_open_prs.get(repo).cloned().unwrap_or_default();
+                self.poll_repo_full(RepoPollParams {
+                    repo: repo.clone(),
+                    last_seen_release_id: last_seen,
+                    seen_merged_prs: seen_prs,
+                    ci_pass_prs: ci_prs,
+                    bot_review_cursor: bot_cursor,
+                    pr_push_prev: pr_push,
+                    open_prs_etag: etag,
+                    cached_open_prs: cached,
+                })
             })
             .collect();
 
@@ -878,6 +1035,13 @@ impl Watcher for GithubWatcher {
 
             if let Some(pr_push) = result.updated_pr_push_cursors {
                 self.pr_push_cursors.insert(result.repo.clone(), pr_push);
+            }
+
+            if let Some(etag) = result.new_open_prs_etag {
+                self.open_prs_etags.insert(result.repo.clone(), etag);
+            }
+            if let Some(prs) = result.fresh_open_prs {
+                self.cached_open_prs.insert(result.repo.clone(), prs);
             }
         }
 
