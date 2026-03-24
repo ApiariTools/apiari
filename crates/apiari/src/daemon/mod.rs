@@ -1521,19 +1521,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     // Broadcast watcher poll heartbeat to TUI clients so remote
                     // clients can update their "last updated" display even without
                     // direct SQLite access.
-                    if let Some(ref server) = socket_server {
-                        if let Ok(cursors) = slot.store.get_watcher_cursors() {
-                            let cursor_summary: Vec<String> = cursors
-                                .iter()
-                                .map(|(name, ts)| format!("{name}={ts}"))
-                                .collect();
-                            server.broadcast_activity(
-                                "daemon",
-                                &slot.name,
-                                "watcher_poll_complete",
-                                &cursor_summary.join(","),
-                            );
-                        }
+                    if let Some(ref server) = socket_server
+                        && let Ok(cursors) = slot.store.get_watcher_cursors()
+                    {
+                        let cursor_summary: Vec<String> = cursors
+                            .iter()
+                            .map(|(name, ts)| format!("{name}={ts}"))
+                            .collect();
+                        server.broadcast_activity(
+                            "daemon",
+                            &slot.name,
+                            "watcher_poll_complete",
+                            &cursor_summary.join(","),
+                        );
                     }
 
                     // Coordinator follow-through for signal hook events (non-blocking)
