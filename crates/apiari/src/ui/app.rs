@@ -1072,8 +1072,10 @@ impl App {
                 }
                 _ => {
                     self.view = View::Dashboard;
-                    // Keep focused_panel in sync with zoomed panel
-                    self.focused_panel = self.zoomed_panel.unwrap_or(Panel::Workers);
+                    if let Some(zoomed) = self.zoomed_panel {
+                        self.focused_panel = zoomed;
+                    }
+                    // Otherwise preserve existing focused_panel
                     self.worker_selection = 0;
                     self.signal_selection = 0;
                 }
