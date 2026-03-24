@@ -584,12 +584,22 @@ async fn run_coordinator_task(
                     continue;
                 }
 
-                if !has_session {
+                let has_action = action
+                    .as_deref()
+                    .map(|a| !a.trim().is_empty())
+                    .unwrap_or(false);
+                if !has_action && !has_session {
                     info!(
-                        "[follow-through] skipped (no active coordinator session): source={source} signal_count={}",
+                        "[follow-through] skipped (no session, no action): source={source} signal_count={}",
                         signals.len()
                     );
                     continue;
+                }
+                if has_action && !has_session {
+                    info!(
+                        "[follow-through] firing without active session (action hook): source={source} signal_count={}",
+                        signals.len()
+                    );
                 }
 
                 let mut notification = if let Some(ref tpl) = prompt_override {
