@@ -21,7 +21,7 @@ use crate::buzz::conversation::ConversationStore;
 use crate::buzz::coordinator::prompt::format_signal_summary;
 use crate::buzz::coordinator::skills::{
     SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
-    default_coordinator_tools,
+    default_coordinator_tools, observe_coordinator_disallowed_tools, observe_coordinator_tools,
 };
 use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
 use crate::buzz::daemon::config as buzz_daemon_config;
@@ -128,6 +128,10 @@ enum CoordinatorJob {
         telegram: Option<(TelegramChannel, i64, Option<i64>)>,
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         slot_name: String,
+        /// Playbook skill names to load for this session.
+        skill_names: Vec<String>,
+        /// Workspace root for loading playbook files.
+        workspace_root: std::path::PathBuf,
     },
 }
 
@@ -568,6 +572,8 @@ async fn run_coordinator_task(
                 telegram,
                 socket_server,
                 slot_name,
+                skill_names,
+                workspace_root,
             } => {
                 let has_session = coordinator.has_session();
                 info!(
@@ -613,10 +619,37 @@ async fn run_coordinator_task(
                     notification.push_str("\n\n[Action] ");
                     notification.push_str(action_str);
                 }
+                // Load hook-triggered playbooks
+                let playbook_content = if !skill_names.is_empty() {
+                    let mut content = String::new();
+                    for name in &skill_names {
+                        if let Some(pb) =
+                            crate::buzz::coordinator::skills::load_playbook(&workspace_root, name)
+                        {
+                            if !content.is_empty() {
+                                content.push_str("\n---\n\n");
+                            }
+                            content.push_str(&format!("### Playbook: {name}\n\n"));
+                            content.push_str(&pb);
+                        } else {
+                            warn!("[{slot_name}] playbook not found: {name}");
+                        }
+                    }
+                    if content.is_empty() {
+                        None
+                    } else {
+                        Some(content)
+                    }
+                } else {
+                    None
+                };
+
                 let saved_turns = coordinator.max_turns();
                 coordinator.set_max_turns(3);
 
-                let mut opts = match coordinator.build_options(&store) {
+                let mut opts = match coordinator
+                    .build_options_with_playbooks(&store, playbook_content.as_deref())
+                {
                     Ok(opts) => opts,
                     Err(e) => {
                         warn!("[{slot_name}] failed to build coordinator options: {e}");
@@ -1577,6 +1610,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             telegram: telegram_info,
                             socket_server: socket_server.clone(),
                             slot_name: slot.name.clone(),
+                            skill_names: hook.skills.clone(),
+                            workspace_root: slot.config.root.clone(),
                         });
                     }
 
@@ -2020,10 +2055,10 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    let allowed = default_coordinator_tools();
-    let disallowed = default_coordinator_disallowed_tools();
+    let (allowed, disallowed) = tools_for_authority(ws.config.authority);
     info!(
-        "[{workspace_name}] coordinator allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}"
+        "[{workspace_name}] coordinator authority={:?} allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}",
+        ws.config.authority
     );
     coordinator.set_tools(allowed);
     coordinator.set_disallowed_tools(disallowed);
@@ -2237,9 +2272,11 @@ fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    let allowed = default_coordinator_tools();
-    let disallowed = default_coordinator_disallowed_tools();
-    info!("[{ws_name}] coordinator allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}");
+    let (allowed, disallowed) = tools_for_authority(config.authority);
+    info!(
+        "[{ws_name}] coordinator authority={:?} allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}",
+        config.authority
+    );
     coordinator.set_tools(allowed);
     coordinator.set_disallowed_tools(disallowed);
     coordinator.set_working_dir(config.root.clone());
@@ -2250,6 +2287,20 @@ fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
         workspace_root: config.root.clone(),
     }));
     coordinator
+}
+
+/// Return (allowed, disallowed) tool lists based on authority level.
+fn tools_for_authority(authority: crate::config::WorkspaceAuthority) -> (Vec<String>, Vec<String>) {
+    match authority {
+        crate::config::WorkspaceAuthority::Observe => (
+            observe_coordinator_tools(),
+            observe_coordinator_disallowed_tools(),
+        ),
+        crate::config::WorkspaceAuthority::Autonomous => (
+            default_coordinator_tools(),
+            default_coordinator_disallowed_tools(),
+        ),
+    }
 }
 
 /// Try to restore the last coordinator session from the database.

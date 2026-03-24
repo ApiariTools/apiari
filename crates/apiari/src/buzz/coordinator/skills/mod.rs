@@ -3,6 +3,12 @@
 //! Skills teach the coordinator what CLI tools and APIs are available
 //! based on the workspace configuration. Each skill contributes a block
 //! of prompt text; `build_skills_prompt()` aggregates them all.
+//!
+//! ## Skill Kinds
+//!
+//! - **Tool** — operational knowledge for external tools/CLIs (auto-detected from watcher config)
+//! - **Context** — what this workspace/project is (auto-loaded from `.apiari/context.md`)
+//! - **Playbook** — how to handle a situation (indexed from `.apiari/skills/*.md`)
 
 pub mod config;
 mod email;
@@ -15,7 +21,9 @@ mod sentry;
 mod signals;
 mod swarm;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use crate::config::{WorkspaceAuthority, WorkspaceCapabilities};
 
 /// Context derived from workspace config, used to build skill prompts.
 pub struct SkillContext {
@@ -41,40 +49,80 @@ pub struct SkillContext {
     pub prompt_preamble: Option<String>,
     /// Default swarm agent: "claude", "codex", "gemini", or "auto".
     pub default_agent: String,
+    /// Workspace authority level.
+    pub authority: WorkspaceAuthority,
+    /// Resolved capabilities (already adjusted for authority level).
+    pub capabilities: WorkspaceCapabilities,
+}
+
+/// A playbook entry indexed from `.apiari/skills/*.md`.
+#[derive(Debug, Clone)]
+pub struct PlaybookEntry {
+    /// Filename stem (e.g. "ci-triage" from "ci-triage.md").
+    pub name: String,
+    /// First line of the file, stripped of leading `#` and whitespace.
+    pub description: String,
+}
+
+/// Load the context skill from `.apiari/context.md` if it exists.
+pub fn load_context_skill(workspace_root: &Path) -> Option<String> {
+    let path = workspace_root.join(".apiari/context.md");
+    std::fs::read_to_string(&path).ok()
+}
+
+/// Index playbooks from `.apiari/skills/*.md`.
+///
+/// Returns a list of (name, first-line description) entries.
+pub fn index_playbooks(workspace_root: &Path) -> Vec<PlaybookEntry> {
+    let dir = workspace_root.join(".apiari/skills");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut playbooks = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "md") {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let description = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| {
+                    content
+                        .lines()
+                        .next()
+                        .map(|line| line.trim_start_matches('#').trim().to_string())
+                })
+                .unwrap_or_default();
+            playbooks.push(PlaybookEntry { name, description });
+        }
+    }
+    playbooks.sort_by(|a, b| a.name.cmp(&b.name));
+    playbooks
+}
+
+/// Load the full content of a named playbook.
+pub fn load_playbook(workspace_root: &Path, name: &str) -> Option<String> {
+    let path = workspace_root.join(format!(".apiari/skills/{name}.md"));
+    std::fs::read_to_string(&path).ok()
 }
 
 /// Build the combined skills prompt from workspace context.
 ///
-/// Each skill checks whether it's applicable (e.g. Sentry skill only
-/// included when `has_sentry` is true) and contributes instructions.
+/// Prompt is assembled in this order:
+/// 1. Workspace info + repos
+/// 2. Tool skills (auto from watcher config)
+/// 3. Context skill (from `.apiari/context.md`)
+/// 4. Playbook index (names + descriptions from `.apiari/skills/*.md`)
+/// 5. Authority level statement
 pub fn build_skills_prompt(ctx: &SkillContext) -> String {
-    // Always-on skills
-    let mut sections = vec![
-        config::build_prompt(ctx),
-        signals::build_prompt(ctx),
-        memory::build_prompt(ctx),
-        scripts::build_prompt(ctx),
-    ];
-
-    // Conditional skills
-    if let Some(s) = github::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = sentry::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = swarm::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = linear::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = email::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = notion::build_prompt(ctx) {
-        sections.push(s);
-    }
     let mut prompt = format!(
         "## Workspace\n\
          Name: {}\n\
@@ -99,9 +147,85 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
         );
     }
 
-    prompt.push_str("\n# Skills\nYou have the following tools and capabilities:\n\n");
+    // Tool skills (auto-detected from watcher config)
+    let mut tool_sections = vec![
+        config::build_prompt(ctx),
+        signals::build_prompt(ctx),
+        memory::build_prompt(ctx),
+        scripts::build_prompt(ctx),
+    ];
 
-    prompt.push_str(&sections.join("\n"));
+    if let Some(s) = github::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = sentry::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = swarm::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = linear::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = email::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = notion::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+
+    prompt.push_str("\n# Skills\nYou have the following tools and capabilities:\n\n");
+    prompt.push_str(&tool_sections.join("\n"));
+
+    // Context skill (from .apiari/context.md)
+    if let Some(context) = load_context_skill(&ctx.workspace_root) {
+        prompt.push_str("\n## Project Context\n");
+        prompt.push_str(&context);
+        if !context.ends_with('\n') {
+            prompt.push('\n');
+        }
+    }
+
+    // Playbook index
+    let playbooks = index_playbooks(&ctx.workspace_root);
+    if !playbooks.is_empty() {
+        prompt.push_str("\n## Available Playbooks\n");
+        prompt.push_str(
+            "The following playbooks are available and will be loaded when relevant signal hooks fire:\n",
+        );
+        for pb in &playbooks {
+            if pb.description.is_empty() {
+                prompt.push_str(&format!("- {}\n", pb.name));
+            } else {
+                prompt.push_str(&format!("- {} — {}\n", pb.name, pb.description));
+            }
+        }
+    }
+
+    // Authority level statement
+    match ctx.authority {
+        WorkspaceAuthority::Observe => {
+            prompt.push_str(
+                "\n## Authority Level: Observe\n\
+                 You are in observe mode. You have read-only access to the workspace.\n\
+                 You CANNOT execute Bash commands, dispatch swarm workers, or make any changes.\n\
+                 Your tools are limited to: Read, Glob, Grep, WebSearch, WebFetch.\n",
+            );
+        }
+        WorkspaceAuthority::Autonomous => {
+            prompt.push_str(
+                "\n## Authority Level: Autonomous\n\
+                 You have full operational access to this workspace.\n",
+            );
+            if !ctx.capabilities.merge_prs.is_allowed(None) {
+                prompt.push_str(
+                    "Note: PR merging is disabled. Do NOT merge PRs — this capability must be \
+                     explicitly enabled in the workspace config (`[workspace.capabilities] merge_prs = true`).\n",
+                );
+            }
+        }
+    }
+
     prompt
 }
 
@@ -120,6 +244,22 @@ pub fn default_coordinator_tools() -> Vec<String> {
 /// Even if the model tries to use these, Claude CLI will refuse.
 pub fn default_coordinator_disallowed_tools() -> Vec<String> {
     ["Write", "Edit", "NotebookEdit", "Task"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Tools for observe mode — read-only only. No Bash.
+pub fn observe_coordinator_tools() -> Vec<String> {
+    ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Disallowed tools for observe mode — everything mutating.
+pub fn observe_coordinator_disallowed_tools() -> Vec<String> {
+    ["Write", "Edit", "NotebookEdit", "Task", "Bash"]
         .iter()
         .map(|s| s.to_string())
         .collect()
@@ -151,6 +291,8 @@ mod tests {
             has_telegram: false,
             prompt_preamble: None,
             default_agent: "claude".to_string(),
+            authority: WorkspaceAuthority::Autonomous,
+            capabilities: WorkspaceCapabilities::default(),
         }
     }
 

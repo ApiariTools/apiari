@@ -90,6 +90,31 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
 
     println!("\n  \u{2713} Created {config_display}\n");
 
+    // Scaffold .apiari/ directory with context.md and skills/
+    let apiari_dir = cwd.join(".apiari");
+    let skills_dir = apiari_dir.join("skills");
+    std::fs::create_dir_all(&skills_dir)
+        .wrap_err_with(|| format!("failed to create {}", skills_dir.display()))?;
+
+    let context_path = apiari_dir.join("context.md");
+    if !context_path.exists() {
+        let context_template = "\
+# Project Name
+
+What is this project? (1-2 sentences)
+
+## Stack
+
+## Team / ownership
+
+## Key conventions
+
+## Anything the coordinator should always know
+";
+        std::fs::write(&context_path, context_template)?;
+        println!("  \u{2713} Created .apiari/context.md \u{2014} fill this in with info about your project\n");
+    }
+
     // Check if swarm is available in PATH
     let swarm_installed = std::process::Command::new("which")
         .arg("swarm")
