@@ -596,33 +596,30 @@ async fn run_coordinator_task(
                     notification.push_str("\n\n[Action] ");
                     notification.push_str(action_str);
                 }
-                // Restrict to read-only for signal follow-throughs — no Bash allowed
-                let saved_disallowed = coordinator.disallowed_tools().to_vec();
-                let mut restricted = saved_disallowed.clone();
-                if !restricted.iter().any(|t| t == "Bash") {
-                    restricted.push("Bash".to_string());
+                let saved_turns = coordinator.max_turns();
+                coordinator.set_max_turns(3);
+
+                let mut opts = match coordinator.build_options(&store) {
+                    Ok(opts) => opts,
+                    Err(e) => {
+                        warn!("[{slot_name}] failed to build coordinator options: {e}");
+                        coordinator.set_max_turns(saved_turns);
+                        continue;
+                    }
+                };
+
+                // Restrict to read-only for signal follow-throughs — no Bash allowed.
+                // Push directly into opts so coordinator state is never mutated.
+                if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
+                    opts.disallowed_tools.push("Bash".to_string());
                 }
-                coordinator.set_disallowed_tools(restricted);
 
                 info!(
                     "[{slot_name}] signal follow-through START source={source} signals={} has_action={} disallowed_tools={:?}",
                     signals.len(),
                     action.is_some(),
-                    coordinator.disallowed_tools()
+                    opts.disallowed_tools
                 );
-
-                let saved_turns = coordinator.max_turns();
-                coordinator.set_max_turns(3);
-
-                let opts = match coordinator.build_options(&store) {
-                    Ok(opts) => opts,
-                    Err(e) => {
-                        warn!("[{slot_name}] failed to build coordinator options: {e}");
-                        coordinator.set_max_turns(saved_turns);
-                        coordinator.set_disallowed_tools(saved_disallowed);
-                        continue;
-                    }
-                };
 
                 let name_for_cb = slot_name.clone();
                 let source_for_cb = source.clone();
@@ -632,8 +629,13 @@ async fn run_coordinator_task(
                             command,
                             matched_pattern,
                         } => {
+                            let sanitized: String = command
+                                .chars()
+                                .take(120)
+                                .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+                                .collect();
                             warn!(
-                                "[{name_for_cb}] signal follow-through bash MUTATING ({matched_pattern}): {command}"
+                                "[{name_for_cb}] signal follow-through bash MUTATING ({matched_pattern}): {sanitized}"
                             );
                         }
                         CoordinatorEvent::FilesModified { files } => {
@@ -695,7 +697,6 @@ async fn run_coordinator_task(
                 }
 
                 coordinator.set_max_turns(saved_turns);
-                coordinator.set_disallowed_tools(saved_disallowed);
             }
         }
     }
