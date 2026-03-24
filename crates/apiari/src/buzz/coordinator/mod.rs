@@ -108,6 +108,11 @@ impl Coordinator {
         self.disallowed_tools = tools;
     }
 
+    /// Get the currently disallowed tools.
+    pub fn disallowed_tools(&self) -> &[String] {
+        &self.disallowed_tools
+    }
+
     /// Set the working directory for the coordinator session.
     pub fn set_working_dir(&mut self, dir: PathBuf) {
         self.working_dir = Some(dir);

@@ -597,6 +597,18 @@ async fn run_coordinator_task(
                     signals.len()
                 );
 
+                // Restrict to read-only for signal follow-throughs — no bash writes allowed
+                let saved_disallowed = coordinator.disallowed_tools().to_vec();
+                let mut restricted = saved_disallowed.clone();
+                restricted.push("Bash".to_string());
+                coordinator.set_disallowed_tools(restricted.clone());
+                info!(
+                    "[{slot_name}] signal follow-through START source={source} signals={} has_action={} disallowed_tools={:?}",
+                    signals.len(),
+                    action.is_some(),
+                    coordinator.disallowed_tools()
+                );
+
                 let saved_turns = coordinator.max_turns();
                 coordinator.set_max_turns(3);
 
@@ -605,6 +617,7 @@ async fn run_coordinator_task(
                     Err(e) => {
                         warn!("[{slot_name}] failed to build coordinator options: {e}");
                         coordinator.set_max_turns(saved_turns);
+                        coordinator.set_disallowed_tools(saved_disallowed);
                         continue;
                     }
                 };
