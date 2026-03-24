@@ -608,6 +608,11 @@ async fn run_coordinator_task(
                     }
                 };
 
+                // Run follow-throughs in a fresh session so tool restrictions
+                // (disallowed Bash) stay isolated and don't poison the main
+                // coordinator session.
+                opts.resume = None;
+
                 // Restrict to read-only for signal follow-throughs — no Bash allowed.
                 // Modify opts directly so coordinator state is never mutated.
                 if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
@@ -618,6 +623,11 @@ async fn run_coordinator_task(
                 // which can cause Claude Code to persistently block Bash in the
                 // resumed session.
                 opts.allowed_tools.retain(|t| t != "Bash");
+
+                // Save the user's session token so we can restore it after the
+                // follow-through (handle_message_with_options overwrites session_id
+                // as a side-effect).
+                let saved_session_token = coordinator.session_token().cloned();
 
                 info!(
                     "[{slot_name}] signal follow-through START source={source} signals={} has_action={} disallowed_tools={:?}",
@@ -699,6 +709,12 @@ async fn run_coordinator_task(
                     Err(e) => {
                         warn!("[{slot_name}] coordinator follow-through failed: {e}");
                     }
+                }
+
+                // Restore the user's session so subsequent messages resume
+                // the original conversation (not the follow-through's session).
+                if let Some(token) = saved_session_token {
+                    coordinator.restore_session(token);
                 }
 
                 coordinator.set_max_turns(saved_turns);
