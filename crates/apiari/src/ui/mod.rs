@@ -555,15 +555,42 @@ async fn event_loop(
                         app.apply_signal_update(data);
                     }
                     AppUpdate::ShellWindows(data) => {
-                        for (name, windows) in data {
-                            if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == name) {
-                                ws.shell_windows = windows;
+                        for (name, windows) in &data {
+                            if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == *name) {
+                                ws.shell_windows = windows.clone();
                             }
                         }
                         app.shell_selection = app.shell_selection.min(
                             app.current_ws()
                                 .map_or(0, |ws| ws.shell_windows.len().saturating_sub(1)),
                         );
+                        // Lazily capture preview for the selected window only
+                        if let Some(ws) = app.current_ws()
+                            && let Some(shell) = ws.shell_windows.get(app.shell_selection)
+                            && let Some(ref tmux) = ws.tmux
+                            && tmux.is_available()
+                        {
+                            let tmux = tmux.clone();
+                            let ws_name = ws.name.clone();
+                            let win_name = shell.name.clone();
+                            let tx = update_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let preview = tmux.capture_preview(&win_name).unwrap_or_default();
+                                let _ = tx.blocking_send(AppUpdate::ShellPreview {
+                                    workspace_name: ws_name,
+                                    window_name: win_name,
+                                    preview,
+                                });
+                            });
+                        }
+                        app.needs_redraw = true;
+                    }
+                    AppUpdate::ShellPreview { workspace_name, window_name, preview } => {
+                        if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == workspace_name)
+                            && let Some(shell) = ws.shell_windows.iter_mut().find(|s| s.name == window_name)
+                        {
+                            shell.preview = preview;
+                        }
                         app.needs_redraw = true;
                     }
                     AppUpdate::Extras { daemon_alive, daemon_uptime_secs, per_workspace } => {
@@ -793,7 +820,7 @@ fn handle_paste(app: &mut App, text: &str) {
     } else if app.review_comment_active {
         app.review_comment_input.push_str(text);
     } else if app.shell_input_active {
-        app.shell_input.push_str(text);
+        app.shell_input.push_str(&sanitize_shell_name_input(text));
     }
     app.needs_redraw = true;
 }
@@ -1401,6 +1428,19 @@ fn handle_review_comment_key(app: &mut App, key: crossterm::event::KeyEvent) -> 
 
 // ── Shell name input keys ─────────────────────────────────
 
+/// Characters that are invalid in tmux window names:
+/// ':', '.' (session:window separators), and control/whitespace chars.
+fn is_valid_shell_name_char(c: char) -> bool {
+    !c.is_control() && c != ':' && c != '.'
+}
+
+/// Strip control chars and tmux-special chars from pasted text for shell names.
+fn sanitize_shell_name_input(text: &str) -> String {
+    text.chars()
+        .filter(|c| is_valid_shell_name_char(*c))
+        .collect()
+}
+
 fn handle_shell_input_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
     match key.code {
         KeyCode::Enter => {
@@ -1420,7 +1460,7 @@ fn handle_shell_input_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
             app.shell_input.pop();
             app.needs_redraw = true;
         }
-        KeyCode::Char(c) => {
+        KeyCode::Char(c) if is_valid_shell_name_char(c) => {
             app.shell_input.push(c);
             app.needs_redraw = true;
         }

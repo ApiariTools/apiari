@@ -190,11 +190,10 @@ impl TmuxManager {
                 let mut parts = line.splitn(2, '\t');
                 let name = parts.next().unwrap_or("").to_string();
                 let working_dir = parts.next().unwrap_or("").to_string();
-                let preview = self.capture_preview(&name).unwrap_or_default();
                 ShellWindow {
                     name,
                     working_dir,
-                    preview,
+                    preview: String::new(),
                 }
             })
             .collect();

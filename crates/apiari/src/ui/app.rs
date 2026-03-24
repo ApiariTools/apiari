@@ -164,6 +164,12 @@ pub(super) enum AppUpdate {
         worker_id: String,
         entries: Vec<ConversationEntry>,
     },
+    /// Preview text for a single shell window (lazily captured).
+    ShellPreview {
+        workspace_name: String,
+        window_name: String,
+        preview: String,
+    },
 }
 
 // ── Worker info from state.json ───────────────────────────
