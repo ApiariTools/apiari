@@ -582,13 +582,26 @@ async fn run_coordinator_task(
                     continue;
                 }
 
-                if !coordinator.has_session() {
+                // Check if the hook has a non-empty action configured
+                let has_action = action
+                    .as_deref()
+                    .map(|a| !a.trim().is_empty())
+                    .unwrap_or(false);
+
+                // Only skip notification-only hooks (no action) if there's no active session
+                if !has_action && !coordinator.has_session() {
                     info!(
-                        "[{slot_name}] [follow-through] skipped (no active coordinator session): source={source} signals={} has_action={}",
-                        signals.len(),
-                        action.is_some()
+                        "[{slot_name}] [follow-through] skipped (no session, no action): source={source} signals={}",
+                        signals.len()
                     );
                     continue;
+                }
+
+                // If we have an action but no active session, log that we're starting fresh
+                if has_action && !coordinator.has_session() {
+                    info!(
+                        "[{slot_name}] [follow-through] firing without active session (action hook): source={source}"
+                    );
                 }
 
                 let mut notification = if let Some(ref tpl) = prompt_override {
