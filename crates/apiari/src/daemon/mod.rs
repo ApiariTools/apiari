@@ -576,12 +576,18 @@ async fn run_coordinator_task(
                 let elapsed = queued_at.elapsed().as_secs();
                 if elapsed >= ttl_secs {
                     info!(
-                        "[{slot_name}] dropping stale signal follow-through ({source}, queued {elapsed}s ago)"
+                        "[{slot_name}] [follow-through] skipped (TTL expired): source={source} signals={} ttl_secs={ttl_secs} elapsed={elapsed}s",
+                        signals.len()
                     );
                     continue;
                 }
 
                 if !coordinator.has_session() {
+                    info!(
+                        "[{slot_name}] [follow-through] skipped (no active coordinator session): source={source} signals={} has_action={}",
+                        signals.len(),
+                        action.is_some()
+                    );
                     continue;
                 }
 
