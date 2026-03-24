@@ -30,6 +30,11 @@ There is one crate in this repo: `crates/apiari`. The `hive` crate no longer exi
 - All TUI code is in `crates/apiari/src/ui/`
 - All daemon code is in `crates/apiari/src/daemon/`
 
+## Pre-Commit Checks
+Before every commit, run **both** of these and fix any issues:
+- `cargo fmt -p apiari`
+- `cargo clippy --workspace -- -D warnings`
+
 ## Git Workflow
 - Stay on your `swarm/*` branch
 - NEVER push to or merge into `main`
