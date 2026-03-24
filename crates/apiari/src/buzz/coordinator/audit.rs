@@ -90,6 +90,48 @@ pub fn classify_bash_command_with_devmode(command: &str) -> BashClassification {
     result
 }
 
+/// Strip the contents of quoted strings, preserving shell structure.
+///
+/// Replaces text inside single/double quotes with empty content (keeping the
+/// quote characters themselves). This prevents pattern matching from
+/// false-positiving on data within string arguments — e.g. a command like
+/// `echo "Do NOT run cargo install" > /tmp/task.txt` won't match the
+/// `cargo install` write pattern.
+///
+/// Handles `\"` escapes within double-quoted strings.
+fn strip_string_contents(command: &str) -> String {
+    let mut result = String::with_capacity(command.len());
+    let mut chars = command.chars();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' => {
+                result.push('\'');
+                for inner in chars.by_ref() {
+                    if inner == '\'' {
+                        result.push('\'');
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                result.push('"');
+                while let Some(inner) = chars.next() {
+                    if inner == '\\' {
+                        chars.next(); // skip escaped char
+                    } else if inner == '"' {
+                        result.push('"');
+                        break;
+                    }
+                }
+            }
+            _ => result.push(ch),
+        }
+    }
+
+    result
+}
+
 /// Classify a Bash command as read-only or potentially mutating.
 ///
 /// Commands that only target `/tmp/` are considered read-only (the coordinator
@@ -108,9 +150,19 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
     let stripped = strip_heredoc_bodies(trimmed);
     let check = stripped.as_str();
 
-    // Check each pattern
+    // Strip quoted string contents for pattern detection. This prevents
+    // false-positives when data inside strings contains write patterns
+    // (e.g. `echo "Do NOT run cargo install" > /tmp/task.txt` should not
+    // match the "cargo install" pattern).
+    //
+    // We keep the original `check` for path-target checks (all_targets_allowed,
+    // redirect_targets_allowed) since those need to see the actual paths which
+    // may be inside quotes.
+    let unquoted = strip_string_contents(check);
+
+    // Check each pattern against the unquoted version
     for &pattern in WRITE_PATTERNS {
-        if contains_pattern(check, pattern) && !all_targets_allowed(check, pattern) {
+        if contains_pattern(&unquoted, pattern) && !all_targets_allowed(check, pattern) {
             return BashClassification::PotentiallyMutating {
                 matched_pattern: pattern.to_string(),
             };
@@ -119,7 +171,7 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
 
     // Git mutating commands
     for &pattern in GIT_MUTATING {
-        if contains_pattern(check, pattern) {
+        if contains_pattern(&unquoted, pattern) {
             return BashClassification::PotentiallyMutating {
                 matched_pattern: pattern.to_string(),
             };
@@ -127,22 +179,23 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
     }
 
     // Output redirects: > and >> (but not 2> which is stderr)
-    // Check for echo/cat/printf writing to files
-    if has_file_redirect(check) && !redirect_targets_allowed(check) {
+    // Check for echo/cat/printf writing to files.
+    // Use unquoted for redirect detection so `>` inside strings is ignored.
+    if has_file_redirect(&unquoted) && !redirect_targets_allowed(check) {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "output redirect".to_string(),
         };
     }
 
     // tee (writes to files)
-    if contains_pattern(check, "tee ") && !all_targets_allowed(check, "tee ") {
+    if contains_pattern(&unquoted, "tee ") && !all_targets_allowed(check, "tee ") {
         return BashClassification::PotentiallyMutating {
             matched_pattern: "tee".to_string(),
         };
     }
 
     // curl -o / -O / --output (downloads to file)
-    if (contains_pattern(check, "curl ") || contains_pattern(check, "curl\t"))
+    if (contains_pattern(&unquoted, "curl ") || contains_pattern(&unquoted, "curl\t"))
         && has_curl_output_flag(check)
         && !curl_output_targets_allowed(check)
     {
@@ -153,7 +206,7 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
 
     // Dev-mode-only commands (blocked by default, allowed in dev-mode)
     for &pattern in DEVMODE_ONLY {
-        if contains_pattern(check, pattern) {
+        if contains_pattern(&unquoted, pattern) {
             return BashClassification::PotentiallyMutating {
                 matched_pattern: pattern.to_string(),
             };
@@ -964,5 +1017,132 @@ if len(data) > 0:
                 "mkdir should be blocked when dev-mode is expired"
             );
         });
+    }
+
+    // -- Quote-aware pattern matching tests --
+
+    #[test]
+    fn test_quoted_cargo_install_not_blocked() {
+        // Text mentioning "cargo install" inside quotes should NOT trigger the pattern.
+        let result = classify_bash_command(r#"echo "Do NOT run cargo install" > /tmp/task.txt"#);
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "cargo install inside double quotes should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_single_quoted_write_pattern_not_blocked() {
+        let result =
+            classify_bash_command("echo 'Rules: never cargo install anything' > /tmp/rules.txt");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "cargo install inside single quotes should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_quoted_git_push_not_blocked() {
+        let result = classify_bash_command(
+            r#"echo "Remember to git push after committing" > /tmp/notes.txt"#,
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "git push inside double quotes should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_quoted_rm_not_blocked() {
+        let result =
+            classify_bash_command(r#"echo "Do not rm -rf anything important" > /tmp/warn.txt"#);
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "rm inside double quotes should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_real_cargo_install_still_blocked() {
+        // Actual cargo install command (not inside quotes) must still be blocked.
+        let result = classify_bash_command("cargo install --path .");
+        assert!(
+            result.is_mutating(),
+            "real cargo install should still be blocked"
+        );
+    }
+
+    #[test]
+    fn test_real_git_push_still_blocked() {
+        let result = classify_bash_command("git push origin main");
+        assert!(
+            result.is_mutating(),
+            "real git push should still be blocked"
+        );
+    }
+
+    #[test]
+    fn test_strip_string_contents_double_quotes() {
+        let result = strip_string_contents(r#"echo "hello world" > /tmp/f.txt"#);
+        assert_eq!(result, r#"echo "" > /tmp/f.txt"#);
+    }
+
+    #[test]
+    fn test_strip_string_contents_single_quotes() {
+        let result = strip_string_contents("echo 'cargo install' > /tmp/f.txt");
+        assert_eq!(result, "echo '' > /tmp/f.txt");
+    }
+
+    #[test]
+    fn test_strip_string_contents_escaped_quotes() {
+        let result = strip_string_contents(r#"echo "say \"hello\"" > /tmp/f.txt"#);
+        assert_eq!(result, r#"echo "" > /tmp/f.txt"#);
+    }
+
+    #[test]
+    fn test_strip_string_contents_no_quotes() {
+        let result = strip_string_contents("ls -la /tmp/");
+        assert_eq!(result, "ls -la /tmp/");
+    }
+
+    #[test]
+    fn test_quoted_separator_with_write_pattern() {
+        // This was the exact failure mode: semicolons inside quotes
+        // caused contains_pattern to split incorrectly.
+        let result = classify_bash_command(
+            r#"echo "step 1: build; cargo install --path ." > /tmp/steps.txt"#,
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "semicolon + cargo install inside quotes should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_quoted_ampersand_with_write_pattern() {
+        let result = classify_bash_command(
+            r#"echo "run: npm install && cargo install" > /tmp/instructions.txt"#,
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "&& + cargo install inside quotes should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_gt_inside_quotes_not_redirect() {
+        // A > inside quotes is not a redirect.
+        let result = classify_bash_command(r#"echo "value > 0""#);
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "> inside double quotes should not be flagged as redirect"
+        );
     }
 }
