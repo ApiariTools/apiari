@@ -103,9 +103,10 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
         return BashClassification::ReadOnly;
     }
 
-    // Strip heredoc bodies so their text doesn't trigger pattern matches or
-    // false-positive redirect detection.
+    // Strip heredoc bodies and quoted string contents so their text doesn't
+    // trigger pattern matches or false-positive redirect detection.
     let stripped = strip_heredoc_bodies(trimmed);
+    let stripped = strip_quoted_strings(&stripped);
     let check = stripped.as_str();
 
     // Check each pattern
@@ -219,6 +220,46 @@ fn strip_heredoc_bodies(command: &str) -> String {
                 result.push('\n');
             }
             i += 1;
+        }
+    }
+
+    result
+}
+
+/// Replace the contents of quoted strings (single and double) with empty
+/// strings, preserving the quotes themselves so the outer command structure
+/// stays intact. This prevents patterns inside string literals (e.g. date
+/// comparisons in `python3 -c` or `jq` filters) from triggering false
+/// positives in WRITE_PATTERNS or redirect detection.
+fn strip_quoted_strings(command: &str) -> String {
+    let mut result = String::with_capacity(command.len());
+    let mut chars = command.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\'' || c == '"' {
+            result.push(c);
+            // Consume everything until matching close quote
+            let quote = c;
+            let mut found_close = false;
+            while let Some(inner) = chars.next() {
+                if inner == '\\' && quote == '"' {
+                    // In double-quoted strings, skip escaped characters
+                    chars.next();
+                    continue;
+                }
+                if inner == quote {
+                    result.push(quote);
+                    found_close = true;
+                    break;
+                }
+                // Drop the character (strip the content)
+            }
+            if !found_close {
+                // Unterminated quote — close it to keep structure valid
+                result.push(quote);
+            }
+        } else {
+            result.push(c);
         }
     }
 
@@ -698,6 +739,64 @@ if len(data) > 0:
         assert!(
             stripped.contains("cat > /tmp/f.txt"),
             "command line should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_strip_quoted_strings() {
+        // Double-quoted string with redirect-like content
+        let input = r#"python3 -c "if x > 0: print('yes')""#;
+        let stripped = strip_quoted_strings(input);
+        assert!(
+            !stripped.contains("> 0"),
+            "quoted string content should be stripped"
+        );
+        assert!(
+            stripped.contains("python3 -c"),
+            "command structure should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_strip_quoted_strings_single() {
+        let input = "jq '.data[] | select(.count > 5)' file.json";
+        let stripped = strip_quoted_strings(input);
+        assert!(
+            !stripped.contains("> 5"),
+            "single-quoted content should be stripped"
+        );
+        assert!(stripped.contains("jq"), "command should be preserved");
+    }
+
+    #[test]
+    fn test_strip_quoted_strings_escaped() {
+        let input = r#"echo "hello \"world\" > /tmp/x""#;
+        let stripped = strip_quoted_strings(input);
+        assert!(
+            !stripped.contains("> /tmp/x"),
+            "escaped-quote string content should be stripped"
+        );
+    }
+
+    #[test]
+    fn test_quoted_date_comparison_not_blocked() {
+        let result = classify_bash_command(
+            r#"python3 -c "from datetime import datetime; print(datetime.now() > datetime(2024,1,1))""#,
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "date comparison inside quoted string should not trigger redirect detection"
+        );
+    }
+
+    #[test]
+    fn test_quoted_jq_filter_not_blocked() {
+        let result = classify_bash_command("jq '.results[] | select(.score > 90)' /tmp/data.json");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "jq filter with > inside single quotes should not trigger redirect detection"
         );
     }
 

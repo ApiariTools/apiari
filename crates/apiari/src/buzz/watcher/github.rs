@@ -331,26 +331,21 @@ fn parse_graphql_issues(nodes: &serde_json::Value) -> Vec<GraphqlIssue> {
 }
 
 /// Evaluate check suites for a PR to determine overall CI status.
-/// Returns (has_failure, has_success, all_concluded).
-fn evaluate_check_suites(check_suites: &[GraphqlCheckSuite]) -> (bool, bool, bool) {
-    if check_suites.is_empty() {
-        return (false, false, false);
-    }
-
+/// Returns (has_failure, has_success). CANCELLED/NEUTRAL/SKIPPED/in-progress
+/// suites are ignored — CI passes when at least one suite succeeds and none fail.
+fn evaluate_check_suites(check_suites: &[GraphqlCheckSuite]) -> (bool, bool) {
     let mut has_failure = false;
     let mut has_success = false;
-    let mut all_concluded = true;
 
     for suite in check_suites {
         match suite.conclusion.as_deref() {
             Some("FAILURE") => has_failure = true,
             Some("SUCCESS") => has_success = true,
-            Some(_) => {} // NEUTRAL, CANCELLED, etc.
-            None => all_concluded = false,
+            _ => {} // NEUTRAL, CANCELLED, SKIPPED, in-progress (None)
         }
     }
 
-    (has_failure, has_success, all_concluded)
+    (has_failure, has_success)
 }
 
 /// Find the URL of the first failing check run across all check suites.
@@ -1004,8 +999,7 @@ impl GithubWatcher {
             let open_pr_numbers: HashSet<u64> = gql.open_prs.iter().map(|pr| pr.number).collect();
 
             for pr in &gql.open_prs {
-                let (has_failure, has_success, all_concluded) =
-                    evaluate_check_suites(&pr.check_suites);
+                let (has_failure, has_success) = evaluate_check_suites(&pr.check_suites);
 
                 if has_failure {
                     ci_pass_prs.remove(&pr.number);
@@ -1021,7 +1015,7 @@ impl GithubWatcher {
                         signal = signal.with_body(&url).with_url(&url);
                     }
                     signals.push(signal);
-                } else if has_success && all_concluded && !ci_pass_prs.contains(&pr.number) {
+                } else if has_success && !ci_pass_prs.contains(&pr.number) {
                     ci_pass_prs.insert(pr.number);
                     let sha_short = &pr.head_sha[..7.min(pr.head_sha.len())];
                     let key = format!("ci-pass-{repo}-{}-{sha_short}", pr.number);
@@ -1686,10 +1680,9 @@ mod tests {
                 check_runs: vec![],
             },
         ];
-        let (fail, success, all) = evaluate_check_suites(&suites);
+        let (fail, success) = evaluate_check_suites(&suites);
         assert!(!fail);
         assert!(success);
-        assert!(all);
     }
 
     #[test]
@@ -1706,14 +1699,34 @@ mod tests {
                 check_runs: vec![],
             },
         ];
-        let (fail, success, all) = evaluate_check_suites(&suites);
+        let (fail, success) = evaluate_check_suites(&suites);
         assert!(fail);
         assert!(success);
-        assert!(all);
     }
 
     #[test]
-    fn test_evaluate_check_suites_in_progress() {
+    fn test_evaluate_check_suites_success_with_cancelled() {
+        // SUCCESS + CANCELLED should still count as CI pass (no failure)
+        let suites = vec![
+            GraphqlCheckSuite {
+                conclusion: Some("SUCCESS".into()),
+                url: String::new(),
+                check_runs: vec![],
+            },
+            GraphqlCheckSuite {
+                conclusion: Some("CANCELLED".into()),
+                url: String::new(),
+                check_runs: vec![],
+            },
+        ];
+        let (fail, success) = evaluate_check_suites(&suites);
+        assert!(!fail);
+        assert!(success);
+    }
+
+    #[test]
+    fn test_evaluate_check_suites_success_with_in_progress() {
+        // SUCCESS + in-progress (None) should still count as CI pass
         let suites = vec![
             GraphqlCheckSuite {
                 conclusion: Some("SUCCESS".into()),
@@ -1726,18 +1739,16 @@ mod tests {
                 check_runs: vec![],
             },
         ];
-        let (fail, success, all) = evaluate_check_suites(&suites);
+        let (fail, success) = evaluate_check_suites(&suites);
         assert!(!fail);
         assert!(success);
-        assert!(!all);
     }
 
     #[test]
     fn test_evaluate_check_suites_empty() {
-        let (fail, success, all) = evaluate_check_suites(&[]);
+        let (fail, success) = evaluate_check_suites(&[]);
         assert!(!fail);
         assert!(!success);
-        assert!(!all);
     }
 
     #[test]
