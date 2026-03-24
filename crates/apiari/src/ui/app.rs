@@ -1380,8 +1380,9 @@ impl App {
     }
 
     pub fn current_ws_has_shells(&self) -> bool {
-        self.current_ws()
-            .is_some_and(|ws| ws.config.shells.enabled && ws.tmux.is_some())
+        self.current_ws().is_some_and(|ws| {
+            ws.config.shells.enabled && ws.tmux.as_ref().is_some_and(|tmux| tmux.is_available())
+        })
     }
 
     pub fn back_to_dashboard(&mut self) {
@@ -2144,11 +2145,14 @@ impl App {
                     }
                 }
 
-                // Tmux auto-worker-shells: create/kill windows on worker lifecycle
+                // Tmux auto-worker-shells: create/kill windows on worker lifecycle.
+                // Note: create_window/kill_window are brief synchronous tmux CLI calls.
+                // The heavier list_windows is handled by the periodic async refresh.
                 if ws.config.shells.enabled
                     && ws.config.shells.auto_worker_shells
                     && !is_first_load
                     && let Some(ref tmux) = ws.tmux
+                    && tmux.is_available()
                 {
                     let old_ids: std::collections::HashSet<&String> =
                         ws.prev_worker_phases.keys().collect();

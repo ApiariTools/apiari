@@ -1127,11 +1127,16 @@ fn draw_shells_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
             Span::styled(&shell.name, name_style),
         ]));
 
-        // Show preview line (trimmed to fit)
+        // Show preview line (trimmed to fit, char-aware to avoid UTF-8 panic)
         if !shell.preview.is_empty() {
             let max_w = inner.width.saturating_sub(4) as usize;
-            let preview = if shell.preview.len() > max_w {
-                &shell.preview[..max_w]
+            let preview: &str = if shell.preview.chars().count() > max_w {
+                let end = shell
+                    .preview
+                    .char_indices()
+                    .nth(max_w)
+                    .map_or(shell.preview.len(), |(i, _)| i);
+                &shell.preview[..end]
             } else {
                 &shell.preview
             };

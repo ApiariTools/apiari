@@ -1873,6 +1873,7 @@ async fn handle_action(
         KeyAction::AttachShell(name) => {
             if let Some(ws) = app.current_ws()
                 && let Some(ref tmux) = ws.tmux
+                && tmux.is_available()
             {
                 let args = tmux.attach_args(&name);
                 // Suspend TUI, run tmux attach, then resume
@@ -1896,39 +1897,47 @@ async fn handle_action(
         KeyAction::CreateShell(name) => {
             if let Some(ws) = app.current_ws()
                 && let Some(ref tmux) = ws.tmux
+                && tmux.is_available()
             {
+                let tmux = tmux.clone();
                 let root = ws.config.root.clone();
-                tmux.ensure_session();
-                if tmux.create_window(&name, &root) {
+                let create_name = name.clone();
+                // Run blocking tmux commands off the async thread
+                let created = tokio::task::spawn_blocking(move || {
+                    tmux.ensure_session();
+                    tmux.create_window(&create_name, &root)
+                })
+                .await
+                .unwrap_or(false);
+                if created {
                     app.flash(format!("Created shell: {name}"));
                 } else {
                     app.flash("Failed to create shell");
                 }
-                // Refresh shell list
-                if let Some(ws) = app.current_ws_mut()
-                    && let Some(ref tmux) = ws.tmux
-                {
-                    ws.shell_windows = tmux.list_windows();
-                }
+                // Let periodic refresh pick up the new window list
             }
         }
         KeyAction::KillShell(name) => {
             if let Some(ws) = app.current_ws()
                 && let Some(ref tmux) = ws.tmux
+                && tmux.is_available()
             {
-                if tmux.kill_window(&name) {
+                let tmux = tmux.clone();
+                let kill_name = name.clone();
+                let killed = tokio::task::spawn_blocking(move || tmux.kill_window(&kill_name))
+                    .await
+                    .unwrap_or(false);
+                if killed {
                     app.flash(format!("Killed shell: {name}"));
+                    // Remove from local list immediately for responsive UI
+                    if let Some(ws) = app.current_ws_mut() {
+                        ws.shell_windows.retain(|w| w.name != name);
+                    }
+                    let count = app.current_ws().map_or(0, |ws| ws.shell_windows.len());
+                    app.shell_selection = app.shell_selection.min(count.saturating_sub(1));
                 } else {
                     app.flash("Failed to kill shell");
                 }
-                // Refresh shell list
-                if let Some(ws) = app.current_ws_mut()
-                    && let Some(ref tmux) = ws.tmux
-                {
-                    ws.shell_windows = tmux.list_windows();
-                }
-                let count = app.current_ws().map_or(0, |ws| ws.shell_windows.len());
-                app.shell_selection = app.shell_selection.min(count.saturating_sub(1));
             }
         }
         KeyAction::OpenSettings
@@ -1963,9 +1972,12 @@ async fn background_refresh_task(
         });
     }
 
+    // Cache tmux availability across refresh ticks
+    let mut tmux_available: Option<bool> = None;
+
     // Do initial data refresh immediately
     do_worker_refresh(&update_tx, &workspace_infos).await;
-    do_shell_refresh(&update_tx, &workspace_infos).await;
+    do_shell_refresh(&update_tx, &workspace_infos, &mut tmux_available).await;
     do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
     do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
 
@@ -1988,7 +2000,7 @@ async fn background_refresh_task(
         tokio::select! {
             _ = worker_interval.tick() => {
                 do_worker_refresh(&update_tx, &workspace_infos).await;
-                do_shell_refresh(&update_tx, &workspace_infos).await;
+                do_shell_refresh(&update_tx, &workspace_infos, &mut tmux_available).await;
             }
             _ = signal_interval.tick() => {
                 do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
@@ -2009,14 +2021,39 @@ async fn do_worker_refresh(tx: &mpsc::Sender<AppUpdate>, infos: &[app::Workspace
     }
 }
 
-async fn do_shell_refresh(tx: &mpsc::Sender<AppUpdate>, infos: &[app::WorkspaceRefreshInfo]) {
+async fn do_shell_refresh(
+    tx: &mpsc::Sender<AppUpdate>,
+    infos: &[app::WorkspaceRefreshInfo],
+    tmux_available: &mut Option<bool>,
+) {
+    // Cache tmux availability across ticks to avoid repeated `which tmux` calls.
+    let available = match *tmux_available {
+        Some(v) => v,
+        None => {
+            let v = tokio::task::spawn_blocking(|| {
+                std::process::Command::new("which")
+                    .arg("tmux")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            })
+            .await
+            .unwrap_or(false);
+            *tmux_available = Some(v);
+            v
+        }
+    };
+    if !available {
+        return;
+    }
+
     let infos = infos.to_vec();
     if let Ok(result) = tokio::task::spawn_blocking(move || {
         infos
             .iter()
             .filter_map(|info| {
                 let session = info.tmux_session.as_ref()?;
-                let mgr = crate::shells::TmuxManager::new(session);
+                let mgr = crate::shells::TmuxManager::with_availability(session, true);
                 let windows = mgr.list_windows();
                 Some((info.name.clone(), windows))
             })
@@ -2813,5 +2850,137 @@ mod tests {
         handle_worker_detail_key(&mut app, key(KeyCode::Char('j')), 0);
         let act_offset = app.workspaces[0].workers[0].activity_scroll.offset;
         assert!(act_offset > 0 || !app.workspaces[0].workers[0].activity_scroll.auto_scroll);
+    }
+
+    // ── Shell panel tests ────────────────────────────────
+
+    #[test]
+    fn test_current_ws_has_shells_false_by_default() {
+        let app = test_app();
+        // Default test app has shells disabled and tmux=None
+        assert!(!app.current_ws_has_shells());
+    }
+
+    #[test]
+    fn test_current_ws_has_shells_requires_available_tmux() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        // tmux is None → should be false
+        assert!(!app.current_ws_has_shells());
+
+        // Set tmux but with available=false
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", false));
+        assert!(!app.current_ws_has_shells());
+
+        // Set tmux with available=true
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
+        assert!(app.current_ws_has_shells());
+    }
+
+    #[test]
+    fn test_next_panel_skips_shells_when_disabled() {
+        let mut app = test_app();
+        // shells disabled (default) — Workers should skip to Signals
+        app.focused_panel = Panel::Workers;
+        app.next_panel();
+        assert_ne!(app.focused_panel, Panel::Shells);
+    }
+
+    #[test]
+    fn test_next_panel_includes_shells_when_enabled() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
+
+        app.focused_panel = Panel::Workers;
+        app.next_panel();
+        assert_eq!(app.focused_panel, Panel::Shells);
+    }
+
+    #[test]
+    fn test_prev_panel_includes_shells_when_enabled() {
+        let mut app = test_app();
+        app.workspaces[0].config.shells.enabled = true;
+        app.workspaces[0].tmux = Some(crate::shells::TmuxManager::with_availability("test", true));
+
+        app.focused_panel = Panel::Signals;
+        app.prev_panel();
+        // Should go to Reviews or Shells depending on review queue — no reviews, so Shells
+        assert_eq!(app.focused_panel, Panel::Shells);
+    }
+
+    #[test]
+    fn test_shell_selection_nav() {
+        let mut app = test_app();
+        app.workspaces[0].shell_windows = vec![
+            crate::shells::ShellWindow {
+                name: "a".into(),
+                working_dir: "/tmp".into(),
+                preview: String::new(),
+            },
+            crate::shells::ShellWindow {
+                name: "b".into(),
+                working_dir: "/tmp".into(),
+                preview: String::new(),
+            },
+            crate::shells::ShellWindow {
+                name: "c".into(),
+                working_dir: "/tmp".into(),
+                preview: String::new(),
+            },
+        ];
+        app.focused_panel = Panel::Shells;
+        assert_eq!(app.shell_selection, 0);
+
+        app.select_next_in_panel();
+        assert_eq!(app.shell_selection, 1);
+
+        app.select_next_in_panel();
+        assert_eq!(app.shell_selection, 2);
+
+        // Should not go past last item
+        app.select_next_in_panel();
+        assert_eq!(app.shell_selection, 2);
+
+        app.select_prev_in_panel();
+        assert_eq!(app.shell_selection, 1);
+
+        app.select_prev_in_panel();
+        assert_eq!(app.shell_selection, 0);
+
+        // Should not go below 0
+        app.select_prev_in_panel();
+        assert_eq!(app.shell_selection, 0);
+    }
+
+    #[test]
+    fn test_shell_panel_d_key_triggers_kill_confirm() {
+        let mut app = test_app();
+        app.workspaces[0].shell_windows = vec![crate::shells::ShellWindow {
+            name: "my-shell".into(),
+            working_dir: "/tmp".into(),
+            preview: String::new(),
+        }];
+        app.focused_panel = Panel::Shells;
+
+        let action = handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+
+        assert!(matches!(action, KeyAction::Redraw));
+        assert!(matches!(
+            app.pending_action,
+            Some(PendingAction::KillShell(ref name)) if name == "my-shell"
+        ));
+        assert!(matches!(app.mode, Mode::Confirm));
+    }
+
+    #[test]
+    fn test_shell_panel_n_key_activates_input() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Shells;
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('n')));
+
+        assert!(app.shell_input_active);
+        assert!(app.shell_input.is_empty());
     }
 }

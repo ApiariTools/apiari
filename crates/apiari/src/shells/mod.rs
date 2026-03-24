@@ -37,6 +37,16 @@ impl TmuxManager {
         }
     }
 
+    /// Create a TmuxManager with a pre-determined availability flag.
+    /// Use this to avoid redundant `which tmux` checks when availability
+    /// has already been verified.
+    pub fn with_availability(session_name: &str, available: bool) -> Self {
+        Self {
+            session: session_name.to_string(),
+            available,
+        }
+    }
+
     /// Whether tmux is available on this system.
     pub fn is_available(&self) -> bool {
         self.available
