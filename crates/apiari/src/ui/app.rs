@@ -2344,7 +2344,7 @@ impl App {
                 feed.sort_by(|a, b| b.when.cmp(&a.when));
                 let mut seen_heartbeats = std::collections::HashSet::new();
                 feed.retain(|item| {
-                    if matches!(item.kind, FeedKind::Heartbeat) {
+                    if matches!(&item.kind, FeedKind::Heartbeat) {
                         seen_heartbeats.insert(item.text.clone())
                     } else {
                         true
@@ -2352,14 +2352,16 @@ impl App {
                 });
                 feed.truncate(20);
 
-                for item in &feed {
-                    if matches!(item.kind, FeedKind::Heartbeat) {
-                        tracing::debug!(
-                            workspace = %name,
-                            text = %item.text,
-                            when = %item.when,
-                            "heartbeat feed item applied"
-                        );
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    for item in &feed {
+                        if matches!(&item.kind, FeedKind::Heartbeat) {
+                            tracing::debug!(
+                                workspace = %name,
+                                text = %item.text,
+                                when = %item.when,
+                                "heartbeat feed item applied"
+                            );
+                        }
                     }
                 }
 
@@ -3665,5 +3667,71 @@ mod tests {
             .unwrap();
         assert!(dispatched_pos < pr_pos);
         assert!(pr_pos < merged_pos);
+    }
+
+    // ── heartbeat dedup tests ─────────────────────────────
+
+    #[test]
+    fn test_heartbeat_dedup_keeps_freshest() {
+        let old = Utc::now() - chrono::Duration::hours(10);
+        let fresh = Utc::now() - chrono::Duration::seconds(30);
+
+        let mut feed = vec![
+            FeedItem {
+                when: old,
+                kind: FeedKind::Heartbeat,
+                text: "github checked".into(),
+            },
+            FeedItem {
+                when: fresh,
+                kind: FeedKind::Heartbeat,
+                text: "github checked".into(),
+            },
+            FeedItem {
+                when: old,
+                kind: FeedKind::Heartbeat,
+                text: "sentry checked".into(),
+            },
+            FeedItem {
+                when: Utc::now(),
+                kind: FeedKind::Signal,
+                text: "some signal".into(),
+            },
+        ];
+
+        // Replicate the dedup logic from apply_extras_update
+        feed.sort_by(|a, b| b.when.cmp(&a.when));
+        let mut seen_heartbeats = std::collections::HashSet::new();
+        feed.retain(|item| {
+            if matches!(&item.kind, FeedKind::Heartbeat) {
+                seen_heartbeats.insert(item.text.clone())
+            } else {
+                true
+            }
+        });
+
+        // Signal survives untouched
+        assert_eq!(
+            feed.iter()
+                .filter(|i| matches!(&i.kind, FeedKind::Signal))
+                .count(),
+            1
+        );
+
+        // Each watcher has exactly one heartbeat (the freshest)
+        let hb: Vec<_> = feed
+            .iter()
+            .filter(|i| matches!(&i.kind, FeedKind::Heartbeat))
+            .collect();
+        assert_eq!(hb.len(), 2, "expected one heartbeat per watcher");
+
+        let github_hb = hb.iter().find(|i| i.text == "github checked").unwrap();
+        assert_eq!(
+            github_hb.when, fresh,
+            "stale github heartbeat should be removed"
+        );
+
+        let sentry_hb = hb.iter().find(|i| i.text == "sentry checked").unwrap();
+        assert_eq!(sentry_hb.when, old, "sole sentry heartbeat should survive");
     }
 }
