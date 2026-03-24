@@ -62,7 +62,12 @@ impl ReviewQueueWatcher {
             client: reqwest::Client::builder()
                 .timeout(REQUEST_TIMEOUT)
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+                .unwrap_or_else(|e| {
+                    warn!(
+                        "failed to build reqwest client with timeout: {e}, falling back to default"
+                    );
+                    reqwest::Client::new()
+                }),
             token: None,
         }
     }

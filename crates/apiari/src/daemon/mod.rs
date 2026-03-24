@@ -1310,6 +1310,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             Ok(inner) => inner,
                             Err(_) => {
                                 error!("[{}] [{}] poll timed out after 30s", slot.name, watcher_name);
+                                let _ = slot.store.set_cursor(&watcher_name, "error: poll timed out");
                                 throttled.mark_polled();
                                 continue;
                             }
@@ -1415,7 +1416,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             }
                             Err(e) => {
                                 error!("[{}] [{}] poll failed: {e}", slot.name, watcher_name);
-                                let _ = slot.store.set_cursor(&watcher_name, &format!("error: {e}"));
+                                let _ = slot.store.set_cursor(&watcher_name, "error: poll failed");
                                 // Still mark polled on error to avoid hammering a failing source
                                 throttled.mark_polled();
                             }
