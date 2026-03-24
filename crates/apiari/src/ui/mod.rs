@@ -841,10 +841,10 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
     if app.focused_panel == Panel::Shells {
         match key.code {
             KeyCode::Enter => {
-                if let Some(ws) = app.current_ws() {
-                    if let Some(shell) = ws.shell_windows.get(app.shell_selection) {
-                        return KeyAction::AttachShell(shell.name.clone());
-                    }
+                if let Some(ws) = app.current_ws()
+                    && let Some(shell) = ws.shell_windows.get(app.shell_selection)
+                {
+                    return KeyAction::AttachShell(shell.name.clone());
                 }
                 return KeyAction::Redraw;
             }
@@ -855,12 +855,12 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 return KeyAction::Redraw;
             }
             KeyCode::Char('d') | KeyCode::Delete => {
-                if let Some(ws) = app.current_ws() {
-                    if let Some(shell) = ws.shell_windows.get(app.shell_selection) {
-                        let name = shell.name.clone();
-                        app.pending_action = Some(PendingAction::KillShell(name));
-                        app.mode = Mode::Confirm;
-                    }
+                if let Some(ws) = app.current_ws()
+                    && let Some(shell) = ws.shell_windows.get(app.shell_selection)
+                {
+                    let name = shell.name.clone();
+                    app.pending_action = Some(PendingAction::KillShell(name));
+                    app.mode = Mode::Confirm;
                 }
                 return KeyAction::Redraw;
             }
@@ -1871,64 +1871,64 @@ async fn handle_action(
             }
         }
         KeyAction::AttachShell(name) => {
-            if let Some(ws) = app.current_ws() {
-                if let Some(ref tmux) = ws.tmux {
-                    let args = tmux.attach_args(&name);
-                    // Suspend TUI, run tmux attach, then resume
-                    disable_raw_mode().ok();
-                    stdout()
-                        .execute(crossterm::event::DisableBracketedPaste)
-                        .ok();
-                    stdout().execute(crossterm::event::DisableMouseCapture).ok();
-                    stdout().execute(LeaveAlternateScreen).ok();
+            if let Some(ws) = app.current_ws()
+                && let Some(ref tmux) = ws.tmux
+            {
+                let args = tmux.attach_args(&name);
+                // Suspend TUI, run tmux attach, then resume
+                disable_raw_mode().ok();
+                stdout()
+                    .execute(crossterm::event::DisableBracketedPaste)
+                    .ok();
+                stdout().execute(crossterm::event::DisableMouseCapture).ok();
+                stdout().execute(LeaveAlternateScreen).ok();
 
-                    let _ = std::process::Command::new("tmux").args(&args).status();
+                let _ = std::process::Command::new("tmux").args(&args).status();
 
-                    stdout().execute(EnterAlternateScreen).ok();
-                    stdout().execute(crossterm::event::EnableMouseCapture).ok();
-                    stdout()
-                        .execute(crossterm::event::EnableBracketedPaste)
-                        .ok();
-                    enable_raw_mode().ok();
-                }
+                stdout().execute(EnterAlternateScreen).ok();
+                stdout().execute(crossterm::event::EnableMouseCapture).ok();
+                stdout()
+                    .execute(crossterm::event::EnableBracketedPaste)
+                    .ok();
+                enable_raw_mode().ok();
             }
         }
         KeyAction::CreateShell(name) => {
-            if let Some(ws) = app.current_ws() {
-                if let Some(ref tmux) = ws.tmux {
-                    let root = ws.config.root.clone();
-                    tmux.ensure_session();
-                    if tmux.create_window(&name, &root) {
-                        app.flash(format!("Created shell: {name}"));
-                    } else {
-                        app.flash("Failed to create shell");
-                    }
-                    // Refresh shell list
-                    if let Some(ws) = app.current_ws_mut() {
-                        if let Some(ref tmux) = ws.tmux {
-                            ws.shell_windows = tmux.list_windows();
-                        }
-                    }
+            if let Some(ws) = app.current_ws()
+                && let Some(ref tmux) = ws.tmux
+            {
+                let root = ws.config.root.clone();
+                tmux.ensure_session();
+                if tmux.create_window(&name, &root) {
+                    app.flash(format!("Created shell: {name}"));
+                } else {
+                    app.flash("Failed to create shell");
+                }
+                // Refresh shell list
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref tmux) = ws.tmux
+                {
+                    ws.shell_windows = tmux.list_windows();
                 }
             }
         }
         KeyAction::KillShell(name) => {
-            if let Some(ws) = app.current_ws() {
-                if let Some(ref tmux) = ws.tmux {
-                    if tmux.kill_window(&name) {
-                        app.flash(format!("Killed shell: {name}"));
-                    } else {
-                        app.flash("Failed to kill shell");
-                    }
-                    // Refresh shell list
-                    if let Some(ws) = app.current_ws_mut() {
-                        if let Some(ref tmux) = ws.tmux {
-                            ws.shell_windows = tmux.list_windows();
-                        }
-                    }
-                    let count = app.current_ws().map_or(0, |ws| ws.shell_windows.len());
-                    app.shell_selection = app.shell_selection.min(count.saturating_sub(1));
+            if let Some(ws) = app.current_ws()
+                && let Some(ref tmux) = ws.tmux
+            {
+                if tmux.kill_window(&name) {
+                    app.flash(format!("Killed shell: {name}"));
+                } else {
+                    app.flash("Failed to kill shell");
                 }
+                // Refresh shell list
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref tmux) = ws.tmux
+                {
+                    ws.shell_windows = tmux.list_windows();
+                }
+                let count = app.current_ws().map_or(0, |ws| ws.shell_windows.len());
+                app.shell_selection = app.shell_selection.min(count.saturating_sub(1));
             }
         }
         KeyAction::OpenSettings
@@ -2023,10 +2023,9 @@ async fn do_shell_refresh(tx: &mpsc::Sender<AppUpdate>, infos: &[app::WorkspaceR
             .collect::<Vec<_>>()
     })
     .await
+        && !result.is_empty()
     {
-        if !result.is_empty() {
-            let _ = tx.send(AppUpdate::ShellWindows(result)).await;
-        }
+        let _ = tx.send(AppUpdate::ShellWindows(result)).await;
     }
 }
 

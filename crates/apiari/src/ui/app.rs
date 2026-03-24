@@ -2145,28 +2145,28 @@ impl App {
                 }
 
                 // Tmux auto-worker-shells: create/kill windows on worker lifecycle
-                if ws.config.shells.enabled && ws.config.shells.auto_worker_shells && !is_first_load
+                if ws.config.shells.enabled
+                    && ws.config.shells.auto_worker_shells
+                    && !is_first_load
+                    && let Some(ref tmux) = ws.tmux
                 {
-                    if let Some(ref tmux) = ws.tmux {
-                        let old_ids: std::collections::HashSet<&String> =
-                            ws.prev_worker_phases.keys().collect();
-                        let new_ids: std::collections::HashSet<&String> =
-                            new_workers.iter().map(|w| &w.id).collect();
+                    let old_ids: std::collections::HashSet<&String> =
+                        ws.prev_worker_phases.keys().collect();
+                    let new_ids: std::collections::HashSet<&String> =
+                        new_workers.iter().map(|w| &w.id).collect();
 
-                        // New workers: create tmux windows
-                        for worker in &new_workers {
-                            if !old_ids.contains(&worker.id) {
-                                let wt_path =
-                                    ws.config.root.join(".swarm").join("wt").join(&worker.id);
-                                tmux.create_window(&worker.id, &wt_path);
-                            }
+                    // New workers: create tmux windows
+                    for worker in &new_workers {
+                        if !old_ids.contains(&worker.id) {
+                            let wt_path = ws.config.root.join(".swarm").join("wt").join(&worker.id);
+                            tmux.create_window(&worker.id, &wt_path);
                         }
+                    }
 
-                        // Closed workers: kill tmux windows
-                        for old_id in &old_ids {
-                            if !new_ids.contains(*old_id) {
-                                tmux.kill_window(old_id);
-                            }
+                    // Closed workers: kill tmux windows
+                    for old_id in &old_ids {
+                        if !new_ids.contains(*old_id) {
+                            tmux.kill_window(old_id);
                         }
                     }
                 }

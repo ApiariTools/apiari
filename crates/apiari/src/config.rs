@@ -142,7 +142,7 @@ impl WorkspaceConfig {
 }
 
 /// Shell management configuration (tmux integration).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShellsConfig {
     /// Whether shell management is enabled.
     #[serde(default)]
@@ -153,16 +153,6 @@ pub struct ShellsConfig {
     /// Automatically create/kill tmux windows with workers.
     #[serde(default)]
     pub auto_worker_shells: bool,
-}
-
-impl Default for ShellsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            tmux_session: None,
-            auto_worker_shells: false,
-        }
-    }
 }
 
 /// Telegram bot configuration.
