@@ -94,6 +94,18 @@ fn parse_open_prs(value: &serde_json::Value) -> Vec<(u64, String, String, String
         .collect()
 }
 
+/// Snapshot of per-repo cursor state passed into `poll_repo_full`.
+struct RepoPollParams {
+    repo: String,
+    last_seen_release_id: u64,
+    seen_merged_prs: HashSet<u64>,
+    ci_pass_prs: HashSet<u64>,
+    bot_review_cursor: Option<String>,
+    pr_push_prev: HashMap<u64, String>,
+    open_prs_etag: Option<String>,
+    cached_open_prs: Vec<(u64, String, String, String)>,
+}
+
 /// Per-repo poll results collected concurrently, then merged into watcher state.
 struct RepoPollResult {
     repo: String,
@@ -824,17 +836,18 @@ impl GithubWatcher {
     /// Poll everything for a single repo concurrently: issues, labels, CI checks,
     /// release runs, merged PRs, and PR CI status. Returns a self-contained result
     /// that the caller merges back into watcher state.
-    async fn poll_repo_full(
-        &self,
-        repo: &str,
-        last_seen_release_id: u64,
-        seen_merged_prs: HashSet<u64>,
-        mut ci_pass_prs: HashSet<u64>,
-        bot_review_cursor: Option<String>,
-        pr_push_prev: HashMap<u64, String>,
-        open_prs_etag: Option<String>,
-        cached_open_prs: Vec<(u64, String, String, String)>,
-    ) -> RepoPollResult {
+    async fn poll_repo_full(&self, params: RepoPollParams) -> RepoPollResult {
+        let RepoPollParams {
+            repo,
+            last_seen_release_id,
+            seen_merged_prs,
+            mut ci_pass_prs,
+            bot_review_cursor,
+            pr_push_prev,
+            open_prs_etag,
+            cached_open_prs,
+        } = params;
+
         // Run independent poll types concurrently within this repo.
         let (
             repo_signals,
@@ -844,12 +857,12 @@ impl GithubWatcher {
             (bot_review_signals, updated_bot_review_cursor),
             completed_runs,
         ) = tokio::join!(
-            self.poll_repo(repo),
-            self.poll_release_runs(repo, last_seen_release_id),
-            self.poll_merged_prs(repo, &seen_merged_prs),
-            self.fetch_open_prs(repo, open_prs_etag.as_deref()),
-            self.poll_bot_reviews(repo, bot_review_cursor.as_deref()),
-            self.fetch_completed_runs(repo),
+            self.poll_repo(&repo),
+            self.poll_release_runs(&repo, last_seen_release_id),
+            self.poll_merged_prs(&repo, &seen_merged_prs),
+            self.fetch_open_prs(&repo, open_prs_etag.as_deref()),
+            self.poll_bot_reviews(&repo, bot_review_cursor.as_deref()),
+            self.fetch_completed_runs(&repo),
         );
 
         let mut signals: Vec<SignalUpdate> = repo_signals.into_iter().map(|(_, s)| s).collect();
@@ -875,7 +888,7 @@ impl GithubWatcher {
         // and skip PR-dependent polling (CI status, push detection).
         let (prs, updated_pr_push_cursors) = match prs {
             Some(prs) => {
-                let (pr_push_signals, cursors) = Self::poll_pr_pushes(repo, &prs, &pr_push_prev);
+                let (pr_push_signals, cursors) = Self::poll_pr_pushes(&repo, &prs, &pr_push_prev);
                 signals.extend(pr_push_signals);
                 (prs, Some(cursors))
             }
@@ -933,7 +946,7 @@ impl GithubWatcher {
         ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
 
         RepoPollResult {
-            repo: repo.to_string(),
+            repo,
             signals,
             new_release_cursor,
             updated_merged_prs,
@@ -978,9 +991,16 @@ impl Watcher for GithubWatcher {
                 let pr_push = self.pr_push_cursors.get(repo).cloned().unwrap_or_default();
                 let etag = self.open_prs_etags.get(repo).cloned();
                 let cached = self.cached_open_prs.get(repo).cloned().unwrap_or_default();
-                self.poll_repo_full(
-                    repo, last_seen, seen_prs, ci_prs, bot_cursor, pr_push, etag, cached,
-                )
+                self.poll_repo_full(RepoPollParams {
+                    repo: repo.clone(),
+                    last_seen_release_id: last_seen,
+                    seen_merged_prs: seen_prs,
+                    ci_pass_prs: ci_prs,
+                    bot_review_cursor: bot_cursor,
+                    pr_push_prev: pr_push,
+                    open_prs_etag: etag,
+                    cached_open_prs: cached,
+                })
             })
             .collect();
 
