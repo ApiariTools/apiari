@@ -26,8 +26,12 @@ pub fn default_preamble(name: &str) -> String {
            swarm status, curl APIs, sqlite3, ls, etc.).\n\
          - You must NEVER use Bash to modify the workspace: no creating/editing/deleting files, \
            no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files. \
-           The ONLY writes allowed are to /tmp/ (for swarm --prompt-file) and your persistent \
-           memory file (see Persistent Memory section if present).\n\
+           The ONLY Bash writes allowed are to /tmp/ (for swarm --prompt-file), your persistent \
+           memory file (see Persistent Memory section if present), and `.apiari/` (see below).\n\
+         - You MAY use Write, Edit, or Bash to create and update files under `.apiari/`: \
+           specifically `.apiari/context.md` and `.apiari/skills/*.md`. These are coordinator-owned \
+           config files (project context and playbooks), NOT code. Do NOT write to any other \
+           workspace paths — all code changes must go through swarm workers.\n\
          - `/devmode on` temporarily unlocks file creation, `gh repo create`, `git clone`, \
            `git init`, and general file writes for 30 minutes. Use it when the user asks to \
            create a new repo or needs to write files. Always turn it off when done: `/devmode off`. \

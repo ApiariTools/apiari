@@ -342,6 +342,9 @@ fn contains_pattern(command: &str, pattern: &str) -> bool {
 /// - Claude Code project memory paths (`~/.claude/.../memory/`) — the
 ///   coordinator is allowed to update its own persistent memory.
 /// - `~/.config/apiari/` — workspace config files managed by the coordinator.
+/// - `.apiari/` (workspace root) — coordinator-owned config files
+///   (`context.md`, `skills/*.md`). Both relative `.apiari/` paths and
+///   absolute paths resolving under `{cwd}/.apiari/` are accepted.
 fn is_allowed_write_target(path: &str) -> bool {
     if path.starts_with("/tmp/") || path == "/tmp" {
         return true;
@@ -352,6 +355,12 @@ fn is_allowed_write_target(path: &str) -> bool {
         || path.starts_with("~/.claude/")
         || path.contains("$HOME/.claude/");
     if has_claude && (path.contains("/memory/") || path.ends_with("/memory")) {
+        return true;
+    }
+    // Workspace .apiari/ directory — coordinator-owned config files.
+    // Relative paths like `.apiari/context.md` are resolved against CWD (= workspace root).
+    // Block path traversal (no `..` allowed).
+    if is_apiari_dir_target(path) {
         return true;
     }
     // Apiari config directory.
@@ -366,6 +375,25 @@ fn is_allowed_write_target(path: &str) -> bool {
         return false;
     }
     (is_home_anchored && in_apiari_config) || path == "~/.config/apiari"
+}
+
+/// Check if a path targets the workspace `.apiari/` directory.
+///
+/// Accepts:
+/// - Relative: `.apiari/...` (relative to CWD = workspace root)
+/// - Absolute: `/.../something/.apiari/...` (must contain `/.apiari/` segment)
+///
+/// Rejects paths containing `..` to prevent traversal attacks.
+fn is_apiari_dir_target(path: &str) -> bool {
+    if path.contains("..") {
+        return false;
+    }
+    // Relative path: .apiari/ or .apiari
+    if path == ".apiari" || path.starts_with(".apiari/") {
+        return true;
+    }
+    // Absolute path containing /.apiari/ segment
+    path.contains("/.apiari/") || path.ends_with("/.apiari")
 }
 
 /// Check if the destination/target of a write command is an allowed path.
@@ -1107,5 +1135,89 @@ if len(data) > 0:
                 "mkdir should be blocked when dev-mode is expired"
             );
         });
+    }
+
+    // -- .apiari/ directory write exception tests --
+
+    #[test]
+    fn test_apiari_dir_redirect_relative_allowed() {
+        let result = classify_bash_command("echo '# Context' > .apiari/context.md");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "redirect to .apiari/ relative path should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_dir_redirect_absolute_allowed() {
+        let result =
+            classify_bash_command("echo '# Context' > /Users/josh/project/.apiari/context.md");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "redirect to absolute .apiari/ path should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_dir_mkdir_allowed() {
+        let result = classify_bash_command("mkdir -p .apiari/skills");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "mkdir for .apiari/skills should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_dir_touch_allowed() {
+        let result = classify_bash_command("touch .apiari/skills/ci-triage.md");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "touch in .apiari/skills/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_dir_tee_allowed() {
+        let result = classify_bash_command("echo '# Playbook' | tee .apiari/skills/ci-triage.md");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "tee to .apiari/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_dir_cp_allowed() {
+        let result = classify_bash_command("cp /tmp/context.md .apiari/context.md");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "cp to .apiari/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_dir_traversal_blocked() {
+        let result = classify_bash_command("echo 'bad' > .apiari/../src/main.rs");
+        assert!(
+            result.is_mutating(),
+            "path traversal out of .apiari/ should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_apiari_dir_heredoc_allowed() {
+        let cmd =
+            "cat > .apiari/context.md << 'EOF'\n# Project Context\nThis is a Rust project.\nEOF";
+        let result = classify_bash_command(cmd);
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "heredoc to .apiari/ should be ReadOnly"
+        );
     }
 }

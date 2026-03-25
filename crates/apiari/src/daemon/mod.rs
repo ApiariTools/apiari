@@ -2263,8 +2263,31 @@ fn build_skill_context(workspace_name: &str, config: &WorkspaceConfig) -> SkillC
     ctx
 }
 
+/// Ensure the `.apiari/` scaffold exists in the workspace root.
+///
+/// Creates `.apiari/context.md` (minimal stub) and `.apiari/skills/` if they
+/// don't already exist. This lets the coordinator assume these paths are
+/// available for writing from the start.
+fn ensure_apiari_scaffold(workspace_root: &std::path::Path, ws_name: &str) {
+    let apiari_dir = workspace_root.join(".apiari");
+    let skills_dir = apiari_dir.join("skills");
+    let context_file = apiari_dir.join("context.md");
+
+    if let Err(e) = std::fs::create_dir_all(&skills_dir) {
+        warn!("[{ws_name}] failed to create .apiari/skills/: {e}");
+        return;
+    }
+
+    if !context_file.exists()
+        && let Err(e) = std::fs::write(&context_file, "# Workspace Context\n")
+    {
+        warn!("[{ws_name}] failed to create .apiari/context.md: {e}");
+    }
+}
+
 /// Build a fresh Coordinator for a workspace (used at startup and on respawn).
 fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
+    ensure_apiari_scaffold(&config.root, ws_name);
     let mut coordinator = Coordinator::new(&config.coordinator.model, config.coordinator.max_turns);
     coordinator.set_name(config.coordinator.name.clone());
     let skill_ctx = build_skill_context(ws_name, config);

@@ -257,19 +257,29 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
 
 /// Default tools the coordinator is allowed to use (auto-approve).
 ///
-/// No Write/Edit — code changes go through swarm workers.
+/// Write/Edit are included for `.apiari/` config files only — the coordinator
+/// prompt constrains their use to `.apiari/context.md` and `.apiari/skills/*.md`.
 pub fn default_coordinator_tools() -> Vec<String> {
-    ["Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "WebSearch",
+        "WebFetch",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Tools explicitly blocked for the coordinator (hard enforcement).
 ///
 /// Even if the model tries to use these, Claude CLI will refuse.
 pub fn default_coordinator_disallowed_tools() -> Vec<String> {
-    ["Write", "Edit", "NotebookEdit", "Task"]
+    ["NotebookEdit", "Task"]
         .iter()
         .map(|s| s.to_string())
         .collect()
