@@ -2,7 +2,7 @@
 
 **Bee is your AI ops coordinator — all the coordination, zero babysitting.**
 
-Apiari runs a persistent daemon that dispatches and monitors AI coding agents (Claude Code, Codex, Gemini), watches your GitHub repos, and pings you on Telegram when something needs attention. CI failures, code reviews, PR status — signals route automatically. You can respond right from your phone through Bee, an AI-powered coordinator that has full context on your workspace.
+Apiari runs a persistent daemon that dispatches and monitors AI coding agents (Claude Code, Codex, Gemini), watches your GitHub repos, and pings you on Telegram when something needs attention. CI failures, code reviews, PR status — signals route through configurable event hooks. You can respond right from your phone through Bee, an AI-powered coordinator that has full context on your workspace.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -69,14 +69,15 @@ apiari status
 
 ## Features
 
-- **📡 GitHub Watcher** — Monitors CI runs, detects failures and recoveries, tracks new PRs (uses the `gh` CLI)
-- **🤖 Swarm Watcher** — Tracks AI coding agent status, detects stalled workers, reports lifecycle events
-- **🔍 Sentry Watcher** — Surfaces unresolved production errors from Sentry
-- **💬 Telegram Notifications** — Real-time alerts with severity levels, batching, and rate limiting
-- **🧠 AI Coordinator** — Chat with your workspace from Telegram via Bee, powered by Claude (Swarm agents can use Claude, Codex, or Gemini) — with full signal context
-- **📊 TUI Dashboard** — Terminal UI for viewing signals across all workspaces
+- **📡 Multi-watcher Support** — GitHub (CI runs, PRs, failures), Swarm (agent status, stalls), Sentry (production errors) — extensible architecture for custom watchers
+- **🔔 Signal Hooks** — Respond to signals by triggering playbooks from `.apiari/skills/` — automate remediation, dispatch workers, merge PRs
+- **📚 Playbooks** — Script signal handlers in Bash, Rust, or use coordinator tools to respond intelligently
+- **🤖 AI Coordinator** — Chat with your workspace from Telegram via Bee, powered by Claude — reads signal context, uses composable tools (Bash, GitHub, Swarm dispatch)
+- **💬 Notifications** — Real-time Telegram alerts with severity levels, batching, rate limiting, and rich formatting
+- **📊 TUI Dashboard** — Terminal UI for viewing signals across all workspaces, filtering by source and severity
 - **🗄️ Signal Store** — All events persisted to a local SQLite database for querying and history
-- **⚡ Custom Commands** — Define shell scripts as Telegram slash commands for remote ops
+- **🔐 Workspace Context** — Per-workspace soul.md (identity), context.md (runbooks), and skills/ (playbooks) for isolated coordination
+- **👤 Authority Model** — [capabilities] config to control what coordinator can do (merge_prs, dispatch_workers, etc.)
 
 ## Commands
 
@@ -87,6 +88,8 @@ apiari status
 | `apiari status [WORKSPACE]` | Show open signals, optionally filtered by workspace |
 | `apiari chat WORKSPACE [MESSAGE]` | Chat with a workspace's AI coordinator (omit message for interactive mode) |
 | `apiari ui [--workspace NAME]` | Launch the TUI dashboard |
+| `apiari config set <KEY> <VALUE>` | Set a workspace config value |
+| `apiari config validate` | Validate all workspace config files |
 
 ## Configuration
 
@@ -110,6 +113,15 @@ model = "sonnet"                    # Claude model (default: "sonnet")
 max_turns = 20                      # max conversation turns (default: 20)
 # prompt = "Custom system prompt"   # optional override for coordinator identity
 
+[coordinator.signal_hooks]
+gh_ci_failure = "respond-to-ci-failure"
+swarm_agent_waiting = "dispatch-next-task"
+
+[capabilities]
+merge_prs = true
+dispatch_workers = true
+
+
 [watchers.github]
 repos = ["YourOrg/my-app"]         # repos to watch (defaults to top-level repos)
 interval_secs = 120                 # poll interval (default: 120)
@@ -124,32 +136,37 @@ project = "my-app"
 token = "sntrys_..."
 interval_secs = 120
 
-[pipeline]
-batch_window_secs = 60              # flush batched signals every N seconds
+```
 
-[[pipeline.rules]]
-name = "drop-info-github"
-source = "github"
-severity = "info"
-action = "drop"                     # "notify", "batch", or "drop"
 
-[[pipeline.rules]]
-name = "rate-limit-sentry"
-source = "sentry"
-action = "notify"
-rate_limit_secs = 300
+### Workspace directories
+Apiari creates a `.apiari/` directory in your workspace root to store identity, context, and playbooks:
 
-[[commands]]
-name = "deploy"
-script = "cd /app && ./deploy.sh"
-description = "Deploy to production"
-restart = false                     # restart daemon after script runs
+```
+.apiari/
+├── soul.md
+├── context.md
+└── skills/
+    ├── respond-to-ci-failure.sh
+    ├── dispatch-next-task.rs
+    └── merge-and-deploy.sh
+```
 
-[[commands]]
-name = "update"
-script = "cd /Users/you/projects/my-app && git pull && cargo install --path crates/apiari"
-description = "Pull latest and reinstall"
-restart = true
+**soul.md** — Coordinator identity (example):
+```markdown
+# Souls Soul
+You are Bee, the teams AI operations coordinator.
+```
+
+**context.md** — Domain knowledge (example):
+```markdown
+# Workspace Context
+```
+
+**skills/** — Playbooks (example):
+```bash
+#!/bin/bash
+BRANCH="$1"
 ```
 
 ### Config paths
@@ -161,6 +178,9 @@ restart = true
 | `~/.config/apiari/daemon.pid` | Daemon PID file |
 | `~/.config/apiari/daemon.log` | Daemon log output |
 | `~/.config/apiari/daemon.sock` | Unix socket for TUI ↔ daemon IPC |
+| `.apiari/soul.md` | Workspace coordinator identity |
+| `.apiari/context.md` | Workspace runbooks and knowledge |
+| `.apiari/skills/` | Playbooks for signal hooks |
 
 ## Signals
 
@@ -172,9 +192,23 @@ Each signal has:
 - **Status** — `open`, `updated`, `resolved`, or `stale`
 - **Metadata** — URL, title, body, timestamps
 
-Signals are routed through a **notification pipeline** where configurable rules can `notify` (send immediately), `batch` (group in a flush window), or `drop` (suppress). Rate limiting per rule prevents alert fatigue.
+Signals are routed through **signal hooks** defined in your workspace config `[coordinator.signal_hooks]`. When a signal fires, the coordinator can trigger a playbook from `.apiari/skills/` to automate response — dispatch workers, merge PRs, page on-call, or run Bash scripts with full context.
 
 Use `apiari status` to view open signals or query the SQLite database directly at `~/.config/apiari/apiari.db`.
+
+
+## Authority Model
+
+The `[capabilities]` section of your workspace config controls what your coordinator is authorized to do:
+
+```toml
+[capabilities]
+merge_prs = true
+dispatch_workers = true
+run_scripts = true
+```
+
+Each capability defaults to `false` for safety. Enable only what your workspace needs. The coordinator will refuse to perform unauthorized actions even if asked directly in chat.
 
 ## Ecosystem
 
