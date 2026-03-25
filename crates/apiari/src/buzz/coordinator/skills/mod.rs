@@ -21,9 +21,19 @@ mod sentry;
 mod signals;
 mod swarm;
 
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use crate::config::{WorkspaceAuthority, WorkspaceCapabilities};
+
+/// Check if a playbook name is safe (no path traversal).
+/// Only allows alphanumeric, hyphens, and underscores.
+fn is_valid_playbook_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
 
 /// Context derived from workspace config, used to build skill prompts.
 pub struct SkillContext {
@@ -83,22 +93,30 @@ pub fn index_playbooks(workspace_root: &Path) -> Vec<PlaybookEntry> {
     let mut playbooks = Vec::new();
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
+        // Skip symlinks to avoid following links outside the skills directory
+        if std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            continue;
+        }
         if path.extension().is_some_and(|ext| ext == "md") {
             let name = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
-            if name.is_empty() {
+            if !is_valid_playbook_name(&name) {
                 continue;
             }
-            let description = std::fs::read_to_string(&path)
+            // Read only the first line using BufReader instead of the full file
+            let description = std::fs::File::open(&path)
                 .ok()
-                .and_then(|content| {
-                    content
-                        .lines()
-                        .next()
-                        .map(|line| line.trim_start_matches('#').trim().to_string())
+                .and_then(|file| {
+                    let mut reader = std::io::BufReader::new(file);
+                    let mut first_line = String::new();
+                    reader.read_line(&mut first_line).ok()?;
+                    Some(first_line.trim_start_matches('#').trim().to_string())
                 })
                 .unwrap_or_default();
             playbooks.push(PlaybookEntry { name, description });
@@ -109,7 +127,13 @@ pub fn index_playbooks(workspace_root: &Path) -> Vec<PlaybookEntry> {
 }
 
 /// Load the full content of a named playbook.
+///
+/// Returns `None` if the name contains invalid characters (path traversal prevention)
+/// or if the file doesn't exist.
 pub fn load_playbook(workspace_root: &Path, name: &str) -> Option<String> {
+    if !is_valid_playbook_name(name) {
+        return None;
+    }
     let path = workspace_root.join(format!(".apiari/skills/{name}.md"));
     std::fs::read_to_string(&path).ok()
 }
@@ -439,5 +463,110 @@ mod tests {
         assert!(tools.contains(&"NotebookEdit".to_string()));
         assert!(tools.contains(&"Task".to_string()));
         assert!(!tools.contains(&"Bash".to_string()));
+    }
+
+    #[test]
+    fn test_load_context_skill_returns_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let apiari_dir = dir.path().join(".apiari");
+        std::fs::create_dir_all(&apiari_dir).unwrap();
+        std::fs::write(
+            apiari_dir.join("context.md"),
+            "# My Project\nA cool project.",
+        )
+        .unwrap();
+        let content = load_context_skill(dir.path());
+        assert!(content.is_some());
+        assert!(content.unwrap().contains("My Project"));
+    }
+
+    #[test]
+    fn test_load_context_skill_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_context_skill(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_index_playbooks_reads_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".apiari/skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("ci-triage.md"), "# CI Triage\nStep 1...").unwrap();
+        std::fs::write(skills_dir.join("deploy.md"), "Deploy checklist\nStep 1...").unwrap();
+
+        let playbooks = index_playbooks(dir.path());
+        assert_eq!(playbooks.len(), 2);
+        assert_eq!(playbooks[0].name, "ci-triage");
+        assert_eq!(playbooks[0].description, "CI Triage");
+        assert_eq!(playbooks[1].name, "deploy");
+        assert_eq!(playbooks[1].description, "Deploy checklist");
+    }
+
+    #[test]
+    fn test_index_playbooks_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let playbooks = index_playbooks(dir.path());
+        assert!(playbooks.is_empty());
+    }
+
+    #[test]
+    fn test_index_playbooks_skips_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".apiari/skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("real.md"), "# Real playbook").unwrap();
+        // Create a symlink — should be skipped
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(skills_dir.join("real.md"), skills_dir.join("linked.md"))
+                .unwrap();
+        }
+        let playbooks = index_playbooks(dir.path());
+        // Only the real file should be indexed
+        assert_eq!(playbooks.len(), 1);
+        assert_eq!(playbooks[0].name, "real");
+    }
+
+    #[test]
+    fn test_load_playbook_returns_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".apiari/skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("ci-triage.md"), "# CI Triage\nDo stuff.").unwrap();
+
+        let content = load_playbook(dir.path(), "ci-triage");
+        assert!(content.is_some());
+        assert!(content.unwrap().contains("CI Triage"));
+    }
+
+    #[test]
+    fn test_load_playbook_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_playbook(dir.path(), "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_load_playbook_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let apiari_dir = dir.path().join(".apiari");
+        std::fs::create_dir_all(&apiari_dir).unwrap();
+        std::fs::write(apiari_dir.join("context.md"), "secret").unwrap();
+
+        // Attempting to traverse up should be rejected
+        assert!(load_playbook(dir.path(), "../context").is_none());
+        assert!(load_playbook(dir.path(), "foo/bar").is_none());
+        assert!(load_playbook(dir.path(), "").is_none());
+    }
+
+    #[test]
+    fn test_is_valid_playbook_name() {
+        assert!(is_valid_playbook_name("ci-triage"));
+        assert!(is_valid_playbook_name("deploy_prod"));
+        assert!(is_valid_playbook_name("step1"));
+        assert!(!is_valid_playbook_name("../context"));
+        assert!(!is_valid_playbook_name("foo/bar"));
+        assert!(!is_valid_playbook_name(""));
+        assert!(!is_valid_playbook_name("has spaces"));
+        assert!(!is_valid_playbook_name("has.dot"));
     }
 }

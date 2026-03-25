@@ -414,6 +414,21 @@ mod tests {
     }
 
     #[test]
+    fn test_hook_playbooks_included_when_present() {
+        let playbook_content = "### Playbook: ci-triage\n\nStep 1: Check logs.\nStep 2: Fix it.";
+        let prompt = build_system_prompt(&[], &[], None, None, None, Some(playbook_content));
+        assert!(prompt.contains("## Active Playbooks"));
+        assert!(prompt.contains("ci-triage"));
+        assert!(prompt.contains("Step 1: Check logs."));
+    }
+
+    #[test]
+    fn test_hook_playbooks_absent_when_none() {
+        let prompt = build_system_prompt(&[], &[], None, None, None, None);
+        assert!(!prompt.contains("## Active Playbooks"));
+    }
+
+    #[test]
     fn test_signal_body_truncation() {
         let long_body = "x".repeat(300);
         let signal = SignalRecord {

@@ -111,7 +111,8 @@ What is this project? (1-2 sentences)
 
 ## Anything the coordinator should always know
 ";
-        std::fs::write(&context_path, context_template)?;
+        std::fs::write(&context_path, context_template)
+            .wrap_err_with(|| format!("failed to write {}", context_path.display()))?;
         println!("  \u{2713} Created .apiari/context.md \u{2014} fill this in with info about your project\n");
     }
 
