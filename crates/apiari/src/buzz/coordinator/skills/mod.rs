@@ -257,19 +257,29 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
 
 /// Default tools the coordinator is allowed to use (auto-approve).
 ///
-/// No Write/Edit — code changes go through swarm workers.
+/// Write/Edit are included for `.apiari/` config files only — the coordinator
+/// prompt constrains their use to `.apiari/context.md` and `.apiari/skills/*.md`.
 pub fn default_coordinator_tools() -> Vec<String> {
-    ["Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    [
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "WebSearch",
+        "WebFetch",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
 }
 
 /// Tools explicitly blocked for the coordinator (hard enforcement).
 ///
 /// Even if the model tries to use these, Claude CLI will refuse.
 pub fn default_coordinator_disallowed_tools() -> Vec<String> {
-    ["Write", "Edit", "NotebookEdit", "Task"]
+    ["NotebookEdit", "Task"]
         .iter()
         .map(|s| s.to_string())
         .collect()
@@ -435,7 +445,7 @@ mod tests {
     #[test]
     fn test_disallowed_tools_exact() {
         let tools = default_coordinator_disallowed_tools();
-        let expected = vec!["Write", "Edit", "NotebookEdit", "Task"];
+        let expected = vec!["NotebookEdit", "Task"];
         assert_eq!(
             tools, expected,
             "disallowed tools must be exactly {expected:?}"
@@ -443,10 +453,20 @@ mod tests {
     }
 
     #[test]
-    fn test_allowed_tools_no_write_capable() {
+    fn test_allowed_tools_include_write_edit() {
         let tools = default_coordinator_tools();
-        let write_capable = ["Write", "Edit", "NotebookEdit", "Task", "TodoWrite"];
-        for tool in &write_capable {
+        // Write and Edit are allowed for .apiari/ config files
+        assert!(
+            tools.contains(&"Write".to_string()),
+            "allowed tools must contain Write"
+        );
+        assert!(
+            tools.contains(&"Edit".to_string()),
+            "allowed tools must contain Edit"
+        );
+        // NotebookEdit and Task must NOT be allowed
+        let still_blocked = ["NotebookEdit", "Task", "TodoWrite"];
+        for tool in &still_blocked {
             assert!(
                 !tools.contains(&tool.to_string()),
                 "allowed tools must not contain {tool}"
@@ -467,18 +487,18 @@ mod tests {
     #[test]
     fn test_default_coordinator_tools() {
         let tools = default_coordinator_tools();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 8);
         assert!(tools.contains(&"Bash".to_string()));
         assert!(tools.contains(&"Read".to_string()));
-        assert!(!tools.contains(&"Write".to_string()));
-        assert!(!tools.contains(&"Edit".to_string()));
+        assert!(tools.contains(&"Write".to_string()));
+        assert!(tools.contains(&"Edit".to_string()));
     }
 
     #[test]
     fn test_default_coordinator_disallowed_tools() {
         let tools = default_coordinator_disallowed_tools();
-        assert!(tools.contains(&"Write".to_string()));
-        assert!(tools.contains(&"Edit".to_string()));
+        assert!(!tools.contains(&"Write".to_string()));
+        assert!(!tools.contains(&"Edit".to_string()));
         assert!(tools.contains(&"NotebookEdit".to_string()));
         assert!(tools.contains(&"Task".to_string()));
         assert!(!tools.contains(&"Bash".to_string()));
