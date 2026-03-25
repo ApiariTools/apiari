@@ -2803,21 +2803,50 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         theme::muted()
     };
 
-    // Live stats: workers, signals, turns
+    // Live stats: workers, signals, turns, context usage
     let worker_count = cur_ws.map_or(0, |ws| ws.workers.len());
     let signal_count = cur_ws.map_or(0, |ws| ws.signals.len());
     let turn_count = cur_ws.map_or(0, |ws| ws.coordinator_turns);
-    let stats_str = format!("workers:{worker_count}  signals:{signal_count}  turns:{turn_count}  ");
+    let mut stats_str =
+        format!("workers:{worker_count}  signals:{signal_count}  turns:{turn_count}");
+
+    // Append context usage if available
+    let ctx_style = if let Some(ws) = cur_ws
+        && ws.usage_context_window > 0
+    {
+        let pct = ws.usage_input_tokens as f64 / ws.usage_context_window as f64 * 100.0;
+        stats_str.push_str(&format!(
+            "  ctx:{}% ({}/{})",
+            pct as u32,
+            format_tokens(ws.usage_input_tokens),
+            format_tokens(ws.usage_context_window),
+        ));
+        if let Some(cost) = ws.usage_cost_usd {
+            stats_str.push_str(&format!("  ${cost:.3}"));
+        }
+        if pct > 80.0 {
+            Some(Style::default().fg(theme::EMBER))
+        } else if pct > 50.0 {
+            Some(Style::default().fg(theme::HONEY))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    stats_str.push_str("  ");
+
+    let stats_style = ctx_style.unwrap_or_else(theme::muted);
 
     let daemon_spans: Vec<Span> = if app.daemon_alive || app.daemon_remote {
         vec![
-            Span::styled(stats_str, theme::muted()),
+            Span::styled(stats_str, stats_style),
             Span::styled(ecg, Style::default().fg(ecg_color)),
             Span::styled(format!(" {conn_indicator} {conn_label} "), conn_style),
         ]
     } else {
         vec![
-            Span::styled(stats_str, theme::muted()),
+            Span::styled(stats_str, stats_style),
             Span::styled(ecg, Style::default().fg(ecg_color)),
             Span::styled(
                 format!(" {conn_indicator} {conn_label} offline "),
@@ -3239,5 +3268,31 @@ fn time_ago(dt: &chrono::DateTime<chrono::Utc>) -> String {
         format!("{}m", duration.num_minutes())
     } else {
         "now".to_string()
+    }
+}
+
+/// Format a token count for display (e.g. 1500 → "1.5k", 200000 → "200.0k").
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_tokens() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(500), "500");
+        assert_eq!(format_tokens(1_500), "1.5k");
+        assert_eq!(format_tokens(200_000), "200.0k");
+        assert_eq!(format_tokens(1_000_000), "1.0M");
+        assert_eq!(format_tokens(1_500_000), "1.5M");
     }
 }

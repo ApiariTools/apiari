@@ -430,6 +430,12 @@ pub struct WorkspaceState {
     pub has_unread_response: bool,
     /// Coordinator turn count (exchanges completed in current session).
     pub coordinator_turns: u32,
+    /// Token usage from the last coordinator turn.
+    pub usage_input_tokens: u64,
+    pub usage_output_tokens: u64,
+    pub usage_cache_read_tokens: u64,
+    pub usage_cost_usd: Option<f64>,
+    pub usage_context_window: u64,
     // State tracking for proactive notifications
     pub(super) prev_worker_phases: std::collections::HashMap<String, String>,
     pub(super) prev_signal_ids: std::collections::HashSet<i64>,
@@ -547,6 +553,11 @@ impl App {
                     coordinator_preview: None,
                     has_unread_response: false,
                     coordinator_turns: 0,
+                    usage_input_tokens: 0,
+                    usage_output_tokens: 0,
+                    usage_cache_read_tokens: 0,
+                    usage_cost_usd: None,
+                    usage_context_window: 0,
                     sparkline_data: vec![0; 24],
                     watcher_health: Vec::new(),
                     feed: Vec::new(),
@@ -682,6 +693,11 @@ impl App {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            usage_input_tokens: 0,
+            usage_output_tokens: 0,
+            usage_cache_read_tokens: 0,
+            usage_cost_usd: None,
+            usage_context_window: 0,
             prev_worker_phases: std::collections::HashMap::new(),
             prev_signal_ids: std::collections::HashSet::new(),
             prev_pr_workers: std::collections::HashSet::new(),
@@ -804,6 +820,11 @@ impl App {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            usage_input_tokens: 0,
+            usage_output_tokens: 0,
+            usage_cache_read_tokens: 0,
+            usage_cost_usd: None,
+            usage_context_window: 0,
             prev_worker_phases: std::collections::HashMap::new(),
             prev_signal_ids: std::collections::HashSet::new(),
             prev_pr_workers: std::collections::HashSet::new(),
@@ -994,6 +1015,11 @@ impl App {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            usage_input_tokens: 0,
+            usage_output_tokens: 0,
+            usage_cache_read_tokens: 0,
+            usage_cost_usd: None,
+            usage_context_window: 0,
             prev_worker_phases: std::collections::HashMap::new(),
             prev_signal_ids: std::collections::HashSet::new(),
             prev_pr_workers: std::collections::HashSet::new(),
@@ -1878,6 +1904,28 @@ impl App {
         {
             ws.chat_history.push(ChatLine::System(text));
             ws.streaming = false;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Update token usage stats for a workspace.
+    pub fn update_usage(
+        &mut self,
+        workspace: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        total_cost_usd: Option<f64>,
+        context_window: u64,
+    ) {
+        if let Some(idx) = self.ws_index(workspace)
+            && let Some(ws) = self.workspaces.get_mut(idx)
+        {
+            ws.usage_input_tokens = input_tokens;
+            ws.usage_output_tokens = output_tokens;
+            ws.usage_cache_read_tokens = cache_read_tokens;
+            ws.usage_cost_usd = total_cost_usd;
+            ws.usage_context_window = context_window;
             self.needs_redraw = true;
         }
     }
@@ -3645,6 +3693,11 @@ mod tests {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            usage_input_tokens: 0,
+            usage_output_tokens: 0,
+            usage_cache_read_tokens: 0,
+            usage_cost_usd: None,
+            usage_context_window: 0,
             prev_worker_phases: Default::default(),
             prev_signal_ids: Default::default(),
             prev_pr_workers: Default::default(),

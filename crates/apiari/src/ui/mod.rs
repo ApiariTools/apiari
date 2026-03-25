@@ -64,6 +64,15 @@ enum CoordResponse {
     },
     /// Startup status message shown to the user (e.g. "Starting daemon...").
     SystemStatus(String),
+    /// Token usage stats for the completed turn.
+    Usage {
+        workspace: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        total_cost_usd: Option<f64>,
+        context_window: u64,
+    },
 }
 
 // ── Key actions ──────────────────────────────────────────
@@ -508,6 +517,9 @@ async fn event_loop(
                     }
                     CoordResponse::Activity { source, workspace, kind, text } => {
                         app.push_activity(&workspace, &source, &kind, &text);
+                    }
+                    CoordResponse::Usage { workspace, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, context_window } => {
+                        app.update_usage(&workspace, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, context_window);
                     }
                     CoordResponse::SystemStatus(text) => {
                         app.push_system_message(text);
@@ -2235,6 +2247,9 @@ async fn daemon_client_task(
                             .send(CoordResponse::Activity { source, workspace, kind, text })
                             .await;
                     }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Usage { workspace, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, context_window })) => {
+                        let _ = coord_tx.send(CoordResponse::Usage { workspace, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, context_window }).await;
+                    }
                     Ok(None) => {
                         // Daemon disconnected
                         let _ = coord_tx
@@ -2316,6 +2331,9 @@ async fn daemon_client_task_tcp(
                         let _ = coord_tx
                             .send(CoordResponse::Activity { source, workspace, kind, text })
                             .await;
+                    }
+                    Ok(Some(crate::daemon::socket::DaemonResponse::Usage { workspace, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, context_window })) => {
+                        let _ = coord_tx.send(CoordResponse::Usage { workspace, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, context_window }).await;
                     }
                     Ok(None) => {
                         let _ = coord_tx
@@ -2421,6 +2439,7 @@ async fn coordinator_task(
                                 text: format!("Bash audit ({matched_pattern}): {command}"),
                             });
                         }
+                        CoordinatorEvent::Usage(_) => {}
                     });
 
                 match tokio::time::timeout(Duration::from_secs(60), handle_fut).await {
@@ -2514,6 +2533,11 @@ mod tests {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            usage_input_tokens: 0,
+            usage_output_tokens: 0,
+            usage_cache_read_tokens: 0,
+            usage_cost_usd: None,
+            usage_context_window: 0,
             prev_worker_phases: Default::default(),
             prev_signal_ids: Default::default(),
             prev_pr_workers: Default::default(),

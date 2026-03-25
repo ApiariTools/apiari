@@ -30,5 +30,6 @@ apiari-common = "0.1.0"
 apiari-tui = "0.1.0"
 apiari-claude-sdk = "0.1.0"
 apiari-codex-sdk = "0.1.0"
+apiari-gemini-sdk = "0.1.0"
 chrono-tz = "0.9"
 apiari-swarm = { version = "0.1.4", default-features = false, features = ["client"] }

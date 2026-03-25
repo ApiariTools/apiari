@@ -114,6 +114,8 @@ name = "apiari"
 version = "0.2.1"
 dependencies = [
  "apiari-claude-sdk",
+ "apiari-codex-sdk",
+ "apiari-gemini-sdk",
  "apiari-swarm",
  "apiari-tui",
  "async-imap",
