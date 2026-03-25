@@ -168,7 +168,7 @@ What is this project? (1-2 sentences)
     println!("  3. Edit your config:");
     println!("     $EDITOR {config_display}\n");
     println!("  4. Start the daemon:");
-    println!("     apiari daemon --background\n");
+    println!("     apiari daemon start\n");
     println!("  5. Open the dashboard:");
     println!("     apiari ui\n");
 
