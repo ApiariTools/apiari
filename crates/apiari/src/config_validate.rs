@@ -4,14 +4,33 @@
 //! Prints a summary line per workspace and exits non-zero if any fail.
 
 use color_eyre::eyre::Result;
+use std::path::Path;
 
 /// Run validation for one or all workspace configs.
 ///
 /// Returns exit code: 0 if all valid, 1 if any fail.
 pub fn run(workspace: Option<&str>) -> Result<i32> {
     let dir = crate::config::workspaces_dir();
+    run_with_dir(workspace, &dir)
+}
 
+/// Sanitize a workspace name — reject path separators and traversal.
+fn sanitize_workspace_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.starts_with('.')
+    {
+        color_eyre::eyre::bail!("invalid workspace name: {name:?}");
+    }
+    Ok(())
+}
+
+/// Inner implementation that accepts a directory, for testability.
+fn run_with_dir(workspace: Option<&str>, dir: &Path) -> Result<i32> {
     if let Some(name) = workspace {
+        sanitize_workspace_name(name)?;
         let path = dir.join(format!("{name}.toml"));
         if !path.exists() {
             eprintln!("\u{2717} {name}: file not found ({})", path.display());
@@ -23,7 +42,7 @@ pub fn run(workspace: Option<&str>) -> Result<i32> {
                 Ok(0)
             }
             Err(e) => {
-                println!("\u{2717} {name}: {e}");
+                eprintln!("\u{2717} {name}: {e}");
                 Ok(1)
             }
         }
@@ -34,7 +53,7 @@ pub fn run(workspace: Option<&str>) -> Result<i32> {
             return Ok(0);
         }
 
-        let mut entries: Vec<_> = std::fs::read_dir(&dir)?
+        let mut entries: Vec<_> = std::fs::read_dir(dir)?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
             .collect();
@@ -56,7 +75,7 @@ pub fn run(workspace: Option<&str>) -> Result<i32> {
             match crate::config::load_workspace(&path) {
                 Ok(_) => println!("\u{2713} {name}: valid"),
                 Err(e) => {
-                    println!("\u{2717} {name}: {e}");
+                    eprintln!("\u{2717} {name}: {e}");
                     any_failed = true;
                 }
             }
@@ -68,6 +87,7 @@ pub fn run(workspace: Option<&str>) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::io::Write;
 
     #[test]
@@ -92,5 +112,94 @@ mod tests {
 
         let result = crate::config::load_workspace(&path);
         assert!(result.is_err(), "invalid TOML should fail to parse");
+    }
+
+    #[test]
+    fn test_run_single_valid_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("myws.toml")).unwrap();
+        writeln!(f, "root = \"/tmp/myws\"").unwrap();
+        drop(f);
+
+        let code = run_with_dir(Some("myws"), dir.path()).unwrap();
+        assert_eq!(code, 0, "valid workspace should return 0");
+    }
+
+    #[test]
+    fn test_run_single_invalid_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("bad.toml")).unwrap();
+        writeln!(f, "not_valid {{{{ toml").unwrap();
+        drop(f);
+
+        let code = run_with_dir(Some("bad"), dir.path()).unwrap();
+        assert_eq!(code, 1, "invalid workspace should return 1");
+    }
+
+    #[test]
+    fn test_run_single_missing_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = run_with_dir(Some("nonexistent"), dir.path()).unwrap();
+        assert_eq!(code, 1, "missing workspace should return 1");
+    }
+
+    #[test]
+    fn test_run_all_workspaces_mixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("good.toml")).unwrap();
+        writeln!(f, "root = \"/tmp/good\"").unwrap();
+        drop(f);
+
+        let mut f = std::fs::File::create(dir.path().join("bad.toml")).unwrap();
+        writeln!(f, "broken {{{{ toml").unwrap();
+        drop(f);
+
+        let code = run_with_dir(None, dir.path()).unwrap();
+        assert_eq!(code, 1, "mixed valid/invalid should return 1");
+    }
+
+    #[test]
+    fn test_run_all_workspaces_all_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(dir.path().join("a.toml")).unwrap();
+        writeln!(f, "root = \"/tmp/a\"").unwrap();
+        drop(f);
+
+        let mut f = std::fs::File::create(dir.path().join("b.toml")).unwrap();
+        writeln!(f, "root = \"/tmp/b\"").unwrap();
+        drop(f);
+
+        let code = run_with_dir(None, dir.path()).unwrap();
+        assert_eq!(code, 0, "all valid should return 0");
+    }
+
+    #[test]
+    fn test_run_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let code = run_with_dir(None, dir.path()).unwrap();
+        assert_eq!(code, 0, "empty dir should return 0");
+    }
+
+    #[test]
+    fn test_sanitize_rejects_path_traversal() {
+        assert!(sanitize_workspace_name("../etc/passwd").is_err());
+        assert!(sanitize_workspace_name("foo/bar").is_err());
+        assert!(sanitize_workspace_name("foo\\bar").is_err());
+        assert!(sanitize_workspace_name(".hidden").is_err());
+        assert!(sanitize_workspace_name("").is_err());
+    }
+
+    #[test]
+    fn test_sanitize_accepts_valid_names() {
+        assert!(sanitize_workspace_name("myworkspace").is_ok());
+        assert!(sanitize_workspace_name("my-workspace").is_ok());
+        assert!(sanitize_workspace_name("my_workspace").is_ok());
+    }
+
+    #[test]
+    fn test_run_rejects_traversal_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_with_dir(Some("../evil"), dir.path());
+        assert!(result.is_err(), "path traversal name should be rejected");
     }
 }
