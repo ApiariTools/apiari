@@ -32,6 +32,9 @@ pub fn default_preamble(name: &str) -> String {
            specifically `.apiari/context.md` and `.apiari/skills/*.md`. These are coordinator-owned \
            config files (project context and playbooks), NOT code. Do NOT write to any other \
            workspace paths — all code changes must go through swarm workers.\n\
+         - You MAY also read and edit `~/.config/apiari/workspaces/{{workspace}}.toml` (the workspace \
+           config file). After any edit, validate it with `apiari config validate --workspace <name>`. \
+           If validation fails, fix the TOML before finishing.\n\
          - `/devmode on` temporarily unlocks file creation, `gh repo create`, `git clone`, \
            `git init`, and general file writes for 30 minutes. Use it when the user asks to \
            create a new repo or needs to write files. Always turn it off when done: `/devmode off`. \
