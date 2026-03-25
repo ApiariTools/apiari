@@ -40,19 +40,14 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Workspace authority level — controls what the coordinator is allowed to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkspaceAuthority {
     /// Read-only tools only (Read, Glob, Grep, WebSearch, WebFetch). No Bash, no swarm dispatch.
     Observe,
     /// Full toolset (current behavior). This is the default.
+    #[default]
     Autonomous,
-}
-
-impl Default for WorkspaceAuthority {
-    fn default() -> Self {
-        Self::Autonomous
-    }
 }
 
 /// Workspace capabilities — fine-grained permission controls.
