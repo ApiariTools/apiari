@@ -986,6 +986,30 @@ if len(data) > 0:
     }
 
     #[test]
+    fn test_apiari_config_dir_tee_allowed() {
+        let result = classify_bash_command(
+            "echo '[watchers]' | tee ~/.config/apiari/workspaces/apiari.toml",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "tee to ~/.config/apiari/workspaces/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_apiari_config_dir_append_redirect_allowed() {
+        let result = classify_bash_command(
+            "echo 'interval_secs = 120' >> ~/.config/apiari/workspaces/apiari.toml",
+        );
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "append redirect to ~/.config/apiari/workspaces/ should be ReadOnly"
+        );
+    }
+
+    #[test]
     fn test_non_apiari_config_dir_still_blocked() {
         let result = classify_bash_command("cp /tmp/evil.txt ~/.config/other/file.txt");
         assert!(

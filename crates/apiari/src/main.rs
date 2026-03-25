@@ -1,6 +1,7 @@
 mod buzz;
 mod config;
 mod config_set;
+mod config_validate;
 mod daemon;
 mod git_safety;
 pub mod shells;
@@ -101,6 +102,12 @@ enum ConfigCommand {
         value: String,
 
         /// Workspace name (default: auto-detect from current directory)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Validate workspace config files
+    Validate {
+        /// Workspace name (default: validate all)
         #[arg(long)]
         workspace: Option<String>,
     },
@@ -210,6 +217,12 @@ async fn main() -> Result<()> {
                 workspace,
             } => {
                 config_set::run(workspace.as_deref(), &key, &value)?;
+            }
+            ConfigCommand::Validate { workspace } => {
+                let code = config_validate::run(workspace.as_deref())?;
+                if code != 0 {
+                    std::process::exit(code);
+                }
             }
         },
         Some(Command::ValidateBash) => {
