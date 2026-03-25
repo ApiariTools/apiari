@@ -672,8 +672,8 @@ async fn run_coordinator_task(
                     }
                 };
 
-                // Run follow-throughs in a fresh session so tool restrictions
-                // stay isolated and don't poison the main coordinator session.
+                // Run follow-throughs in a fresh session so any per-session
+                // overrides stay isolated and don't poison the main session.
                 opts.resume = None;
 
                 // In observe mode, strip Bash from follow-throughs to enforce
@@ -771,6 +771,13 @@ async fn run_coordinator_task(
                                 "[{slot_name}] coordinator ack'd {source} events (no message sent)"
                             );
                         }
+                        // Check if the follow-through exhausted its turn budget.
+                        let used = coordinator.last_num_turns();
+                        if used >= max_turns as u64 {
+                            warn!(
+                                "signal follow-through exhausted max_turns ({max_turns}) for source={source}"
+                            );
+                        }
                     }
                     Err(e) => {
                         warn!(
@@ -778,14 +785,6 @@ async fn run_coordinator_task(
                             signals.len()
                         );
                     }
-                }
-
-                // Check if the follow-through exhausted its turn budget.
-                let used = coordinator.last_num_turns();
-                if used >= max_turns as u64 {
-                    warn!(
-                        "signal follow-through exhausted max_turns ({max_turns}) for source={source}"
-                    );
                 }
 
                 // Restore the user's session so subsequent messages resume

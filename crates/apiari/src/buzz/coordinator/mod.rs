@@ -335,6 +335,7 @@ impl Coordinator {
     where
         F: FnMut(CoordinatorEvent),
     {
+        self.last_num_turns = 0;
         let client = ClaudeClient::new();
         let mut session = client.spawn(opts).await?;
         session.send_message(message).await?;
