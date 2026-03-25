@@ -220,7 +220,13 @@ impl Coordinator {
     }
 
     /// Extract structured events from an SDK event.
-    fn process_event(&mut self, event: &Event) -> Vec<CoordinatorEvent> {
+    ///
+    /// Returns `Ok(events)` normally, or `Err(message)` if the result indicates
+    /// a session error (e.g. stale resume token).
+    fn process_event(
+        &mut self,
+        event: &Event,
+    ) -> std::result::Result<Vec<CoordinatorEvent>, String> {
         let mut events = Vec::new();
 
         match event {
@@ -262,6 +268,20 @@ impl Coordinator {
                 }
             }
             Event::Result(result) => {
+                if result.is_error {
+                    // Session errored — extract error message and signal to caller.
+                    // Common cause: stale resume token ("No conversation found with session ID: ...").
+                    let error_detail = result
+                        .result
+                        .as_deref()
+                        .unwrap_or("session error (no detail)");
+                    warn!(
+                        "[coordinator] session error (subtype={}): {}",
+                        result.subtype, error_detail
+                    );
+                    // Don't store the broken session — caller will reset.
+                    return Err(error_detail.to_string());
+                }
                 self.session_id = Some(result.session_id.clone());
                 self.session_token = Some(SessionToken {
                     provider: self.provider.clone(),
@@ -271,7 +291,7 @@ impl Coordinator {
             _ => {}
         }
 
-        events
+        Ok(events)
     }
 
     /// Handle a user message with structured event callbacks.
@@ -319,11 +339,20 @@ impl Coordinator {
         let mut response = String::new();
 
         while let Ok(Some(event)) = session.next_event().await {
-            for coord_event in self.process_event(&event) {
-                if let CoordinatorEvent::Token(ref t) = coord_event {
-                    response.push_str(t);
+            match self.process_event(&event) {
+                Ok(coord_events) => {
+                    for coord_event in coord_events {
+                        if let CoordinatorEvent::Token(ref t) = coord_event {
+                            response.push_str(t);
+                        }
+                        on_event(coord_event);
+                    }
                 }
-                on_event(coord_event);
+                Err(error_msg) => {
+                    // Session error (e.g. stale resume token). Propagate to caller
+                    // who will reset the session and notify the user.
+                    return Err(color_eyre::eyre::eyre!("Claude session error: {error_msg}"));
+                }
             }
             if event.is_result() {
                 break;
@@ -364,4 +393,308 @@ impl Coordinator {
 fn truncate_cmd(cmd: &str) -> &str {
     let end = cmd.char_indices().nth(120).map_or(cmd.len(), |(i, _)| i);
     &cmd[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apiari_claude_sdk::Event;
+    use apiari_claude_sdk::types::{
+        AssistantMessage, AssistantMessageContent, ContentBlock, ResultMessage,
+    };
+    use serde_json::Map;
+
+    fn make_coordinator() -> Coordinator {
+        Coordinator::new("sonnet", 20)
+    }
+
+    fn make_result_event(session_id: &str, is_error: bool, result_text: Option<&str>) -> Event {
+        Event::Result(ResultMessage {
+            subtype: if is_error {
+                "error_during_execution".to_string()
+            } else {
+                "success".to_string()
+            },
+            duration_ms: 100,
+            duration_api_ms: 90,
+            is_error,
+            num_turns: 1,
+            session_id: session_id.to_string(),
+            total_cost_usd: Some(0.01),
+            usage: None,
+            result: result_text.map(|s| s.to_string()),
+            structured_output: None,
+        })
+    }
+
+    fn make_assistant_event(content_blocks: Vec<ContentBlock>) -> Event {
+        Event::Assistant {
+            message: AssistantMessage {
+                message: AssistantMessageContent {
+                    model: "claude-sonnet-4-6".to_string(),
+                    content: content_blocks,
+                    id: Some("msg_test".to_string()),
+                    role: Some("assistant".to_string()),
+                    stop_reason: Some("end_turn".to_string()),
+                    usage: None,
+                    extra: Map::new(),
+                },
+                parent_tool_use_id: None,
+                session_id: Some("test-session".to_string()),
+                uuid: Some("test-uuid".to_string()),
+            },
+            tool_uses: vec![],
+        }
+    }
+
+    // -- process_event: success result --
+
+    #[test]
+    fn test_process_event_success_result_stores_session() {
+        let mut coord = make_coordinator();
+        assert!(!coord.has_session());
+
+        let event = make_result_event("new-session-id", false, Some("All done."));
+        let result = coord.process_event(&event);
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty()); // Result events emit no CoordinatorEvents
+        assert!(coord.has_session());
+        assert_eq!(coord.session_token().unwrap().token, "new-session-id");
+    }
+
+    // -- process_event: error result --
+
+    #[test]
+    fn test_process_event_error_result_returns_err() {
+        let mut coord = make_coordinator();
+
+        let event = make_result_event(
+            "error-session-id",
+            true,
+            Some("No conversation found with session ID: abc-123"),
+        );
+        let result = coord.process_event(&event);
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("No conversation found with session ID")
+        );
+    }
+
+    #[test]
+    fn test_process_event_error_result_does_not_store_session() {
+        let mut coord = make_coordinator();
+        assert!(!coord.has_session());
+
+        let event = make_result_event("broken-session-id", true, Some("error"));
+        let _ = coord.process_event(&event);
+
+        // Session should NOT be stored for error results
+        assert!(!coord.has_session());
+    }
+
+    #[test]
+    fn test_process_event_error_result_no_detail() {
+        let mut coord = make_coordinator();
+
+        let event = make_result_event("err-session", true, None);
+        let result = coord.process_event(&event);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("session error (no detail)"));
+    }
+
+    #[test]
+    fn test_process_event_error_does_not_clobber_existing_session() {
+        let mut coord = make_coordinator();
+        // Simulate an existing valid session
+        coord.session_id = Some("good-session".to_string());
+        coord.session_token = Some(SessionToken {
+            provider: "claude".to_string(),
+            token: "good-session".to_string(),
+        });
+
+        let event = make_result_event("broken-session", true, Some("error"));
+        let _ = coord.process_event(&event);
+
+        // The existing session should be preserved (caller decides whether to reset)
+        assert_eq!(coord.session_token().unwrap().token, "good-session");
+    }
+
+    // -- process_event: assistant text --
+
+    #[test]
+    fn test_process_event_assistant_text_emits_token() {
+        let mut coord = make_coordinator();
+
+        let event = make_assistant_event(vec![ContentBlock::Text {
+            text: "Hello!".to_string(),
+        }]);
+        let result = coord.process_event(&event);
+
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            CoordinatorEvent::Token(t) => assert_eq!(t, "Hello!"),
+            other => panic!("expected Token, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_process_event_assistant_multiple_text_blocks() {
+        let mut coord = make_coordinator();
+
+        let event = make_assistant_event(vec![
+            ContentBlock::Text {
+                text: "Hello ".to_string(),
+            },
+            ContentBlock::Text {
+                text: "world!".to_string(),
+            },
+        ]);
+        let result = coord.process_event(&event);
+
+        let events = result.unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            CoordinatorEvent::Token(t) => assert_eq!(t, "Hello world!"),
+            other => panic!("expected Token, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_process_event_assistant_no_text_emits_nothing() {
+        let mut coord = make_coordinator();
+
+        // Thinking block only — no text
+        let event = make_assistant_event(vec![ContentBlock::Thinking {
+            thinking: "Let me think...".to_string(),
+            signature: "sig".to_string(),
+        }]);
+        let result = coord.process_event(&event);
+
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_process_event_assistant_tool_use_no_text() {
+        let mut coord = make_coordinator();
+
+        let event = make_assistant_event(vec![ContentBlock::ToolUse {
+            id: "tool_1".to_string(),
+            name: "Read".to_string(),
+            input: serde_json::json!({"file_path": "/tmp/test"}),
+        }]);
+        let result = coord.process_event(&event);
+
+        // No text content → no Token event
+        assert!(result.unwrap().is_empty());
+    }
+
+    // -- process_event: bash audit --
+
+    #[test]
+    fn test_process_event_bash_mutating_emits_audit() {
+        let mut coord = make_coordinator();
+
+        let event = Event::Assistant {
+            message: AssistantMessage {
+                message: AssistantMessageContent {
+                    model: "claude-sonnet-4-6".to_string(),
+                    content: vec![],
+                    id: None,
+                    role: None,
+                    stop_reason: None,
+                    usage: None,
+                    extra: Map::new(),
+                },
+                parent_tool_use_id: None,
+                session_id: None,
+                uuid: None,
+            },
+            tool_uses: vec![apiari_claude_sdk::ToolUse {
+                id: "tool_1".to_string(),
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "rm -rf src/"}),
+            }],
+        };
+        let result = coord.process_event(&event);
+
+        let events = result.unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, CoordinatorEvent::BashAudit { .. })),
+            "expected BashAudit event for mutating command"
+        );
+    }
+
+    #[test]
+    fn test_process_event_bash_readonly_no_audit() {
+        let mut coord = make_coordinator();
+
+        let event = Event::Assistant {
+            message: AssistantMessage {
+                message: AssistantMessageContent {
+                    model: "claude-sonnet-4-6".to_string(),
+                    content: vec![],
+                    id: None,
+                    role: None,
+                    stop_reason: None,
+                    usage: None,
+                    extra: Map::new(),
+                },
+                parent_tool_use_id: None,
+                session_id: None,
+                uuid: None,
+            },
+            tool_uses: vec![apiari_claude_sdk::ToolUse {
+                id: "tool_1".to_string(),
+                name: "Bash".to_string(),
+                input: serde_json::json!({"command": "ls -la"}),
+            }],
+        };
+        let result = coord.process_event(&event);
+
+        let events = result.unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, CoordinatorEvent::BashAudit { .. })),
+            "read-only command should not emit BashAudit"
+        );
+    }
+
+    // -- process_event: other event types --
+
+    #[test]
+    fn test_process_event_system_event_ignored() {
+        let mut coord = make_coordinator();
+
+        let event = Event::System(apiari_claude_sdk::types::SystemMessage {
+            subtype: "init".to_string(),
+            data: Map::new(),
+        });
+        let result = coord.process_event(&event);
+
+        assert!(result.unwrap().is_empty());
+        assert!(!coord.has_session());
+    }
+
+    #[test]
+    fn test_process_event_rate_limit_ignored() {
+        let mut coord = make_coordinator();
+
+        let event = Event::RateLimit(apiari_claude_sdk::types::RateLimitEvent {
+            rate_limit_info: None,
+            uuid: None,
+            session_id: None,
+        });
+        let result = coord.process_event(&event);
+
+        assert!(result.unwrap().is_empty());
+    }
 }
