@@ -452,6 +452,8 @@ pub struct WorkspaceState {
     pub tmux: Option<crate::shells::TmuxManager>,
     /// Cached shell windows (refreshed periodically).
     pub shell_windows: Vec<crate::shells::ShellWindow>,
+    /// Queued notifications waiting for streaming to finish.
+    pub pending_notifications: Vec<String>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -569,6 +571,7 @@ impl App {
                     is_setup_placeholder: false,
                     tmux,
                     shell_windows: Vec::new(),
+                    pending_notifications: Vec::new(),
                 }
             })
             .collect();
@@ -709,6 +712,7 @@ impl App {
             is_setup_placeholder: true,
             tmux: None,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
 
         let setup = SetupState {
@@ -836,6 +840,7 @@ impl App {
             is_setup_placeholder: true,
             tmux: None,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1031,6 +1036,7 @@ impl App {
             thoughts: Vec::new(),
             tmux,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
 
         if is_add {
@@ -1893,6 +1899,14 @@ impl App {
                     ws.has_unread_response = true;
                 }
             }
+
+            // Flush any notifications that arrived during streaming.
+            let queued = std::mem::take(&mut ws.pending_notifications);
+            for note in queued {
+                ws.chat_history.push(ChatLine::System(note));
+                ws.has_unread_response = true;
+            }
+
             self.needs_redraw = true;
         }
     }
@@ -1962,6 +1976,15 @@ impl App {
                         .push(ChatLine::Assistant(text.to_string(), ts, msg_source));
                     ws.coordinator_preview = Some(truncate_preview(text, 120));
                     ws.has_unread_response = true;
+                }
+                "notification" => {
+                    // Signal follow-through results: queue if streaming, else show immediately.
+                    if ws.streaming {
+                        ws.pending_notifications.push(text.to_string());
+                    } else {
+                        ws.chat_history.push(ChatLine::System(text.to_string()));
+                        ws.has_unread_response = true;
+                    }
                 }
                 "watcher_poll_complete" => {
                     // Update feed heartbeat timestamps from daemon's watcher cursors.
@@ -3709,6 +3732,7 @@ mod tests {
             is_setup_placeholder: false,
             tmux: None,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
         app.workspaces = vec![ws];
         app.setup = None;

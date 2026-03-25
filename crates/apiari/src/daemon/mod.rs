@@ -753,25 +753,25 @@ async fn run_coordinator_task(
                             response.is_empty()
                         );
                         if !response.is_empty() && response.to_lowercase() != "ack" {
-                            // TUI-first: try broadcasting to TUI clients.
-                            // If nobody received it (0 receivers), fall back to Telegram.
-                            let receivers = socket_server
-                                .as_ref()
-                                .map(|server| {
-                                    server.broadcast_activity(
-                                        "signal",
-                                        &slot_name,
-                                        "assistant_message",
-                                        &response,
-                                    )
-                                })
-                                .unwrap_or(0);
-                            if receivers == 0
-                                && let Some((ref channel, chat_id, topic_id)) = telegram
-                            {
+                            let notification_text = format!(
+                                "[signal: {source}] {response}"
+                            );
+
+                            // Broadcast to TUI clients as a notification.
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity(
+                                    "signal",
+                                    &slot_name,
+                                    "notification",
+                                    &notification_text,
+                                );
+                            }
+
+                            // Always send to Telegram when configured.
+                            if let Some((ref channel, chat_id, topic_id)) = telegram {
                                 let msg = OutboundMessage {
                                     chat_id,
-                                    text: response.clone(),
+                                    text: notification_text,
                                     buttons: vec![],
                                     topic_id,
                                 };
