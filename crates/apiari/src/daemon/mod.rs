@@ -152,6 +152,7 @@ async fn run_coordinator_task(
     store: SignalStore,
     mut job_rx: mpsc::UnboundedReceiver<CoordinatorJob>,
     max_session_turns: u32,
+    authority: crate::config::WorkspaceAuthority,
 ) {
     let mut turn_count: u32 = 0;
 
@@ -672,9 +673,18 @@ async fn run_coordinator_task(
                 };
 
                 // Run follow-throughs in a fresh session so tool restrictions
-                // (disallowed Bash) stay isolated and don't poison the main
-                // coordinator session.
+                // stay isolated and don't poison the main coordinator session.
                 opts.resume = None;
+
+                // In observe mode, strip Bash from follow-throughs to enforce
+                // read-only. Autonomous mode keeps Bash — the validate-bash
+                // hook already audits commands.
+                if authority == crate::config::WorkspaceAuthority::Observe {
+                    if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
+                        opts.disallowed_tools.push("Bash".to_string());
+                    }
+                    opts.allowed_tools.retain(|t| t != "Bash");
+                }
 
                 // Save the user's session token so we can restore it after the
                 // follow-through (handle_message_with_options overwrites session_id
@@ -1097,6 +1107,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             coord_store,
             coord_rx,
             max_session_turns,
+            ws.config.authority,
         ));
 
         // Morning brief scheduler
@@ -1336,6 +1347,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         coord_store,
                         new_rx,
                         slot.max_session_turns,
+                        slot.config.authority,
                     )));
                     slot.coord_respawn_count += 1;
                     slot.coord_last_respawn = Some(std::time::Instant::now());
