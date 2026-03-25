@@ -657,7 +657,8 @@ async fn run_coordinator_task(
                 };
 
                 let saved_turns = coordinator.max_turns();
-                coordinator.set_max_turns(3);
+                let max_turns = 15;
+                coordinator.set_max_turns(max_turns);
 
                 let mut opts = match coordinator
                     .build_options_with_playbooks(&store, playbook_content.as_deref())
@@ -674,19 +675,6 @@ async fn run_coordinator_task(
                 // (disallowed Bash) stay isolated and don't poison the main
                 // coordinator session.
                 opts.resume = None;
-
-                // Restrict to read-only for signal follow-throughs — no Bash allowed.
-                // Apply this restriction via opts so the coordinator's persistent
-                // configuration is not changed; other session-level side effects
-                // are handled via the save/restore logic below.
-                if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
-                    opts.disallowed_tools.push("Bash".to_string());
-                }
-                // Also remove Bash from allowed_tools to avoid conflicting CLI
-                // flags (--allowedTools and --disallowedTools both containing Bash),
-                // which can cause Claude Code to persistently block Bash in the
-                // resumed session.
-                opts.allowed_tools.retain(|t| t != "Bash");
 
                 // Save the user's session token so we can restore it after the
                 // follow-through (handle_message_with_options overwrites session_id
@@ -780,6 +768,14 @@ async fn run_coordinator_task(
                             signals.len()
                         );
                     }
+                }
+
+                // Check if the follow-through exhausted its turn budget.
+                let used = coordinator.last_num_turns();
+                if used >= max_turns as u64 {
+                    warn!(
+                        "signal follow-through exhausted max_turns ({max_turns}) for source={source}"
+                    );
                 }
 
                 // Restore the user's session so subsequent messages resume
