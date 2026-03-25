@@ -560,6 +560,32 @@ mod tests {
     }
 
     #[test]
+    fn test_build_skills_prompt_includes_soul_before_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let apiari_dir = dir.path().join(".apiari");
+        std::fs::create_dir_all(apiari_dir.join("skills")).unwrap();
+        std::fs::write(apiari_dir.join("soul.md"), "Be terse and opinionated.").unwrap();
+        std::fs::write(apiari_dir.join("context.md"), "# My Project\nA Rust CLI.").unwrap();
+
+        let ctx = SkillContext {
+            workspace_root: dir.path().to_path_buf(),
+            ..test_ctx()
+        };
+        let prompt = build_skills_prompt(&ctx);
+
+        assert!(prompt.contains("## Communication Style"));
+        assert!(prompt.contains("Be terse and opinionated."));
+
+        // Soul must appear before Project Context
+        let soul_pos = prompt.find("## Communication Style").unwrap();
+        let context_pos = prompt.find("## Project Context").unwrap();
+        assert!(
+            soul_pos < context_pos,
+            "Communication Style must appear before Project Context"
+        );
+    }
+
+    #[test]
     fn test_index_playbooks_reads_first_line() {
         let dir = tempfile::tempdir().unwrap();
         let skills_dir = dir.path().join(".apiari/skills");
