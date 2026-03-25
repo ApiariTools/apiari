@@ -83,7 +83,7 @@ pub fn load_context_skill(workspace_root: &Path) -> Option<String> {
 }
 
 /// Load the soul/personality from `.apiari/soul.md` if it exists.
-pub fn load_soul(workspace_root: &Path) -> Option<String> {
+pub fn load_soul_skill(workspace_root: &Path) -> Option<String> {
     let path = workspace_root.join(".apiari/soul.md");
     std::fs::read_to_string(&path).ok()
 }
@@ -212,7 +212,7 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
     prompt.push_str(&tool_sections.join("\n"));
 
     // Soul / communication style (from .apiari/soul.md)
-    if let Some(soul) = load_soul(&ctx.workspace_root) {
+    if let Some(soul) = load_soul_skill(&ctx.workspace_root) {
         prompt.push_str("\n## Communication Style\n");
         prompt.push_str(&soul);
         if !soul.ends_with('\n') {
@@ -543,20 +543,20 @@ mod tests {
     }
 
     #[test]
-    fn test_load_soul_returns_content() {
+    fn test_load_soul_skill_returns_content() {
         let dir = tempfile::tempdir().unwrap();
         let apiari_dir = dir.path().join(".apiari");
         std::fs::create_dir_all(&apiari_dir).unwrap();
         std::fs::write(apiari_dir.join("soul.md"), "Be concise and direct.").unwrap();
-        let content = load_soul(dir.path());
+        let content = load_soul_skill(dir.path());
         assert!(content.is_some());
         assert!(content.unwrap().contains("Be concise and direct."));
     }
 
     #[test]
-    fn test_load_soul_returns_none_when_missing() {
+    fn test_load_soul_skill_returns_none_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_soul(dir.path()).is_none());
+        assert!(load_soul_skill(dir.path()).is_none());
     }
 
     #[test]
