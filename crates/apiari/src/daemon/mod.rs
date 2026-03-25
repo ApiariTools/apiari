@@ -152,6 +152,7 @@ async fn run_coordinator_task(
     store: SignalStore,
     mut job_rx: mpsc::UnboundedReceiver<CoordinatorJob>,
     max_session_turns: u32,
+    authority: crate::config::WorkspaceAuthority,
 ) {
     let mut turn_count: u32 = 0;
 
@@ -657,7 +658,8 @@ async fn run_coordinator_task(
                 };
 
                 let saved_turns = coordinator.max_turns();
-                coordinator.set_max_turns(3);
+                let max_turns = 15;
+                coordinator.set_max_turns(max_turns);
 
                 let mut opts = match coordinator
                     .build_options_with_playbooks(&store, playbook_content.as_deref())
@@ -670,23 +672,19 @@ async fn run_coordinator_task(
                     }
                 };
 
-                // Run follow-throughs in a fresh session so tool restrictions
-                // (disallowed Bash) stay isolated and don't poison the main
-                // coordinator session.
+                // Run follow-throughs in a fresh session so any per-session
+                // overrides stay isolated and don't poison the main session.
                 opts.resume = None;
 
-                // Restrict to read-only for signal follow-throughs — no Bash allowed.
-                // Apply this restriction via opts so the coordinator's persistent
-                // configuration is not changed; other session-level side effects
-                // are handled via the save/restore logic below.
-                if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
-                    opts.disallowed_tools.push("Bash".to_string());
+                // In observe mode, strip Bash from follow-throughs to enforce
+                // read-only. Autonomous mode keeps Bash — the validate-bash
+                // hook already audits commands.
+                if authority == crate::config::WorkspaceAuthority::Observe {
+                    if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
+                        opts.disallowed_tools.push("Bash".to_string());
+                    }
+                    opts.allowed_tools.retain(|t| t != "Bash");
                 }
-                // Also remove Bash from allowed_tools to avoid conflicting CLI
-                // flags (--allowedTools and --disallowedTools both containing Bash),
-                // which can cause Claude Code to persistently block Bash in the
-                // resumed session.
-                opts.allowed_tools.retain(|t| t != "Bash");
 
                 // Save the user's session token so we can restore it after the
                 // follow-through (handle_message_with_options overwrites session_id
@@ -771,6 +769,13 @@ async fn run_coordinator_task(
                         } else {
                             info!(
                                 "[{slot_name}] coordinator ack'd {source} events (no message sent)"
+                            );
+                        }
+                        // Check if the follow-through exhausted its turn budget.
+                        let used = coordinator.last_num_turns();
+                        if used >= max_turns as u64 {
+                            warn!(
+                                "signal follow-through exhausted max_turns ({max_turns}) for source={source}"
                             );
                         }
                     }
@@ -1101,6 +1106,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             coord_store,
             coord_rx,
             max_session_turns,
+            ws.config.authority,
         ));
 
         // Morning brief scheduler
@@ -1340,6 +1346,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         coord_store,
                         new_rx,
                         slot.max_session_turns,
+                        slot.config.authority,
                     )));
                     slot.coord_respawn_count += 1;
                     slot.coord_last_respawn = Some(std::time::Instant::now());

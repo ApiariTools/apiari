@@ -63,6 +63,8 @@ pub struct Coordinator {
     working_dir: Option<PathBuf>,
     settings: Option<String>,
     safety_hooks: Option<Box<dyn SafetyHooks>>,
+    /// Number of turns used in the last completed session.
+    last_num_turns: u64,
 }
 
 impl Coordinator {
@@ -81,6 +83,7 @@ impl Coordinator {
             working_dir: None,
             settings: None,
             safety_hooks: None,
+            last_num_turns: 0,
         }
     }
 
@@ -168,6 +171,11 @@ impl Coordinator {
     /// Temporarily change max turns (e.g. for system notifications).
     pub fn set_max_turns(&mut self, turns: u32) {
         self.max_turns = turns;
+    }
+
+    /// Number of turns used in the last completed session.
+    pub fn last_num_turns(&self) -> u64 {
+        self.last_num_turns
     }
 
     /// Check if the Claude CLI is available.
@@ -282,6 +290,7 @@ impl Coordinator {
                     // Don't store the broken session — caller will reset.
                     return Err(error_detail.to_string());
                 }
+                self.last_num_turns = result.num_turns;
                 self.session_id = Some(result.session_id.clone());
                 self.session_token = Some(SessionToken {
                     provider: self.provider.clone(),
@@ -326,6 +335,7 @@ impl Coordinator {
     where
         F: FnMut(CoordinatorEvent),
     {
+        self.last_num_turns = 0;
         let client = ClaudeClient::new();
         let mut session = client.spawn(opts).await?;
         session.send_message(message).await?;
