@@ -452,6 +452,8 @@ pub struct WorkspaceState {
     pub tmux: Option<crate::shells::TmuxManager>,
     /// Cached shell windows (refreshed periodically).
     pub shell_windows: Vec<crate::shells::ShellWindow>,
+    /// Queued notifications waiting for streaming to finish.
+    pub pending_notifications: Vec<String>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -569,6 +571,7 @@ impl App {
                     is_setup_placeholder: false,
                     tmux,
                     shell_windows: Vec::new(),
+                    pending_notifications: Vec::new(),
                 }
             })
             .collect();
@@ -709,6 +712,7 @@ impl App {
             is_setup_placeholder: true,
             tmux: None,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
 
         let setup = SetupState {
@@ -836,6 +840,7 @@ impl App {
             is_setup_placeholder: true,
             tmux: None,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1031,6 +1036,7 @@ impl App {
             thoughts: Vec::new(),
             tmux,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
 
         if is_add {
@@ -1816,6 +1822,11 @@ impl App {
         if let Some(ws) = self.current_ws_mut() {
             ws.chat_history.push(ChatLine::System(text));
             ws.streaming = false;
+            let queued = std::mem::take(&mut ws.pending_notifications);
+            for note in queued {
+                ws.chat_history.push(ChatLine::System(note));
+                ws.has_unread_response = true;
+            }
             self.needs_redraw = true;
         }
     }
@@ -1893,6 +1904,14 @@ impl App {
                     ws.has_unread_response = true;
                 }
             }
+
+            // Flush any notifications that arrived during streaming.
+            let queued = std::mem::take(&mut ws.pending_notifications);
+            for note in queued {
+                ws.chat_history.push(ChatLine::System(note));
+                ws.has_unread_response = true;
+            }
+
             self.needs_redraw = true;
         }
     }
@@ -1904,6 +1923,11 @@ impl App {
         {
             ws.chat_history.push(ChatLine::System(text));
             ws.streaming = false;
+            let queued = std::mem::take(&mut ws.pending_notifications);
+            for note in queued {
+                ws.chat_history.push(ChatLine::System(note));
+                ws.has_unread_response = true;
+            }
             self.needs_redraw = true;
         }
     }
@@ -1962,6 +1986,15 @@ impl App {
                         .push(ChatLine::Assistant(text.to_string(), ts, msg_source));
                     ws.coordinator_preview = Some(truncate_preview(text, 120));
                     ws.has_unread_response = true;
+                }
+                "notification" => {
+                    // Signal follow-through results: queue if streaming, else show immediately.
+                    if ws.streaming {
+                        ws.pending_notifications.push(text.to_string());
+                    } else {
+                        ws.chat_history.push(ChatLine::System(text.to_string()));
+                        ws.has_unread_response = true;
+                    }
                 }
                 "watcher_poll_complete" => {
                     // Update feed heartbeat timestamps from daemon's watcher cursors.
@@ -3556,6 +3589,102 @@ mod tests {
         }
     }
 
+    // ── Notification queuing tests ────────────────────────────
+
+    #[test]
+    fn test_notification_queued_during_streaming() {
+        let mut app = make_app(&["ws1"], false);
+        app.workspaces[0].streaming = true;
+
+        // Push a notification while streaming — should be queued, not in chat_history
+        app.push_activity(
+            "ws1",
+            "signal",
+            "notification",
+            "[signal: github] PR reviewed",
+        );
+
+        assert!(app.workspaces[0].pending_notifications.len() == 1);
+        assert_eq!(
+            app.workspaces[0].pending_notifications[0],
+            "[signal: github] PR reviewed"
+        );
+        // Should NOT appear in chat_history yet
+        assert!(app.workspaces[0].chat_history.is_empty());
+    }
+
+    #[test]
+    fn test_notification_shown_immediately_when_not_streaming() {
+        let mut app = make_app(&["ws1"], false);
+        assert!(!app.workspaces[0].streaming);
+
+        app.push_activity(
+            "ws1",
+            "signal",
+            "notification",
+            "[signal: github] PR reviewed",
+        );
+
+        assert!(app.workspaces[0].pending_notifications.is_empty());
+        assert_eq!(app.workspaces[0].chat_history.len(), 1);
+        assert!(matches!(
+            &app.workspaces[0].chat_history[0],
+            ChatLine::System(s) if s == "[signal: github] PR reviewed"
+        ));
+        assert!(app.workspaces[0].has_unread_response);
+    }
+
+    #[test]
+    fn test_finish_assistant_message_flushes_queued_notifications() {
+        let mut app = make_app(&["ws1"], false);
+        // Simulate streaming with a token
+        app.workspaces[0].streaming = true;
+        app.append_assistant_token_to("ws1", "response text");
+
+        // Queue two notifications during streaming
+        app.push_activity("ws1", "signal", "notification", "note 1");
+        app.push_activity("ws1", "signal", "notification", "note 2");
+        assert_eq!(app.workspaces[0].pending_notifications.len(), 2);
+
+        // Finish streaming — should flush queued notifications
+        app.finish_assistant_message_for("ws1");
+
+        assert!(!app.workspaces[0].streaming);
+        assert!(app.workspaces[0].pending_notifications.is_empty());
+        // chat_history: 1 assistant + 2 flushed notifications = 3
+        assert_eq!(app.workspaces[0].chat_history.len(), 3);
+        assert!(matches!(
+            &app.workspaces[0].chat_history[1],
+            ChatLine::System(s) if s == "note 1"
+        ));
+        assert!(matches!(
+            &app.workspaces[0].chat_history[2],
+            ChatLine::System(s) if s == "note 2"
+        ));
+    }
+
+    #[test]
+    fn test_push_system_message_to_flushes_queued_notifications() {
+        let mut app = make_app(&["ws1"], false);
+        app.workspaces[0].streaming = true;
+
+        // Queue a notification
+        app.push_activity("ws1", "signal", "notification", "queued note");
+        assert_eq!(app.workspaces[0].pending_notifications.len(), 1);
+
+        // Error ends streaming via push_system_message_to
+        app.push_system_message_to("ws1", "Error occurred".into());
+
+        assert!(!app.workspaces[0].streaming);
+        assert!(app.workspaces[0].pending_notifications.is_empty());
+        // chat_history: 1 error system msg + 1 flushed notification = 2
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        assert!(matches!(
+            &app.workspaces[0].chat_history[1],
+            ChatLine::System(s) if s == "queued note"
+        ));
+    }
+
     // ── Setup state machine tests ────────────────────────────
 
     /// Drive the setup state machine and return the finished SetupState + generated TOML.
@@ -3709,6 +3838,7 @@ mod tests {
             is_setup_placeholder: false,
             tmux: None,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
         app.workspaces = vec![ws];
         app.setup = None;

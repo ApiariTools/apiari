@@ -2549,6 +2549,7 @@ mod tests {
             is_setup_placeholder: false,
             tmux: None,
             shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
         };
         let ws_name = ws.name.clone();
         App {
