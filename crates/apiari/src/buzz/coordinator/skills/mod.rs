@@ -7,6 +7,7 @@
 //! ## Skill Kinds
 //!
 //! - **Tool** — operational knowledge for external tools/CLIs (auto-detected from watcher config)
+//! - **Soul** — communication style and personality (auto-loaded from `.apiari/soul.md`)
 //! - **Context** — what this workspace/project is (auto-loaded from `.apiari/context.md`)
 //! - **Playbook** — how to handle a situation (indexed from `.apiari/skills/*.md`)
 
@@ -81,6 +82,12 @@ pub fn load_context_skill(workspace_root: &Path) -> Option<String> {
     std::fs::read_to_string(&path).ok()
 }
 
+/// Load the soul/personality from `.apiari/soul.md` if it exists.
+pub fn load_soul_skill(workspace_root: &Path) -> Option<String> {
+    let path = workspace_root.join(".apiari/soul.md");
+    std::fs::read_to_string(&path).ok()
+}
+
 /// Index playbooks from `.apiari/skills/*.md`.
 ///
 /// Returns a list of (name, first-line description) entries.
@@ -144,9 +151,10 @@ pub fn load_playbook(workspace_root: &Path, name: &str) -> Option<String> {
 /// Prompt is assembled in this order:
 /// 1. Workspace info + repos
 /// 2. Tool skills (auto from watcher config)
-/// 3. Context skill (from `.apiari/context.md`)
-/// 4. Playbook index (names + descriptions from `.apiari/skills/*.md`)
-/// 5. Authority level statement
+/// 3. Soul / communication style (from `.apiari/soul.md`)
+/// 4. Context skill (from `.apiari/context.md`)
+/// 5. Playbook index (names + descriptions from `.apiari/skills/*.md`)
+/// 6. Authority level statement
 pub fn build_skills_prompt(ctx: &SkillContext) -> String {
     let mut prompt = format!(
         "## Workspace\n\
@@ -202,6 +210,15 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
 
     prompt.push_str("\n# Skills\nYou have the following tools and capabilities:\n\n");
     prompt.push_str(&tool_sections.join("\n"));
+
+    // Soul / communication style (from .apiari/soul.md)
+    if let Some(soul) = load_soul_skill(&ctx.workspace_root) {
+        prompt.push_str("\n## Communication Style\n");
+        prompt.push_str(&soul);
+        if !soul.ends_with('\n') {
+            prompt.push('\n');
+        }
+    }
 
     // Context skill (from .apiari/context.md)
     if let Some(context) = load_context_skill(&ctx.workspace_root) {
@@ -523,6 +540,49 @@ mod tests {
     fn test_load_context_skill_returns_none_when_missing() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_context_skill(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_load_soul_skill_returns_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let apiari_dir = dir.path().join(".apiari");
+        std::fs::create_dir_all(&apiari_dir).unwrap();
+        std::fs::write(apiari_dir.join("soul.md"), "Be concise and direct.").unwrap();
+        let content = load_soul_skill(dir.path());
+        assert!(content.is_some());
+        assert!(content.unwrap().contains("Be concise and direct."));
+    }
+
+    #[test]
+    fn test_load_soul_skill_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_soul_skill(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_build_skills_prompt_includes_soul_before_context() {
+        let dir = tempfile::tempdir().unwrap();
+        let apiari_dir = dir.path().join(".apiari");
+        std::fs::create_dir_all(apiari_dir.join("skills")).unwrap();
+        std::fs::write(apiari_dir.join("soul.md"), "Be terse and opinionated.").unwrap();
+        std::fs::write(apiari_dir.join("context.md"), "# My Project\nA Rust CLI.").unwrap();
+
+        let ctx = SkillContext {
+            workspace_root: dir.path().to_path_buf(),
+            ..test_ctx()
+        };
+        let prompt = build_skills_prompt(&ctx);
+
+        assert!(prompt.contains("## Communication Style"));
+        assert!(prompt.contains("Be terse and opinionated."));
+
+        // Soul must appear before Project Context
+        let soul_pos = prompt.find("## Communication Style").unwrap();
+        let context_pos = prompt.find("## Project Context").unwrap();
+        assert!(
+            soul_pos < context_pos,
+            "Communication Style must appear before Project Context"
+        );
     }
 
     #[test]
