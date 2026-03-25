@@ -237,7 +237,9 @@ async fn run_coordinator_task(
                     if let Err(e) = conv.save_message("user", &text, Some("telegram"), None, None) {
                         warn!("[{slot_name}] failed to save user message: {e}");
                     }
-                    if let Ok(ref response) = result {
+                    if let Ok(ref response) = result
+                        && !response.trim().is_empty()
+                    {
                         let session_id = coordinator.session_token().map(|t| t.token.as_str());
                         let provider = Some(coordinator.provider());
                         if let Err(e) = conv.save_message(
@@ -256,7 +258,9 @@ async fn run_coordinator_task(
                     Ok(response) => {
                         turn_count += 1;
 
-                        if let Some(ref server) = socket_server {
+                        if !response.trim().is_empty()
+                            && let Some(ref server) = socket_server
+                        {
                             server.broadcast_activity(
                                 "telegram",
                                 &slot_name,
@@ -384,7 +388,11 @@ async fn run_coordinator_task(
                     if let Err(e) = conv.save_message("user", &text, Some("tui"), None, None) {
                         warn!("[{ws_name}] failed to save user message: {e}");
                     }
-                    if let Ok(ref response) = result {
+                    // Only persist non-empty assistant responses (tool-only turns
+                    // produce empty text which clutters history).
+                    if let Ok(ref response) = result
+                        && !response.trim().is_empty()
+                    {
                         let session_id = coordinator.session_token().map(|t| t.token.as_str());
                         let provider = Some(coordinator.provider());
                         if let Err(e) = conv.save_message(
@@ -405,7 +413,11 @@ async fn run_coordinator_task(
                         let _ = responder.send(socket::DaemonResponse::Done {
                             workspace: ws_name.clone(),
                         });
-                        if let Some(ref server) = socket_server {
+                        // Only broadcast non-empty responses (tool-only turns
+                        // have no text to show).
+                        if !response.trim().is_empty()
+                            && let Some(ref server) = socket_server
+                        {
                             server.broadcast_activity(
                                 "tui",
                                 &ws_name,

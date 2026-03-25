@@ -1817,12 +1817,23 @@ impl App {
     }
 
     /// Append a streaming token to the correct workspace's chat history.
+    ///
+    /// Only appends to an existing Assistant entry if it came from the TUI's
+    /// own streaming (source=None). Activity-sourced entries (Telegram, System)
+    /// are treated as complete — a new entry is created instead.
     pub fn append_assistant_token_to(&mut self, workspace: &str, token: &str) {
         if let Some(idx) = self.ws_index(workspace)
             && let Some(ws) = self.workspaces.get_mut(idx)
         {
-            if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last_mut() {
-                s.push_str(token);
+            let should_append = matches!(
+                ws.chat_history.last(),
+                Some(ChatLine::Assistant(_, _, src))
+                    if !matches!(src, Some(MessageSource::Telegram) | Some(MessageSource::System))
+            );
+            if should_append {
+                if let Some(ChatLine::Assistant(s, _, _)) = ws.chat_history.last_mut() {
+                    s.push_str(token);
+                }
             } else {
                 ws.chat_history
                     .push(ChatLine::Assistant(token.to_string(), now_ts(), None));
@@ -2414,15 +2425,19 @@ impl App {
                 continue;
             }
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
-                // Only apply if no real user/assistant messages yet — system-only
-                // messages (e.g. "Starting daemon…") should not block history load.
-                let has_user = ws
-                    .chat_history
-                    .iter()
-                    .any(|m| matches!(m, ChatLine::User(..)));
-                // Count only assistant messages from real chat sources (Tui,
-                // Telegram, None). Assistant lines injected with
-                // MessageSource::System (daemon broadcasts) don't count.
+                // Only apply if the user hasn't started chatting in THIS TUI session.
+                // Messages from daemon activity broadcasts (Telegram, System) should
+                // NOT block history loading — they arrive via the socket before the
+                // background history task completes.
+                let has_local_user = ws.chat_history.iter().any(|m| {
+                    matches!(
+                        m,
+                        ChatLine::User(_, _, src)
+                            if !matches!(src, Some(MessageSource::Telegram) | Some(MessageSource::System))
+                    )
+                });
+                // Count only assistant messages from direct TUI interaction (source=None).
+                // Telegram/System-sourced assistants come from daemon broadcasts.
                 let real_assistant_count = ws
                     .chat_history
                     .iter()
@@ -2430,14 +2445,14 @@ impl App {
                         matches!(
                             m,
                             ChatLine::Assistant(_, _, src)
-                                if !matches!(src, Some(MessageSource::System))
+                                if !matches!(src, Some(MessageSource::System) | Some(MessageSource::Telegram))
                         )
                     })
                     .count();
                 // The single onboarding assistant message doesn't count as real chat.
                 let has_real_assistant = real_assistant_count > 0
                     && !(self.onboarding.active && real_assistant_count <= 1);
-                if has_user || has_real_assistant {
+                if has_local_user || has_real_assistant {
                     continue;
                 }
 
@@ -3014,6 +3029,10 @@ pub(super) fn load_chat_history_blocking(
                 match conv.load_history(CHAT_HISTORY_LIMIT) {
                     Ok(rows) if !rows.is_empty() => rows
                         .into_iter()
+                        .filter(|row| {
+                            // Skip empty assistant responses (tool-only turns)
+                            !(row.role == "assistant" && row.content.trim().is_empty())
+                        })
                         .map(|row| {
                             let ts = chrono::DateTime::parse_from_rfc3339(&row.created_at)
                                 .map(|dt| dt.format("%H:%M").to_string())
@@ -3427,6 +3446,66 @@ mod tests {
             &app.workspaces[0].chat_history[0],
             ChatLine::System(s) if s.contains("previous session")
         ));
+    }
+
+    #[test]
+    fn test_apply_chat_history_loads_despite_telegram_activity() {
+        let mut app = make_app(&["ws1"], false);
+        // Simulate a Telegram user_message activity arriving before history loads
+        app.workspaces[0].chat_history.push(ChatLine::User(
+            "telegram msg".into(),
+            "12:00".into(),
+            Some(MessageSource::Telegram),
+        ));
+        // Simulate a Telegram assistant_message activity
+        app.workspaces[0].chat_history.push(ChatLine::Assistant(
+            "telegram response".into(),
+            "12:01".into(),
+            Some(MessageSource::Telegram),
+        ));
+
+        let history = vec![
+            ChatLine::User("old question".into(), "10:00".into(), None),
+            ChatLine::Assistant("old answer".into(), "10:01".into(), None),
+        ];
+        app.apply_chat_history(vec![("ws1".into(), history, None)]);
+
+        // History should load despite Telegram activity messages.
+        // 2 dividers + 2 history + 2 re-appended Telegram messages = 6
+        assert_eq!(app.workspaces[0].chat_history.len(), 6);
+        assert!(matches!(
+            &app.workspaces[0].chat_history[0],
+            ChatLine::System(s) if s.contains("previous session")
+        ));
+    }
+
+    #[test]
+    fn test_append_assistant_token_skips_telegram_entry() {
+        let mut app = make_app(&["ws1"], false);
+        // Simulate a Telegram assistant message already in history
+        app.workspaces[0].chat_history.push(ChatLine::Assistant(
+            "telegram response".into(),
+            "12:00".into(),
+            Some(MessageSource::Telegram),
+        ));
+
+        // Append a streaming token — should NOT append to the Telegram entry
+        app.append_assistant_token_to("ws1", "hello from coordinator");
+
+        // Should be 2 entries: telegram + new streaming entry
+        assert_eq!(app.workspaces[0].chat_history.len(), 2);
+        if let ChatLine::Assistant(content, _, src) = &app.workspaces[0].chat_history[0] {
+            assert_eq!(content, "telegram response");
+            assert!(matches!(src, Some(MessageSource::Telegram)));
+        } else {
+            panic!("expected telegram assistant");
+        }
+        if let ChatLine::Assistant(content, _, src) = &app.workspaces[0].chat_history[1] {
+            assert_eq!(content, "hello from coordinator");
+            assert!(matches!(src, None));
+        } else {
+            panic!("expected streaming assistant");
+        }
     }
 
     // ── Setup state machine tests ────────────────────────────
