@@ -96,6 +96,18 @@ pub fn run_init(name_override: Option<&str>) -> Result<()> {
     std::fs::create_dir_all(&skills_dir)
         .wrap_err_with(|| format!("failed to create {}", skills_dir.display()))?;
 
+    let soul_path = apiari_dir.join("soul.md");
+    if !soul_path.exists() {
+        let soul_template = "\
+# Soul
+
+Communication style and behavioral guidelines for the coordinator.
+";
+        std::fs::write(&soul_path, soul_template)
+            .wrap_err_with(|| format!("failed to write {}", soul_path.display()))?;
+        println!("  \u{2713} Created .apiari/soul.md \u{2014} define the coordinator's communication style\n");
+    }
+
     let context_path = apiari_dir.join("context.md");
     if !context_path.exists() {
         let context_template = "\

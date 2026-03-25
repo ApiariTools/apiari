@@ -29,6 +29,10 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          merge_prs = false         # default false — must explicitly opt in\n\
          # merge_prs = [\"develop\", \"staging\"]   # scope to specific branches\n\
          ```\n\n\
+         ### Communication Style (Soul)\n\
+         `{root}/.apiari/soul.md` is automatically loaded into every coordinator session. \
+         Users should put communication style and behavioral guidelines here: tone, verbosity, \
+         what to lead with, personality traits. If the file does not exist, no soul is loaded.\n\n\
          ### Project Context\n\
          `{root}/.apiari/context.md` is automatically loaded into every coordinator session. \
          Users should put high-level project info here: what the project is, the tech stack, \
@@ -54,6 +58,7 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          declarative and playbooks reusable.\n\n\
          ### Scaffolding\n\
          `apiari init` creates the workspace config and scaffolds:\n\
+         - `.apiari/soul.md` — template for communication style\n\
          - `.apiari/context.md` — template for project context\n\
          - `.apiari/skills/` — empty directory for playbooks\n\n\
          Users can also create these manually.\n",
