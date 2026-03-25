@@ -3,8 +3,8 @@
 //! Parses each workspace config and checks it deserializes into `WorkspaceConfig`.
 //! Prints a summary line per workspace and exits non-zero if any fail.
 
-use color_eyre::eyre::Result;
-use std::path::Path;
+use color_eyre::eyre::{Result, WrapErr};
+use std::path::{Component, Path};
 
 /// Run validation for one or all workspace configs.
 ///
@@ -14,14 +14,19 @@ pub fn run(workspace: Option<&str>) -> Result<i32> {
     run_with_dir(workspace, &dir)
 }
 
-/// Sanitize a workspace name — reject path separators and traversal.
+/// Sanitize a workspace name — reject path separators and `.`/`..` components.
+///
+/// Uses `Path::components()` so that names like `.hidden` or `foo..bar` are
+/// allowed (they are single `Normal` components), while `..`, `.`, and anything
+/// containing path separators is rejected.
 fn sanitize_workspace_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains("..")
-        || name.starts_with('.')
-    {
+    if name.is_empty() {
+        color_eyre::eyre::bail!("invalid workspace name: {name:?}");
+    }
+    let path = Path::new(name);
+    let components: Vec<_> = path.components().collect();
+    // Must be exactly one Normal component (no separators, no . or ..)
+    if components.len() != 1 || !matches!(components[0], Component::Normal(_)) {
         color_eyre::eyre::bail!("invalid workspace name: {name:?}");
     }
     Ok(())
@@ -53,7 +58,8 @@ fn run_with_dir(workspace: Option<&str>, dir: &Path) -> Result<i32> {
             return Ok(0);
         }
 
-        let mut entries: Vec<_> = std::fs::read_dir(dir)?
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .wrap_err_with(|| format!("failed to read {}", dir.display()))?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "toml"))
             .collect();
@@ -184,8 +190,8 @@ mod tests {
     fn test_sanitize_rejects_path_traversal() {
         assert!(sanitize_workspace_name("../etc/passwd").is_err());
         assert!(sanitize_workspace_name("foo/bar").is_err());
-        assert!(sanitize_workspace_name("foo\\bar").is_err());
-        assert!(sanitize_workspace_name(".hidden").is_err());
+        assert!(sanitize_workspace_name("..").is_err());
+        assert!(sanitize_workspace_name(".").is_err());
         assert!(sanitize_workspace_name("").is_err());
     }
 
@@ -194,6 +200,8 @@ mod tests {
         assert!(sanitize_workspace_name("myworkspace").is_ok());
         assert!(sanitize_workspace_name("my-workspace").is_ok());
         assert!(sanitize_workspace_name("my_workspace").is_ok());
+        assert!(sanitize_workspace_name(".hidden").is_ok());
+        assert!(sanitize_workspace_name("foo..bar").is_ok());
     }
 
     #[test]
