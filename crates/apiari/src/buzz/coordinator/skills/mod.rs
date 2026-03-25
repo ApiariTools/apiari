@@ -10,6 +10,7 @@
 //! - **Context** — what this workspace/project is (auto-loaded from `.apiari/context.md`)
 //! - **Playbook** — how to handle a situation (indexed from `.apiari/skills/*.md`)
 
+mod apiari;
 pub mod config;
 mod email;
 mod github;
@@ -171,8 +172,9 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
         );
     }
 
-    // Tool skills (auto-detected from watcher config)
+    // Tool skills (auto-detected from watcher config) + always-on apiari system skill
     let mut tool_sections = vec![
+        apiari::build_prompt(ctx),
         config::build_prompt(ctx),
         signals::build_prompt(ctx),
         memory::build_prompt(ctx),
@@ -325,6 +327,7 @@ mod tests {
         let prompt = build_skills_prompt(&test_ctx());
         assert!(prompt.contains("## Workspace"));
         assert!(prompt.contains("myproject"));
+        assert!(prompt.contains("## Apiari System"));
         assert!(prompt.contains("## Current Workspace Config"));
         assert!(prompt.contains("## Integration Setup Guides"));
         assert!(prompt.contains("## Signal Store"));
@@ -356,6 +359,22 @@ mod tests {
         ctx.repos.clear();
         let prompt = build_skills_prompt(&ctx);
         assert!(!prompt.contains("## GitHub"));
+    }
+
+    #[test]
+    fn test_apiari_skill_always_present() {
+        // Even with a minimal context (no watchers), the apiari system skill is included
+        let mut ctx = test_ctx();
+        ctx.has_sentry = false;
+        ctx.has_swarm = false;
+        ctx.repos.clear();
+        let prompt = build_skills_prompt(&ctx);
+        assert!(prompt.contains("## Apiari System"));
+        assert!(prompt.contains("authority"));
+        assert!(prompt.contains(".apiari/context.md"));
+        assert!(prompt.contains(".apiari/skills/"));
+        assert!(prompt.contains("skills = ["));
+        assert!(prompt.contains("apiari init"));
     }
 
     #[test]
