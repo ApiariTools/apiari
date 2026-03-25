@@ -181,6 +181,15 @@ impl Coordinator {
 
     /// Build session options with current signal context.
     pub fn build_options(&self, store: &SignalStore) -> Result<SessionOptions> {
+        self.build_options_with_playbooks(store, None)
+    }
+
+    /// Build session options with current signal context and optional hook-triggered playbooks.
+    pub fn build_options_with_playbooks(
+        &self,
+        store: &SignalStore,
+        hook_playbooks: Option<&str>,
+    ) -> Result<SessionOptions> {
         let signals = store.get_open_signals()?;
 
         let system_prompt = prompt::build_system_prompt(
@@ -189,6 +198,7 @@ impl Coordinator {
             self.extra_context.as_deref(),
             Some(&self.name),
             self.prompt_preamble.as_deref(),
+            hook_playbooks,
         );
 
         let mut opts = SessionOptions {

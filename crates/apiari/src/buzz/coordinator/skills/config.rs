@@ -291,6 +291,8 @@ mod tests {
             has_telegram: true,
             prompt_preamble: None,
             default_agent: "claude".to_string(),
+            authority: crate::config::WorkspaceAuthority::Autonomous,
+            capabilities: crate::config::WorkspaceCapabilities::default(),
         }
     }
 
@@ -315,6 +317,8 @@ mod tests {
             script_names: vec![],
             prompt_preamble: None,
             default_agent: "claude".to_string(),
+            authority: crate::config::WorkspaceAuthority::Autonomous,
+            capabilities: crate::config::WorkspaceCapabilities::default(),
         }
     }
 

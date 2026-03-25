@@ -3,7 +3,14 @@
 //! Skills teach the coordinator what CLI tools and APIs are available
 //! based on the workspace configuration. Each skill contributes a block
 //! of prompt text; `build_skills_prompt()` aggregates them all.
+//!
+//! ## Skill Kinds
+//!
+//! - **Tool** — operational knowledge for external tools/CLIs (auto-detected from watcher config)
+//! - **Context** — what this workspace/project is (auto-loaded from `.apiari/context.md`)
+//! - **Playbook** — how to handle a situation (indexed from `.apiari/skills/*.md`)
 
+mod apiari;
 pub mod config;
 mod email;
 mod github;
@@ -15,7 +22,19 @@ mod sentry;
 mod signals;
 mod swarm;
 
-use std::path::PathBuf;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
+
+use crate::config::{WorkspaceAuthority, WorkspaceCapabilities};
+
+/// Check if a playbook name is safe (no path traversal).
+/// Only allows alphanumeric, hyphens, and underscores.
+fn is_valid_playbook_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
 
 /// Context derived from workspace config, used to build skill prompts.
 pub struct SkillContext {
@@ -41,40 +60,94 @@ pub struct SkillContext {
     pub prompt_preamble: Option<String>,
     /// Default swarm agent: "claude", "codex", "gemini", or "auto".
     pub default_agent: String,
+    /// Workspace authority level.
+    pub authority: WorkspaceAuthority,
+    /// Resolved capabilities (already adjusted for authority level).
+    pub capabilities: WorkspaceCapabilities,
+}
+
+/// A playbook entry indexed from `.apiari/skills/*.md`.
+#[derive(Debug, Clone)]
+pub struct PlaybookEntry {
+    /// Filename stem (e.g. "ci-triage" from "ci-triage.md").
+    pub name: String,
+    /// First line of the file, stripped of leading `#` and whitespace.
+    pub description: String,
+}
+
+/// Load the context skill from `.apiari/context.md` if it exists.
+pub fn load_context_skill(workspace_root: &Path) -> Option<String> {
+    let path = workspace_root.join(".apiari/context.md");
+    std::fs::read_to_string(&path).ok()
+}
+
+/// Index playbooks from `.apiari/skills/*.md`.
+///
+/// Returns a list of (name, first-line description) entries.
+pub fn index_playbooks(workspace_root: &Path) -> Vec<PlaybookEntry> {
+    let dir = workspace_root.join(".apiari/skills");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut playbooks = Vec::new();
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        // Skip symlinks to avoid following links outside the skills directory
+        if std::fs::symlink_metadata(&path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        if path.extension().is_some_and(|ext| ext == "md") {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            if !is_valid_playbook_name(&name) {
+                continue;
+            }
+            // Read only the first line using BufReader instead of the full file
+            let description = std::fs::File::open(&path)
+                .ok()
+                .and_then(|file| {
+                    let mut reader = std::io::BufReader::new(file);
+                    let mut first_line = String::new();
+                    reader.read_line(&mut first_line).ok()?;
+                    Some(first_line.trim_start_matches('#').trim().to_string())
+                })
+                .unwrap_or_default();
+            playbooks.push(PlaybookEntry { name, description });
+        }
+    }
+    playbooks.sort_by(|a, b| a.name.cmp(&b.name));
+    playbooks
+}
+
+/// Load the full content of a named playbook.
+///
+/// Returns `None` if the name contains invalid characters (path traversal prevention)
+/// or if the file doesn't exist.
+pub fn load_playbook(workspace_root: &Path, name: &str) -> Option<String> {
+    if !is_valid_playbook_name(name) {
+        return None;
+    }
+    let path = workspace_root.join(format!(".apiari/skills/{name}.md"));
+    std::fs::read_to_string(&path).ok()
 }
 
 /// Build the combined skills prompt from workspace context.
 ///
-/// Each skill checks whether it's applicable (e.g. Sentry skill only
-/// included when `has_sentry` is true) and contributes instructions.
+/// Prompt is assembled in this order:
+/// 1. Workspace info + repos
+/// 2. Tool skills (auto from watcher config)
+/// 3. Context skill (from `.apiari/context.md`)
+/// 4. Playbook index (names + descriptions from `.apiari/skills/*.md`)
+/// 5. Authority level statement
 pub fn build_skills_prompt(ctx: &SkillContext) -> String {
-    // Always-on skills
-    let mut sections = vec![
-        config::build_prompt(ctx),
-        signals::build_prompt(ctx),
-        memory::build_prompt(ctx),
-        scripts::build_prompt(ctx),
-    ];
-
-    // Conditional skills
-    if let Some(s) = github::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = sentry::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = swarm::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = linear::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = email::build_prompt(ctx) {
-        sections.push(s);
-    }
-    if let Some(s) = notion::build_prompt(ctx) {
-        sections.push(s);
-    }
     let mut prompt = format!(
         "## Workspace\n\
          Name: {}\n\
@@ -99,9 +172,86 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
         );
     }
 
-    prompt.push_str("\n# Skills\nYou have the following tools and capabilities:\n\n");
+    // Tool skills (auto-detected from watcher config) + always-on apiari system skill
+    let mut tool_sections = vec![
+        apiari::build_prompt(ctx),
+        config::build_prompt(ctx),
+        signals::build_prompt(ctx),
+        memory::build_prompt(ctx),
+        scripts::build_prompt(ctx),
+    ];
 
-    prompt.push_str(&sections.join("\n"));
+    if let Some(s) = github::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = sentry::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = swarm::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = linear::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = email::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+    if let Some(s) = notion::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
+
+    prompt.push_str("\n# Skills\nYou have the following tools and capabilities:\n\n");
+    prompt.push_str(&tool_sections.join("\n"));
+
+    // Context skill (from .apiari/context.md)
+    if let Some(context) = load_context_skill(&ctx.workspace_root) {
+        prompt.push_str("\n## Project Context\n");
+        prompt.push_str(&context);
+        if !context.ends_with('\n') {
+            prompt.push('\n');
+        }
+    }
+
+    // Playbook index
+    let playbooks = index_playbooks(&ctx.workspace_root);
+    if !playbooks.is_empty() {
+        prompt.push_str("\n## Available Playbooks\n");
+        prompt.push_str(
+            "The following playbooks are available and will be loaded when relevant signal hooks fire:\n",
+        );
+        for pb in &playbooks {
+            if pb.description.is_empty() {
+                prompt.push_str(&format!("- {}\n", pb.name));
+            } else {
+                prompt.push_str(&format!("- {} — {}\n", pb.name, pb.description));
+            }
+        }
+    }
+
+    // Authority level statement
+    match ctx.authority {
+        WorkspaceAuthority::Observe => {
+            prompt.push_str(
+                "\n## Authority Level: Observe\n\
+                 You are in observe mode. You have read-only access to the workspace.\n\
+                 You CANNOT execute Bash commands, dispatch swarm workers, or make any changes.\n\
+                 Your tools are limited to: Read, Glob, Grep, WebSearch, WebFetch.\n",
+            );
+        }
+        WorkspaceAuthority::Autonomous => {
+            prompt.push_str(
+                "\n## Authority Level: Autonomous\n\
+                 You have full operational access to this workspace.\n",
+            );
+            if !ctx.capabilities.merge_prs.is_allowed(None) {
+                prompt.push_str(
+                    "Note: PR merging is disabled. Do NOT merge PRs — this capability must be \
+                     explicitly enabled in the workspace config (`[workspace.capabilities] merge_prs = true`).\n",
+                );
+            }
+        }
+    }
+
     prompt
 }
 
@@ -120,6 +270,22 @@ pub fn default_coordinator_tools() -> Vec<String> {
 /// Even if the model tries to use these, Claude CLI will refuse.
 pub fn default_coordinator_disallowed_tools() -> Vec<String> {
     ["Write", "Edit", "NotebookEdit", "Task"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Tools for observe mode — read-only only. No Bash.
+pub fn observe_coordinator_tools() -> Vec<String> {
+    ["Read", "Glob", "Grep", "WebSearch", "WebFetch"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Disallowed tools for observe mode — everything mutating.
+pub fn observe_coordinator_disallowed_tools() -> Vec<String> {
+    ["Write", "Edit", "NotebookEdit", "Task", "Bash"]
         .iter()
         .map(|s| s.to_string())
         .collect()
@@ -151,6 +317,8 @@ mod tests {
             has_telegram: false,
             prompt_preamble: None,
             default_agent: "claude".to_string(),
+            authority: WorkspaceAuthority::Autonomous,
+            capabilities: WorkspaceCapabilities::default(),
         }
     }
 
@@ -159,6 +327,7 @@ mod tests {
         let prompt = build_skills_prompt(&test_ctx());
         assert!(prompt.contains("## Workspace"));
         assert!(prompt.contains("myproject"));
+        assert!(prompt.contains("## Apiari System"));
         assert!(prompt.contains("## Current Workspace Config"));
         assert!(prompt.contains("## Integration Setup Guides"));
         assert!(prompt.contains("## Signal Store"));
@@ -190,6 +359,22 @@ mod tests {
         ctx.repos.clear();
         let prompt = build_skills_prompt(&ctx);
         assert!(!prompt.contains("## GitHub"));
+    }
+
+    #[test]
+    fn test_apiari_skill_always_present() {
+        // Even with a minimal context (no watchers), the apiari system skill is included
+        let mut ctx = test_ctx();
+        ctx.has_sentry = false;
+        ctx.has_swarm = false;
+        ctx.repos.clear();
+        let prompt = build_skills_prompt(&ctx);
+        assert!(prompt.contains("## Apiari System"));
+        assert!(prompt.contains("authority"));
+        assert!(prompt.contains(".apiari/context.md"));
+        assert!(prompt.contains(".apiari/skills/"));
+        assert!(prompt.contains("skills = ["));
+        assert!(prompt.contains("apiari init"));
     }
 
     #[test]
@@ -297,5 +482,110 @@ mod tests {
         assert!(tools.contains(&"NotebookEdit".to_string()));
         assert!(tools.contains(&"Task".to_string()));
         assert!(!tools.contains(&"Bash".to_string()));
+    }
+
+    #[test]
+    fn test_load_context_skill_returns_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let apiari_dir = dir.path().join(".apiari");
+        std::fs::create_dir_all(&apiari_dir).unwrap();
+        std::fs::write(
+            apiari_dir.join("context.md"),
+            "# My Project\nA cool project.",
+        )
+        .unwrap();
+        let content = load_context_skill(dir.path());
+        assert!(content.is_some());
+        assert!(content.unwrap().contains("My Project"));
+    }
+
+    #[test]
+    fn test_load_context_skill_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_context_skill(dir.path()).is_none());
+    }
+
+    #[test]
+    fn test_index_playbooks_reads_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".apiari/skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("ci-triage.md"), "# CI Triage\nStep 1...").unwrap();
+        std::fs::write(skills_dir.join("deploy.md"), "Deploy checklist\nStep 1...").unwrap();
+
+        let playbooks = index_playbooks(dir.path());
+        assert_eq!(playbooks.len(), 2);
+        assert_eq!(playbooks[0].name, "ci-triage");
+        assert_eq!(playbooks[0].description, "CI Triage");
+        assert_eq!(playbooks[1].name, "deploy");
+        assert_eq!(playbooks[1].description, "Deploy checklist");
+    }
+
+    #[test]
+    fn test_index_playbooks_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let playbooks = index_playbooks(dir.path());
+        assert!(playbooks.is_empty());
+    }
+
+    #[test]
+    fn test_index_playbooks_skips_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".apiari/skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("real.md"), "# Real playbook").unwrap();
+        // Create a symlink — should be skipped
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(skills_dir.join("real.md"), skills_dir.join("linked.md"))
+                .unwrap();
+        }
+        let playbooks = index_playbooks(dir.path());
+        // Only the real file should be indexed
+        assert_eq!(playbooks.len(), 1);
+        assert_eq!(playbooks[0].name, "real");
+    }
+
+    #[test]
+    fn test_load_playbook_returns_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".apiari/skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+        std::fs::write(skills_dir.join("ci-triage.md"), "# CI Triage\nDo stuff.").unwrap();
+
+        let content = load_playbook(dir.path(), "ci-triage");
+        assert!(content.is_some());
+        assert!(content.unwrap().contains("CI Triage"));
+    }
+
+    #[test]
+    fn test_load_playbook_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_playbook(dir.path(), "nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_load_playbook_rejects_path_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let apiari_dir = dir.path().join(".apiari");
+        std::fs::create_dir_all(&apiari_dir).unwrap();
+        std::fs::write(apiari_dir.join("context.md"), "secret").unwrap();
+
+        // Attempting to traverse up should be rejected
+        assert!(load_playbook(dir.path(), "../context").is_none());
+        assert!(load_playbook(dir.path(), "foo/bar").is_none());
+        assert!(load_playbook(dir.path(), "").is_none());
+    }
+
+    #[test]
+    fn test_is_valid_playbook_name() {
+        assert!(is_valid_playbook_name("ci-triage"));
+        assert!(is_valid_playbook_name("deploy_prod"));
+        assert!(is_valid_playbook_name("step1"));
+        assert!(!is_valid_playbook_name("../context"));
+        assert!(!is_valid_playbook_name("foo/bar"));
+        assert!(!is_valid_playbook_name(""));
+        assert!(!is_valid_playbook_name("has spaces"));
+        assert!(!is_valid_playbook_name("has.dot"));
     }
 }

@@ -39,6 +39,88 @@ pub fn socket_path() -> PathBuf {
     config_dir().join("daemon.sock")
 }
 
+/// Workspace authority level — controls what the coordinator is allowed to do.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorkspaceAuthority {
+    /// Read-only tools only (Read, Glob, Grep, WebSearch, WebFetch). No Bash, no swarm dispatch.
+    Observe,
+    /// Full toolset (current behavior). This is the default.
+    #[default]
+    Autonomous,
+}
+
+/// Workspace capabilities — fine-grained permission controls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceCapabilities {
+    /// Whether the coordinator can dispatch swarm workers.
+    /// Default: true in autonomous, false in observe.
+    #[serde(default = "default_true")]
+    pub dispatch_workers: bool,
+
+    /// Whether the coordinator can merge PRs.
+    /// Default: false — must explicitly opt in.
+    /// Can be `true` (all branches) or a list of branch names.
+    #[serde(default)]
+    pub merge_prs: MergePrsCapability,
+}
+
+impl Default for WorkspaceCapabilities {
+    fn default() -> Self {
+        Self {
+            dispatch_workers: true,
+            merge_prs: MergePrsCapability::default(),
+        }
+    }
+}
+
+impl WorkspaceCapabilities {
+    /// Resolve capabilities for a given authority level.
+    /// In observe mode, dispatch_workers is always false.
+    pub fn resolved(&self, authority: WorkspaceAuthority) -> Self {
+        match authority {
+            WorkspaceAuthority::Observe => Self {
+                dispatch_workers: false,
+                merge_prs: MergePrsCapability::Bool(false),
+            },
+            WorkspaceAuthority::Autonomous => self.clone(),
+        }
+    }
+}
+
+/// Whether and how merge_prs is enabled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum MergePrsCapability {
+    /// Simple boolean: true = all branches, false = disabled.
+    Bool(bool),
+    /// Scoped to specific target branches.
+    Branches(Vec<String>),
+}
+
+impl Default for MergePrsCapability {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+
+impl MergePrsCapability {
+    /// Check if merging is allowed, optionally for a specific target branch.
+    pub fn is_allowed(&self, target_branch: Option<&str>) -> bool {
+        match self {
+            Self::Bool(b) => *b,
+            Self::Branches(branches) => {
+                if let Some(branch) = target_branch {
+                    branches.iter().any(|b| b == branch)
+                } else {
+                    // No specific branch requested — allowed if any branches are configured
+                    !branches.is_empty()
+                }
+            }
+        }
+    }
+}
+
 /// A fully self-contained workspace configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
@@ -48,6 +130,14 @@ pub struct WorkspaceConfig {
     /// Repository slugs (e.g. ["ApiariTools/swarm", "ApiariTools/apiari"]).
     #[serde(default)]
     pub repos: Vec<String>,
+
+    /// Workspace authority level (observe or autonomous). Default: autonomous.
+    #[serde(default)]
+    pub authority: WorkspaceAuthority,
+
+    /// Fine-grained capability controls.
+    #[serde(default)]
+    pub capabilities: WorkspaceCapabilities,
 
     /// Telegram configuration.
     #[serde(default)]
@@ -223,6 +313,10 @@ pub struct SignalHookConfig {
     /// Max seconds to wait in queue before dropping. Default: 120.
     #[serde(default = "default_hook_ttl")]
     pub ttl_secs: u64,
+    /// Playbook skills to load for this hook's coordinator session.
+    /// Names reference files in `.apiari/skills/{name}.md`.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 fn default_hook_ttl() -> u64 {
@@ -236,18 +330,21 @@ fn default_signal_hooks() -> Vec<SignalHookConfig> {
             prompt: "Swarm activity: {events}".into(),
             action: Some("Assess the situation. If a worker opened a PR, check if Copilot has reviewed it and if so forward any comments to the worker. If a worker is stuck or failed, investigate and either send a fix or dispatch a new worker.".into()),
             ttl_secs: 300,
+            skills: vec![],
         },
         SignalHookConfig {
             source: "github_bot_review".into(),
             prompt: "Bot review received: {events}".into(),
             action: Some("Find the swarm worker whose branch matches this PR and forward the review comments directly to it so it can address them.".into()),
             ttl_secs: 300,
+            skills: vec![],
         },
         SignalHookConfig {
             source: "github".into(),
             prompt: "CI failed: {events}".into(),
             action: Some("Find the relevant swarm worker for this PR. If a worker exists, send it the CI error details so it can fix them. If no worker exists, dispatch a new one to fix the failure.".into()),
             ttl_secs: 300,
+            skills: vec![],
         },
     ]
 }
@@ -647,6 +744,7 @@ pub fn build_skill_context(
         .iter()
         .map(|s| s.name.clone())
         .collect();
+    let resolved_caps = config.capabilities.resolved(config.authority);
     crate::buzz::coordinator::skills::SkillContext {
         workspace_name: workspace_name.to_string(),
         workspace_root: config.root.clone(),
@@ -667,6 +765,8 @@ pub fn build_skill_context(
         has_telegram: config.telegram.is_some(),
         prompt_preamble: config.coordinator.prompt.clone(),
         default_agent: config.swarm.default_agent.clone(),
+        authority: config.authority,
+        capabilities: resolved_caps,
     }
 }
 
@@ -1075,6 +1175,8 @@ max_session_turns = 0
         let config = WorkspaceConfig {
             root: "/tmp/nonexistent".into(),
             repos: vec!["Org/Repo".to_string()],
+            authority: WorkspaceAuthority::default(),
+            capabilities: WorkspaceCapabilities::default(),
             telegram: None,
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
@@ -1098,6 +1200,8 @@ max_session_turns = 0
         let config = WorkspaceConfig {
             root: "/tmp/nonexistent-dir-12345".into(),
             repos: vec![],
+            authority: WorkspaceAuthority::default(),
+            capabilities: WorkspaceCapabilities::default(),
             telegram: None,
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
@@ -1120,6 +1224,8 @@ max_session_turns = 0
         let ws = WorkspaceConfig {
             root: "/tmp".into(),
             repos: vec![],
+            authority: WorkspaceAuthority::default(),
+            capabilities: WorkspaceCapabilities::default(),
             telegram: Some(TelegramConfig {
                 bot_token: "tok".into(),
                 chat_id: 123,
@@ -1370,6 +1476,8 @@ max_session_turns = 0
         WorkspaceConfig {
             root: "/nonexistent".into(),
             repos: ws_repos,
+            authority: WorkspaceAuthority::default(),
+            capabilities: WorkspaceCapabilities::default(),
             telegram: None,
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig {

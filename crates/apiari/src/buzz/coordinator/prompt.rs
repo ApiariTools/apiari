@@ -45,12 +45,16 @@ pub fn default_preamble(name: &str) -> String {
 }
 
 /// Build the system prompt with signal and memory context.
+///
+/// `hook_playbooks` contains full playbook content triggered by signal hooks
+/// for this specific session.
 pub fn build_system_prompt(
     signals: &[SignalRecord],
     memory: &[MemoryEntry],
     extra_context: Option<&str>,
     name: Option<&str>,
     prompt_preamble: Option<&str>,
+    hook_playbooks: Option<&str>,
 ) -> String {
     let name = name.unwrap_or("Bee");
     let mut prompt = String::new();
@@ -166,11 +170,21 @@ pub fn build_system_prompt(
         prompt.push('\n');
     }
 
-    // Extra context
+    // Extra context (skills prompt — includes tool skills, context skill, playbook index, authority)
     if let Some(ctx) = extra_context {
         prompt.push_str("## Additional Context\n");
         prompt.push_str(ctx);
         prompt.push('\n');
+    }
+
+    // Hook-triggered playbook content (injected per-session when signal hooks fire)
+    if let Some(playbooks) = hook_playbooks {
+        prompt.push_str("\n## Active Playbooks\n");
+        prompt.push_str("The following playbook instructions were activated for this session:\n\n");
+        prompt.push_str(playbooks);
+        if !playbooks.ends_with('\n') {
+            prompt.push('\n');
+        }
     }
 
     prompt
@@ -232,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_empty() {
-        let prompt = build_system_prompt(&[], &[], None, None, None);
+        let prompt = build_system_prompt(&[], &[], None, None, None, None);
         assert!(prompt.contains("No open signals"));
         assert!(prompt.contains("Bee"));
     }
@@ -243,7 +257,7 @@ mod tests {
             make_signal("sentry", "Server down", Severity::Critical),
             make_signal("github", "PR #42 failed CI", Severity::Warning),
         ];
-        let prompt = build_system_prompt(&signals, &[], None, None, None);
+        let prompt = build_system_prompt(&signals, &[], None, None, None, None);
         assert!(prompt.contains("Server down"));
         assert!(prompt.contains("PR #42 failed CI"));
         assert!(prompt.contains("[critical]"));
@@ -260,7 +274,7 @@ mod tests {
             ),
             make_memory(MemoryCategory::Decision, "Switched to WAL mode for SQLite"),
         ];
-        let prompt = build_system_prompt(&[], &memory, None, None, None);
+        let prompt = build_system_prompt(&[], &memory, None, None, None, None);
         assert!(prompt.contains("Preferences:"));
         assert!(prompt.contains("User prefers concise responses"));
         assert!(prompt.contains("Observations:"));
@@ -269,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_build_system_prompt_with_extra_context() {
-        let prompt = build_system_prompt(&[], &[], Some("Running on macOS"), None, None);
+        let prompt = build_system_prompt(&[], &[], Some("Running on macOS"), None, None, None);
         assert!(prompt.contains("Additional Context"));
         assert!(prompt.contains("Running on macOS"));
     }
@@ -315,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_custom_preamble_replaces_default() {
-        let prompt = build_system_prompt(&[], &[], None, None, Some("Custom identity."));
+        let prompt = build_system_prompt(&[], &[], None, None, Some("Custom identity."), None);
         // Custom preamble replaces default
         assert!(prompt.contains("Custom identity."));
         assert!(!prompt.contains("ops coordinator"));
@@ -330,6 +344,7 @@ mod tests {
             &[],
             &[],
             Some("## Swarm Workers\nUse swarm to dispatch."),
+            None,
             None,
             None,
         );
@@ -377,7 +392,7 @@ mod tests {
         };
         let other = make_signal("sentry", "Server error spike", Severity::Warning);
 
-        let prompt = build_system_prompt(&[ci_pass, ci_fail, other], &[], None, None, None);
+        let prompt = build_system_prompt(&[ci_pass, ci_fail, other], &[], None, None, None, None);
 
         // CI signals appear in dedicated section with titles as-is (no redundant prefix)
         assert!(prompt.contains("## Recent CI Activity"));
@@ -392,10 +407,25 @@ mod tests {
     #[test]
     fn test_no_ci_section_when_no_ci_signals() {
         let signals = vec![make_signal("sentry", "Bug", Severity::Error)];
-        let prompt = build_system_prompt(&signals, &[], None, None, None);
+        let prompt = build_system_prompt(&signals, &[], None, None, None, None);
         assert!(!prompt.contains("## Recent CI Activity"));
         assert!(prompt.contains("## Current Signals"));
         assert!(prompt.contains("Bug"));
+    }
+
+    #[test]
+    fn test_hook_playbooks_included_when_present() {
+        let playbook_content = "### Playbook: ci-triage\n\nStep 1: Check logs.\nStep 2: Fix it.";
+        let prompt = build_system_prompt(&[], &[], None, None, None, Some(playbook_content));
+        assert!(prompt.contains("## Active Playbooks"));
+        assert!(prompt.contains("ci-triage"));
+        assert!(prompt.contains("Step 1: Check logs."));
+    }
+
+    #[test]
+    fn test_hook_playbooks_absent_when_none() {
+        let prompt = build_system_prompt(&[], &[], None, None, None, None);
+        assert!(!prompt.contains("## Active Playbooks"));
     }
 
     #[test]
@@ -405,7 +435,7 @@ mod tests {
             body: Some(long_body),
             ..make_signal("sentry", "Bug", Severity::Error)
         };
-        let prompt = build_system_prompt(&[signal], &[], None, None, None);
+        let prompt = build_system_prompt(&[signal], &[], None, None, None, None);
         assert!(prompt.contains("..."));
     }
 }
