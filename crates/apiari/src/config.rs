@@ -261,6 +261,9 @@ pub struct TelegramConfig {
 pub struct CoordinatorConfig {
     #[serde(default = "default_coordinator_name")]
     pub name: String,
+    /// LLM provider: "claude", "codex", or "gemini".
+    #[serde(default = "default_provider")]
+    pub provider: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_max_turns")]
@@ -282,6 +285,7 @@ impl Default for CoordinatorConfig {
     fn default() -> Self {
         Self {
             name: default_coordinator_name(),
+            provider: default_provider(),
             model: default_model(),
             max_turns: default_max_turns(),
             prompt: None,
@@ -1047,6 +1051,10 @@ fn default_max_session_turns() -> u32 {
     50
 }
 
+fn default_provider() -> String {
+    "claude".to_string()
+}
+
 fn default_watcher_interval() -> u64 {
     120
 }
@@ -1706,5 +1714,37 @@ signal_hooks = []
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert!(config.coordinator.signal_hooks.is_empty());
+    }
+
+    #[test]
+    fn test_coordinator_config_provider_default() {
+        let toml_str = r#"root = "/tmp/test""#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.provider, "claude");
+    }
+
+    #[test]
+    fn test_coordinator_config_provider_codex() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+provider = "codex"
+model = "o4-mini"
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.provider, "codex");
+        assert_eq!(config.coordinator.model, "o4-mini");
+    }
+
+    #[test]
+    fn test_coordinator_config_provider_gemini() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+provider = "gemini"
+model = "gemini-2.0-flash"
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.coordinator.provider, "gemini");
     }
 }

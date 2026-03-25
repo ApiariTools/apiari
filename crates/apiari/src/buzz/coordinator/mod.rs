@@ -1,8 +1,8 @@
-//! Buzz coordinator — Claude SDK wrapper with signal awareness.
+//! Buzz coordinator — multi-provider LLM wrapper with signal awareness.
 //!
-//! The coordinator maintains a Claude session with a system prompt that
-//! includes open signals and accumulated memory. It handles user messages
-//! and can proactively notify about signal changes.
+//! The coordinator maintains an LLM session (Claude, Codex, or Gemini) with
+//! a system prompt that includes open signals and accumulated memory. It
+//! handles user messages and can proactively notify about signal changes.
 
 pub mod audit;
 pub mod devmode;
@@ -14,6 +14,7 @@ pub mod swarm_client;
 use std::path::PathBuf;
 
 use color_eyre::eyre::Result;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use apiari_claude_sdk::types::ContentBlock;
@@ -21,6 +22,15 @@ use apiari_claude_sdk::{ClaudeClient, Event, SessionOptions};
 
 use crate::buzz::conversation::SessionToken;
 use crate::buzz::signal::store::SignalStore;
+
+/// Unified token usage stats across all providers.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct UsageStats {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_cost_usd: Option<f64>,
+}
 
 /// Structured events emitted by the coordinator during a turn.
 #[derive(Debug, Clone)]
@@ -34,6 +44,18 @@ pub enum CoordinatorEvent {
     },
     /// Post-turn: workspace files were newly modified.
     FilesModified { files: Vec<(String, String)> },
+    /// Token usage stats for the completed turn.
+    Usage(UsageStats),
+}
+
+/// Derive the context window size from a model name.
+pub fn max_context_tokens(model: &str) -> u64 {
+    let m = model.to_lowercase();
+    if m.contains("gemini") {
+        1_000_000
+    } else {
+        200_000
+    }
 }
 
 /// Lets callers inject workspace safety checks without buzz depending on git.
@@ -48,7 +70,17 @@ pub trait SafetyHooks: Send {
     fn post_turn(&self, snapshot: Box<dyn std::any::Any + Send>) -> Vec<(String, String)>;
 }
 
-/// The buzz coordinator — manages Claude sessions with signal context.
+/// Pre-built dispatch data, produced by `prepare_dispatch` (sync) and consumed
+/// by `dispatch_message` (async). Separating these avoids holding `&SignalStore`
+/// (which is !Send) across await points.
+pub enum DispatchBundle {
+    /// Claude SDK session options.
+    Claude(Box<SessionOptions>),
+    /// For Codex/Gemini: optional system prompt (first message only).
+    AltProvider { system_prompt: Option<String> },
+}
+
+/// The buzz coordinator — manages LLM sessions with signal context.
 pub struct Coordinator {
     name: String,
     model: String,
@@ -142,6 +174,11 @@ impl Coordinator {
         &self.provider
     }
 
+    /// Set the LLM provider ("claude", "codex", or "gemini").
+    pub fn set_provider(&mut self, provider: String) {
+        self.provider = provider;
+    }
+
     /// Restore a session from a persisted token.
     pub fn restore_session(&mut self, token: SessionToken) {
         info!(
@@ -178,10 +215,15 @@ impl Coordinator {
         self.last_num_turns
     }
 
-    /// Check if the Claude CLI is available.
-    pub async fn is_available() -> bool {
+    /// Check if the CLI for the configured provider is available.
+    pub async fn is_available(provider: &str) -> bool {
+        let bin = match provider {
+            "codex" => "codex",
+            "gemini" => "gemini",
+            _ => "claude",
+        };
         tokio::process::Command::new("which")
-            .arg("claude")
+            .arg(bin)
             .output()
             .await
             .is_ok_and(|o| o.status.success())
@@ -296,6 +338,27 @@ impl Coordinator {
                     provider: self.provider.clone(),
                     token: result.session_id.clone(),
                 });
+
+                // Extract usage stats from the result.
+                let mut stats = UsageStats {
+                    total_cost_usd: result.total_cost_usd,
+                    ..Default::default()
+                };
+                if let Some(ref usage_val) = result.usage {
+                    stats.input_tokens = usage_val
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    stats.output_tokens = usage_val
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    stats.cache_read_tokens = usage_val
+                        .get("cache_read_input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                }
+                events.push(CoordinatorEvent::Usage(stats));
             }
             _ => {}
         }
@@ -370,6 +433,286 @@ impl Coordinator {
         }
 
         // Post-turn: check for file modifications via safety hooks
+        if let Some(snapshot) = snapshot
+            && let Some(hooks) = &self.safety_hooks
+        {
+            let modified = hooks.post_turn(snapshot);
+            if !modified.is_empty() {
+                on_event(CoordinatorEvent::FilesModified { files: modified });
+            }
+        }
+
+        Ok(response)
+    }
+
+    /// Build a provider-agnostic dispatch bundle synchronously.
+    ///
+    /// Call this while you still have access to `&SignalStore` (which is !Send),
+    /// then pass the result to `dispatch_message` across the await boundary.
+    pub fn prepare_dispatch(&self, store: &SignalStore) -> Result<DispatchBundle> {
+        match self.provider.as_str() {
+            "codex" | "gemini" => {
+                // Build system prompt for first message (Codex/Gemini don't have
+                // a separate system prompt mechanism).
+                let system_prompt = if self.session_id.is_none() {
+                    let signals = store.get_open_signals().unwrap_or_default();
+                    Some(prompt::build_system_prompt(
+                        &signals,
+                        &[],
+                        self.extra_context.as_deref(),
+                        Some(&self.name),
+                        self.prompt_preamble.as_deref(),
+                        None,
+                    ))
+                } else {
+                    None
+                };
+                Ok(DispatchBundle::AltProvider { system_prompt })
+            }
+            _ => {
+                let opts = self.build_options(store)?;
+                Ok(DispatchBundle::Claude(Box::new(opts)))
+            }
+        }
+    }
+
+    /// Like `prepare_dispatch` but supports hook-triggered playbooks.
+    pub fn prepare_dispatch_with_playbooks(
+        &self,
+        store: &SignalStore,
+        hook_playbooks: Option<&str>,
+    ) -> Result<DispatchBundle> {
+        match self.provider.as_str() {
+            "codex" | "gemini" => {
+                // Build system prompt with playbook content for first message.
+                let signals = store.get_open_signals().unwrap_or_default();
+                let system_prompt = Some(prompt::build_system_prompt(
+                    &signals,
+                    &[],
+                    self.extra_context.as_deref(),
+                    Some(&self.name),
+                    self.prompt_preamble.as_deref(),
+                    hook_playbooks,
+                ));
+                Ok(DispatchBundle::AltProvider { system_prompt })
+            }
+            _ => {
+                let opts = self.build_options_with_playbooks(store, hook_playbooks)?;
+                Ok(DispatchBundle::Claude(Box::new(opts)))
+            }
+        }
+    }
+
+    /// Provider-agnostic message dispatch.
+    ///
+    /// Routes to Claude, Codex, or Gemini based on `self.provider`.
+    /// Call `prepare_dispatch` first to get the bundle.
+    pub async fn dispatch_message<F>(
+        &mut self,
+        message: &str,
+        bundle: DispatchBundle,
+        on_event: F,
+    ) -> Result<String>
+    where
+        F: FnMut(CoordinatorEvent),
+    {
+        match bundle {
+            DispatchBundle::Claude(opts) => {
+                self.handle_message_with_options(message, *opts, on_event)
+                    .await
+            }
+            DispatchBundle::AltProvider { system_prompt } => {
+                let prompt = if let Some(sys) = system_prompt {
+                    format!("{sys}\n\n---\n\n{message}")
+                } else {
+                    message.to_string()
+                };
+                match self.provider.as_str() {
+                    "codex" => self.run_codex(&prompt, on_event).await,
+                    "gemini" => self.run_gemini(&prompt, on_event).await,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    /// Run a turn against the Codex CLI.
+    async fn run_codex<F>(&mut self, prompt: &str, mut on_event: F) -> Result<String>
+    where
+        F: FnMut(CoordinatorEvent),
+    {
+        use apiari_codex_sdk::{CodexClient, ExecOptions, ResumeOptions};
+
+        let client = CodexClient::new();
+
+        let snapshot = self
+            .safety_hooks
+            .as_ref()
+            .and_then(|hooks| hooks.pre_turn());
+
+        let mut execution = if let Some(ref sid) = self.session_id {
+            client
+                .exec_resume(
+                    prompt,
+                    ResumeOptions {
+                        session_id: Some(sid.clone()),
+                        model: Some(self.model.clone()),
+                        full_auto: true,
+                        working_dir: self.working_dir.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await?
+        } else {
+            client
+                .exec(
+                    prompt,
+                    ExecOptions {
+                        model: Some(self.model.clone()),
+                        full_auto: true,
+                        working_dir: self.working_dir.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await?
+        };
+
+        let mut response = String::new();
+
+        while let Ok(Some(event)) = execution.next_event().await {
+            match &event {
+                apiari_codex_sdk::Event::ThreadStarted { thread_id } => {
+                    self.session_id = Some(thread_id.clone());
+                    self.session_token = Some(SessionToken {
+                        provider: "codex".to_string(),
+                        token: thread_id.clone(),
+                    });
+                }
+                apiari_codex_sdk::Event::ItemCompleted { item } => {
+                    if let Some(text) = item.text()
+                        && !text.is_empty()
+                    {
+                        response = text.to_string();
+                        on_event(CoordinatorEvent::Token(text.to_string()));
+                    }
+                }
+                apiari_codex_sdk::Event::TurnCompleted { usage: Some(u) } => {
+                    on_event(CoordinatorEvent::Usage(UsageStats {
+                        input_tokens: u.input_tokens,
+                        output_tokens: u.output_tokens,
+                        cache_read_tokens: u.cached_input_tokens,
+                        total_cost_usd: None,
+                    }));
+                }
+                apiari_codex_sdk::Event::TurnFailed { error, .. } => {
+                    let msg = error
+                        .as_ref()
+                        .and_then(|e| e.message.as_deref())
+                        .unwrap_or("codex turn failed");
+                    return Err(color_eyre::eyre::eyre!("{msg}"));
+                }
+                apiari_codex_sdk::Event::Error { message } => {
+                    let msg = message.as_deref().unwrap_or("codex error");
+                    return Err(color_eyre::eyre::eyre!("{msg}"));
+                }
+                _ => {}
+            }
+        }
+
+        // Post-turn safety hooks
+        if let Some(snapshot) = snapshot
+            && let Some(hooks) = &self.safety_hooks
+        {
+            let modified = hooks.post_turn(snapshot);
+            if !modified.is_empty() {
+                on_event(CoordinatorEvent::FilesModified { files: modified });
+            }
+        }
+
+        Ok(response)
+    }
+
+    /// Run a turn against the Gemini CLI.
+    async fn run_gemini<F>(&mut self, prompt: &str, mut on_event: F) -> Result<String>
+    where
+        F: FnMut(CoordinatorEvent),
+    {
+        use apiari_gemini_sdk::{GeminiClient, GeminiOptions};
+
+        let client = GeminiClient::new();
+
+        let snapshot = self
+            .safety_hooks
+            .as_ref()
+            .and_then(|hooks| hooks.pre_turn());
+
+        let mut execution = if let Some(ref sid) = self.session_id {
+            client
+                .exec_resume(
+                    prompt,
+                    apiari_gemini_sdk::SessionOptions {
+                        session_id: Some(sid.clone()),
+                        model: Some(self.model.clone()),
+                        working_dir: self.working_dir.clone(),
+                    },
+                )
+                .await?
+        } else {
+            client
+                .exec(
+                    prompt,
+                    GeminiOptions {
+                        model: Some(self.model.clone()),
+                        working_dir: self.working_dir.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await?
+        };
+
+        let mut response = String::new();
+
+        while let Ok(Some(event)) = execution.next_event().await {
+            match &event {
+                apiari_gemini_sdk::Event::ThreadStarted { thread_id } => {
+                    self.session_id = Some(thread_id.clone());
+                    self.session_token = Some(SessionToken {
+                        provider: "gemini".to_string(),
+                        token: thread_id.clone(),
+                    });
+                }
+                apiari_gemini_sdk::Event::ItemCompleted { item } => {
+                    if let Some(text) = item.text()
+                        && !text.is_empty()
+                    {
+                        response = text.to_string();
+                        on_event(CoordinatorEvent::Token(text.to_string()));
+                    }
+                }
+                apiari_gemini_sdk::Event::TurnCompleted { usage: Some(u) } => {
+                    on_event(CoordinatorEvent::Usage(UsageStats {
+                        input_tokens: u.input_tokens,
+                        output_tokens: u.output_tokens,
+                        cache_read_tokens: u.cached_input_tokens,
+                        total_cost_usd: None,
+                    }));
+                }
+                apiari_gemini_sdk::Event::TurnFailed { error, .. } => {
+                    let msg = error
+                        .as_ref()
+                        .and_then(|e| e.message.as_deref())
+                        .unwrap_or("gemini turn failed");
+                    return Err(color_eyre::eyre::eyre!("{msg}"));
+                }
+                apiari_gemini_sdk::Event::Error { message } => {
+                    let msg = message.as_deref().unwrap_or("gemini error");
+                    return Err(color_eyre::eyre::eyre!("{msg}"));
+                }
+                _ => {}
+            }
+        }
+
+        // Post-turn safety hooks
         if let Some(snapshot) = snapshot
             && let Some(hooks) = &self.safety_hooks
         {
@@ -468,7 +811,10 @@ mod tests {
         let result = coord.process_event(&event);
 
         assert!(result.is_ok());
-        assert!(result.unwrap().is_empty()); // Result events emit no CoordinatorEvents
+        let events = result.unwrap();
+        // Result events emit a Usage event
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], CoordinatorEvent::Usage(_)));
         assert!(coord.has_session());
         assert_eq!(coord.session_token().unwrap().token, "new-session-id");
     }
@@ -706,5 +1052,118 @@ mod tests {
         let result = coord.process_event(&event);
 
         assert!(result.unwrap().is_empty());
+    }
+
+    // -- Usage extraction --
+
+    #[test]
+    fn test_process_event_result_extracts_usage() {
+        let mut coord = make_coordinator();
+
+        let event = Event::Result(ResultMessage {
+            subtype: "success".to_string(),
+            duration_ms: 100,
+            duration_api_ms: 90,
+            is_error: false,
+            num_turns: 1,
+            session_id: "sess-1".to_string(),
+            total_cost_usd: Some(0.042),
+            usage: Some(serde_json::json!({
+                "input_tokens": 1500,
+                "output_tokens": 300,
+                "cache_read_input_tokens": 800
+            })),
+            result: None,
+            structured_output: None,
+        });
+        let events = coord.process_event(&event).unwrap();
+
+        assert_eq!(events.len(), 1);
+        if let CoordinatorEvent::Usage(stats) = &events[0] {
+            assert_eq!(stats.input_tokens, 1500);
+            assert_eq!(stats.output_tokens, 300);
+            assert_eq!(stats.cache_read_tokens, 800);
+            assert_eq!(stats.total_cost_usd, Some(0.042));
+        } else {
+            panic!("expected Usage event");
+        }
+    }
+
+    #[test]
+    fn test_process_event_error_result_skips_usage() {
+        let mut coord = make_coordinator();
+
+        let event = make_result_event("err", true, Some("broken"));
+        let result = coord.process_event(&event);
+
+        // Error results return Err, no Usage event
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_process_event_result_no_usage_field() {
+        let mut coord = make_coordinator();
+
+        // Result with no usage field → Usage event with zeros
+        let event = make_result_event("sess-2", false, Some("done"));
+        let events = coord.process_event(&event).unwrap();
+
+        assert_eq!(events.len(), 1);
+        if let CoordinatorEvent::Usage(stats) = &events[0] {
+            assert_eq!(stats.input_tokens, 0);
+            assert_eq!(stats.output_tokens, 0);
+            assert_eq!(stats.total_cost_usd, Some(0.01)); // from make_result_event
+        } else {
+            panic!("expected Usage event");
+        }
+    }
+
+    // -- max_context_tokens --
+
+    #[test]
+    fn test_max_context_tokens() {
+        assert_eq!(max_context_tokens("sonnet"), 200_000);
+        assert_eq!(max_context_tokens("opus"), 200_000);
+        assert_eq!(max_context_tokens("o4-mini"), 200_000);
+        assert_eq!(max_context_tokens("gemini-2.0-flash"), 1_000_000);
+        assert_eq!(max_context_tokens("unknown-model"), 200_000);
+    }
+
+    // -- set_provider --
+
+    #[test]
+    fn test_set_provider() {
+        let mut coord = make_coordinator();
+        assert_eq!(coord.provider(), "claude");
+
+        coord.set_provider("codex".to_string());
+        assert_eq!(coord.provider(), "codex");
+
+        coord.set_provider("gemini".to_string());
+        assert_eq!(coord.provider(), "gemini");
+    }
+
+    // -- UsageStats serde --
+
+    #[test]
+    fn test_usage_stats_serde_roundtrip() {
+        let stats = UsageStats {
+            input_tokens: 1500,
+            output_tokens: 300,
+            cache_read_tokens: 800,
+            total_cost_usd: Some(0.042),
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        let parsed: UsageStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(stats, parsed);
+    }
+
+    #[test]
+    fn test_usage_stats_default() {
+        let stats = UsageStats::default();
+        assert_eq!(stats.input_tokens, 0);
+        assert_eq!(stats.output_tokens, 0);
+        assert_eq!(stats.cache_read_tokens, 0);
+        assert_eq!(stats.total_cost_usd, None);
     }
 }

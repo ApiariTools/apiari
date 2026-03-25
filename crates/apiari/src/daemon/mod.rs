@@ -23,7 +23,7 @@ use crate::buzz::coordinator::skills::{
     SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
     default_coordinator_tools, observe_coordinator_disallowed_tools, observe_coordinator_tools,
 };
-use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
+use crate::buzz::coordinator::{Coordinator, CoordinatorEvent, DispatchBundle};
 use crate::buzz::daemon::config as buzz_daemon_config;
 use crate::buzz::pipeline::Pipeline;
 use crate::buzz::signal::Severity;
@@ -185,8 +185,8 @@ async fn run_coordinator_task(
                     });
                 }
 
-                let opts = match coordinator.build_options(&store) {
-                    Ok(opts) => opts,
+                let bundle = match coordinator.prepare_dispatch(&store) {
+                    Ok(b) => b,
                     Err(e) => {
                         error!("[{slot_name}] failed to build coordinator options: {e}");
                         typing_cancel.cancel();
@@ -198,7 +198,7 @@ async fn run_coordinator_task(
                 let mut alerts: Vec<String> = Vec::new();
 
                 let result = coordinator
-                    .handle_message_with_options(&text, opts, |event| match event {
+                    .dispatch_message(&text, bundle, |event| match event {
                         CoordinatorEvent::BashAudit {
                             command,
                             matched_pattern,
@@ -225,7 +225,7 @@ async fn run_coordinator_task(
                                     .join("\n")
                             ));
                         }
-                        CoordinatorEvent::Token(_) => {}
+                        CoordinatorEvent::Token(_) | CoordinatorEvent::Usage(_) => {}
                     })
                     .await;
 
@@ -340,8 +340,8 @@ async fn run_coordinator_task(
                 socket_server,
                 ws_name,
             } => {
-                let opts = match coordinator.build_options(&store) {
-                    Ok(opts) => opts,
+                let bundle = match coordinator.prepare_dispatch(&store) {
+                    Ok(b) => b,
                     Err(e) => {
                         let _ = responder.send(socket::DaemonResponse::Error {
                             workspace: ws_name.clone(),
@@ -352,14 +352,27 @@ async fn run_coordinator_task(
                 };
 
                 let name_for_cb = ws_name.clone();
+                let model_for_cb = coordinator.model().to_string();
                 let responder_for_cb = responder.clone();
 
                 let result = coordinator
-                    .handle_message_with_options(&text, opts, |event| match event {
+                    .dispatch_message(&text, bundle, |event| match event {
                         CoordinatorEvent::Token(t) => {
                             let _ = responder_for_cb.send(socket::DaemonResponse::Token {
                                 workspace: name_for_cb.clone(),
                                 text: t,
+                            });
+                        }
+                        CoordinatorEvent::Usage(stats) => {
+                            let _ = responder_for_cb.send(socket::DaemonResponse::Usage {
+                                workspace: name_for_cb.clone(),
+                                input_tokens: stats.input_tokens,
+                                output_tokens: stats.output_tokens,
+                                cache_read_tokens: stats.cache_read_tokens,
+                                total_cost_usd: stats.total_cost_usd,
+                                context_window: crate::buzz::coordinator::max_context_tokens(
+                                    &model_for_cb,
+                                ),
                             });
                         }
                         CoordinatorEvent::BashAudit {
@@ -506,10 +519,10 @@ async fn run_coordinator_task(
                 if coordinator.has_session() {
                     let summary_prompt = "Summarize the current session in 3-5 bullet points of key context: decisions made, tasks in flight, important state. Output ONLY the bullet points, nothing else.";
 
-                    let opts = coordinator.build_options(&store);
-                    if let Ok(opts) = opts {
+                    let bundle = coordinator.prepare_dispatch(&store);
+                    if let Ok(bundle) = bundle {
                         match coordinator
-                            .handle_message_with_options(summary_prompt, opts, |_| {})
+                            .dispatch_message(summary_prompt, bundle, |_| {})
                             .await
                         {
                             Ok(summary) => {
@@ -661,10 +674,10 @@ async fn run_coordinator_task(
                 let max_turns = 15;
                 coordinator.set_max_turns(max_turns);
 
-                let mut opts = match coordinator
-                    .build_options_with_playbooks(&store, playbook_content.as_deref())
+                let mut bundle = match coordinator
+                    .prepare_dispatch_with_playbooks(&store, playbook_content.as_deref())
                 {
-                    Ok(opts) => opts,
+                    Ok(b) => b,
                     Err(e) => {
                         warn!("[{slot_name}] failed to build coordinator options: {e}");
                         coordinator.set_max_turns(saved_turns);
@@ -672,22 +685,23 @@ async fn run_coordinator_task(
                     }
                 };
 
-                // Run follow-throughs in a fresh session so any per-session
-                // overrides stay isolated and don't poison the main session.
-                opts.resume = None;
+                // For Claude: run follow-throughs in a fresh session so any
+                // per-session overrides stay isolated.
+                if let DispatchBundle::Claude(ref mut opts) = bundle {
+                    opts.resume = None;
 
-                // In observe mode, strip Bash from follow-throughs to enforce
-                // read-only. Autonomous mode keeps Bash — the validate-bash
-                // hook already audits commands.
-                if authority == crate::config::WorkspaceAuthority::Observe {
-                    if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
-                        opts.disallowed_tools.push("Bash".to_string());
+                    // In observe mode, strip Bash to enforce read-only.
+                    // Autonomous mode keeps Bash — validate-bash hook audits.
+                    if authority == crate::config::WorkspaceAuthority::Observe {
+                        if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
+                            opts.disallowed_tools.push("Bash".to_string());
+                        }
+                        opts.allowed_tools.retain(|t| t != "Bash");
                     }
-                    opts.allowed_tools.retain(|t| t != "Bash");
                 }
 
                 // Save the user's session token so we can restore it after the
-                // follow-through (handle_message_with_options overwrites session_id
+                // follow-through (dispatch_message overwrites session_id
                 // as a side-effect).
                 let saved_session_token = coordinator.session_token().cloned();
 
@@ -696,15 +710,14 @@ async fn run_coordinator_task(
                     .map(|a| a.chars().take(80).collect::<String>())
                     .unwrap_or_default();
                 info!(
-                    "[follow-through] executing: source={source} signal_count={} action=\"{action_snippet}\" disallowed_tools={:?}",
+                    "[follow-through] executing: source={source} signal_count={} action=\"{action_snippet}\"",
                     signals.len(),
-                    opts.disallowed_tools
                 );
 
                 let name_for_cb = slot_name.clone();
                 let source_for_cb = source.clone();
                 match coordinator
-                    .handle_message_with_options(&notification, opts, |event| match event {
+                    .dispatch_message(&notification, bundle, |event| match event {
                         CoordinatorEvent::BashAudit {
                             command,
                             matched_pattern,
@@ -2089,8 +2102,11 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
         workspace_root: ws.config.root.clone(),
     }));
 
-    if !Coordinator::is_available().await {
-        eprintln!("claude CLI not found — coordinator requires it");
+    if !Coordinator::is_available(&ws.config.coordinator.provider).await {
+        eprintln!(
+            "{} CLI not found — coordinator requires it",
+            ws.config.coordinator.provider
+        );
         return Ok(());
     }
 
@@ -2155,7 +2171,7 @@ fn print_event_to_stderr(event: &CoordinatorEvent) {
                 list.join("\n")
             );
         }
-        CoordinatorEvent::Token(_) => {}
+        CoordinatorEvent::Token(_) | CoordinatorEvent::Usage(_) => {}
     }
 }
 
@@ -2307,7 +2323,14 @@ fn ensure_apiari_scaffold(workspace_root: &std::path::Path, ws_name: &str) {
 /// Build a fresh Coordinator for a workspace (used at startup and on respawn).
 fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
     ensure_apiari_scaffold(&config.root, ws_name);
+
+    let provider = &config.coordinator.provider;
+    if !matches!(provider.as_str(), "claude" | "codex" | "gemini") {
+        warn!("[{ws_name}] unknown coordinator provider \"{provider}\" — falling back to claude");
+    }
+
     let mut coordinator = Coordinator::new(&config.coordinator.model, config.coordinator.max_turns);
+    coordinator.set_provider(config.coordinator.provider.clone());
     coordinator.set_name(config.coordinator.name.clone());
     let skill_ctx = build_skill_context(ws_name, config);
     coordinator.set_extra_context(build_skills_prompt(&skill_ctx));

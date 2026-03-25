@@ -51,6 +51,16 @@ pub enum DaemonResponse {
         kind: String,
         text: String,
     },
+    /// Unicast: token usage stats for the completed turn.
+    Usage {
+        #[serde(default)]
+        workspace: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        total_cost_usd: Option<f64>,
+        context_window: u64,
+    },
 }
 
 /// A request from a connected client, tagged with a responder channel.
@@ -541,6 +551,37 @@ mod tests {
                 assert_eq!(text, "check PR status");
             }
             _ => panic!("expected Activity"),
+        }
+    }
+
+    #[test]
+    fn test_daemon_response_usage_serde() {
+        let resp = DaemonResponse::Usage {
+            workspace: "apiari".into(),
+            input_tokens: 1500,
+            output_tokens: 300,
+            cache_read_tokens: 800,
+            total_cost_usd: Some(0.042),
+            context_window: 200_000,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"type\":\"usage\""));
+        assert!(json.contains("\"input_tokens\":1500"));
+        let parsed: DaemonResponse = serde_json::from_str(&json).unwrap();
+        match parsed {
+            DaemonResponse::Usage {
+                workspace,
+                input_tokens,
+                output_tokens,
+                context_window,
+                ..
+            } => {
+                assert_eq!(workspace, "apiari");
+                assert_eq!(input_tokens, 1500);
+                assert_eq!(output_tokens, 300);
+                assert_eq!(context_window, 200_000);
+            }
+            _ => panic!("expected Usage"),
         }
     }
 }
