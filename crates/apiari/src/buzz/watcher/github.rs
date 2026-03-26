@@ -104,7 +104,7 @@ struct GraphqlCheckRun {
 struct GraphqlPr {
     number: u64,
     title: String,
-    author_login: String,
+    author_login: Option<String>,
     head_ref_name: String,
     head_sha: String,
     reviews: Vec<GraphqlReview>,
@@ -114,7 +114,7 @@ struct GraphqlPr {
 struct GraphqlMergedPr {
     number: u64,
     title: String,
-    author_login: String,
+    author_login: Option<String>,
     url: String,
     merged_at: String,
 }
@@ -186,8 +186,7 @@ fn parse_graphql_open_prs(nodes: &serde_json::Value) -> Vec<GraphqlPr> {
             let author_login = node
                 .pointer("/author/login")
                 .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .map(|s| s.to_string());
 
             Some(GraphqlPr {
                 number,
@@ -309,8 +308,7 @@ fn parse_graphql_merged_prs(nodes: &serde_json::Value) -> Vec<GraphqlMergedPr> {
                 author_login: node
                     .pointer("/author/login")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                    .map(|s| s.to_string()),
                 url: node.get("url")?.as_str()?.to_string(),
                 merged_at: node.get("mergedAt")?.as_str()?.to_string(),
             })
@@ -359,7 +357,7 @@ fn signal_matches_author_filter(
     signal: &SignalUpdate,
     filter: &str,
     my_username: Option<&str>,
-    pr_authors: &HashMap<u64, String>,
+    pr_authors: &HashMap<u64, Option<String>>,
 ) -> bool {
     let target_username = if let Some(rest) = filter.strip_prefix("author:") {
         let name = rest.trim();
@@ -386,21 +384,21 @@ fn signal_matches_author_filter(
 
     match pr_number {
         Some(num) => match pr_authors.get(&num) {
-            Some(author) => author.eq_ignore_ascii_case(target_username),
-            None => true, // PR not in GraphQL data, pass through
+            Some(Some(author)) => author.eq_ignore_ascii_case(target_username),
+            Some(None) => true, // Author unknown (ghost/deleted user), pass through
+            None => true,       // PR not in GraphQL data, pass through
         },
         None => true, // Not a PR-related signal, pass through
     }
 }
 
 /// Extract a PR number from known signal external_id key patterns.
+///
+/// Keys have the form `{prefix}{owner}/{repo}-{number}` or
+/// `{prefix}{owner}/{repo}-{number}-{suffix}`. Since repo names can contain
+/// dashes (e.g. `my-cool-repo`), we split from the right to find the numeric
+/// PR number segment.
 fn extract_pr_number_from_key(key: &str) -> Option<u64> {
-    // Patterns: "pr-push-OWNER/REPO-NUM-SHA", "ci-failure-OWNER/REPO-NUM-SHA",
-    // "ci-pass-OWNER/REPO-NUM-SHA", "bot-review-OWNER/REPO-NUM-REVIEWID",
-    // "merged-OWNER/REPO-NUM"
-    // The repo part contains a '/', so we can't just split on '-'.
-    // Strategy: find the repo (owner/name) portion by looking for '/' then
-    // parse everything after "repo-" as number segments.
     let prefixes = [
         "pr-push-",
         "ci-failure-",
@@ -410,22 +408,25 @@ fn extract_pr_number_from_key(key: &str) -> Option<u64> {
     ];
     let rest = prefixes.iter().find_map(|p| key.strip_prefix(p))?;
 
-    // rest = "owner/repo-NUM-..." or "owner/repo-NUM"
-    // Find the '/' in owner/repo, then find the next '-' after that for the repo-number boundary
-    let slash_pos = rest.find('/')?;
-    let after_slash = &rest[slash_pos + 1..];
-    let repo_end = after_slash.find('-')?;
-    let after_repo = &after_slash[repo_end + 1..];
+    // rest = "owner/repo-name-NUM-SUFFIX" or "owner/repo-name-NUM"
+    // Strategy: split on '-' from the right. For keys with a suffix (SHA,
+    // review ID), the number is the second-to-last segment. For "merged-"
+    // keys with no suffix, it's the last segment.
+    let parts: Vec<&str> = rest.split('-').collect();
 
-    // after_repo = "NUM-SHA" or "NUM-REVIEWID" or "NUM"
-    let num_str = if let Some(dash) = after_repo.find('-') {
-        &after_repo[..dash]
-    } else {
-        after_repo
-    };
-    num_str.parse().ok()
+    // Try second-to-last segment first (covers keys with a suffix),
+    // then fall back to last segment (covers "merged-owner/repo-NUM").
+    for &idx in &[parts.len().wrapping_sub(2), parts.len().wrapping_sub(1)] {
+        if idx < parts.len()
+            && let Ok(num) = parts[idx].parse::<u64>()
+        {
+            return Some(num);
+        }
+    }
+    None
 }
 
+/// Evaluate check suites and return (has_failure, has_success).
 fn evaluate_check_suites(check_suites: &[GraphqlCheckSuite]) -> (bool, bool) {
     let mut has_failure = false;
     let mut has_success = false;
@@ -1137,7 +1138,7 @@ impl GithubWatcher {
 
             // Apply per-event-type author filters
             if !self.config.filters.is_empty() {
-                let mut pr_authors: HashMap<u64, String> = HashMap::new();
+                let mut pr_authors: HashMap<u64, Option<String>> = HashMap::new();
                 for pr in &gql.open_prs {
                     pr_authors.insert(pr.number, pr.author_login.clone());
                 }
@@ -1956,6 +1957,19 @@ mod tests {
             Some(10)
         );
         assert_eq!(extract_pr_number_from_key("merged-org/repo-5"), Some(5));
+        // Repo names with dashes
+        assert_eq!(
+            extract_pr_number_from_key("pr-push-org/my-cool-repo-42-abc123"),
+            Some(42)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("ci-failure-org/my-repo-7-abc"),
+            Some(7)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("merged-org/dashed-name-5"),
+            Some(5)
+        );
         assert_eq!(extract_pr_number_from_key("release-org/repo-123"), None);
         assert_eq!(extract_pr_number_from_key("random-key"), None);
     }
@@ -1963,8 +1977,8 @@ mod tests {
     #[test]
     fn test_signal_matches_author_filter_me() {
         let mut pr_authors = HashMap::new();
-        pr_authors.insert(42, "josh".to_string());
-        pr_authors.insert(99, "other-user".to_string());
+        pr_authors.insert(42, Some("josh".to_string()));
+        pr_authors.insert(99, Some("other-user".to_string()));
 
         let signal_42 = SignalUpdate::new(
             "github_pr_push",
@@ -1997,7 +2011,7 @@ mod tests {
     #[test]
     fn test_signal_matches_author_filter_literal() {
         let mut pr_authors = HashMap::new();
-        pr_authors.insert(10, "bot-user".to_string());
+        pr_authors.insert(10, Some("bot-user".to_string()));
 
         let signal = SignalUpdate::new(
             "github_bot_review",
@@ -2061,10 +2075,31 @@ mod tests {
     }
 
     #[test]
+    fn test_signal_matches_author_filter_ghost_user_passes() {
+        let mut pr_authors = HashMap::new();
+        pr_authors.insert(42, None); // ghost/deleted user
+
+        let signal = SignalUpdate::new(
+            "github_pr_push",
+            "pr-push-org/repo-42-abc",
+            "pushed",
+            Severity::Info,
+        );
+
+        // Ghost user (None author) should pass through filter
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:@me",
+            Some("josh"),
+            &pr_authors,
+        ));
+    }
+
+    #[test]
     fn test_signal_filtering_integration() {
         let mut pr_authors = HashMap::new();
-        pr_authors.insert(1, "josh".to_string());
-        pr_authors.insert(2, "other".to_string());
+        pr_authors.insert(1, Some("josh".to_string()));
+        pr_authors.insert(2, Some("other".to_string()));
 
         let signals = vec![
             SignalUpdate::new(
