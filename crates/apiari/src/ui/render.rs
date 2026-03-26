@@ -477,16 +477,20 @@ fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, ar
     // Build status line for the header
     let healthy = ws.watcher_health.iter().filter(|w| w.healthy).count();
     let total = ws.watcher_health.len();
-    let last_poll = if let Some(w) = ws.watcher_health.first() {
-        if w.last_check_secs < 0 {
-            "never".to_string()
-        } else if w.last_check_secs < 60 {
-            format!("{}s ago", w.last_check_secs)
-        } else {
-            format!("{}m ago", w.last_check_secs / 60)
+    // Most recent poll across all watchers (min non-negative last_check_secs)
+    let last_poll = {
+        let most_recent = ws
+            .watcher_health
+            .iter()
+            .filter(|w| w.last_check_secs >= 0)
+            .map(|w| w.last_check_secs)
+            .min();
+        match most_recent {
+            Some(secs) if secs < 60 => format!("{secs}s ago"),
+            Some(secs) => format!("{}m ago", secs / 60),
+            None if ws.watcher_health.is_empty() => "n/a".to_string(),
+            None => "never".to_string(), // all watchers have -1
         }
-    } else {
-        "n/a".to_string()
     };
 
     let health_icon = if total == 0 || healthy == total {

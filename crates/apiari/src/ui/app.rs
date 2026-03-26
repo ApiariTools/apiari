@@ -278,16 +278,21 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
             })
             .unwrap_or_default();
 
-        let entered = w
+        let created_utc = w
             .created_at
             .map(|t| t.with_timezone(&chrono::Utc))
             .unwrap_or(now);
 
+        let is_done_phase =
+            phase.eq_ignore_ascii_case("completed") || phase.eq_ignore_ascii_case("closed");
+
         if let Some(pr) = &w.pr {
             covered_prs.insert(pr.number);
+            let pr_done =
+                pr.state.eq_ignore_ascii_case("closed") || pr.state.eq_ignore_ascii_case("merged");
             let waiting =
                 phase == "waiting" || w.agent_session_status.as_deref() == Some("waiting");
-            if phase == "completed" || phase == "closed" || pr.state == "closed" {
+            if is_done_phase || pr_done {
                 cards.push(KanbanCard {
                     id: format!("worker:{}", w.id),
                     stage: KanbanStage::Done,
@@ -296,11 +301,12 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                     subtitle: format!("PR #{} · completed", pr.number),
                     source: "worker".to_string(),
                     url: Some(pr.url.clone()),
-                    entered_stage_at: entered,
+                    // Use now() so long-running workers aren't filtered out
+                    // immediately on completion by the 30m cutoff.
+                    entered_stage_at: now,
                 });
             } else if waiting {
-                // Check if PR might need user attention (heuristic: waiting workers with PRs)
-                // We don't have CI/review data directly, so "waiting" with a PR → Needs Me
+                // Waiting worker with a PR → likely needs user attention
                 cards.push(KanbanCard {
                     id: format!("worker:{}", w.id),
                     stage: KanbanStage::NeedsMe,
@@ -309,7 +315,7 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                     subtitle: format!("PR #{} · merge?", pr.number),
                     source: "worker".to_string(),
                     url: Some(pr.url.clone()),
-                    entered_stage_at: entered,
+                    entered_stage_at: created_utc,
                 });
             } else {
                 cards.push(KanbanCard {
@@ -320,10 +326,10 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                     subtitle: format!("PR #{} · running", pr.number),
                     source: "worker".to_string(),
                     url: Some(pr.url.clone()),
-                    entered_stage_at: entered,
+                    entered_stage_at: created_utc,
                 });
             }
-        } else if phase == "completed" || phase == "closed" {
+        } else if is_done_phase {
             cards.push(KanbanCard {
                 id: format!("worker:{}", w.id),
                 stage: KanbanStage::Done,
@@ -332,7 +338,7 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                 subtitle: "completed".to_string(),
                 source: "worker".to_string(),
                 url: None,
-                entered_stage_at: entered,
+                entered_stage_at: now,
             });
         } else {
             // Running, no PR yet
@@ -344,7 +350,7 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                 subtitle: format!("running {elapsed}"),
                 source: "worker".to_string(),
                 url: None,
-                entered_stage_at: entered,
+                entered_stage_at: created_utc,
             });
         }
     }
@@ -510,9 +516,9 @@ struct SwarmPrInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingStage {
     Chat,      // only chat panel bright, Bee introduces herself
-    Workers,   // workers panel brightens
-    Heartbeat, // feed panel brightens
-    Reviews,   // reviews/signals panels brighten
+    Workers,   // kanban strip brightens (workers & signals)
+    Heartbeat, // remaining panels brighten
+    Reviews,   // signals/reviews panels brighten (zoom mode)
     Complete,  // all panels bright, onboarding done
 }
 
@@ -561,31 +567,31 @@ impl OnboardingState {
             OnboardingStage::Chat => {
                 self.stage = OnboardingStage::Workers;
                 self.revealed_panels.insert(Panel::Workers);
+                self.revealed_panels.insert(Panel::Home);
                 Some(
-                    "On your left: Workers. When you dispatch a coding task, \
-                     an AI agent spins up in its own git worktree and gets to work. \
-                     Each worker shows its status, branch, and PR link.\n\n\
+                    "Above: the Kanban strip. Workers, signals, and PRs flow \
+                     through four stages \u{2014} Incoming, In Progress, Needs Me, Done. \
+                     Everything at a glance.\n\n\
                      Press enter to continue.",
                 )
             }
             OnboardingStage::Workers => {
                 self.stage = OnboardingStage::Heartbeat;
                 self.revealed_panels.insert(Panel::Feed);
-                self.revealed_panels.insert(Panel::Home);
+                self.revealed_panels.insert(Panel::Signals);
+                self.revealed_panels.insert(Panel::Reviews);
                 Some(
-                    "This is your Heartbeat \u{2014} a live feed of everything happening \
-                     in your workspace. Signals from GitHub (CI, PRs, releases), Sentry \
-                     errors, Linear issues \u{2014} it all flows here.\n\n\
+                    "Signals from GitHub (CI, PRs, releases), Sentry errors, \
+                     Linear issues \u{2014} they all appear as kanban cards. \
+                     The \u{201c}Needs Me\u{201d} column highlights what needs your attention.\n\n\
                      Press enter to continue.",
                 )
             }
             OnboardingStage::Heartbeat => {
                 self.stage = OnboardingStage::Reviews;
-                self.revealed_panels.insert(Panel::Signals);
-                self.revealed_panels.insert(Panel::Reviews);
                 Some(
-                    "Over here: your signal queue and reviews. Open PRs, review requests, \
-                     anything that needs your attention surfaces here automatically.\n\n\
+                    "Want more detail? Press 'w' for workers, 's' for signals, \
+                     'r' for reviews \u{2014} zoom hotkeys open full-screen panels.\n\n\
                      Press enter to continue.",
                 )
             }
@@ -595,6 +601,7 @@ impl OnboardingState {
                 // Reveal everything
                 self.revealed_panels.insert(Panel::Home);
                 self.revealed_panels.insert(Panel::Workers);
+                self.revealed_panels.insert(Panel::Shells);
                 self.revealed_panels.insert(Panel::Signals);
                 self.revealed_panels.insert(Panel::Reviews);
                 self.revealed_panels.insert(Panel::Feed);
@@ -690,7 +697,7 @@ pub struct WorkspaceState {
     pub shell_windows: Vec<crate::shells::ShellWindow>,
     /// Queued notifications waiting for streaming to finish.
     pub pending_notifications: Vec<String>,
-    /// Derived kanban cards (rebuilt on each tick).
+    /// Derived kanban cards (rebuilt on signal/worker refresh).
     pub kanban_cards: Vec<KanbanCard>,
 }
 
@@ -4275,5 +4282,220 @@ mod tests {
 
         let sentry_hb = hb.iter().find(|i| i.text == "sentry checked").unwrap();
         assert_eq!(sentry_hb.when, old, "sole sentry heartbeat should survive");
+    }
+
+    // ── build_kanban_cards tests ─────────────────────────────
+
+    fn make_worker(id: &str, phase: &str, pr: Option<PrInfo>) -> WorkerInfo {
+        WorkerInfo {
+            id: id.to_string(),
+            branch: format!("swarm/{id}"),
+            prompt: "test".to_string(),
+            agent_kind: "claude".to_string(),
+            phase: Some(phase.to_string()),
+            agent_session_status: None,
+            summary: None,
+            created_at: Some(chrono::Local::now()),
+            pr,
+            last_activity: None,
+            conversation: Vec::new(),
+            conv_scroll: apiari_tui::scroll::ScrollState::new(),
+            activity: Vec::new(),
+            activity_scroll: apiari_tui::scroll::ScrollState::new(),
+        }
+    }
+
+    fn make_pr(number: u64, state: &str) -> PrInfo {
+        PrInfo {
+            number,
+            title: format!("PR #{number}"),
+            state: state.to_string(),
+            url: format!("https://github.com/test/repo/pull/{number}"),
+        }
+    }
+
+    fn empty_ws() -> WorkspaceState {
+        let config: config::WorkspaceConfig = serde_json::from_str(r#"{"root":"/tmp"}"#).unwrap();
+        WorkspaceState {
+            name: "test".into(),
+            config,
+            signals: Vec::new(),
+            workers: Vec::new(),
+            chat_history: Vec::new(),
+            input: String::new(),
+            cursor_pos: 0,
+            chat_scroll: apiari_tui::scroll::ScrollState::new(),
+            streaming: false,
+            coordinator_preview: None,
+            has_unread_response: false,
+            coordinator_turns: 0,
+            usage_input_tokens: 0,
+            usage_output_tokens: 0,
+            usage_cache_read_tokens: 0,
+            usage_cost_usd: None,
+            usage_context_window: 0,
+            prev_worker_phases: Default::default(),
+            prev_signal_ids: Default::default(),
+            prev_pr_workers: Default::default(),
+            sparkline_data: vec![0; 24],
+            watcher_health: Vec::new(),
+            feed: Vec::new(),
+            feed_scroll: apiari_tui::scroll::ScrollState::new(),
+            thoughts: Vec::new(),
+            is_setup_placeholder: false,
+            tmux: None,
+            shell_windows: Vec::new(),
+            pending_notifications: Vec::new(),
+            kanban_cards: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_kanban_running_worker_maps_to_in_progress() {
+        let mut ws = empty_ws();
+        ws.workers = vec![make_worker("abc-1234", "running", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::InProgress);
+        assert!(cards[0].subtitle.contains("running"));
+    }
+
+    #[test]
+    fn test_kanban_worker_with_pr_running_maps_to_in_progress() {
+        let mut ws = empty_ws();
+        ws.workers = vec![make_worker(
+            "abc-1234",
+            "running",
+            Some(make_pr(42, "open")),
+        )];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::InProgress);
+        assert!(cards[0].subtitle.contains("PR #42"));
+    }
+
+    #[test]
+    fn test_kanban_waiting_worker_with_pr_maps_to_needs_me() {
+        let mut ws = empty_ws();
+        ws.workers = vec![make_worker(
+            "abc-1234",
+            "waiting",
+            Some(make_pr(42, "open")),
+        )];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::NeedsMe);
+        assert!(cards[0].subtitle.contains("merge?"));
+    }
+
+    #[test]
+    fn test_kanban_pr_state_case_insensitive() {
+        let mut ws = empty_ws();
+        // Test uppercase "CLOSED"
+        ws.workers = vec![make_worker(
+            "abc-1234",
+            "running",
+            Some(make_pr(42, "CLOSED")),
+        )];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::Done);
+
+        // Test "MERGED"
+        ws.workers = vec![make_worker(
+            "abc-5678",
+            "running",
+            Some(make_pr(43, "MERGED")),
+        )];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::Done);
+
+        // Test mixed case "Closed"
+        ws.workers = vec![make_worker(
+            "abc-9999",
+            "running",
+            Some(make_pr(44, "Closed")),
+        )];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::Done);
+    }
+
+    #[test]
+    fn test_kanban_done_cards_not_immediately_filtered() {
+        // Done cards use now() for entered_stage_at, so they should survive the 30m cutoff
+        let mut ws = empty_ws();
+        ws.workers = vec![make_worker("abc-1234", "completed", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::Done);
+    }
+
+    #[test]
+    fn test_kanban_old_done_signal_filtered() {
+        let mut ws = empty_ws();
+        let mut sig = make_signal("github_merged_pr", "merge-123", None);
+        sig.created_at = Utc::now() - chrono::Duration::hours(1);
+        ws.signals = vec![sig];
+        let cards = build_kanban_cards(&ws);
+        assert!(
+            cards.is_empty(),
+            "Done signals older than 30m should be filtered"
+        );
+    }
+
+    #[test]
+    fn test_kanban_noise_signals_excluded() {
+        let mut ws = empty_ws();
+        ws.signals = vec![
+            make_signal("github_ci_pass", "ci-123", None),
+            make_signal("github_bot_review", "bot-456", None),
+        ];
+        let cards = build_kanban_cards(&ws);
+        assert!(cards.is_empty(), "Noise signals should not create cards");
+    }
+
+    #[test]
+    fn test_kanban_signal_dedup_with_worker_pr() {
+        let mut ws = empty_ws();
+        ws.workers = vec![make_worker(
+            "abc-1234",
+            "running",
+            Some(make_pr(42, "open")),
+        )];
+        // CI failure for the same PR — should be deduped
+        let mut sig = make_signal("github_ci_failure", "ci-org/repo-42", None);
+        sig.metadata = Some(r#"{"pr_number":42}"#.to_string());
+        ws.signals = vec![sig];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(
+            cards.len(),
+            1,
+            "Signal should be deduped with worker PR card"
+        );
+        assert_eq!(cards[0].id, "worker:abc-1234");
+    }
+
+    #[test]
+    fn test_kanban_sentry_signal_maps_to_incoming() {
+        let mut ws = empty_ws();
+        ws.signals = vec![make_signal("sentry", "sentry-err-1", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::Incoming);
+    }
+
+    #[test]
+    fn test_kanban_review_requested_maps_to_needs_me() {
+        let mut ws = empty_ws();
+        ws.signals = vec![make_signal(
+            "github_review_queue",
+            "rq-org/repo-10",
+            Some(r#"{"query_name":"Review Requested","repo":"org/repo","pr_number":10}"#),
+        )];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].stage, KanbanStage::NeedsMe);
     }
 }
