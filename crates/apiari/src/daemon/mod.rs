@@ -785,12 +785,14 @@ async fn run_coordinator_task(
                                 "[signal: {source}] {response}"
                             );
 
-                            // Broadcast to TUI clients as a notification.
+                            // Broadcast to TUI clients as an assistant message so
+                            // the response renders as a normal assistant chat bubble
+                            // rather than a dim system status line.
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity(
                                     "signal",
                                     &slot_name,
-                                    "notification",
+                                    "assistant_message",
                                     &notification_text,
                                 );
                             }
