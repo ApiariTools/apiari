@@ -118,6 +118,11 @@ enum CoordinatorJob {
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         slot_name: String,
     },
+    /// Inject context into the coordinator session without streaming tokens
+    /// to the user or incrementing the turn count. Used for built-in command
+    /// output (e.g. /doctor) that the coordinator should see but the user
+    /// has already received directly.
+    InjectContext { text: String, ws_name: String },
     /// Coordinator follow-through triggered by a signal hook.
     SignalFollowThrough {
         signals: Vec<String>,
@@ -463,6 +468,42 @@ async fn run_coordinator_task(
                         });
                     }
                 }
+            }
+
+            CoordinatorJob::InjectContext { text, ws_name } => {
+                let bundle = match coordinator.prepare_dispatch(&store) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("[{ws_name}] failed to inject context: {e}");
+                        continue;
+                    }
+                };
+
+                // Dispatch to the coordinator so the context enters the
+                // session, but silently discard response tokens — the user
+                // already saw the command output directly.
+                let result = coordinator
+                    .dispatch_message(&text, bundle, |_event| {})
+                    .await;
+
+                // Persist as a system-sourced context message (not a user
+                // chat message) so it shows up in conversation history.
+                {
+                    let conv = ConversationStore::new(store.conn(), store.workspace());
+                    if let Err(e) = conv.save_message("user", &text, Some("system"), None, None) {
+                        warn!("[{ws_name}] failed to save injected context: {e}");
+                    }
+                }
+
+                if let Err(e) = result {
+                    warn!("[{ws_name}] context injection dispatch failed: {e}");
+                    if coordinator.has_session() {
+                        coordinator.reset_session();
+                        turn_count = 0;
+                    }
+                }
+                // Deliberately do NOT increment turn_count — injected
+                // context should not push the session toward auto-compact.
             }
 
             CoordinatorJob::ResetSession => {
@@ -1686,13 +1727,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     // (e.g. /doctor output), inject it so the coordinator
                                     // can reference the results in future turns.
                                     if let Some(context) = inject_context {
-                                        let job = CoordinatorJob::TuiChat {
+                                        let job = CoordinatorJob::InjectContext {
                                             text: context,
-                                            responder: client_req.responder.clone(),
-                                            socket_server: socket_server.clone(),
-                                            ws_name,
+                                            ws_name: ws_name.clone(),
                                         };
-                                        let _ = slot.coord_tx.send(job);
+                                        if slot.coord_tx.send(job).is_err() {
+                                            warn!("[{ws_name}] failed to inject command context: coordinator task shut down");
+                                        }
                                     }
                                     continue;
                                 }
@@ -2429,7 +2470,10 @@ fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
 }
 
-/// Handle a TUI slash command. Returns `true` if the command was handled.
+/// Handle a TUI slash command. Returns `(handled, inject_context)` where
+/// `handled` is `true` if the command was recognized and processed, and
+/// `inject_context` is an optional string to forward into the coordinator
+/// session so it can reference the output in future turns (e.g. /doctor).
 async fn handle_tui_command(
     command: &str,
     args: &str,
