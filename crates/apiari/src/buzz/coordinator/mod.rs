@@ -97,6 +97,9 @@ pub struct Coordinator {
     safety_hooks: Option<Box<dyn SafetyHooks>>,
     /// Number of turns used in the last completed session.
     last_num_turns: u64,
+    /// Context to prepend to the next user message (e.g. /doctor output).
+    /// Consumed on the next `take_pending_context()` call.
+    pending_context: Option<String>,
 }
 
 impl Coordinator {
@@ -116,6 +119,7 @@ impl Coordinator {
             settings: None,
             safety_hooks: None,
             last_num_turns: 0,
+            pending_context: None,
         }
     }
 
@@ -127,6 +131,18 @@ impl Coordinator {
     /// Set extra context to include in the system prompt (e.g. skills prompt).
     pub fn set_extra_context(&mut self, context: String) {
         self.extra_context = Some(context);
+    }
+
+    /// Queue context to be prepended to the next user message dispatched to
+    /// the coordinator. Used for built-in command output (e.g. /doctor) that
+    /// the coordinator should see without triggering a separate LLM turn.
+    pub fn set_pending_context(&mut self, context: String) {
+        self.pending_context = Some(context);
+    }
+
+    /// Take (and clear) any pending context queued via `set_pending_context`.
+    pub fn take_pending_context(&mut self) -> Option<String> {
+        self.pending_context.take()
     }
 
     /// Set a custom prompt preamble (replaces default identity/role sections).

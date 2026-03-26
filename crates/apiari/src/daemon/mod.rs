@@ -118,11 +118,10 @@ enum CoordinatorJob {
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         slot_name: String,
     },
-    /// Inject context into the coordinator session without streaming tokens
-    /// to the user or incrementing the turn count. Used for built-in command
-    /// output (e.g. /doctor) that the coordinator should see but the user
-    /// has already received directly.
-    InjectContext { text: String, ws_name: String },
+    /// Queue context to be prepended to the next user message. Used for
+    /// built-in command output (e.g. /doctor) that the coordinator should
+    /// see without triggering a separate LLM turn.
+    InjectContext { text: String },
     /// Coordinator follow-through triggered by a signal hook.
     SignalFollowThrough {
         signals: Vec<String>,
@@ -357,12 +356,20 @@ async fn run_coordinator_task(
                     }
                 };
 
+                // Prepend any pending context (e.g. /doctor output) to
+                // the user message so the coordinator sees it inline.
+                let dispatch_text = if let Some(ctx) = coordinator.take_pending_context() {
+                    format!("{ctx}\n\n---\n\nUser message: {text}")
+                } else {
+                    text.clone()
+                };
+
                 let name_for_cb = ws_name.clone();
                 let model_for_cb = coordinator.model().to_string();
                 let responder_for_cb = responder.clone();
 
                 let result = coordinator
-                    .dispatch_message(&text, bundle, |event| match event {
+                    .dispatch_message(&dispatch_text, bundle, |event| match event {
                         CoordinatorEvent::Token(t) => {
                             let _ = responder_for_cb.send(socket::DaemonResponse::Token {
                                 workspace: name_for_cb.clone(),
@@ -470,40 +477,12 @@ async fn run_coordinator_task(
                 }
             }
 
-            CoordinatorJob::InjectContext { text, ws_name } => {
-                let bundle = match coordinator.prepare_dispatch(&store) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("[{ws_name}] failed to inject context: {e}");
-                        continue;
-                    }
-                };
-
-                // Dispatch to the coordinator so the context enters the
-                // session, but silently discard response tokens — the user
-                // already saw the command output directly.
-                let result = coordinator
-                    .dispatch_message(&text, bundle, |_event| {})
-                    .await;
-
-                // Persist as a system-sourced context message (not a user
-                // chat message) so it shows up in conversation history.
-                {
-                    let conv = ConversationStore::new(store.conn(), store.workspace());
-                    if let Err(e) = conv.save_message("user", &text, Some("system"), None, None) {
-                        warn!("[{ws_name}] failed to save injected context: {e}");
-                    }
-                }
-
-                if let Err(e) = result {
-                    warn!("[{ws_name}] context injection dispatch failed: {e}");
-                    if coordinator.has_session() {
-                        coordinator.reset_session();
-                        turn_count = 0;
-                    }
-                }
-                // Deliberately do NOT increment turn_count — injected
-                // context should not push the session toward auto-compact.
+            CoordinatorJob::InjectContext { text } => {
+                // Store context on the coordinator so it is prepended to the
+                // next real user message. No LLM turn is triggered here —
+                // the coordinator will see the context when the user sends
+                // their next message.
+                coordinator.set_pending_context(text);
             }
 
             CoordinatorJob::ResetSession => {
@@ -1729,7 +1708,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     if let Some(context) = inject_context {
                                         let job = CoordinatorJob::InjectContext {
                                             text: context,
-                                            ws_name: ws_name.clone(),
                                         };
                                         if slot.coord_tx.send(job).is_err() {
                                             warn!("[{ws_name}] failed to inject command context: coordinator task shut down");
