@@ -54,6 +54,12 @@ enum ExitReason {
     Restart,
 }
 
+/// How long the user must be idle before we send a nudge (10 minutes).
+const IDLE_NUDGE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Minimum time between consecutive nudges (30 minutes).
+const IDLE_NUDGE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// A workspace slot in the daemon — holds per-workspace state.
 struct WorkspaceSlot {
     name: String,
@@ -70,6 +76,10 @@ struct WorkspaceSlot {
     /// Respawn backoff: number of consecutive respawns and when the last one happened.
     coord_respawn_count: u32,
     coord_last_respawn: Option<std::time::Instant>,
+    /// When the user last sent a message (TUI or Telegram).
+    last_user_input: Option<std::time::Instant>,
+    /// When we last sent an idle nudge.
+    last_nudge: Option<std::time::Instant>,
 }
 
 /// Key for routing Telegram messages to workspaces.
@@ -1189,6 +1199,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             max_session_turns,
             coord_respawn_count: 0,
             coord_last_respawn: None,
+            last_user_input: None,
+            last_nudge: None,
         });
     }
 
@@ -1292,6 +1304,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
     let poll_interval = std::time::Duration::from_secs(min_interval);
     let mut poll_timer = tokio::time::interval(poll_interval);
     poll_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let mut idle_timer = tokio::time::interval(std::time::Duration::from_secs(60));
+    idle_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
@@ -1692,6 +1707,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             let slot = &mut slots[idx];
                             info!("[{}] TUI chat: {user_text}", slot.name);
 
+                            slot.last_user_input = Some(std::time::Instant::now());
+                            slot.last_nudge = None;
+
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("tui", &ws_name, "user_message", &user_text);
                             }
@@ -1758,8 +1776,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             .or_else(|| route_map.get(&RouteKey { chat_id, topic_id: None }).copied());
 
                         if let Some(idx) = slot_idx {
-                            let slot = &slots[idx];
+                            let slot = &mut slots[idx];
                             info!("[{}] message from {user_name}: {text}", slot.name);
+
+                            slot.last_user_input = Some(std::time::Instant::now());
+                            slot.last_nudge = None;
 
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("telegram", &slot.name, "user_message", &text);
@@ -1792,6 +1813,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         if let Some(idx) = slot_idx {
                             let slot = &mut slots[idx];
                             info!("[{}] command: /{command}", slot.name);
+
+                            slot.last_user_input = Some(std::time::Instant::now());
+                            slot.last_nudge = None;
 
                             // Broadcast command to TUI
                             if let Some(ref server) = socket_server {
@@ -2053,6 +2077,77 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             channel.answer_callback_query(&callback_query_id).await;
                         }
                     }
+                }
+            }
+
+            _ = idle_timer.tick() => {
+                // Check each workspace slot for idle nudge eligibility.
+                let has_tui_clients = socket_server
+                    .as_ref()
+                    .is_some_and(|s| s.has_clients());
+
+                if !has_tui_clients {
+                    continue;
+                }
+
+                for slot in &mut slots {
+                    let last_input = match slot.last_user_input {
+                        Some(t) => t,
+                        None => continue, // user hasn't chatted yet
+                    };
+
+                    if last_input.elapsed() < IDLE_NUDGE_THRESHOLD {
+                        continue; // user is still active
+                    }
+
+                    if let Some(last) = slot.last_nudge
+                        && last.elapsed() < IDLE_NUDGE_COOLDOWN
+                    {
+                        continue; // already nudged recently
+                    }
+
+                    // Mark nudge attempt now to avoid repeated expensive checks
+                    // even when there's nothing to report.
+                    slot.last_nudge = Some(std::time::Instant::now());
+
+                    // Offload the nudge check to a spawned task so it doesn't
+                    // block the main event loop.
+                    let ws_name = slot.name.clone();
+                    let swarm_state_path = slot
+                        .config
+                        .watchers
+                        .swarm
+                        .as_ref()
+                        .map(|s| s.state_path.clone());
+                    let repos = slot.config.repos.clone();
+                    let server = socket_server.clone();
+
+                    tokio::spawn(async move {
+                        let nudge = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            build_idle_nudge_detached(&swarm_state_path, &repos),
+                        )
+                        .await;
+
+                        let text = match nudge {
+                            Ok(Some(t)) => t,
+                            Ok(None) => return,
+                            Err(_) => {
+                                warn!("[{ws_name}] idle nudge check timed out");
+                                return;
+                            }
+                        };
+
+                        info!("[{ws_name}] sending idle nudge");
+                        if let Some(ref server) = server {
+                            server.broadcast_activity(
+                                "system",
+                                &ws_name,
+                                "assistant_message",
+                                &text,
+                            );
+                        }
+                    });
                 }
             }
         }
@@ -2732,6 +2827,103 @@ async fn handle_tui_command(
             }
         }
     }
+}
+
+/// Build an idle nudge message, or `None` if nothing is pending.
+///
+/// This is a detached version that takes owned/cloned data so it can run
+/// inside a spawned task without borrowing `WorkspaceSlot`.
+///
+/// Checks for:
+/// - Swarm workers in "waiting" state (via state file)
+/// - Open PRs with all CI checks passing (via `gh`)
+async fn build_idle_nudge_detached(
+    swarm_state_path: &Option<std::path::PathBuf>,
+    repos: &[String],
+) -> Option<String> {
+    let mut items: Vec<String> = Vec::new();
+
+    // 1. Check for waiting workers from swarm state file
+    if let Some(path) = swarm_state_path
+        && let Ok(contents) = tokio::fs::read_to_string(path).await
+        && let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents)
+        && let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array())
+    {
+        for wt in worktrees {
+            let phase = wt.get("phase").and_then(|v| v.as_str()).unwrap_or("");
+            if phase == "waiting" {
+                let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let pr_info = wt
+                    .get("pr")
+                    .and_then(|v| v.as_object())
+                    .and_then(|pr| {
+                        let number = pr.get("number")?.as_u64()?;
+                        Some(format!(" (PR #{number})"))
+                    })
+                    .unwrap_or_default();
+                items.push(format!("Worker {id} is waiting{pr_info}"));
+            }
+        }
+    }
+
+    // 2. Check for open PRs with all CI checks passing (only if gh is available)
+    if !repos.is_empty() && is_gh_available().await {
+        for repo in repos {
+            let output = tokio::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "list",
+                    "--repo",
+                    repo,
+                    "--state",
+                    "open",
+                    "--json",
+                    "number,title,statusCheckRollup",
+                    "--jq",
+                    ".[] | select(.statusCheckRollup != null and (.statusCheckRollup | length > 0) and all(.statusCheckRollup[]; .conclusion == \"SUCCESS\")) | \"#\\(.number) \\(.title)\"",
+                ])
+                .output()
+                .await;
+
+            if let Ok(out) = output
+                && out.status.success()
+            {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for line in stdout.lines() {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        items.push(format!("PR {line} has CI green — ready to merge?"));
+                    }
+                }
+            }
+        }
+    }
+
+    if items.is_empty() {
+        return None;
+    }
+
+    let mut msg = String::from("Hey — a few things waiting on you:\n");
+    for item in &items {
+        msg.push_str(&format!("• {item}\n"));
+    }
+    Some(msg.trim_end().to_string())
+}
+
+/// Check if the `gh` CLI is installed and authenticated.
+async fn is_gh_available() -> bool {
+    let which = tokio::process::Command::new("which")
+        .arg("gh")
+        .output()
+        .await;
+    if !matches!(which, Ok(ref o) if o.status.success()) {
+        return false;
+    }
+    let auth = tokio::process::Command::new("gh")
+        .args(["auth", "status"])
+        .output()
+        .await;
+    matches!(auth, Ok(ref o) if o.status.success())
 }
 
 /// Build a full status summary: open signals + worker states + PR queue.
