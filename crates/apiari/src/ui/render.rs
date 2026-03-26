@@ -195,158 +195,23 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let has_thoughts = !ws.thoughts.is_empty();
-    let thoughts_h: u16 = if has_thoughts { 1 } else { 0 };
-
-    // Build action summary to decide if we need the banner
-    let actions = build_action_summary(app, ws);
-    let action_h: u16 = if actions.is_empty() { 0 } else { 1 };
-
-    // KPI height: enough for watchers (1 per line) + borders
-    let kpi_h = (ws.watcher_health.len() as u16 + 2).clamp(4, 7);
+    // Kanban strip + Chat layout
+    let kanban_h = compute_kanban_height(ws);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(kpi_h),      // KPI cards (Watchers + Today)
-            Constraint::Length(action_h),   // Action banner
-            Constraint::Percentage(55),     // Workers + Signals/Feed
-            Constraint::Length(thoughts_h), // Thoughts strip
-            Constraint::Min(5),             // Chat
+            Constraint::Length(kanban_h), // Kanban strip
+            Constraint::Min(5),           // Chat (gets everything else)
         ])
         .split(area);
 
-    // Track areas for onboarding dimming
-    let mut dim_areas: Vec<(Panel, Rect)> = Vec::new();
+    draw_kanban_strip(frame, app, ws, rows[0]);
+    draw_chat_panel(frame, app, ws, rows[1]);
 
-    draw_kpi_strip(frame, app, ws, rows[0]);
-    dim_areas.push((Panel::Home, rows[0]));
-
-    if !actions.is_empty() {
-        draw_action_banner(frame, &actions, rows[1]);
-        dim_areas.push((Panel::Home, rows[1]));
-    }
-
-    // Workers + right column side by side
-    let items = rows[2];
-    let wide = items.width >= 80;
-    let medium = items.width >= 60;
-    let has_reviews = app.has_review_queue();
-    let has_shells = app.current_ws_has_shells();
-
-    if medium {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .spacing(1)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(items);
-
-        // Left column: Workers, and optionally Shells below
-        if has_shells {
-            let left_rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                .split(cols[0]);
-            draw_workers_panel(frame, app, ws, left_rows[0]);
-            dim_areas.push((Panel::Workers, left_rows[0]));
-            draw_shells_panel(frame, app, ws, left_rows[1]);
-            dim_areas.push((Panel::Shells, left_rows[1]));
-        } else {
-            draw_workers_panel(frame, app, ws, cols[0]);
-            dim_areas.push((Panel::Workers, cols[0]));
-        }
-
-        if wide {
-            if has_reviews {
-                // Wide + reviews: Reviews (35%) + Signals (30%) + Feed (35%)
-                let right_rows = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Percentage(35),
-                        Constraint::Percentage(30),
-                        Constraint::Percentage(35),
-                    ])
-                    .split(cols[1]);
-                draw_reviews_pane(frame, app, ws, right_rows[0]);
-                dim_areas.push((Panel::Reviews, right_rows[0]));
-                draw_signals_card(frame, app, ws, right_rows[1]);
-                dim_areas.push((Panel::Signals, right_rows[1]));
-                draw_feed_panel(frame, app, ws, right_rows[2]);
-                dim_areas.push((Panel::Feed, right_rows[2]));
-            } else {
-                // Wide: Signals (top) + Feed (bottom)
-                let right_rows = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-                    .split(cols[1]);
-                draw_signals_card(frame, app, ws, right_rows[0]);
-                dim_areas.push((Panel::Signals, right_rows[0]));
-                draw_feed_panel(frame, app, ws, right_rows[1]);
-                dim_areas.push((Panel::Feed, right_rows[1]));
-            }
-        } else if has_reviews {
-            // Medium + reviews: Reviews (50%) + Signals (50%)
-            let right_rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(cols[1]);
-            draw_reviews_pane(frame, app, ws, right_rows[0]);
-            dim_areas.push((Panel::Reviews, right_rows[0]));
-            draw_signals_card(frame, app, ws, right_rows[1]);
-            dim_areas.push((Panel::Signals, right_rows[1]));
-        } else {
-            // Medium: just signals, no feed
-            draw_signals_card(frame, app, ws, cols[1]);
-            dim_areas.push((Panel::Signals, cols[1]));
-        }
-    } else {
-        // Narrow: stack vertically
-        if has_reviews {
-            let third = items.height / 3;
-            let wk_area = Rect::new(items.x, items.y, items.width, third);
-            draw_workers_panel(frame, app, ws, wk_area);
-            dim_areas.push((Panel::Workers, wk_area));
-            let rev_y = items.y + third;
-            let rev_area = Rect::new(items.x, rev_y, items.width, third);
-            draw_reviews_pane(frame, app, ws, rev_area);
-            dim_areas.push((Panel::Reviews, rev_area));
-            let sig_y = rev_y + third;
-            let sig_rem = items.height.saturating_sub(third * 2);
-            if sig_rem > 0 {
-                let sig_area = Rect::new(items.x, sig_y, items.width, sig_rem);
-                draw_signals_card(frame, app, ws, sig_area);
-                dim_areas.push((Panel::Signals, sig_area));
-            }
-        } else {
-            let half = items.height / 2;
-            let wk_area = Rect::new(items.x, items.y, items.width, half);
-            draw_workers_panel(frame, app, ws, wk_area);
-            dim_areas.push((Panel::Workers, wk_area));
-            let sig_y = items.y + half;
-            let sig_rem = items.height.saturating_sub(half);
-            if sig_rem > 0 {
-                let sig_area = Rect::new(items.x, sig_y, items.width, sig_rem);
-                draw_signals_card(frame, app, ws, sig_area);
-                dim_areas.push((Panel::Signals, sig_area));
-            }
-        }
-    }
-
-    // Thoughts strip
-    if has_thoughts {
-        draw_thoughts_strip(frame, app, ws, rows[3]);
-        dim_areas.push((Panel::Home, rows[3]));
-    }
-
-    draw_chat_panel(frame, app, ws, rows[4]);
-
-    // Onboarding: dim unrevealed panels
-    if app.onboarding.active {
-        for (panel, rect) in &dim_areas {
-            if !app.onboarding.is_revealed(*panel) {
-                onboarding_dim_area(frame, *rect);
-            }
-        }
+    // Onboarding: dim kanban area if Home panel not revealed
+    if app.onboarding.active && !app.onboarding.is_revealed(Panel::Home) {
+        onboarding_dim_area(frame, rows[0]);
     }
 }
 
@@ -579,6 +444,201 @@ fn draw_kpi_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: 
 
         frame.render_widget(Paragraph::new(lines), inner);
     }
+}
+
+// ── Kanban strip ─────────────────────────────────────────
+
+/// Compute the height of the kanban strip based on card count.
+fn compute_kanban_height(ws: &app::WorkspaceState) -> u16 {
+    if ws.kanban_cards.is_empty() {
+        return 3; // header + "all clear" + border
+    }
+
+    // Count cards per visible column
+    let mut counts = [0u16; 4]; // Incoming, InProgress, NeedsMe, Done
+    for card in &ws.kanban_cards {
+        let idx = match card.stage {
+            app::KanbanStage::Incoming => 0,
+            app::KanbanStage::InProgress => 1,
+            app::KanbanStage::NeedsMe => 2,
+            app::KanbanStage::Done => 3,
+        };
+        counts[idx] += 1;
+    }
+
+    // Tallest column determines height: each card = 2 lines, + 1 header line + 2 border
+    let max_cards = counts.iter().copied().max().unwrap_or(0);
+    let content_h = max_cards * 2 + 1; // header line + cards
+    (content_h + 2).clamp(3, 8) // +2 for borders, clamp to reasonable range
+}
+
+/// Draw the kanban strip with columns for each stage.
+fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, area: Rect) {
+    // Build status line for the header
+    let healthy = ws.watcher_health.iter().filter(|w| w.healthy).count();
+    let total = ws.watcher_health.len();
+    let last_poll = if let Some(w) = ws.watcher_health.first() {
+        if w.last_check_secs < 0 {
+            "never".to_string()
+        } else if w.last_check_secs < 60 {
+            format!("{}s ago", w.last_check_secs)
+        } else {
+            format!("{}m ago", w.last_check_secs / 60)
+        }
+    } else {
+        "n/a".to_string()
+    };
+
+    let health_icon = if total == 0 || healthy == total {
+        "\u{2705}"
+    } else {
+        "\u{26a0}\u{fe0f}"
+    };
+    let title = format!(
+        " Kanban \u{00b7} Watchers: {healthy}/{total} {health_icon} \u{00b7} Last poll: {last_poll} "
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme::STEEL))
+        .style(Style::default().bg(theme::COMB))
+        .title(Span::styled(title, Style::default().fg(theme::POLLEN)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if ws.kanban_cards.is_empty() {
+        let line = Line::from(vec![
+            Span::styled(" \u{1f41d} ", Style::default().fg(theme::HONEY)),
+            Span::styled(
+                "All clear \u{2014} nothing in flight",
+                Style::default().fg(theme::SMOKE),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(vec![line]), inner);
+        return;
+    }
+
+    // Group cards by stage
+    let stages = [
+        app::KanbanStage::Incoming,
+        app::KanbanStage::InProgress,
+        app::KanbanStage::NeedsMe,
+        app::KanbanStage::Done,
+    ];
+
+    let mut columns: Vec<(app::KanbanStage, Vec<&app::KanbanCard>)> = Vec::new();
+    for stage in &stages {
+        let cards: Vec<&app::KanbanCard> = ws
+            .kanban_cards
+            .iter()
+            .filter(|c| c.stage == *stage)
+            .collect();
+        if !cards.is_empty() {
+            columns.push((*stage, cards));
+        }
+    }
+
+    if columns.is_empty() {
+        return;
+    }
+
+    // Split inner area into equal columns
+    let constraints: Vec<Constraint> = columns
+        .iter()
+        .map(|_| Constraint::Ratio(1, columns.len() as u32))
+        .collect();
+    let col_areas = Layout::default()
+        .direction(Direction::Horizontal)
+        .spacing(1)
+        .constraints(constraints)
+        .split(inner);
+
+    for (i, (stage, cards)) in columns.iter().enumerate() {
+        let col_area = col_areas[i];
+        draw_kanban_column(frame, *stage, cards, col_area);
+    }
+}
+
+fn draw_kanban_column(
+    frame: &mut Frame,
+    stage: app::KanbanStage,
+    cards: &[&app::KanbanCard],
+    area: Rect,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let (header_text, header_style) = match stage {
+        app::KanbanStage::Incoming => ("INCOMING", Style::default().fg(theme::FROST)),
+        app::KanbanStage::InProgress => ("IN PROGRESS", Style::default().fg(theme::MINT)),
+        app::KanbanStage::NeedsMe => (
+            "NEEDS ME",
+            Style::default()
+                .fg(theme::HONEY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        app::KanbanStage::Done => (
+            "DONE",
+            Style::default()
+                .fg(theme::STEEL)
+                .add_modifier(Modifier::DIM),
+        ),
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header line
+    lines.push(Line::from(Span::styled(header_text, header_style)));
+
+    // How many cards can we fit? Each card = 2 lines, reserve 1 for header
+    let available = area.height.saturating_sub(1) as usize;
+    let cards_fit = available / 2;
+    let show_count = cards_fit.min(cards.len());
+    let overflow = cards.len().saturating_sub(show_count);
+
+    let is_needs_me = stage == app::KanbanStage::NeedsMe;
+    let card_style = if is_needs_me {
+        Style::default()
+            .fg(theme::HONEY)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::FROST)
+    };
+    let subtitle_style = if is_needs_me {
+        Style::default().fg(theme::HONEY)
+    } else {
+        Style::default().fg(theme::SMOKE)
+    };
+
+    for card in cards.iter().take(show_count) {
+        // Line 1: icon + title
+        let title_line = Line::from(vec![
+            Span::raw(&card.icon),
+            Span::raw(" "),
+            Span::styled(&card.title, card_style),
+        ]);
+        lines.push(title_line);
+
+        // Line 2: subtitle (indented)
+        let sub_line = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(&card.subtitle, subtitle_style),
+        ]);
+        lines.push(sub_line);
+    }
+
+    if overflow > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  +{overflow} more"),
+            Style::default()
+                .fg(theme::SMOKE)
+                .add_modifier(Modifier::DIM),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 // ── Action banner ────────────────────────────────────────

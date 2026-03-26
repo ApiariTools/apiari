@@ -231,6 +231,242 @@ pub enum WorkerEventKind {
     StatusChange,
 }
 
+// ── Kanban board ─────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KanbanStage {
+    Incoming,
+    InProgress,
+    NeedsMe,
+    Done,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct KanbanCard {
+    pub id: String,
+    pub stage: KanbanStage,
+    pub icon: String,
+    pub title: String,
+    pub subtitle: String,
+    pub source: String,
+    pub url: Option<String>,
+    pub entered_stage_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Build kanban cards by deriving them from worker and signal state.
+pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
+    let now = chrono::Utc::now();
+    let mut cards: Vec<KanbanCard> = Vec::new();
+    // Track PR numbers covered by worker cards so we can dedup signals.
+    let mut covered_prs: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+    // ── Workers → cards ──
+    for w in &ws.workers {
+        let phase = w.phase.as_deref().unwrap_or("");
+        let elapsed = w
+            .created_at
+            .map(|t| {
+                let mins = chrono::Utc::now()
+                    .signed_duration_since(t.with_timezone(&chrono::Utc))
+                    .num_minutes();
+                if mins >= 60 {
+                    format!("{}h{}m", mins / 60, mins % 60)
+                } else {
+                    format!("{mins}m")
+                }
+            })
+            .unwrap_or_default();
+
+        let entered = w
+            .created_at
+            .map(|t| t.with_timezone(&chrono::Utc))
+            .unwrap_or(now);
+
+        if let Some(pr) = &w.pr {
+            covered_prs.insert(pr.number);
+            let waiting =
+                phase == "waiting" || w.agent_session_status.as_deref() == Some("waiting");
+            if phase == "completed" || phase == "closed" || pr.state == "closed" {
+                cards.push(KanbanCard {
+                    id: format!("worker:{}", w.id),
+                    stage: KanbanStage::Done,
+                    icon: "👷".to_string(),
+                    title: short_id(&w.id),
+                    subtitle: format!("PR #{} · completed", pr.number),
+                    source: "worker".to_string(),
+                    url: Some(pr.url.clone()),
+                    entered_stage_at: entered,
+                });
+            } else if waiting {
+                // Check if PR might need user attention (heuristic: waiting workers with PRs)
+                // We don't have CI/review data directly, so "waiting" with a PR → Needs Me
+                cards.push(KanbanCard {
+                    id: format!("worker:{}", w.id),
+                    stage: KanbanStage::NeedsMe,
+                    icon: "👷".to_string(),
+                    title: short_id(&w.id),
+                    subtitle: format!("PR #{} · merge?", pr.number),
+                    source: "worker".to_string(),
+                    url: Some(pr.url.clone()),
+                    entered_stage_at: entered,
+                });
+            } else {
+                cards.push(KanbanCard {
+                    id: format!("worker:{}", w.id),
+                    stage: KanbanStage::InProgress,
+                    icon: "👷".to_string(),
+                    title: short_id(&w.id),
+                    subtitle: format!("PR #{} · running", pr.number),
+                    source: "worker".to_string(),
+                    url: Some(pr.url.clone()),
+                    entered_stage_at: entered,
+                });
+            }
+        } else if phase == "completed" || phase == "closed" {
+            cards.push(KanbanCard {
+                id: format!("worker:{}", w.id),
+                stage: KanbanStage::Done,
+                icon: "👷".to_string(),
+                title: short_id(&w.id),
+                subtitle: "completed".to_string(),
+                source: "worker".to_string(),
+                url: None,
+                entered_stage_at: entered,
+            });
+        } else {
+            // Running, no PR yet
+            cards.push(KanbanCard {
+                id: format!("worker:{}", w.id),
+                stage: KanbanStage::InProgress,
+                icon: "👷".to_string(),
+                title: short_id(&w.id),
+                subtitle: format!("running {elapsed}"),
+                source: "worker".to_string(),
+                url: None,
+                entered_stage_at: entered,
+            });
+        }
+    }
+
+    // ── Signals → cards ──
+    for sig in &ws.signals {
+        // Skip noise signals
+        if is_noise_signal(sig) {
+            continue;
+        }
+        // Skip signals that are covered by worker PR cards
+        if signal_covered_by_worker(sig, &covered_prs) {
+            continue;
+        }
+
+        let src = sig.source.as_str();
+        let (stage, icon) = match src {
+            "github_review_queue" => {
+                let query = sig
+                    .metadata
+                    .as_deref()
+                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                    .and_then(|v| {
+                        v.get("query_name")
+                            .and_then(|q| q.as_str())
+                            .map(String::from)
+                    })
+                    .unwrap_or_default();
+                if query.contains("Review Requested") {
+                    (KanbanStage::NeedsMe, "🔍")
+                } else {
+                    (KanbanStage::Incoming, "🔍")
+                }
+            }
+            "github_ci_failure" => {
+                // If there's a matching worker, it's in progress via the worker card already.
+                // Otherwise incoming.
+                (KanbanStage::Incoming, "🐛")
+            }
+            "github_ci_pass" | "github_bot_review" => continue,
+            "github_merged_pr" => (KanbanStage::Done, "📋"),
+            "github_release" => (KanbanStage::Done, "📋"),
+            "sentry" => (KanbanStage::Incoming, "🐛"),
+            "linear" => (KanbanStage::Incoming, "📋"),
+            "email" => (KanbanStage::Incoming, "📋"),
+            "notion" => (KanbanStage::Incoming, "📋"),
+            _ => (KanbanStage::Incoming, "⚡"),
+        };
+
+        cards.push(KanbanCard {
+            id: format!("signal:{}", sig.id),
+            stage,
+            icon: icon.to_string(),
+            title: truncate_title(&sig.title, 40),
+            subtitle: src.to_string(),
+            source: src.to_string(),
+            url: sig.url.clone(),
+            entered_stage_at: sig.created_at,
+        });
+    }
+
+    // Filter out Done cards older than 30 minutes
+    let cutoff = now - chrono::Duration::minutes(30);
+    cards.retain(|c| c.stage != KanbanStage::Done || c.entered_stage_at > cutoff);
+
+    cards
+}
+
+/// Check if a signal is already represented by a worker's PR card.
+fn signal_covered_by_worker(
+    sig: &SignalRecord,
+    covered_prs: &std::collections::HashSet<u64>,
+) -> bool {
+    if covered_prs.is_empty() {
+        return false;
+    }
+    let src = sig.source.as_str();
+    // These signal types are PR-specific and get folded into worker cards
+    if matches!(
+        src,
+        "github_ci_pass" | "github_ci_failure" | "github_bot_review"
+    ) {
+        // Try to extract PR number from external_id
+        if let Some(pr_num) = extract_pr_number_from_signal(sig) {
+            return covered_prs.contains(&pr_num);
+        }
+    }
+    false
+}
+
+/// Try to extract a PR number from a signal's external_id or metadata.
+fn extract_pr_number_from_signal(sig: &SignalRecord) -> Option<u64> {
+    // Try metadata first
+    if let Some(meta) = &sig.metadata
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(meta)
+        && let Some(n) = v.get("pr_number").and_then(|n| n.as_u64())
+    {
+        return Some(n);
+    }
+    // Try parsing from external_id (format: "ci-{repo}-{number}" or "rq-{repo}-{number}")
+    let eid = &sig.external_id;
+    let last_dash = eid.rfind('-')?;
+    eid[last_dash + 1..].parse().ok()
+}
+
+fn short_id(id: &str) -> String {
+    if id.len() > 12 {
+        format!("{}…", &id[..12])
+    } else {
+        id.to_string()
+    }
+}
+
+fn truncate_title(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{truncated}…")
+    }
+}
+
 /// Deserialization types for .swarm/state.json.
 #[derive(Debug, Deserialize)]
 struct SwarmStateFile {
@@ -454,6 +690,8 @@ pub struct WorkspaceState {
     pub shell_windows: Vec<crate::shells::ShellWindow>,
     /// Queued notifications waiting for streaming to finish.
     pub pending_notifications: Vec<String>,
+    /// Derived kanban cards (rebuilt on each tick).
+    pub kanban_cards: Vec<KanbanCard>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -572,6 +810,7 @@ impl App {
                     tmux,
                     shell_windows: Vec::new(),
                     pending_notifications: Vec::new(),
+                    kanban_cards: Vec::new(),
                 }
             })
             .collect();
@@ -713,6 +952,7 @@ impl App {
             tmux: None,
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
+            kanban_cards: Vec::new(),
         };
 
         let setup = SetupState {
@@ -841,6 +1081,7 @@ impl App {
             tmux: None,
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
+            kanban_cards: Vec::new(),
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1037,6 +1278,7 @@ impl App {
             tmux,
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
+            kanban_cards: Vec::new(),
         };
 
         if is_add {
@@ -2241,6 +2483,8 @@ impl App {
             }
 
             ws.prev_signal_ids = current_ids;
+            // Rebuild kanban cards from updated state
+            ws.kanban_cards = build_kanban_cards(ws);
         }
         self.last_signal_refresh = Instant::now();
         self.clamp_selections();
@@ -2352,6 +2596,8 @@ impl App {
                     .collect();
 
                 ws.workers = new_workers;
+                // Rebuild kanban cards from updated state
+                ws.kanban_cards = build_kanban_cards(ws);
             }
         }
         self.last_worker_refresh = Instant::now();
@@ -2399,6 +2645,8 @@ impl App {
 
                 ws.prev_signal_ids = current_ids;
                 ws.signals = new_signals;
+                // Rebuild kanban cards from updated state
+                ws.kanban_cards = build_kanban_cards(ws);
             }
         }
         self.last_signal_refresh = Instant::now();
@@ -3840,6 +4088,7 @@ mod tests {
             tmux: None,
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
+            kanban_cards: Vec::new(),
         };
         app.workspaces = vec![ws];
         app.setup = None;
