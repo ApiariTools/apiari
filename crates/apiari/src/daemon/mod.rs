@@ -1684,7 +1684,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 if handled {
                                     continue;
                                 }
-                                // Not a built-in command — fall through to coordinator
+                                // Unknown slash command — reply with error
+                                let err_text = format!("Unknown command: /{}. Run /help for available commands.", command);
+                                let _ = client_req.responder.send(socket::DaemonResponse::Token {
+                                    workspace: ws_name.clone(),
+                                    text: err_text.clone(),
+                                });
+                                let _ = client_req.responder.send(socket::DaemonResponse::Done {
+                                    workspace: ws_name.clone(),
+                                });
+                                if let Some(server) = &socket_server {
+                                    server.broadcast_activity("tui", &ws_name, "assistant_message", &err_text);
+                                }
+                                continue;
                             }
 
                             let ws_name_for_err = ws_name.clone();
