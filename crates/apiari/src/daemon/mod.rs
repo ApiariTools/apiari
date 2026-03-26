@@ -1707,6 +1707,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             let slot = &mut slots[idx];
                             info!("[{}] TUI chat: {user_text}", slot.name);
 
+                            slot.last_user_input = Some(std::time::Instant::now());
+                            slot.last_nudge = None;
+
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("tui", &ws_name, "user_message", &user_text);
                             }
@@ -1741,9 +1744,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 }
                                 // Not a built-in command — fall through to coordinator
                             }
-
-                            slot.last_user_input = Some(std::time::Instant::now());
-                            slot.last_nudge = None;
 
                             let ws_name_for_err = ws_name.clone();
                             let job = CoordinatorJob::TuiChat {
@@ -1813,6 +1813,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         if let Some(idx) = slot_idx {
                             let slot = &mut slots[idx];
                             info!("[{}] command: /{command}", slot.name);
+
+                            slot.last_user_input = Some(std::time::Instant::now());
+                            slot.last_nudge = None;
 
                             // Broadcast command to TUI
                             if let Some(ref server) = socket_server {
@@ -2103,19 +2106,48 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         continue; // already nudged recently
                     }
 
-                    let nudge = build_idle_nudge(slot).await;
-                    if let Some(text) = nudge {
-                        info!("[{}] sending idle nudge", slot.name);
-                        if let Some(ref server) = socket_server {
+                    // Mark nudge attempt now to avoid repeated expensive checks
+                    // even when there's nothing to report.
+                    slot.last_nudge = Some(std::time::Instant::now());
+
+                    // Offload the nudge check to a spawned task so it doesn't
+                    // block the main event loop.
+                    let ws_name = slot.name.clone();
+                    let swarm_state_path = slot
+                        .config
+                        .watchers
+                        .swarm
+                        .as_ref()
+                        .map(|s| s.state_path.clone());
+                    let repos = slot.config.repos.clone();
+                    let server = socket_server.clone();
+
+                    tokio::spawn(async move {
+                        let nudge = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            build_idle_nudge_detached(&swarm_state_path, &repos),
+                        )
+                        .await;
+
+                        let text = match nudge {
+                            Ok(Some(t)) => t,
+                            Ok(None) => return,
+                            Err(_) => {
+                                warn!("[{ws_name}] idle nudge check timed out");
+                                return;
+                            }
+                        };
+
+                        info!("[{ws_name}] sending idle nudge");
+                        if let Some(ref server) = server {
                             server.broadcast_activity(
                                 "system",
-                                &slot.name,
+                                &ws_name,
                                 "assistant_message",
                                 &text,
                             );
                         }
-                        slot.last_nudge = Some(std::time::Instant::now());
-                    }
+                    });
                 }
             }
         }
@@ -2797,17 +2829,23 @@ async fn handle_tui_command(
     }
 }
 
-/// Build an idle nudge message for a workspace, or `None` if nothing is pending.
+/// Build an idle nudge message, or `None` if nothing is pending.
+///
+/// This is a detached version that takes owned/cloned data so it can run
+/// inside a spawned task without borrowing `WorkspaceSlot`.
 ///
 /// Checks for:
-/// - Swarm workers in "waiting" state
-/// - Open PRs with all CI checks passing
-async fn build_idle_nudge(slot: &WorkspaceSlot) -> Option<String> {
+/// - Swarm workers in "waiting" state (via state file)
+/// - Open PRs with all CI checks passing (via `gh`)
+async fn build_idle_nudge_detached(
+    swarm_state_path: &Option<std::path::PathBuf>,
+    repos: &[String],
+) -> Option<String> {
     let mut items: Vec<String> = Vec::new();
 
     // 1. Check for waiting workers from swarm state file
-    if let Some(ref swarm_cfg) = slot.config.watchers.swarm
-        && let Ok(contents) = tokio::fs::read_to_string(&swarm_cfg.state_path).await
+    if let Some(path) = swarm_state_path
+        && let Ok(contents) = tokio::fs::read_to_string(path).await
         && let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents)
         && let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array())
     {
@@ -2828,33 +2866,34 @@ async fn build_idle_nudge(slot: &WorkspaceSlot) -> Option<String> {
         }
     }
 
-    // 2. Check for open PRs with all CI checks passing
-    let repos = &slot.config.repos;
-    for repo in repos {
-        let output = tokio::process::Command::new("gh")
-            .args([
-                "pr",
-                "list",
-                "--repo",
-                repo,
-                "--state",
-                "open",
-                "--json",
-                "number,title,statusCheckRollup",
-                "--jq",
-                ".[] | select(.statusCheckRollup != null and (.statusCheckRollup | length > 0) and all(.statusCheckRollup[]; .conclusion == \"SUCCESS\")) | \"#\\(.number) \\(.title)\"",
-            ])
-            .output()
-            .await;
+    // 2. Check for open PRs with all CI checks passing (only if gh is available)
+    if !repos.is_empty() && is_gh_available().await {
+        for repo in repos {
+            let output = tokio::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "list",
+                    "--repo",
+                    repo,
+                    "--state",
+                    "open",
+                    "--json",
+                    "number,title,statusCheckRollup",
+                    "--jq",
+                    ".[] | select(.statusCheckRollup != null and (.statusCheckRollup | length > 0) and all(.statusCheckRollup[]; .conclusion == \"SUCCESS\")) | \"#\\(.number) \\(.title)\"",
+                ])
+                .output()
+                .await;
 
-        if let Ok(out) = output
-            && out.status.success()
-        {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            for line in stdout.lines() {
-                let line = line.trim();
-                if !line.is_empty() {
-                    items.push(format!("PR {line} has CI green — ready to merge?"));
+            if let Ok(out) = output
+                && out.status.success()
+            {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                for line in stdout.lines() {
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        items.push(format!("PR {line} has CI green — ready to merge?"));
+                    }
                 }
             }
         }
@@ -2869,6 +2908,22 @@ async fn build_idle_nudge(slot: &WorkspaceSlot) -> Option<String> {
         msg.push_str(&format!("• {item}\n"));
     }
     Some(msg.trim_end().to_string())
+}
+
+/// Check if the `gh` CLI is installed and authenticated.
+async fn is_gh_available() -> bool {
+    let which = tokio::process::Command::new("which")
+        .arg("gh")
+        .output()
+        .await;
+    if !matches!(which, Ok(ref o) if o.status.success()) {
+        return false;
+    }
+    let auth = tokio::process::Command::new("gh")
+        .args(["auth", "status"])
+        .output()
+        .await;
+    matches!(auth, Ok(ref o) if o.status.success())
 }
 
 /// Build a full status summary: open signals + worker states + PR queue.
