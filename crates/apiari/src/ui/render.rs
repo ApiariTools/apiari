@@ -979,6 +979,8 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
                     }
                 }
                 ChatLine::Assistant(text, ts, _source) => {
+                    // TODO: map to ConversationEntry::Question when assistant message ends with "?"
+                    // and contains actionable content (merge, close, dispatch, etc.)
                     conversation::ConversationEntry::AssistantText {
                         text: text.clone(),
                         timestamp: ts.clone(),

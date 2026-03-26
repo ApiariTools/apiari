@@ -1988,7 +1988,8 @@ impl App {
                     ws.has_unread_response = true;
                 }
                 "notification" => {
-                    // Signal follow-through results: queue if streaming, else show immediately.
+                    // Signal arrival notifications (e.g. "! 3 new signals: github (2)").
+                    // Follow-through *responses* are now broadcast as "assistant_message".
                     if ws.streaming {
                         ws.pending_notifications.push(text.to_string());
                     } else {

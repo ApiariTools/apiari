@@ -229,9 +229,9 @@ dependencies = [
 
 [[package]]
 name = "apiari-tui"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "612f2e215d90aaaa077b5101f0c953e45527e5ae2298f9d099c1964e7a3d41d6"
+checksum = "d52a56bc2c3cfc69b55b5652040f9c789a03946e942ccc6670794fe436e7de53"
 dependencies = [
  "chrono",
  "crossterm",
