@@ -25,7 +25,8 @@ fn workspace_template(root: &Path, coordinator_name: &str) -> String {
         .join("\n");
 
     format!(
-        r#"root = "{root_str}"
+        r#"config_version = 1
+root = "{root_str}"
 repos = []  # empty = auto-discover from workspace root
 
 # [telegram]

@@ -121,9 +121,17 @@ impl MergePrsCapability {
     }
 }
 
+/// Current workspace config version. Bump when adding new fields or changing semantics.
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
+
 /// A fully self-contained workspace configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
+    /// Schema version for forward-compatible config evolution.
+    /// `None` means pre-versioning (version 0).
+    #[serde(default)]
+    pub config_version: Option<u32>,
+
     /// Absolute path to the workspace root.
     pub root: PathBuf,
 
