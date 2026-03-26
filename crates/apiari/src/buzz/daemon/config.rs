@@ -78,6 +78,7 @@ mod tests {
             repos: vec!["org/repo".into()],
             watch_labels: vec![],
             review_queue: vec![],
+            filters: std::collections::HashMap::new(),
         });
         assert!(has_watchers(&config));
     }
@@ -91,6 +92,7 @@ mod tests {
             repos: vec![],
             watch_labels: vec![],
             review_queue: vec![],
+            filters: std::collections::HashMap::new(),
         });
         assert!(!has_watchers(&config));
     }
@@ -104,6 +106,7 @@ mod tests {
             repos: vec![],
             watch_labels: vec![],
             review_queue: vec![],
+            filters: std::collections::HashMap::new(),
         });
         config.watchers.swarm = Some(SwarmWatcherConfig {
             enabled: true,

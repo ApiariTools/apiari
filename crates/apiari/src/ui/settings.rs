@@ -2,6 +2,8 @@
 //!
 //! Accessible via `/settings` chat command or `s` key when not typing.
 
+use std::collections::HashMap;
+
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::text::{Line, Span};
@@ -274,6 +276,7 @@ impl SettingsState {
                     repos: vec![],
                     interval_secs: 120,
                     review_queue: vec![],
+                    filters: HashMap::new(),
                 });
             config.watchers.github = Some(config::GithubWatcherConfig { repos, ..existing });
         } else {
