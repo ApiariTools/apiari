@@ -126,9 +126,12 @@ pub fn classify_bash_command(command: &str) -> BashClassification {
         }
     }
 
-    // Git mutating commands
+    // Git mutating commands — but allow tag creation and tag-only pushes.
     for &pattern in GIT_MUTATING {
         if contains_pattern(check, pattern) {
+            if is_allowed_git_tag_operation(check, pattern) {
+                continue;
+            }
             return BashClassification::PotentiallyMutating {
                 matched_pattern: pattern.to_string(),
             };
@@ -315,6 +318,56 @@ fn extract_heredoc_delimiter(line: &str) -> Option<&str> {
         // Unquoted: take until whitespace or end
         Some(after.split_whitespace().next().unwrap_or(after))
     }
+}
+
+/// Check if a matched git command is an allowed tag operation.
+///
+/// Allowed operations:
+/// - `git tag v*` — creating version tags
+/// - `git push origin v*` — pushing a version tag to origin
+/// - `git push origin refs/tags/v*` — alternate ref form
+/// - `git pull` / `git fetch` — read-only networking (not in GIT_MUTATING, but
+///   listed here for completeness)
+///
+/// General `git push` (no args, or pushing branches) remains blocked.
+fn is_allowed_git_tag_operation(command: &str, matched_pattern: &str) -> bool {
+    // Split on chain operators so `git tag v1 && git push origin v1` checks each part.
+    for sep in &[" && ", "; "] {
+        if command.contains(sep) {
+            return command.split(sep).all(|part| {
+                let part = part.trim();
+                // If this part doesn't match the pattern, it's fine (handled elsewhere).
+                if !part.starts_with(matched_pattern) {
+                    return true;
+                }
+                is_single_allowed_git_tag_op(part)
+            });
+        }
+    }
+    is_single_allowed_git_tag_op(command)
+}
+
+/// Check a single (non-chained) command for allowed git tag operations.
+fn is_single_allowed_git_tag_op(command: &str) -> bool {
+    let trimmed = command.trim();
+
+    // `git tag v*` — creating a version tag
+    if let Some(rest) = trimmed.strip_prefix("git tag ") {
+        let tag_name = rest.split_whitespace().next().unwrap_or("");
+        return tag_name.starts_with('v');
+    }
+
+    // `git push origin v*` or `git push origin refs/tags/v*`
+    if let Some(rest) = trimmed.strip_prefix("git push ") {
+        let args: Vec<&str> = rest.split_whitespace().collect();
+        if args.len() == 2 && args[0] == "origin" {
+            let target = args[1];
+            return target.starts_with('v') || target.starts_with("refs/tags/v");
+        }
+        return false;
+    }
+
+    false
 }
 
 /// Check if a command contains a pattern, respecting word boundaries at the start.
@@ -1242,6 +1295,85 @@ if len(data) > 0:
             result,
             BashClassification::ReadOnly,
             "heredoc to .apiari/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_git_tag_creation_allowed() {
+        let result = classify_bash_command("git tag v0.1.5");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "git tag v* should be allowed"
+        );
+
+        let result = classify_bash_command("git tag v1.0.0-rc.1");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "git tag v* with prerelease should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_git_push_tag_allowed() {
+        let result = classify_bash_command("git push origin v0.1.5");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "git push origin v* should be allowed"
+        );
+
+        let result = classify_bash_command("git push origin refs/tags/v0.1.5");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "git push origin refs/tags/v* should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_git_push_branch_still_blocked() {
+        let result = classify_bash_command("git push origin main");
+        assert!(
+            result.is_mutating(),
+            "git push origin main should be blocked"
+        );
+
+        let result = classify_bash_command("git push origin some-branch");
+        assert!(
+            result.is_mutating(),
+            "git push origin some-branch should be blocked"
+        );
+
+        let result = classify_bash_command("git push");
+        assert!(result.is_mutating(), "bare git push should be blocked");
+    }
+
+    #[test]
+    fn test_git_tag_and_push_chained() {
+        let result = classify_bash_command("git tag v0.1.5 && git push origin v0.1.5");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "chained git tag + push tag should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_git_pull_and_fetch_allowed() {
+        let result = classify_bash_command("git pull");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "git pull should be allowed"
+        );
+
+        let result = classify_bash_command("git fetch origin");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "git fetch should be allowed"
         );
     }
 }
