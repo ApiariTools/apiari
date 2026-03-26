@@ -6,10 +6,10 @@
 //!
 //! Replaces the previous approach of polling `.swarm/state.json` on disk.
 
-use apiari_swarm::core::ipc::{global_socket_path, socket_path};
-use apiari_swarm::core::state::WorkerPhase;
-use apiari_swarm::daemon::ipc_client::send_daemon_request;
-use apiari_swarm::daemon::protocol::{DaemonRequest, DaemonResponse, WorkerInfo};
+use apiari_swarm::WorkerPhase;
+use apiari_swarm::client::{
+    DaemonRequest, DaemonResponse, WorkerInfo, global_socket_path, send_daemon_request, socket_path,
+};
 use async_trait::async_trait;
 use color_eyre::Result;
 use std::collections::HashMap;
