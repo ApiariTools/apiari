@@ -2423,18 +2423,20 @@ fn remove_pid() {
 
 /// Build the `/help` text, appending any custom commands from the workspace config.
 fn build_help_text(config: &WorkspaceConfig) -> String {
-    let mut text = "Built-in commands:\n\
-        /status — show open signals\n\
-        /config — show workspace configuration summary\n\
-        /brief — generate morning brief on demand\n\
-        /reset — reset coordinator session\n\
-        /clear — clear session (hard reset, no context carried forward)\n\
-        /compact — compact session (summarize key context to memory, then reset)\n\
-        /devmode — toggle dev mode (on/off/status)\n\
-        /update — install latest apiari + swarm from crates.io\n\
-        /reload — restart daemon to pick up config changes\n\
-        /help — this message"
-        .to_string();
+    let mut text = concat!(
+        "Built-in commands:\n",
+        "/status — show open signals\n",
+        "/config — show workspace configuration summary\n",
+        "/brief — generate morning brief on demand\n",
+        "/reset — reset coordinator session\n",
+        "/clear — clear session (hard reset, no context carried forward)\n",
+        "/compact — compact session (summarize key context to memory, then reset)\n",
+        "/devmode — toggle dev mode (on/off/status)\n",
+        "/update — install latest apiari + swarm from crates.io\n",
+        "/reload — restart daemon to pick up config changes\n",
+        "/help — this message",
+    )
+    .to_string();
     if !config.commands.is_empty() {
         text.push_str("\n\nCustom commands:");
         for cmd in &config.commands {
