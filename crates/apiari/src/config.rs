@@ -121,9 +121,17 @@ impl MergePrsCapability {
     }
 }
 
+/// Current workspace config version. Bump when adding new fields or changing semantics.
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
+
 /// A fully self-contained workspace configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
+    /// Schema version for forward-compatible config evolution.
+    /// `None` means pre-versioning (version 0).
+    #[serde(default)]
+    pub config_version: Option<u32>,
+
     /// Absolute path to the workspace root.
     pub root: PathBuf,
 
@@ -1093,6 +1101,10 @@ interval_secs = 15
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.root, PathBuf::from("/Users/josh/Developer/apiari"));
         assert_eq!(config.repos, vec!["ApiariTools/swarm"]);
+        assert!(
+            config.config_version.is_none(),
+            "missing config_version should default to None"
+        );
         assert!(config.telegram.is_some());
         assert!(config.watchers.github.is_some());
         assert!(config.watchers.swarm.is_some());
@@ -1106,6 +1118,10 @@ root = "/tmp/test"
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.root, PathBuf::from("/tmp/test"));
+        assert!(
+            config.config_version.is_none(),
+            "missing config_version should default to None"
+        );
         assert!(config.repos.is_empty());
         assert!(config.telegram.is_none());
         assert_eq!(config.coordinator.model, "sonnet");
@@ -1181,6 +1197,7 @@ max_session_turns = 0
     #[test]
     fn test_resolve_repos_explicit_override() {
         let config = WorkspaceConfig {
+            config_version: None,
             root: "/tmp/nonexistent".into(),
             repos: vec!["Org/Repo".to_string()],
             authority: WorkspaceAuthority::default(),
@@ -1206,6 +1223,7 @@ max_session_turns = 0
     fn test_resolve_repos_empty_discovers() {
         // With a non-existent root, discover_repos returns empty
         let config = WorkspaceConfig {
+            config_version: None,
             root: "/tmp/nonexistent-dir-12345".into(),
             repos: vec![],
             authority: WorkspaceAuthority::default(),
@@ -1230,6 +1248,7 @@ max_session_turns = 0
     #[test]
     fn test_to_buzz_config() {
         let ws = WorkspaceConfig {
+            config_version: None,
             root: "/tmp".into(),
             repos: vec![],
             authority: WorkspaceAuthority::default(),
@@ -1482,6 +1501,7 @@ max_session_turns = 0
     /// Helper to build a minimal WorkspaceConfig with a GitHub watcher for repo resolution tests.
     fn ws_with_github(ws_repos: Vec<String>, gh_repos: Vec<String>) -> WorkspaceConfig {
         WorkspaceConfig {
+            config_version: None,
             root: "/nonexistent".into(),
             repos: ws_repos,
             authority: WorkspaceAuthority::default(),
