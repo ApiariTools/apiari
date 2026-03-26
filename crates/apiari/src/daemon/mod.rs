@@ -1896,11 +1896,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     "reload" => {
                                         info!("[{}] running /reload", slot.name);
                                         if let Some(ref server) = socket_server {
-                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", "Daemon reloaded.");
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", "Restarting daemon...");
                                         }
                                         let _ = channel.send_message(&OutboundMessage {
                                             chat_id,
-                                            text: "Daemon reloaded.".to_string(),
+                                            text: "Restarting daemon...".to_string(),
                                             buttons: vec![],
                                             topic_id,
                                         }).await;
@@ -1938,14 +1938,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/reload — restart daemon to pick up config changes\n/help — this message".to_string();
-                                        if !slot.config.commands.is_empty() {
-                                            text.push_str("\n\nCustom commands:");
-                                            for cmd in &slot.config.commands {
-                                                let desc = cmd.description.as_deref().unwrap_or("(no description)");
-                                                text.push_str(&format!("\n/{} — {}", cmd.name, desc));
-                                            }
-                                        }
+                                        let text = build_help_text(&slot.config);
                                         if let Some(ref server) = socket_server {
                                             server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
                                         }
@@ -2428,7 +2421,32 @@ fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
 }
 
-/// Handle a TUI slash command. Returns `true` if the command was handled.
+/// Build the `/help` text, appending any custom commands from the workspace config.
+fn build_help_text(config: &WorkspaceConfig) -> String {
+    let mut text = "Built-in commands:\n\
+        /status — show open signals\n\
+        /config — show workspace configuration summary\n\
+        /brief — generate morning brief on demand\n\
+        /reset — reset coordinator session\n\
+        /clear — clear session (hard reset, no context carried forward)\n\
+        /compact — compact session (summarize key context to memory, then reset)\n\
+        /devmode — toggle dev mode (on/off/status)\n\
+        /update — install latest apiari + swarm from crates.io\n\
+        /reload — restart daemon to pick up config changes\n\
+        /help — this message"
+        .to_string();
+    if !config.commands.is_empty() {
+        text.push_str("\n\nCustom commands:");
+        for cmd in &config.commands {
+            let desc = cmd.description.as_deref().unwrap_or("(no description)");
+            text.push_str(&format!("\n/{} — {}", cmd.name, desc));
+        }
+    }
+    text
+}
+
+/// Handle a TUI slash command. Returns a [`TuiCommandResult`] indicating
+/// whether the command was handled, unrecognized, or requests a daemon restart.
 async fn handle_tui_command(
     command: &str,
     args: &str,
@@ -2567,21 +2585,13 @@ async fn handle_tui_command(
             TuiCommandResult::Handled
         }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/reload — restart daemon to pick up config changes\n/help — this message"
-                .to_string();
-            if !slot.config.commands.is_empty() {
-                text.push_str("\n\nCustom commands:");
-                for cmd in &slot.config.commands {
-                    let desc = cmd.description.as_deref().unwrap_or("(no description)");
-                    text.push_str(&format!("\n/{} — {}", cmd.name, desc));
-                }
-            }
+            let text = build_help_text(&slot.config);
             reply(responder, socket_server, &slot.name, &text);
             TuiCommandResult::Handled
         }
         "reload" => {
             info!("[{}] running /reload", slot.name);
-            reply(responder, socket_server, &slot.name, "Daemon reloaded.");
+            reply(responder, socket_server, &slot.name, "Restarting daemon...");
             TuiCommandResult::Restart
         }
         "update" => {
