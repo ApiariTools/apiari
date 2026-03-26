@@ -3,6 +3,8 @@
 //! Inspects the workspace config and `.apiari/` scaffold, reports issues,
 //! and optionally fixes them with `--fix`.
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 
 use crate::config::{CURRENT_CONFIG_VERSION, WorkspaceConfig};
@@ -13,6 +15,7 @@ use crate::config::{CURRENT_CONFIG_VERSION, WorkspaceConfig};
 pub fn run(workspace_name: &str, config: &WorkspaceConfig, fix: bool) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut issues = 0u32;
+    let mut scaffolded = 0u32;
 
     lines.push(format!(
         "apiari doctor \u{2014} workspace: {workspace_name}\n"
@@ -20,8 +23,15 @@ pub fn run(workspace_name: &str, config: &WorkspaceConfig, fix: bool) -> String 
 
     // ── config_version ───────────────────────────────────────
     match config.config_version {
-        Some(v) if v >= CURRENT_CONFIG_VERSION => {
+        Some(v) if v == CURRENT_CONFIG_VERSION => {
             lines.push(format!("\u{2705} config_version: {v} (current)"));
+        }
+        Some(v) if v > CURRENT_CONFIG_VERSION => {
+            lines.push(format!(
+                "\u{26a0}\u{fe0f}  config_version: {v} \u{2014} this binary only knows up to \
+                 {CURRENT_CONFIG_VERSION}. You may need to update apiari."
+            ));
+            issues += 1;
         }
         Some(v) => {
             lines.push(format!(
@@ -53,8 +63,8 @@ pub fn run(workspace_name: &str, config: &WorkspaceConfig, fix: bool) -> String 
                 .to_string(),
         );
         issues += 1;
-        if fix {
-            scaffold_soul(&soul_path);
+        if fix && scaffold_soul(&soul_path) {
+            scaffolded += 1;
         }
     }
 
@@ -68,8 +78,8 @@ pub fn run(workspace_name: &str, config: &WorkspaceConfig, fix: bool) -> String 
                 .to_string(),
         );
         issues += 1;
-        if fix {
-            scaffold_context(&context_path);
+        if fix && scaffold_context(&context_path) {
+            scaffolded += 1;
         }
     }
 
@@ -94,8 +104,8 @@ pub fn run(workspace_name: &str, config: &WorkspaceConfig, fix: bool) -> String 
                 .to_string(),
         );
         issues += 1;
-        if fix {
-            let _ = std::fs::create_dir_all(&skills_dir);
+        if fix && std::fs::create_dir_all(&skills_dir).is_ok() {
+            scaffolded += 1;
         }
     }
 
@@ -123,13 +133,24 @@ pub fn run(workspace_name: &str, config: &WorkspaceConfig, fix: bool) -> String 
     }
 
     // ── summary ──────────────────────────────────────────────
-    if issues > 0 && !fix {
+    if fix && scaffolded > 0 {
+        lines.push(format!(
+            "\n\u{2705} Scaffolded {scaffolded} missing file{}.",
+            if scaffolded == 1 { "" } else { "s" }
+        ));
+    }
+    let unfixable = issues - scaffolded;
+    if unfixable > 0 {
+        lines.push(format!(
+            "\n{unfixable} issue{} remaining that {} manual attention.",
+            if unfixable == 1 { "" } else { "s" },
+            if unfixable == 1 { "needs" } else { "need" }
+        ));
+    } else if !fix && issues > 0 {
         lines.push(format!(
             "\n{issues} issue{} found. Run `/doctor --fix` to scaffold missing files.",
             if issues == 1 { "" } else { "s" }
         ));
-    } else if issues > 0 && fix {
-        lines.push("\n\u{2705} Scaffolded missing files.".to_string());
     }
 
     lines.join("\n")
@@ -159,7 +180,8 @@ fn check_latest_release() -> Option<String> {
     if tag.is_empty() { None } else { Some(tag) }
 }
 
-fn scaffold_soul(path: &Path) {
+/// Atomically create soul.md only if it doesn't exist. Returns true on success.
+fn scaffold_soul(path: &Path) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -168,10 +190,11 @@ fn scaffold_soul(path: &Path) {
 
 Communication style and behavioral guidelines for the coordinator.
 ";
-    let _ = std::fs::write(path, template);
+    write_new_file(path, template)
 }
 
-fn scaffold_context(path: &Path) {
+/// Atomically create context.md only if it doesn't exist. Returns true on success.
+fn scaffold_context(path: &Path) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -188,5 +211,140 @@ What is this project? (1-2 sentences)
 
 ## Anything the coordinator should always know
 ";
-    let _ = std::fs::write(path, template);
+    write_new_file(path, template)
+}
+
+/// Write `contents` to `path` only if the file does not already exist (atomic create).
+fn write_new_file(path: &Path, contents: &str) -> bool {
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut f) => f.write_all(contents.as_bytes()).is_ok(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::*;
+
+    /// Build a minimal WorkspaceConfig pointing at `root`.
+    fn test_config(root: std::path::PathBuf, config_version: Option<u32>) -> WorkspaceConfig {
+        WorkspaceConfig {
+            config_version,
+            root,
+            repos: vec![],
+            authority: WorkspaceAuthority::default(),
+            capabilities: WorkspaceCapabilities::default(),
+            telegram: None,
+            coordinator: CoordinatorConfig::default(),
+            watchers: WatchersConfig::default(),
+            swarm: SwarmConfig::default(),
+            pipeline: PipelineConfig::default(),
+            commands: vec![],
+            morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_endpoints: vec![],
+            shells: ShellsConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_config_version_none_warns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), None);
+        let text = run("test", &config, false);
+        assert!(text.contains("config_version missing"), "{text}");
+        assert!(text.contains("issue"), "{text}");
+    }
+
+    #[test]
+    fn test_config_version_current_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create .apiari scaffold so those don't count as issues
+        let apiari = tmp.path().join(".apiari");
+        std::fs::create_dir_all(apiari.join("skills")).unwrap();
+        std::fs::write(apiari.join("soul.md"), "x").unwrap();
+        std::fs::write(apiari.join("context.md"), "x").unwrap();
+
+        let config = test_config(tmp.path().to_path_buf(), Some(CURRENT_CONFIG_VERSION));
+        let text = run("test", &config, false);
+        assert!(
+            text.contains(&format!(
+                "config_version: {CURRENT_CONFIG_VERSION} (current)"
+            )),
+            "{text}"
+        );
+        // No issues (besides possibly version check)
+        assert!(!text.contains("config_version missing"), "{text}");
+    }
+
+    #[test]
+    fn test_config_version_older_warns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), Some(0));
+        let text = run("test", &config, false);
+        assert!(text.contains("config_version: 0"), "{text}");
+        assert!(text.contains("current is"), "{text}");
+    }
+
+    #[test]
+    fn test_config_version_newer_warns_incompatible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let future_version = CURRENT_CONFIG_VERSION + 1;
+        let config = test_config(tmp.path().to_path_buf(), Some(future_version));
+        let text = run("test", &config, false);
+        assert!(
+            text.contains("this binary only knows up to"),
+            "should warn about newer version: {text}"
+        );
+    }
+
+    #[test]
+    fn test_fix_creates_missing_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(tmp.path().to_path_buf(), Some(CURRENT_CONFIG_VERSION));
+
+        let text = run("test", &config, true);
+        assert!(text.contains("Scaffolded"), "{text}");
+
+        // Files should now exist
+        assert!(tmp.path().join(".apiari/soul.md").exists());
+        assert!(tmp.path().join(".apiari/context.md").exists());
+        assert!(tmp.path().join(".apiari/skills").is_dir());
+    }
+
+    #[test]
+    fn test_fix_does_not_overwrite_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apiari = tmp.path().join(".apiari");
+        std::fs::create_dir_all(apiari.join("skills")).unwrap();
+        std::fs::write(apiari.join("soul.md"), "custom soul").unwrap();
+        std::fs::write(apiari.join("context.md"), "custom context").unwrap();
+
+        let config = test_config(tmp.path().to_path_buf(), Some(CURRENT_CONFIG_VERSION));
+        let _ = run("test", &config, true);
+
+        // Originals should be untouched
+        assert_eq!(
+            std::fs::read_to_string(apiari.join("soul.md")).unwrap(),
+            "custom soul"
+        );
+        assert_eq!(
+            std::fs::read_to_string(apiari.join("context.md")).unwrap(),
+            "custom context"
+        );
+    }
+
+    #[test]
+    fn test_fix_summary_distinguishes_fixable_from_unfixable() {
+        let tmp = tempfile::tempdir().unwrap();
+        // config_version None = unfixable, missing files = fixable
+        let config = test_config(tmp.path().to_path_buf(), None);
+        let text = run("test", &config, true);
+        assert!(text.contains("Scaffolded"), "{text}");
+        assert!(text.contains("manual attention"), "{text}");
+    }
 }

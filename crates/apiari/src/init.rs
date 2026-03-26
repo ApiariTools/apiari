@@ -4,7 +4,7 @@ use color_eyre::eyre::{Result, WrapErr};
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
-use crate::config::workspaces_dir;
+use crate::config::{CURRENT_CONFIG_VERSION, workspaces_dir};
 
 /// Generate a template workspace TOML.
 fn workspace_template(root: &Path, coordinator_name: &str) -> String {
@@ -25,7 +25,7 @@ fn workspace_template(root: &Path, coordinator_name: &str) -> String {
         .join("\n");
 
     format!(
-        r#"config_version = 1
+        r#"config_version = {CURRENT_CONFIG_VERSION}
 root = "{root_str}"
 repos = []  # empty = auto-discover from workspace root
 

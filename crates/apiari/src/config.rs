@@ -1101,6 +1101,10 @@ interval_secs = 15
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.root, PathBuf::from("/Users/josh/Developer/apiari"));
         assert_eq!(config.repos, vec!["ApiariTools/swarm"]);
+        assert!(
+            config.config_version.is_none(),
+            "missing config_version should default to None"
+        );
         assert!(config.telegram.is_some());
         assert!(config.watchers.github.is_some());
         assert!(config.watchers.swarm.is_some());
@@ -1114,6 +1118,10 @@ root = "/tmp/test"
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.root, PathBuf::from("/tmp/test"));
+        assert!(
+            config.config_version.is_none(),
+            "missing config_version should default to None"
+        );
         assert!(config.repos.is_empty());
         assert!(config.telegram.is_none());
         assert_eq!(config.coordinator.model, "sonnet");

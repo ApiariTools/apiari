@@ -3,6 +3,7 @@
 //! Discovers workspace configs, builds per-workspace watcher registries,
 //! shares Telegram connections by bot_token, and routes messages by (chat_id, topic_id).
 
+pub mod doctor;
 pub mod morning_brief;
 pub mod socket;
 
@@ -50,16 +51,6 @@ enum ExitReason {
     /// Error — daemon should restart.
     Error(color_eyre::eyre::Error),
     /// Self-update — exec the new binary.
-    Restart,
-}
-
-/// Result of handling a TUI built-in command.
-enum TuiCommandResult {
-    /// Command was not recognized — fall through to coordinator.
-    NotHandled,
-    /// Command was handled.
-    Handled,
-    /// Command requests a daemon restart.
     Restart,
 }
 
@@ -1682,17 +1673,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     Some((cmd, args)) => (cmd, args.trim()),
                                     None => (rest, ""),
                                 };
-                                match handle_tui_command(
+                                let handled = handle_tui_command(
                                     command,
                                     args,
                                     slot,
                                     &client_req.responder,
                                     &socket_server,
                                     &telegram_channels,
-                                ).await {
-                                    TuiCommandResult::Handled => continue,
-                                    TuiCommandResult::Restart => return ExitReason::Restart,
-                                    TuiCommandResult::NotHandled => {}
+                                ).await;
+                                if handled {
+                                    continue;
                                 }
                                 // Not a built-in command — fall through to coordinator
                             }
@@ -1893,19 +1883,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
                                         }
                                     }
-                                    "reload" => {
-                                        info!("[{}] running /reload", slot.name);
-                                        if let Some(ref server) = socket_server {
-                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", "Restarting daemon...");
-                                        }
-                                        let _ = channel.send_message(&OutboundMessage {
-                                            chat_id,
-                                            text: "Restarting daemon...".to_string(),
-                                            buttons: vec![],
-                                            topic_id,
-                                        }).await;
-                                        return ExitReason::Restart;
-                                    }
                                     "brief" => {
                                         channel.send_typing(chat_id, topic_id).await;
 
@@ -1937,8 +1914,27 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         }
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
+                                    "doctor" => {
+                                        let fix = args.trim() == "--fix";
+                                        let ws_name = slot.name.clone();
+                                        let ws_config = slot.config.clone();
+                                        let text = tokio::task::spawn_blocking(move || {
+                                            doctor::run(&ws_name, &ws_config, fix)
+                                        }).await.unwrap_or_else(|e| format!("doctor failed: {e}"));
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+                                    }
                                     "help" => {
-                                        let text = build_help_text(&slot.config);
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        if !slot.config.commands.is_empty() {
+                                            text.push_str("\n\nCustom commands:");
+                                            for cmd in &slot.config.commands {
+                                                let desc = cmd.description.as_deref().unwrap_or("(no description)");
+                                                text.push_str(&format!("\n/{} — {}", cmd.name, desc));
+                                            }
+                                        }
                                         if let Some(ref server) = socket_server {
                                             server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
                                         }
@@ -2421,34 +2417,7 @@ fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
 }
 
-/// Build the `/help` text, appending any custom commands from the workspace config.
-fn build_help_text(config: &WorkspaceConfig) -> String {
-    let mut text = concat!(
-        "Built-in commands:\n",
-        "/status — show open signals\n",
-        "/config — show workspace configuration summary\n",
-        "/brief — generate morning brief on demand\n",
-        "/reset — reset coordinator session\n",
-        "/clear — clear session (hard reset, no context carried forward)\n",
-        "/compact — compact session (summarize key context to memory, then reset)\n",
-        "/devmode — toggle dev mode (on/off/status)\n",
-        "/update — install latest apiari + swarm from crates.io\n",
-        "/reload — restart daemon to pick up config changes\n",
-        "/help — this message",
-    )
-    .to_string();
-    if !config.commands.is_empty() {
-        text.push_str("\n\nCustom commands:");
-        for cmd in &config.commands {
-            let desc = cmd.description.as_deref().unwrap_or("(no description)");
-            text.push_str(&format!("\n/{} — {}", cmd.name, desc));
-        }
-    }
-    text
-}
-
-/// Handle a TUI slash command. Returns a [`TuiCommandResult`] indicating
-/// whether the command was handled, unrecognized, or requests a daemon restart.
+/// Handle a TUI slash command. Returns `true` if the command was handled.
 async fn handle_tui_command(
     command: &str,
     args: &str,
@@ -2456,7 +2425,7 @@ async fn handle_tui_command(
     responder: &mpsc::UnboundedSender<socket::DaemonResponse>,
     socket_server: &Option<Arc<socket::DaemonSocketServer>>,
     telegram_channels: &HashMap<String, TelegramChannel>,
-) -> TuiCommandResult {
+) -> bool {
     /// Send a text response back to the TUI client.
     fn reply(
         responder: &mpsc::UnboundedSender<socket::DaemonResponse>,
@@ -2480,12 +2449,12 @@ async fn handle_tui_command(
         "status" => {
             let summary = build_full_status(slot).await;
             reply(responder, socket_server, &slot.name, &summary);
-            TuiCommandResult::Handled
+            true
         }
         "reset" => {
             let _ = slot.coord_tx.send(CoordinatorJob::ResetSession);
             reply(responder, socket_server, &slot.name, "Session reset.");
-            TuiCommandResult::Handled
+            true
         }
         "clear" => {
             if slot
@@ -2505,7 +2474,7 @@ async fn handle_tui_command(
                     "Error: coordinator task shut down",
                 );
             }
-            TuiCommandResult::Handled
+            true
         }
         "compact" => {
             if slot
@@ -2525,7 +2494,7 @@ async fn handle_tui_command(
                     "Error: coordinator task shut down",
                 );
             }
-            TuiCommandResult::Handled
+            true
         }
         "brief" => {
             let channel = slot
@@ -2573,28 +2542,41 @@ async fn handle_tui_command(
                     "No Telegram channel configured for briefs.",
                 );
             }
-            TuiCommandResult::Handled
+            true
         }
         "config" => {
             let skill_ctx = build_skill_context(&slot.name, &slot.config);
             let text = crate::buzz::coordinator::skills::config::build_config_summary(&skill_ctx);
             reply(responder, socket_server, &slot.name, &text);
-            TuiCommandResult::Handled
+            true
         }
         "devmode" => {
             let text = crate::buzz::coordinator::devmode::handle_command(args);
             reply(responder, socket_server, &slot.name, &text);
-            TuiCommandResult::Handled
+            true
+        }
+        "doctor" => {
+            let fix = args.trim() == "--fix";
+            let ws_name = slot.name.clone();
+            let ws_config = slot.config.clone();
+            let text = tokio::task::spawn_blocking(move || doctor::run(&ws_name, &ws_config, fix))
+                .await
+                .unwrap_or_else(|e| format!("doctor failed: {e}"));
+            reply(responder, socket_server, &slot.name, &text);
+            true
         }
         "help" => {
-            let text = build_help_text(&slot.config);
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+                .to_string();
+            if !slot.config.commands.is_empty() {
+                text.push_str("\n\nCustom commands:");
+                for cmd in &slot.config.commands {
+                    let desc = cmd.description.as_deref().unwrap_or("(no description)");
+                    text.push_str(&format!("\n/{} — {}", cmd.name, desc));
+                }
+            }
             reply(responder, socket_server, &slot.name, &text);
-            TuiCommandResult::Handled
-        }
-        "reload" => {
-            info!("[{}] running /reload", slot.name);
-            reply(responder, socket_server, &slot.name, "Restarting daemon...");
-            TuiCommandResult::Restart
+            true
         }
         "update" => {
             // Send initial status as a streaming token (Done sent after completion)
@@ -2657,7 +2639,7 @@ async fn handle_tui_command(
                     }
                 }
             }
-            TuiCommandResult::Handled
+            true
         }
         _ => {
             // Check custom commands
@@ -2699,10 +2681,10 @@ async fn handle_tui_command(
                         );
                     }
                 }
-                TuiCommandResult::Handled
+                true
             } else {
                 // Not a known command — let the coordinator handle it
-                TuiCommandResult::NotHandled
+                false
             }
         }
     }
