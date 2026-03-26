@@ -118,9 +118,10 @@ enum CoordinatorJob {
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         slot_name: String,
     },
-    /// Queue context to be prepended to the next user message. Used for
-    /// built-in command output (e.g. /doctor) that the coordinator should
-    /// see without triggering a separate LLM turn.
+    /// Queue context to be prepended to the next TUI user message. Used for
+    /// built-in TUI command output (e.g. /doctor) that the coordinator should
+    /// see without triggering a separate LLM turn. Only consumed by the
+    /// `TuiChat` path; Telegram dispatches are unaffected.
     InjectContext { text: String },
     /// Coordinator follow-through triggered by a signal hook.
     SignalFollowThrough {
@@ -358,7 +359,8 @@ async fn run_coordinator_task(
 
                 // Prepend any pending context (e.g. /doctor output) to
                 // the user message so the coordinator sees it inline.
-                let dispatch_text = if let Some(ctx) = coordinator.take_pending_context() {
+                let pending_ctx = coordinator.take_pending_context();
+                let dispatch_text = if let Some(ref ctx) = pending_ctx {
                     format!("{ctx}\n\n---\n\nUser message: {text}")
                 } else {
                     text.clone()
@@ -461,6 +463,11 @@ async fn run_coordinator_task(
                         }
                     }
                     Err(e) => {
+                        // Restore pending context so it's available on the
+                        // next attempt — the coordinator never ingested it.
+                        if let Some(ctx) = pending_ctx {
+                            coordinator.set_pending_context(ctx);
+                        }
                         // If session resume failed, reset and try fresh next time
                         if coordinator.has_session() {
                             warn!(

@@ -755,6 +755,7 @@ impl Coordinator {
         info!("coordinator session reset");
         self.session_id = None;
         self.session_token = None;
+        self.pending_context = None;
     }
 }
 
