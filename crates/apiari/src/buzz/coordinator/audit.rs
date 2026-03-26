@@ -43,6 +43,7 @@ const GIT_MUTATING: &[&str] = &[
     "git add",
     "git commit",
     "git push",
+    "git tag",
     "git merge",
     "git rebase",
     "git reset",
@@ -331,20 +332,28 @@ fn extract_heredoc_delimiter(line: &str) -> Option<&str> {
 ///
 /// General `git push` (no args, or pushing branches) remains blocked.
 fn is_allowed_git_tag_operation(command: &str, matched_pattern: &str) -> bool {
-    // Split on chain operators so `git tag v1 && git push origin v1` checks each part.
-    for sep in &[" && ", "; "] {
-        if command.contains(sep) {
-            return command.split(sep).all(|part| {
-                let part = part.trim();
-                // If this part doesn't match the pattern, it's fine (handled elsewhere).
-                if !part.starts_with(matched_pattern) {
-                    return true;
-                }
-                is_single_allowed_git_tag_op(part)
-            });
+    // Split on all chain operators so every part is checked individually.
+    let parts = split_chain_operators(command);
+    for part in &parts {
+        let part = part.trim();
+        // If this part doesn't match the pattern, it's fine (handled elsewhere).
+        if !part.starts_with(matched_pattern) {
+            continue;
+        }
+        if !is_single_allowed_git_tag_op(part) {
+            return false;
         }
     }
-    is_single_allowed_git_tag_op(command)
+    true
+}
+
+/// Split a command string on all chain operators (`&&`, `;`).
+fn split_chain_operators(command: &str) -> Vec<&str> {
+    let mut parts = vec![command];
+    for sep in &[" && ", "; "] {
+        parts = parts.iter().flat_map(|p| p.split(sep)).collect();
+    }
+    parts
 }
 
 /// Check a single (non-chained) command for allowed git tag operations.
@@ -362,6 +371,10 @@ fn is_single_allowed_git_tag_op(command: &str) -> bool {
         let args: Vec<&str> = rest.split_whitespace().collect();
         if args.len() == 2 && args[0] == "origin" {
             let target = args[1];
+            // Reject refspecs with `:` — they can update arbitrary refs.
+            if target.contains(':') {
+                return false;
+            }
             return target.starts_with('v') || target.starts_with("refs/tags/v");
         }
         return false;
@@ -1348,6 +1361,28 @@ if len(data) > 0:
 
         let result = classify_bash_command("git push");
         assert!(result.is_mutating(), "bare git push should be blocked");
+
+        // Refspec attacks — tag name used to push to a branch
+        let result = classify_bash_command("git push origin v0.1.5:main");
+        assert!(
+            result.is_mutating(),
+            "git push origin v*:main refspec should be blocked"
+        );
+
+        let result = classify_bash_command("git push origin refs/tags/v0.1.5:refs/heads/main");
+        assert!(
+            result.is_mutating(),
+            "git push origin refs/tags/v*:refs/heads/main refspec should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_git_tag_non_version_blocked() {
+        let result = classify_bash_command("git tag foo");
+        assert!(
+            result.is_mutating(),
+            "git tag without v prefix should be blocked"
+        );
     }
 
     #[test]
