@@ -53,6 +53,16 @@ enum ExitReason {
     Restart,
 }
 
+/// Result of handling a TUI built-in command.
+enum TuiCommandResult {
+    /// Command was not recognized — fall through to coordinator.
+    NotHandled,
+    /// Command was handled.
+    Handled,
+    /// Command requests a daemon restart.
+    Restart,
+}
+
 /// A workspace slot in the daemon — holds per-workspace state.
 struct WorkspaceSlot {
     name: String,
@@ -1672,16 +1682,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     Some((cmd, args)) => (cmd, args.trim()),
                                     None => (rest, ""),
                                 };
-                                let handled = handle_tui_command(
+                                match handle_tui_command(
                                     command,
                                     args,
                                     slot,
                                     &client_req.responder,
                                     &socket_server,
                                     &telegram_channels,
-                                ).await;
-                                if handled {
-                                    continue;
+                                ).await {
+                                    TuiCommandResult::Handled => continue,
+                                    TuiCommandResult::Restart => return ExitReason::Restart,
+                                    TuiCommandResult::NotHandled => {}
                                 }
                                 // Not a built-in command — fall through to coordinator
                             }
@@ -1882,6 +1893,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
                                         }
                                     }
+                                    "reload" => {
+                                        info!("[{}] running /reload", slot.name);
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", "Daemon reloaded.");
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage {
+                                            chat_id,
+                                            text: "Daemon reloaded.".to_string(),
+                                            buttons: vec![],
+                                            topic_id,
+                                        }).await;
+                                        return ExitReason::Restart;
+                                    }
                                     "brief" => {
                                         channel.send_typing(chat_id, topic_id).await;
 
@@ -1914,7 +1938,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/reload — restart daemon to pick up config changes\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -2412,7 +2436,7 @@ async fn handle_tui_command(
     responder: &mpsc::UnboundedSender<socket::DaemonResponse>,
     socket_server: &Option<Arc<socket::DaemonSocketServer>>,
     telegram_channels: &HashMap<String, TelegramChannel>,
-) -> bool {
+) -> TuiCommandResult {
     /// Send a text response back to the TUI client.
     fn reply(
         responder: &mpsc::UnboundedSender<socket::DaemonResponse>,
@@ -2436,12 +2460,12 @@ async fn handle_tui_command(
         "status" => {
             let summary = build_full_status(slot).await;
             reply(responder, socket_server, &slot.name, &summary);
-            true
+            TuiCommandResult::Handled
         }
         "reset" => {
             let _ = slot.coord_tx.send(CoordinatorJob::ResetSession);
             reply(responder, socket_server, &slot.name, "Session reset.");
-            true
+            TuiCommandResult::Handled
         }
         "clear" => {
             if slot
@@ -2461,7 +2485,7 @@ async fn handle_tui_command(
                     "Error: coordinator task shut down",
                 );
             }
-            true
+            TuiCommandResult::Handled
         }
         "compact" => {
             if slot
@@ -2481,7 +2505,7 @@ async fn handle_tui_command(
                     "Error: coordinator task shut down",
                 );
             }
-            true
+            TuiCommandResult::Handled
         }
         "brief" => {
             let channel = slot
@@ -2529,21 +2553,21 @@ async fn handle_tui_command(
                     "No Telegram channel configured for briefs.",
                 );
             }
-            true
+            TuiCommandResult::Handled
         }
         "config" => {
             let skill_ctx = build_skill_context(&slot.name, &slot.config);
             let text = crate::buzz::coordinator::skills::config::build_config_summary(&skill_ctx);
             reply(responder, socket_server, &slot.name, &text);
-            true
+            TuiCommandResult::Handled
         }
         "devmode" => {
             let text = crate::buzz::coordinator::devmode::handle_command(args);
             reply(responder, socket_server, &slot.name, &text);
-            true
+            TuiCommandResult::Handled
         }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/reload — restart daemon to pick up config changes\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");
@@ -2553,7 +2577,12 @@ async fn handle_tui_command(
                 }
             }
             reply(responder, socket_server, &slot.name, &text);
-            true
+            TuiCommandResult::Handled
+        }
+        "reload" => {
+            info!("[{}] running /reload", slot.name);
+            reply(responder, socket_server, &slot.name, "Daemon reloaded.");
+            TuiCommandResult::Restart
         }
         "update" => {
             // Send initial status as a streaming token (Done sent after completion)
@@ -2616,7 +2645,7 @@ async fn handle_tui_command(
                     }
                 }
             }
-            true
+            TuiCommandResult::Handled
         }
         _ => {
             // Check custom commands
@@ -2658,10 +2687,10 @@ async fn handle_tui_command(
                         );
                     }
                 }
-                true
+                TuiCommandResult::Handled
             } else {
                 // Not a known command — let the coordinator handle it
-                false
+                TuiCommandResult::NotHandled
             }
         }
     }
