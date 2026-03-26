@@ -4,6 +4,7 @@
 
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -516,6 +517,9 @@ pub struct GithubWatcherConfig {
     /// Order = priority order (first entry is highest priority).
     #[serde(default)]
     pub review_queue: Vec<ReviewQueueEntry>,
+    /// Per-event-type filters (e.g. `github_pr_push = "author:@me"`).
+    #[serde(default)]
+    pub filters: HashMap<String, String>,
 }
 
 /// A named review queue query.
@@ -816,6 +820,7 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                             query: e.query.clone(),
                         })
                         .collect(),
+                    filters: g.filters.clone(),
                 }),
             sentry: ws
                 .watchers
@@ -1513,6 +1518,7 @@ max_session_turns = 0
                     repos: gh_repos,
                     interval_secs: default_watcher_interval(),
                     review_queue: vec![],
+                    filters: HashMap::new(),
                 }),
                 ..Default::default()
             },

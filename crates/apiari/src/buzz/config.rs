@@ -4,6 +4,7 @@
 
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 
 /// Top-level buzz configuration.
@@ -80,6 +81,9 @@ pub struct GithubWatcherConfig {
     /// Named priority queries for the review queue.
     #[serde(default)]
     pub review_queue: Vec<ReviewQueueEntry>,
+    /// Per-event-type filters (e.g. `github_pr_push = "author:@me"`).
+    #[serde(default)]
+    pub filters: HashMap<String, String>,
 }
 
 /// A named review queue query.

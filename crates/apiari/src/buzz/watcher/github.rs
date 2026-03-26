@@ -104,6 +104,7 @@ struct GraphqlCheckRun {
 struct GraphqlPr {
     number: u64,
     title: String,
+    author_login: Option<String>,
     head_ref_name: String,
     head_sha: String,
     reviews: Vec<GraphqlReview>,
@@ -113,6 +114,7 @@ struct GraphqlPr {
 struct GraphqlMergedPr {
     number: u64,
     title: String,
+    author_login: Option<String>,
     url: String,
     merged_at: String,
 }
@@ -181,9 +183,15 @@ fn parse_graphql_open_prs(nodes: &serde_json::Value) -> Vec<GraphqlPr> {
                 .map(|arr| parse_graphql_check_suites(arr))
                 .unwrap_or_default();
 
+            let author_login = node
+                .pointer("/author/login")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             Some(GraphqlPr {
                 number,
                 title,
+                author_login,
                 head_ref_name,
                 head_sha,
                 reviews,
@@ -297,6 +305,10 @@ fn parse_graphql_merged_prs(nodes: &serde_json::Value) -> Vec<GraphqlMergedPr> {
             Some(GraphqlMergedPr {
                 number: node.get("number")?.as_u64()?,
                 title: node.get("title")?.as_str()?.to_string(),
+                author_login: node
+                    .pointer("/author/login")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
                 url: node.get("url")?.as_str()?.to_string(),
                 merged_at: node.get("mergedAt")?.as_str()?.to_string(),
             })
@@ -333,6 +345,85 @@ fn parse_graphql_issues(nodes: &serde_json::Value) -> Vec<GraphqlIssue> {
 /// Evaluate check suites for a PR to determine overall CI status.
 /// Returns (has_failure, has_success). CANCELLED/NEUTRAL/SKIPPED/in-progress
 /// suites are ignored — CI passes when at least one suite succeeds and none fail.
+/// Check if a signal matches an author filter string.
+///
+/// Supported filter formats:
+/// - `"author:@me"` — matches if the PR author is the authenticated user
+/// - `"author:<username>"` — matches if the PR author is the given username
+///
+/// For signals that don't reference a PR (e.g. `github_release`), always passes.
+/// The PR number is extracted from the signal's `external_id` key patterns.
+fn signal_matches_author_filter(
+    signal: &SignalUpdate,
+    filter: &str,
+    my_username: Option<&str>,
+    pr_authors: &HashMap<u64, Option<String>>,
+) -> bool {
+    let target_username = if let Some(rest) = filter.strip_prefix("author:") {
+        let name = rest.trim();
+        if name.is_empty() {
+            return true; // bare "author:" with no value, don't filter
+        }
+        if name == "@me" {
+            match my_username {
+                Some(u) => u,
+                None => return true, // can't resolve @me, pass through
+            }
+        } else {
+            name
+        }
+    } else {
+        // Unknown filter format — don't filter
+        return true;
+    };
+
+    // Extract PR number from signal external_id key patterns:
+    //   pr-push-{repo}-{number}-{sha}
+    //   ci-failure-{repo}-{number}-{sha_short}
+    //   ci-pass-{repo}-{number}-{sha_short}
+    //   bot-review-{repo}-{number}-{review_id}
+    //   merged-{repo}-{number}
+    let pr_number = extract_pr_number_from_key(&signal.external_id);
+
+    match pr_number {
+        Some(num) => match pr_authors.get(&num) {
+            Some(Some(author)) => author.eq_ignore_ascii_case(target_username),
+            Some(None) => true, // Author unknown (ghost/deleted user), pass through
+            // PR not in GraphQL data (e.g. pagination limit) — pass through
+            // to avoid silently dropping signals we can't verify.
+            None => true,
+        },
+        None => true, // Not a PR-related signal, pass through
+    }
+}
+
+/// Extract a PR number from known signal external_id key patterns.
+///
+/// Keys have the form `{prefix}{owner}/{repo}-{number}` or
+/// `{prefix}{owner}/{repo}-{number}-{suffix}`. Since repo names can contain
+/// dashes (e.g. `my-cool-repo`), we split from the right to find the numeric
+/// PR number segment.
+fn extract_pr_number_from_key(key: &str) -> Option<u64> {
+    let has_suffix_prefixes = ["pr-push-", "ci-failure-", "ci-pass-", "bot-review-"];
+    let no_suffix_prefix = "merged-";
+
+    // "merged-" keys: {owner}/{repo}-{number} — PR number is always the last
+    // dash-separated segment, since there is no trailing suffix.
+    if let Some(rest) = key.strip_prefix(no_suffix_prefix) {
+        return rest.rsplit('-').next()?.parse().ok();
+    }
+
+    // Other keys: {owner}/{repo}-{number}-{suffix} — PR number is the
+    // second-to-last dash-separated segment (suffix is SHA or review ID).
+    let rest = has_suffix_prefixes
+        .iter()
+        .find_map(|p| key.strip_prefix(p))?;
+    let last_dash = rest.rfind('-')?;
+    let before_suffix = &rest[..last_dash];
+    before_suffix.rsplit('-').next()?.parse().ok()
+}
+
+/// Evaluate check suites and return (has_failure, has_success).
 fn evaluate_check_suites(check_suites: &[GraphqlCheckSuite]) -> (bool, bool) {
     let mut has_failure = false;
     let mut has_success = false;
@@ -712,7 +803,7 @@ impl GithubWatcher {
         };
 
         let query = format!(
-            r#"{{ repository(owner: "{owner}", name: "{name}") {{ openPRs: pullRequests(states: [OPEN], first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url headRefName updatedAt commits(last: 1) {{ nodes {{ commit {{ oid checkSuites(first: 10) {{ nodes {{ conclusion url checkRuns(first: 10) {{ nodes {{ name conclusion detailsUrl }} }} }} }} }} }} }} reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} mergedPRs: pullRequests(states: [MERGED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url mergedAt }} }} {issues_fragment} }} }}"#
+            r#"{{ repository(owner: "{owner}", name: "{name}") {{ openPRs: pullRequests(states: [OPEN], first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url headRefName updatedAt author {{ login }} commits(last: 1) {{ nodes {{ commit {{ oid checkSuites(first: 10) {{ nodes {{ conclusion url checkRuns(first: 10) {{ nodes {{ name conclusion detailsUrl }} }} }} }} }} }} }} reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} mergedPRs: pullRequests(states: [MERGED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url mergedAt author {{ login }} }} }} {issues_fragment} }} }}"#
         );
         let query_arg = format!("query={query}");
 
@@ -1041,6 +1132,26 @@ impl GithubWatcher {
             }
 
             ci_pass_prs.retain(|n| open_pr_numbers.contains(n));
+
+            // Apply per-event-type author filters
+            if !self.config.filters.is_empty() {
+                let mut pr_authors: HashMap<u64, Option<String>> = HashMap::new();
+                for pr in &gql.open_prs {
+                    pr_authors.insert(pr.number, pr.author_login.clone());
+                }
+                for pr in &gql.merged_prs {
+                    pr_authors.insert(pr.number, pr.author_login.clone());
+                }
+                signals.retain(|signal| match self.config.filters.get(&signal.source) {
+                    None => true,
+                    Some(filter) => signal_matches_author_filter(
+                        signal,
+                        filter,
+                        self.username.as_deref(),
+                        &pr_authors,
+                    ),
+                });
+            }
         }
 
         RepoPollResult {
@@ -1822,5 +1933,248 @@ mod tests {
         assert_eq!(result.open_prs.len(), 1);
         assert_eq!(result.merged_prs.len(), 1);
         assert_eq!(result.assigned_issues.len(), 1);
+    }
+
+    #[test]
+    fn test_extract_pr_number_from_key() {
+        assert_eq!(
+            extract_pr_number_from_key("pr-push-org/repo-42-abc123"),
+            Some(42)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("ci-failure-org/repo-7-abc"),
+            Some(7)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("ci-pass-org/repo-99-def"),
+            Some(99)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("bot-review-org/repo-10-555"),
+            Some(10)
+        );
+        assert_eq!(extract_pr_number_from_key("merged-org/repo-5"), Some(5));
+        // Repo names with dashes
+        assert_eq!(
+            extract_pr_number_from_key("pr-push-org/my-cool-repo-42-abc123"),
+            Some(42)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("ci-failure-org/my-repo-7-abc"),
+            Some(7)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("merged-org/dashed-name-5"),
+            Some(5)
+        );
+        // Hyphenated repo with numeric segment in the name
+        assert_eq!(
+            extract_pr_number_from_key("merged-org/service-2-17"),
+            Some(17)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("ci-pass-org/v2-api-99-abc"),
+            Some(99)
+        );
+        assert_eq!(extract_pr_number_from_key("release-org/repo-123"), None);
+        assert_eq!(extract_pr_number_from_key("random-key"), None);
+    }
+
+    #[test]
+    fn test_signal_matches_author_filter_me() {
+        let mut pr_authors = HashMap::new();
+        pr_authors.insert(42, Some("josh".to_string()));
+        pr_authors.insert(99, Some("other-user".to_string()));
+
+        let signal_42 = SignalUpdate::new(
+            "github_pr_push",
+            "pr-push-org/repo-42-abc123",
+            "pushed to PR",
+            Severity::Info,
+        );
+        let signal_99 = SignalUpdate::new(
+            "github_ci_pass",
+            "ci-pass-org/repo-99-def",
+            "CI passed",
+            Severity::Info,
+        );
+
+        // author:@me with username "josh" should match PR 42 but not PR 99
+        assert!(signal_matches_author_filter(
+            &signal_42,
+            "author:@me",
+            Some("josh"),
+            &pr_authors,
+        ));
+        assert!(!signal_matches_author_filter(
+            &signal_99,
+            "author:@me",
+            Some("josh"),
+            &pr_authors,
+        ));
+    }
+
+    #[test]
+    fn test_signal_matches_author_filter_literal() {
+        let mut pr_authors = HashMap::new();
+        pr_authors.insert(10, Some("bot-user".to_string()));
+
+        let signal = SignalUpdate::new(
+            "github_bot_review",
+            "bot-review-org/repo-10-555",
+            "bot reviewed",
+            Severity::Info,
+        );
+
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:bot-user",
+            None,
+            &pr_authors,
+        ));
+        assert!(!signal_matches_author_filter(
+            &signal,
+            "author:someone-else",
+            None,
+            &pr_authors,
+        ));
+    }
+
+    #[test]
+    fn test_signal_matches_author_filter_non_pr_signal_passes() {
+        let pr_authors = HashMap::new();
+
+        let signal = SignalUpdate::new(
+            "github_release",
+            "release-org/repo-123",
+            "new release",
+            Severity::Info,
+        );
+
+        // Non-PR signals always pass through filters
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:@me",
+            Some("josh"),
+            &pr_authors,
+        ));
+    }
+
+    #[test]
+    fn test_signal_matches_author_filter_no_filter_passes() {
+        let pr_authors = HashMap::new();
+
+        let signal = SignalUpdate::new(
+            "github_pr_push",
+            "pr-push-org/repo-42-abc",
+            "pushed",
+            Severity::Info,
+        );
+
+        // Unknown filter format passes through
+        assert!(signal_matches_author_filter(
+            &signal,
+            "unknown:value",
+            Some("josh"),
+            &pr_authors,
+        ));
+
+        // Empty "author:" value passes through
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:",
+            Some("josh"),
+            &pr_authors,
+        ));
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:   ",
+            Some("josh"),
+            &pr_authors,
+        ));
+    }
+
+    #[test]
+    fn test_signal_matches_author_filter_ghost_user_passes() {
+        let mut pr_authors = HashMap::new();
+        pr_authors.insert(42, None); // ghost/deleted user
+
+        let signal = SignalUpdate::new(
+            "github_pr_push",
+            "pr-push-org/repo-42-abc",
+            "pushed",
+            Severity::Info,
+        );
+
+        // Ghost user (None author) should pass through filter
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:@me",
+            Some("josh"),
+            &pr_authors,
+        ));
+    }
+
+    #[test]
+    fn test_signal_filtering_end_to_end() {
+        let mut pr_authors = HashMap::new();
+        pr_authors.insert(1, Some("josh".to_string()));
+        pr_authors.insert(2, Some("other".to_string()));
+
+        let signals = vec![
+            SignalUpdate::new(
+                "github_pr_push",
+                "pr-push-org/repo-1-aaa",
+                "push to #1",
+                Severity::Info,
+            ),
+            SignalUpdate::new(
+                "github_pr_push",
+                "pr-push-org/repo-2-bbb",
+                "push to #2",
+                Severity::Info,
+            ),
+            SignalUpdate::new(
+                "github_ci_pass",
+                "ci-pass-org/repo-1-aaa",
+                "CI pass #1",
+                Severity::Info,
+            ),
+            SignalUpdate::new(
+                "github_release",
+                "release-org/repo-100",
+                "new release",
+                Severity::Info,
+            ),
+            SignalUpdate::new(
+                "github_merged_pr",
+                "merged-org/repo-2",
+                "merged #2",
+                Severity::Info,
+            ),
+        ];
+
+        let mut filters = HashMap::new();
+        filters.insert("github_pr_push".to_string(), "author:@me".to_string());
+        filters.insert("github_ci_pass".to_string(), "author:@me".to_string());
+        // no filter for github_release or github_merged_pr
+
+        let filtered: Vec<_> = signals
+            .into_iter()
+            .filter(|signal| match filters.get(&signal.source) {
+                None => true,
+                Some(filter) => {
+                    signal_matches_author_filter(signal, filter, Some("josh"), &pr_authors)
+                }
+            })
+            .collect();
+
+        // Should keep: pr_push #1 (josh), ci_pass #1 (josh), release, merged_pr #2
+        // Should drop: pr_push #2 (other)
+        assert_eq!(filtered.len(), 4);
+        assert_eq!(filtered[0].external_id, "pr-push-org/repo-1-aaa");
+        assert_eq!(filtered[1].external_id, "ci-pass-org/repo-1-aaa");
+        assert_eq!(filtered[2].external_id, "release-org/repo-100");
+        assert_eq!(filtered[3].external_id, "merged-org/repo-2");
     }
 }
