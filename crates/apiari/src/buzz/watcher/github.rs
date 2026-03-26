@@ -361,6 +361,9 @@ fn signal_matches_author_filter(
 ) -> bool {
     let target_username = if let Some(rest) = filter.strip_prefix("author:") {
         let name = rest.trim();
+        if name.is_empty() {
+            return true; // bare "author:" with no value, don't filter
+        }
         if name == "@me" {
             match my_username {
                 Some(u) => u,
@@ -386,7 +389,9 @@ fn signal_matches_author_filter(
         Some(num) => match pr_authors.get(&num) {
             Some(Some(author)) => author.eq_ignore_ascii_case(target_username),
             Some(None) => true, // Author unknown (ghost/deleted user), pass through
-            None => true,       // PR not in GraphQL data, pass through
+            // PR not in GraphQL data (e.g. pagination limit) — pass through
+            // to avoid silently dropping signals we can't verify.
+            None => true,
         },
         None => true, // Not a PR-related signal, pass through
     }
@@ -399,31 +404,23 @@ fn signal_matches_author_filter(
 /// dashes (e.g. `my-cool-repo`), we split from the right to find the numeric
 /// PR number segment.
 fn extract_pr_number_from_key(key: &str) -> Option<u64> {
-    let prefixes = [
-        "pr-push-",
-        "ci-failure-",
-        "ci-pass-",
-        "bot-review-",
-        "merged-",
-    ];
-    let rest = prefixes.iter().find_map(|p| key.strip_prefix(p))?;
+    let has_suffix_prefixes = ["pr-push-", "ci-failure-", "ci-pass-", "bot-review-"];
+    let no_suffix_prefix = "merged-";
 
-    // rest = "owner/repo-name-NUM-SUFFIX" or "owner/repo-name-NUM"
-    // Strategy: split on '-' from the right. For keys with a suffix (SHA,
-    // review ID), the number is the second-to-last segment. For "merged-"
-    // keys with no suffix, it's the last segment.
-    let parts: Vec<&str> = rest.split('-').collect();
-
-    // Try second-to-last segment first (covers keys with a suffix),
-    // then fall back to last segment (covers "merged-owner/repo-NUM").
-    for &idx in &[parts.len().wrapping_sub(2), parts.len().wrapping_sub(1)] {
-        if idx < parts.len()
-            && let Ok(num) = parts[idx].parse::<u64>()
-        {
-            return Some(num);
-        }
+    // "merged-" keys: {owner}/{repo}-{number} — PR number is always the last
+    // dash-separated segment, since there is no trailing suffix.
+    if let Some(rest) = key.strip_prefix(no_suffix_prefix) {
+        return rest.rsplit('-').next()?.parse().ok();
     }
-    None
+
+    // Other keys: {owner}/{repo}-{number}-{suffix} — PR number is the
+    // second-to-last dash-separated segment (suffix is SHA or review ID).
+    let rest = has_suffix_prefixes
+        .iter()
+        .find_map(|p| key.strip_prefix(p))?;
+    let last_dash = rest.rfind('-')?;
+    let before_suffix = &rest[..last_dash];
+    before_suffix.rsplit('-').next()?.parse().ok()
 }
 
 /// Evaluate check suites and return (has_failure, has_success).
@@ -1970,6 +1967,15 @@ mod tests {
             extract_pr_number_from_key("merged-org/dashed-name-5"),
             Some(5)
         );
+        // Hyphenated repo with numeric segment in the name
+        assert_eq!(
+            extract_pr_number_from_key("merged-org/service-2-17"),
+            Some(17)
+        );
+        assert_eq!(
+            extract_pr_number_from_key("ci-pass-org/v2-api-99-abc"),
+            Some(99)
+        );
         assert_eq!(extract_pr_number_from_key("release-org/repo-123"), None);
         assert_eq!(extract_pr_number_from_key("random-key"), None);
     }
@@ -2072,6 +2078,20 @@ mod tests {
             Some("josh"),
             &pr_authors,
         ));
+
+        // Empty "author:" value passes through
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:",
+            Some("josh"),
+            &pr_authors,
+        ));
+        assert!(signal_matches_author_filter(
+            &signal,
+            "author:   ",
+            Some("josh"),
+            &pr_authors,
+        ));
     }
 
     #[test]
@@ -2096,7 +2116,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signal_filtering_integration() {
+    fn test_signal_filtering_end_to_end() {
         let mut pr_authors = HashMap::new();
         pr_authors.insert(1, Some("josh".to_string()));
         pr_authors.insert(2, Some("other".to_string()));
