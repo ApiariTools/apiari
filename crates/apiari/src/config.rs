@@ -1189,6 +1189,7 @@ max_session_turns = 0
     #[test]
     fn test_resolve_repos_explicit_override() {
         let config = WorkspaceConfig {
+            config_version: None,
             root: "/tmp/nonexistent".into(),
             repos: vec!["Org/Repo".to_string()],
             authority: WorkspaceAuthority::default(),
@@ -1214,6 +1215,7 @@ max_session_turns = 0
     fn test_resolve_repos_empty_discovers() {
         // With a non-existent root, discover_repos returns empty
         let config = WorkspaceConfig {
+            config_version: None,
             root: "/tmp/nonexistent-dir-12345".into(),
             repos: vec![],
             authority: WorkspaceAuthority::default(),
@@ -1238,6 +1240,7 @@ max_session_turns = 0
     #[test]
     fn test_to_buzz_config() {
         let ws = WorkspaceConfig {
+            config_version: None,
             root: "/tmp".into(),
             repos: vec![],
             authority: WorkspaceAuthority::default(),
@@ -1490,6 +1493,7 @@ max_session_turns = 0
     /// Helper to build a minimal WorkspaceConfig with a GitHub watcher for repo resolution tests.
     fn ws_with_github(ws_repos: Vec<String>, gh_repos: Vec<String>) -> WorkspaceConfig {
         WorkspaceConfig {
+            config_version: None,
             root: "/nonexistent".into(),
             repos: ws_repos,
             authority: WorkspaceAuthority::default(),
