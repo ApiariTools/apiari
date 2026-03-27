@@ -243,22 +243,26 @@ fn strip_heredoc_bodies(command: &str) -> String {
 /// `sh -c "..."`). These commands must NOT have their quoted strings stripped
 /// because the quoted content is the actual command to audit.
 fn is_shell_passthrough(command: &str) -> bool {
+    /// Characters that can appear immediately before a shell token and still
+    /// count as a word boundary: whitespace, path separators, and shell
+    /// chaining / grouping operators (including backtick for command
+    /// substitution).
+    fn is_boundary_before(b: u8) -> bool {
+        b.is_ascii_whitespace() || matches!(b, b'/' | b';' | b'&' | b'|' | b'(' | b'`')
+    }
+
     let shells = ["bash", "sh", "zsh", "fish"];
     for shell in shells {
-        // Match "bash -c", "bash  -c", "/bin/bash -c", "/usr/bin/env bash -c"
-        if let Some(pos) = command.find(shell) {
-            // Ensure whole-word match: char before must be whitespace or '/' (or start of string)
-            if pos > 0 {
-                let prev = command.as_bytes()[pos - 1];
-                if !prev.is_ascii_whitespace()
-                    && prev != b'/'
-                    && prev != b';'
-                    && prev != b'&'
-                    && prev != b'|'
-                    && prev != b'('
-                {
-                    continue;
-                }
+        // Iterate over *all* occurrences so a substring false-positive
+        // (e.g. "--squash") doesn't shadow a real match later in the string.
+        let mut start = 0;
+        while let Some(rel) = command[start..].find(shell) {
+            let pos = start + rel;
+            start = pos + 1; // advance for next iteration
+
+            // Char before must be a boundary or start of string
+            if pos > 0 && !is_boundary_before(command.as_bytes()[pos - 1]) {
+                continue;
             }
             // Char after must be whitespace or end of string
             let end = pos + shell.len();
@@ -1473,6 +1477,39 @@ if len(data) > 0:
             result.is_mutating(),
             "/bin/sh -c should still be detected as shell passthrough"
         );
+    }
+
+    #[test]
+    fn test_shell_passthrough_after_false_positive_substring() {
+        // "sh" appears first inside "--squash" (fails boundary), but a real
+        // "sh -c" later in the command must still be detected.
+        let result = classify_bash_command(r#"echo ok --squash && sh -c "rm -rf /""#);
+        assert!(
+            result.is_mutating(),
+            "sh -c after --squash should still be caught"
+        );
+        if let BashClassification::PotentiallyMutating { matched_pattern } = &result {
+            assert_eq!(
+                matched_pattern, "shell passthrough",
+                "should match as shell passthrough"
+            );
+        }
+    }
+
+    #[test]
+    fn test_shell_passthrough_in_backtick_substitution() {
+        // Backtick command substitution: `sh -c "..."` should be detected.
+        let result = classify_bash_command(r#"echo `sh -c "id"`"#);
+        assert!(
+            result.is_mutating(),
+            "sh -c inside backtick substitution should be caught"
+        );
+        if let BashClassification::PotentiallyMutating { matched_pattern } = &result {
+            assert_eq!(
+                matched_pattern, "shell passthrough",
+                "should match as shell passthrough"
+            );
+        }
     }
 
     #[test]
