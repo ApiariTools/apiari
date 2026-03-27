@@ -498,7 +498,7 @@ fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, ar
     } else {
         "\u{26a0}\u{fe0f}"
     };
-    let open_signals = ws.signals.len();
+    let open_signals = ws.kanban_cards.len();
     let title = format!(
         " Kanban \u{00b7} Watchers: {healthy}/{total} {health_icon} \u{00b7} Last poll: {last_poll} \u{00b7} Open: {open_signals} signals "
     );
