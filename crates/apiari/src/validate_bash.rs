@@ -207,13 +207,20 @@ mod tests {
     }
 
     #[test]
-    fn test_verdict_allow_for_gh_pr_merge_squash() {
+    fn test_verdict_deny_for_gh_pr_merge_squash() {
+        // gh pr merge is mutating — must be denied, and the reason should
+        // reference "gh pr merge", NOT "shell passthrough".
         let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --repo Org/repo --squash --delete-branch"}}"#;
-        assert_eq!(
-            evaluate(input),
-            Verdict::Allow,
-            "gh pr merge --squash must not be blocked by shell passthrough heuristic"
-        );
+        let verdict = evaluate(input);
+        match verdict {
+            Verdict::Deny { reason } => {
+                assert!(
+                    reason.contains("gh pr merge"),
+                    "reason should reference gh pr merge, not shell passthrough: {reason}"
+                );
+            }
+            Verdict::Allow => panic!("expected Deny for gh pr merge"),
+        }
     }
 
     #[test]

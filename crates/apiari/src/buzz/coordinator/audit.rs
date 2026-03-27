@@ -36,6 +36,7 @@ const WRITE_PATTERNS: &[&str] = &[
     "cargo install",
     "npm install",
     "pip install",
+    "gh pr merge",
 ];
 
 /// Git subcommands that mutate state.
@@ -249,7 +250,13 @@ fn is_shell_passthrough(command: &str) -> bool {
             // Ensure whole-word match: char before must be whitespace or '/' (or start of string)
             if pos > 0 {
                 let prev = command.as_bytes()[pos - 1];
-                if !prev.is_ascii_whitespace() && prev != b'/' {
+                if !prev.is_ascii_whitespace()
+                    && prev != b'/'
+                    && prev != b';'
+                    && prev != b'&'
+                    && prev != b'|'
+                    && prev != b'('
+                {
                     continue;
                 }
             }
@@ -1409,24 +1416,36 @@ if len(data) > 0:
 
     #[test]
     fn test_shell_passthrough_false_positive_squash() {
-        // "sh" inside "--squash" must not trigger shell passthrough detection
+        // "sh" inside "--squash" must not trigger shell passthrough detection.
+        // gh pr merge is mutating (matched by "gh pr merge"), but the matched
+        // pattern must NOT be "shell passthrough".
         let result =
             classify_bash_command("gh pr merge 160 --repo Org/repo --squash --delete-branch");
-        assert_eq!(
-            result,
-            BashClassification::ReadOnly,
-            "gh pr merge --squash should be ReadOnly, not a shell passthrough"
+        assert!(
+            result.is_mutating(),
+            "gh pr merge --squash should be mutating"
         );
+        if let BashClassification::PotentiallyMutating { matched_pattern } = &result {
+            assert_eq!(
+                matched_pattern, "gh pr merge",
+                "should match gh pr merge, not shell passthrough"
+            );
+        }
     }
 
     #[test]
     fn test_shell_passthrough_false_positive_squash_short() {
         let result = classify_bash_command("gh pr merge 160 --squash");
-        assert_eq!(
-            result,
-            BashClassification::ReadOnly,
-            "gh pr merge --squash (short) should be ReadOnly"
+        assert!(
+            result.is_mutating(),
+            "gh pr merge --squash should be mutating"
         );
+        if let BashClassification::PotentiallyMutating { matched_pattern } = &result {
+            assert_eq!(
+                matched_pattern, "gh pr merge",
+                "should match gh pr merge, not shell passthrough"
+            );
+        }
     }
 
     #[test]
