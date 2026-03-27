@@ -207,6 +207,16 @@ mod tests {
     }
 
     #[test]
+    fn test_verdict_allow_for_gh_pr_merge_squash() {
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --repo Org/repo --squash --delete-branch"}}"#;
+        assert_eq!(
+            evaluate(input),
+            Verdict::Allow,
+            "gh pr merge --squash must not be blocked by shell passthrough heuristic"
+        );
+    }
+
+    #[test]
     fn test_deny_json_structure() {
         // Verify the JSON written to stdout matches Claude Code's expected
         // hookSpecificOutput schema.
