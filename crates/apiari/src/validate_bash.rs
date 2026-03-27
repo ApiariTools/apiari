@@ -147,18 +147,22 @@ fn check_merge_allowed(cwd: &std::path::Path, workspaces: &[config::Workspace]) 
 /// Check if a command contains shell chaining operators that could bypass
 /// the allowlist (e.g. `gh pr merge 123 && git push`).
 ///
-/// Strips quoted strings first so that metacharacters inside arguments
-/// (e.g. `--body "a | b"`) don't trigger false positives.
+/// Command substitution (`$(...)` and backticks) is checked on the RAW
+/// command before quote-stripping, because the shell executes substitutions
+/// inside double quotes (e.g. `--body "$(rm -rf /)"` is still dangerous).
+/// Other metacharacters are checked on the quote-stripped form to avoid
+/// false positives from literal pipe/semicolons in argument values.
 fn contains_command_chaining(command: &str) -> bool {
+    // Check command substitution on raw command — these execute inside quotes.
+    if command.contains("$(") || command.contains('`') {
+        return true;
+    }
     let stripped = audit::strip_quoted_strings(command);
-    // Check for shell operators that chain or compose commands.
-    // This is intentionally conservative — reject anything suspicious.
+    // Check remaining shell operators on the stripped form.
     stripped.contains("&&")
         || stripped.contains("||")
         || stripped.contains('|')
         || stripped.contains(';')
-        || stripped.contains('`')
-        || stripped.contains("$(")
         || stripped.contains('&')
         || stripped.contains('\n')
         || stripped.contains('\r')
@@ -431,6 +435,23 @@ mod tests {
         // But unquoted metacharacters still trigger.
         assert!(contains_command_chaining(
             r#"gh pr merge 123 --body "safe" && git push"#
+        ));
+    }
+
+    #[test]
+    fn test_chaining_check_catches_substitution_inside_quotes() {
+        // Command substitution executes even inside double quotes — must be
+        // caught on the raw command before quote-stripping.
+        assert!(contains_command_chaining(
+            r#"gh pr merge 123 --body "$(rm -rf /)""#
+        ));
+        assert!(contains_command_chaining(
+            r#"gh pr merge 123 --body "`rm -rf /`""#
+        ));
+        // Single-quoted substitution: shell does NOT expand $() inside '', so
+        // this won't execute — but we still flag $(  for safety.
+        assert!(contains_command_chaining(
+            "gh pr merge 123 --body '$(rm -rf /)'"
         ));
     }
 
