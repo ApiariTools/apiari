@@ -322,6 +322,32 @@ mod tests {
     }
 
     #[test]
+    fn test_verdict_deny_gh_pr_merge_when_observe_mode() {
+        // Even with merge_prs=true, observe mode forces it off — must deny.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!(
+            "root = {cwd:?}\nauthority = \"observe\"\n\n[capabilities]\nmerge_prs = true\n",
+        );
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        let _guard = HomeGuard::new(tmp.path());
+
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
+        let verdict = evaluate(input);
+
+        match verdict {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("gh pr merge"));
+            }
+            Verdict::Allow => panic!("expected Deny when authority is observe"),
+        }
+    }
+
+    #[test]
     fn test_verdict_deny_gh_pr_merge_when_capability_disabled() {
         // When merge_prs is explicitly false, gh pr merge should be denied.
         let tmp = tempfile::tempdir().unwrap();
