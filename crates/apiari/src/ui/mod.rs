@@ -922,16 +922,16 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         }
     }
 
-    // Home panel (kanban strip) navigation — intercept before common handlers
-    if app.focused_panel == Panel::Home {
+    // Home panel (kanban strip) navigation — only when the strip is actually
+    // visible (not zoomed away, and terminal wide enough that we're not in the
+    // auto-zoom fallback path which collapses the strip).
+    if app.focused_panel == Panel::Home && app.zoomed_panel.is_none() && app.terminal_width >= 50 {
         match key.code {
-            // Note: narrow-terminal auto-focus doesn't set zoomed_panel, so
-            // Left/Right column navigation won't fire in that edge case.
-            KeyCode::Left | KeyCode::Char('h') if app.zoomed_panel.is_none() => {
+            KeyCode::Left | KeyCode::Char('h') => {
                 app.kanban_navigate_left();
                 return KeyAction::Redraw;
             }
-            KeyCode::Right | KeyCode::Char('l') if app.zoomed_panel.is_none() => {
+            KeyCode::Right | KeyCode::Char('l') => {
                 app.kanban_navigate_right();
                 return KeyAction::Redraw;
             }
