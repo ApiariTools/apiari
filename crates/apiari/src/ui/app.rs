@@ -463,11 +463,8 @@ fn signal_covered_by_worker(
 }
 
 /// How many cards in `stage` are actually visible in the kanban strip.
-/// Uses the same strip-height formula as the renderer (inlined here to
-/// avoid a circular dependency on the render module): strip height is
-/// `(max_cards * 2 + 3).clamp(3, 8)`, cards_fit = `(strip_h - 3) / 2`.
-/// Navigation and clamping use this so Enter/Dismiss never target an
-/// off-screen card.
+/// Mirrors the height logic in `render::compute_kanban_height` and the
+/// per-column clamping based on `area.height` in `render::draw_kanban_column`.
 fn ws_kanban_visible_count(ws: &WorkspaceState, stage: KanbanStage) -> usize {
     let total = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
     if total == 0 {
