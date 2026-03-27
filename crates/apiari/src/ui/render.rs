@@ -666,8 +666,12 @@ fn draw_kanban_column(
         Style::default().fg(theme::SMOKE)
     };
 
+    // Clamp selected index to the visible range; if the selected card is
+    // scrolled off (e.g. narrow terminal fits fewer cards), suppress highlight.
+    let visible_selected = selected.filter(|&i| i < show_count);
+
     for (card_idx, card) in cards.iter().take(show_count).enumerate() {
-        let is_selected = selected == Some(card_idx);
+        let is_selected = visible_selected == Some(card_idx);
 
         let effective_card_style = if is_selected {
             card_style.add_modifier(Modifier::REVERSED)
