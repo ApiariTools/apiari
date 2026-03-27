@@ -125,10 +125,13 @@ fn check_merge_allowed(cwd: &std::path::Path, workspaces: &[config::Workspace]) 
 
     if let Some(ws) = best {
         let caps = ws.config.capabilities.resolved(ws.config.authority);
-        // Match directly: Bool(true) allows, everything else denies.
-        // Branch-scoped configs fail closed because validate-bash doesn't
-        // know the target branch from the command line.
-        return matches!(caps.merge_prs, config::MergePrsCapability::Bool(true));
+        return match caps.merge_prs {
+            config::MergePrsCapability::Bool(allowed) => allowed,
+            // validate-bash can't determine the target branch from the command
+            // line, so branch-scoped configs are treated as "enabled" here.
+            // The coordinator enforces the per-branch restriction later.
+            config::MergePrsCapability::Branches(_) => true,
+        };
     }
 
     false
@@ -296,13 +299,14 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_denied_when_branch_scoped() {
-        // Branch-scoped configs fail closed — validate-bash can't determine
-        // the target branch from the command line.
+    fn test_merge_allowed_when_branch_scoped() {
+        // validate-bash can't determine the target branch, so branch-scoped
+        // configs are treated as "enabled" — the coordinator enforces the
+        // per-branch restriction later.
         let cwd = std::env::current_dir().unwrap();
         let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = [\"main\"]\n");
         let ws = test_workspace(&toml);
-        assert!(!check_merge_allowed(&cwd, &[ws]));
+        assert!(check_merge_allowed(&cwd, &[ws]));
     }
 
     #[test]
