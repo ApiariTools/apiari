@@ -283,7 +283,7 @@ fn is_shell_passthrough(command: &str) -> bool {
 /// stays intact. This prevents patterns inside string literals (e.g. date
 /// comparisons in `python3 -c` or `jq` filters) from triggering false
 /// positives in WRITE_PATTERNS or redirect detection.
-fn strip_quoted_strings(command: &str) -> String {
+pub(crate) fn strip_quoted_strings(command: &str) -> String {
     let mut result = String::with_capacity(command.len());
     let mut chars = command.chars().peekable();
 

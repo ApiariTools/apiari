@@ -143,20 +143,24 @@ fn check_merge_allowed(cwd: &std::path::Path, workspaces: &[config::Workspace]) 
 
 /// Check if a command contains shell chaining operators that could bypass
 /// the allowlist (e.g. `gh pr merge 123 && git push`).
+///
+/// Strips quoted strings first so that metacharacters inside arguments
+/// (e.g. `--body "a | b"`) don't trigger false positives.
 fn contains_command_chaining(command: &str) -> bool {
+    let stripped = audit::strip_quoted_strings(command);
     // Check for shell operators that chain or compose commands.
     // This is intentionally conservative — reject anything suspicious.
-    command.contains("&&")
-        || command.contains("||")
-        || command.contains('|')
-        || command.contains(';')
-        || command.contains('`')
-        || command.contains("$(")
-        || command.contains('&')
-        || command.contains('\n')
-        || command.contains('\r')
-        || command.contains(">(")
-        || command.contains("<(")
+    stripped.contains("&&")
+        || stripped.contains("||")
+        || stripped.contains('|')
+        || stripped.contains(';')
+        || stripped.contains('`')
+        || stripped.contains("$(")
+        || stripped.contains('&')
+        || stripped.contains('\n')
+        || stripped.contains('\r')
+        || stripped.contains(">(")
+        || stripped.contains("<(")
 }
 
 /// Extract the command string from the hook JSON input.
@@ -410,6 +414,21 @@ mod tests {
                 Verdict::Allow => panic!("expected Deny for chained command: {cmd}"),
             }
         }
+    }
+
+    #[test]
+    fn test_chaining_check_ignores_quoted_metacharacters() {
+        // Metacharacters inside quoted strings are arguments, not operators.
+        assert!(!contains_command_chaining(
+            r#"gh pr merge 123 --body "fix: a | b && c""#
+        ));
+        assert!(!contains_command_chaining(
+            "gh pr merge 123 --body 'use foo; bar'"
+        ));
+        // But unquoted metacharacters still trigger.
+        assert!(contains_command_chaining(
+            r#"gh pr merge 123 --body "safe" && git push"#
+        ));
     }
 
     // -- check_merge_allowed tests: use injected workspaces, no env var mutation --
