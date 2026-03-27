@@ -11,6 +11,7 @@
 //! (which can deregister the tool for the session).
 
 use crate::buzz::coordinator::audit::{self, BashClassification};
+use crate::config;
 use std::io::Read;
 
 /// The hook's verdict: either allow (no stdout) or deny (JSON on stdout).
@@ -70,12 +71,96 @@ fn evaluate(input: &str) -> Verdict {
 
     match audit::classify_bash_command_with_devmode(&command) {
         BashClassification::ReadOnly => Verdict::Allow,
-        BashClassification::PotentiallyMutating { matched_pattern } => Verdict::Deny {
-            reason: format!(
-                "BLOCKED: coordinator attempted mutating Bash command (matched: {matched_pattern})"
-            ),
-        },
+        BashClassification::PotentiallyMutating { matched_pattern } => {
+            // Allow gh pr merge if the workspace has merge_prs capability enabled
+            // AND the command is a single invocation (no chaining).
+            // Check both matched_pattern (the audit classifier's match) and the
+            // raw command start as a fallback — the command could match a broader
+            // pattern first (e.g. a shell passthrough) while still being a
+            // plain `gh pr merge` invocation that should be allowed.
+            let is_gh_pr_merge =
+                matched_pattern == "gh pr merge" || command.trim_start().starts_with("gh pr merge");
+            if is_gh_pr_merge && !contains_command_chaining(&command) && is_merge_allowed() {
+                return Verdict::Allow;
+            }
+            Verdict::Deny {
+                reason: format!(
+                    "BLOCKED: coordinator attempted mutating Bash command (matched: {matched_pattern})"
+                ),
+            }
+        }
     }
+}
+
+/// Check if the current workspace allows PR merging.
+///
+/// Scans `~/.config/apiari/workspaces/*.toml` for a workspace whose `root`
+/// matches the current working directory (or is a parent of it). If found,
+/// checks the `merge_prs` capability. Fails closed (returns false) if the
+/// config can't be loaded or no matching workspace is found.
+fn is_merge_allowed() -> bool {
+    // Fail closed if home dir can't be determined — config_dir() falls back
+    // to "." which could read arbitrary workspace configs from CWD.
+    if dirs::home_dir().is_none() {
+        return false;
+    }
+
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    let workspaces = match config::discover_workspaces() {
+        Ok(ws) => ws,
+        Err(_) => return false,
+    };
+
+    check_merge_allowed(&cwd, &workspaces)
+}
+
+/// Pure logic: check if merging is allowed for the given cwd and workspace list.
+///
+/// Separated from `is_merge_allowed()` so tests can inject workspaces directly
+/// without mutating environment variables.
+fn check_merge_allowed(cwd: &std::path::Path, workspaces: &[config::Workspace]) -> bool {
+    if let Some(ws) = config::workspace_for_cwd(workspaces, cwd) {
+        let caps = ws.config.capabilities.resolved(ws.config.authority);
+        return match caps.merge_prs {
+            config::MergePrsCapability::Bool(allowed) => allowed,
+            // validate-bash can't determine the target branch from the command
+            // line, so branch-scoped configs fail closed here. The coordinator
+            // has full context and enforces branch-scoped merges itself.
+            config::MergePrsCapability::Branches(_) => false,
+        };
+    }
+
+    false
+}
+
+/// Check if a command contains shell chaining operators that could bypass
+/// the allowlist (e.g. `gh pr merge 123 && git push`).
+///
+/// Command substitution (`$(...)` and backticks) is checked on the RAW
+/// command before quote-stripping, because the shell executes substitutions
+/// inside double quotes (e.g. `--body "$(rm -rf /)"` is still dangerous).
+/// Other metacharacters are checked on the quote-stripped form to avoid
+/// false positives from literal pipe/semicolons in argument values.
+fn contains_command_chaining(command: &str) -> bool {
+    // Check command substitution on raw command — these execute inside quotes.
+    if command.contains("$(") || command.contains('`') {
+        return true;
+    }
+    let stripped = audit::strip_quoted_strings(command);
+    // Check remaining shell operators on the stripped form.
+    stripped.contains("&&")
+        || stripped.contains("||")
+        || stripped.contains('|')
+        || stripped.contains(';')
+        || stripped.contains('&')
+        || stripped.contains('\n')
+        || stripped.contains('\r')
+        || stripped.contains(">(")
+        || stripped.contains("<(")
 }
 
 /// Extract the command string from the hook JSON input.
@@ -90,6 +175,51 @@ fn extract_command(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Tests that mutate HOME must hold this lock to avoid interfering with each other.
+    /// Note: this only serializes tests within this module. Tests in other modules that
+    /// read HOME could observe the temporary value. This is an accepted tradeoff — the
+    /// pure-logic check_merge_allowed() tests cover most cases without env mutation;
+    /// only the evaluate() end-to-end tests need HOME isolation.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that sets HOME on creation and restores (or removes) it on drop.
+    /// Holds the HOME_LOCK for the duration, and handles panics via Drop.
+    struct HomeGuard {
+        orig: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl HomeGuard {
+        fn new(new_home: &std::path::Path) -> Self {
+            let lock = HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let orig = std::env::var("HOME").ok();
+            // Safety: HOME_LOCK serializes all HOME-mutating tests in this module.
+            unsafe { std::env::set_var("HOME", new_home) };
+            Self { orig, _lock: lock }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.orig {
+                Some(h) => unsafe { std::env::set_var("HOME", h) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
+    /// Build a test workspace by parsing a TOML config string.
+    fn test_workspace(toml_content: &str) -> config::Workspace {
+        let cfg: config::WorkspaceConfig = toml::from_str(toml_content).expect("invalid test TOML");
+        config::Workspace {
+            name: "test".to_string(),
+            config: cfg,
+        }
+    }
 
     #[test]
     fn test_extract_command_valid() {
@@ -206,21 +336,175 @@ mod tests {
         );
     }
 
+    // -- evaluate() end-to-end tests for gh pr merge --
+
     #[test]
-    fn test_verdict_deny_for_gh_pr_merge_squash() {
-        // gh pr merge is mutating — must be denied, and the reason should
-        // reference "gh pr merge", NOT "shell passthrough".
+    fn test_evaluate_denies_gh_pr_merge_without_config() {
+        // evaluate() should deny gh pr merge when no workspace config matches
+        // (is_merge_allowed fails closed). Use empty temp HOME.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::new(tmp.path());
+
         let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --repo Org/repo --squash --delete-branch"}}"#;
-        let verdict = evaluate(input);
-        match verdict {
+        match evaluate(input) {
             Verdict::Deny { reason } => {
                 assert!(
                     reason.contains("gh pr merge"),
-                    "reason should reference gh pr merge, not shell passthrough: {reason}"
+                    "reason should reference gh pr merge: {reason}"
                 );
             }
-            Verdict::Allow => panic!("expected Deny for gh pr merge"),
+            Verdict::Allow => panic!("expected Deny for gh pr merge without config"),
         }
+    }
+
+    #[test]
+    fn test_evaluate_allows_gh_pr_merge_with_config() {
+        // evaluate() should allow gh pr merge when workspace has merge_prs=true.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = true\n");
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        let _guard = HomeGuard::new(tmp.path());
+
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
+        assert_eq!(
+            evaluate(input),
+            Verdict::Allow,
+            "evaluate() should allow gh pr merge when merge_prs=true"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_denies_gh_pr_merge_with_chaining() {
+        // Command chaining must always be denied, even with merge_prs enabled.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = true\n");
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        let _guard = HomeGuard::new(tmp.path());
+
+        let cases = &[
+            r#"gh pr merge 123 --squash && git push"#,
+            r#"gh pr merge 123 --squash; rm -rf /"#,
+            r#"gh pr merge 123 --squash || echo fail"#,
+            r#"gh pr merge 123 --squash | tee log"#,
+            r#"gh pr merge `echo 123` --squash"#,
+            r#"gh pr merge $(echo 123) --squash"#,
+            "gh pr merge 123 --squash & rm -rf /",
+            "gh pr merge 123 >(tee log) --squash",
+            "gh pr merge 123 <(cat prs) --squash",
+        ];
+
+        // Newlines/carriage returns can't be embedded in JSON test strings,
+        // so test contains_command_chaining directly for those.
+        assert!(contains_command_chaining("gh pr merge 123\nrm -rf /"));
+        assert!(contains_command_chaining("gh pr merge 123\rrm -rf /"));
+        for cmd in cases {
+            let input = format!(r#"{{"tool_name":"Bash","tool_input":{{"command":"{cmd}"}}}}"#,);
+            match evaluate(&input) {
+                Verdict::Deny { .. } => {} // expected
+                Verdict::Allow => panic!("expected Deny for chained command: {cmd}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_chaining_check_ignores_quoted_metacharacters() {
+        // Metacharacters inside quoted strings are arguments, not operators.
+        assert!(!contains_command_chaining(
+            r#"gh pr merge 123 --body "fix: a | b && c""#
+        ));
+        assert!(!contains_command_chaining(
+            "gh pr merge 123 --body 'use foo; bar'"
+        ));
+        // But unquoted metacharacters still trigger.
+        assert!(contains_command_chaining(
+            r#"gh pr merge 123 --body "safe" && git push"#
+        ));
+    }
+
+    #[test]
+    fn test_chaining_check_catches_substitution_inside_quotes() {
+        // Command substitution executes even inside double quotes — must be
+        // caught on the raw command before quote-stripping.
+        assert!(contains_command_chaining(
+            r#"gh pr merge 123 --body "$(rm -rf /)""#
+        ));
+        assert!(contains_command_chaining(
+            r#"gh pr merge 123 --body "`rm -rf /`""#
+        ));
+        // Single-quoted substitution: shell does NOT expand $() inside '', so
+        // this won't execute — but we still flag $(  for safety.
+        assert!(contains_command_chaining(
+            "gh pr merge 123 --body '$(rm -rf /)'"
+        ));
+    }
+
+    // -- check_merge_allowed tests: use injected workspaces, no env var mutation --
+
+    #[test]
+    fn test_merge_denied_when_no_workspaces() {
+        let cwd = std::env::current_dir().unwrap();
+        assert!(!check_merge_allowed(&cwd, &[]));
+    }
+
+    #[test]
+    fn test_merge_allowed_when_capability_enabled() {
+        let cwd = std::env::current_dir().unwrap();
+        let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = true\n");
+        let ws = test_workspace(&toml);
+        assert!(check_merge_allowed(&cwd, &[ws]));
+    }
+
+    #[test]
+    fn test_merge_denied_when_capability_disabled() {
+        let cwd = std::env::current_dir().unwrap();
+        let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = false\n");
+        let ws = test_workspace(&toml);
+        assert!(!check_merge_allowed(&cwd, &[ws]));
+    }
+
+    #[test]
+    fn test_merge_denied_when_branch_scoped() {
+        // validate-bash can't determine the target branch, so branch-scoped
+        // configs fail closed. The coordinator enforces branch-scoped merges.
+        let cwd = std::env::current_dir().unwrap();
+        let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = [\"main\"]\n");
+        let ws = test_workspace(&toml);
+        assert!(!check_merge_allowed(&cwd, &[ws]));
+    }
+
+    #[test]
+    fn test_merge_denied_when_observe_mode() {
+        // Observe mode forces merge_prs off even if config says true.
+        let cwd = std::env::current_dir().unwrap();
+        let toml = format!(
+            "root = {cwd:?}\nauthority = \"observe\"\n\n[capabilities]\nmerge_prs = true\n"
+        );
+        let ws = test_workspace(&toml);
+        assert!(!check_merge_allowed(&cwd, &[ws]));
+    }
+
+    #[test]
+    fn test_merge_uses_most_specific_workspace() {
+        // Nested roots: inner workspace (merge_prs=false) should win over
+        // outer workspace (merge_prs=true).
+        let cwd = std::env::current_dir().unwrap();
+        let parent = cwd.parent().unwrap();
+        let outer_toml = format!("root = {parent:?}\n\n[capabilities]\nmerge_prs = true\n");
+        let inner_toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = false\n");
+        let outer = test_workspace(&outer_toml);
+        let inner = test_workspace(&inner_toml);
+        // Order shouldn't matter — longest prefix wins.
+        assert!(!check_merge_allowed(&cwd, &[outer, inner]));
     }
 
     #[test]

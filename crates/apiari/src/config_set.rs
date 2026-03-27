@@ -21,13 +21,12 @@ fn find_workspace_config(workspace: Option<&str>) -> Result<(String, PathBuf)> {
         return Ok((name.to_string(), path));
     }
 
-    // Auto-detect: find workspace whose root contains cwd
+    // Auto-detect: find workspace whose root most specifically contains cwd.
     let cwd = std::env::current_dir().wrap_err("failed to get current directory")?;
-    for ws in crate::config::discover_workspaces()? {
-        if cwd.starts_with(&ws.config.root) {
-            let path = dir.join(format!("{}.toml", ws.name));
-            return Ok((ws.name, path));
-        }
+    let workspaces = crate::config::discover_workspaces()?;
+    if let Some(ws) = crate::config::workspace_for_cwd(&workspaces, &cwd) {
+        let path = dir.join(format!("{}.toml", ws.name));
+        return Ok((ws.name.clone(), path));
     }
 
     bail!(

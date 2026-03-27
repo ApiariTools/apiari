@@ -616,6 +616,21 @@ pub fn discover_workspaces() -> Result<Vec<Workspace>> {
     Ok(workspaces)
 }
 
+/// Find the workspace whose root most specifically (longest prefix) contains
+/// `cwd`. Returns `None` if no workspace root is a prefix of `cwd`.
+///
+/// Using longest-prefix matching ensures nested workspace roots resolve to the
+/// most specific workspace, which is the correct and consistent behavior.
+pub fn workspace_for_cwd<'a>(
+    workspaces: &'a [Workspace],
+    cwd: &std::path::Path,
+) -> Option<&'a Workspace> {
+    workspaces
+        .iter()
+        .filter(|ws| cwd.starts_with(&ws.config.root))
+        .max_by_key(|ws| ws.config.root.as_os_str().len())
+}
+
 /// Maximum directory depth for recursive repo discovery.
 const MAX_DISCOVER_DEPTH: u32 = 4;
 
