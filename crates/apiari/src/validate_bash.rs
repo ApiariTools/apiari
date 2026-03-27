@@ -102,11 +102,16 @@ fn is_merge_allowed() -> bool {
         Err(_) => return false,
     };
 
-    for ws in &workspaces {
-        if cwd.starts_with(&ws.config.root) {
-            let caps = ws.config.capabilities.resolved(ws.config.authority);
-            return caps.merge_prs.is_allowed(None);
-        }
+    // Find the most specific (longest root) matching workspace to handle
+    // nested workspace roots correctly.
+    let best = workspaces
+        .iter()
+        .filter(|ws| cwd.starts_with(&ws.config.root))
+        .max_by_key(|ws| ws.config.root.as_os_str().len());
+
+    if let Some(ws) = best {
+        let caps = ws.config.capabilities.resolved(ws.config.authority);
+        return caps.merge_prs.is_allowed(None);
     }
 
     false
@@ -128,6 +133,31 @@ mod tests {
 
     /// Tests that mutate HOME must hold this lock to avoid interfering with each other.
     static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that sets HOME on creation and restores (or removes) it on drop.
+    /// Holds the HOME_LOCK for the duration, and handles panics via Drop.
+    struct HomeGuard {
+        orig: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl HomeGuard {
+        fn new(new_home: &std::path::Path) -> Self {
+            let lock = HOME_LOCK.lock().unwrap();
+            let orig = std::env::var("HOME").ok();
+            unsafe { std::env::set_var("HOME", new_home) };
+            Self { orig, _lock: lock }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.orig {
+                Some(h) => unsafe { std::env::set_var("HOME", h) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
 
     #[test]
     fn test_extract_command_valid() {
@@ -246,21 +276,15 @@ mod tests {
 
     #[test]
     fn test_verdict_deny_for_gh_pr_merge_squash() {
-        let _guard = HOME_LOCK.lock().unwrap();
         // gh pr merge is mutating — denied when no workspace config matches
         // (is_merge_allowed fails closed). The reason should reference
         // "gh pr merge", NOT "shell passthrough".
         // Use an empty temp HOME so no real workspace config interferes.
         let tmp = tempfile::tempdir().unwrap();
-        let orig_home = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let _guard = HomeGuard::new(tmp.path());
 
         let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --repo Org/repo --squash --delete-branch"}}"#;
         let verdict = evaluate(input);
-
-        if let Some(h) = orig_home {
-            unsafe { std::env::set_var("HOME", h) };
-        }
 
         match verdict {
             Verdict::Deny { reason } => {
@@ -275,7 +299,6 @@ mod tests {
 
     #[test]
     fn test_verdict_allow_gh_pr_merge_when_capability_enabled() {
-        let _guard = HOME_LOCK.lock().unwrap();
         // When a workspace config with merge_prs=true exists and its root
         // matches the current directory, gh pr merge should be allowed.
         let tmp = tempfile::tempdir().unwrap();
@@ -286,17 +309,10 @@ mod tests {
         let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = true\n",);
         std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
 
-        // Point config dir to our temp dir
-        let orig_home = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let _guard = HomeGuard::new(tmp.path());
 
         let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
         let verdict = evaluate(input);
-
-        // Restore HOME
-        if let Some(h) = orig_home {
-            unsafe { std::env::set_var("HOME", h) };
-        }
 
         assert_eq!(
             verdict,
@@ -307,7 +323,6 @@ mod tests {
 
     #[test]
     fn test_verdict_deny_gh_pr_merge_when_capability_disabled() {
-        let _guard = HOME_LOCK.lock().unwrap();
         // When merge_prs is explicitly false, gh pr merge should be denied.
         let tmp = tempfile::tempdir().unwrap();
         let ws_dir = tmp.path().join(".config/apiari/workspaces");
@@ -317,15 +332,10 @@ mod tests {
         let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = false\n",);
         std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
 
-        let orig_home = std::env::var("HOME").ok();
-        unsafe { std::env::set_var("HOME", tmp.path()) };
+        let _guard = HomeGuard::new(tmp.path());
 
         let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
         let verdict = evaluate(input);
-
-        if let Some(h) = orig_home {
-            unsafe { std::env::set_var("HOME", h) };
-        }
 
         match verdict {
             Verdict::Deny { reason } => {
