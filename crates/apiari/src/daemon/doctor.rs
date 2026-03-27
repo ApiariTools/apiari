@@ -248,6 +248,7 @@ mod tests {
             daemon_port: None,
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
+            schedule: None,
         }
     }
 
