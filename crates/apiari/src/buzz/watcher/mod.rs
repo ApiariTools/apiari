@@ -190,11 +190,6 @@ impl WatcherRegistry {
         &mut self.watchers
     }
 
-    /// Return a mutable reference to the most-recently-added watcher.
-    pub fn last_watcher_mut(&mut self) -> Option<&mut ThrottledWatcher> {
-        self.watchers.last_mut()
-    }
-
     pub fn is_empty(&self) -> bool {
         self.watchers.is_empty()
     }

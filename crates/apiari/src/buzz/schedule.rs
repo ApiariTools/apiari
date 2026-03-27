@@ -6,9 +6,16 @@ use tracing::warn;
 
 use crate::config::Schedule;
 
-/// Validate a schedule at configuration-load time and emit a `warn!` for any
+/// Valid lowercase day abbreviations accepted in `active_days`.
+const VALID_DAYS: &[&str] = &["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+/// Validate a schedule at configuration-load time and emit `warn!` for any
 /// malformed fields.  Call this once per watcher/workspace at startup — not
 /// in the poll hot path.
+///
+/// Malformed constraints are silently ignored at runtime (the constraint is
+/// treated as absent) so that a misconfigured schedule does not break polling
+/// entirely.  This function is the single place where the user is notified.
 pub fn warn_if_invalid(schedule: &Schedule) {
     if let Some(ref hours) = schedule.active_hours
         && parse_active_hours(hours).is_none()
@@ -18,6 +25,17 @@ pub fn warn_if_invalid(schedule: &Schedule) {
              hours constraint will be ignored",
             hours
         );
+    }
+    if let Some(ref days) = schedule.active_days {
+        for day in days {
+            if !VALID_DAYS.iter().any(|&v| day.eq_ignore_ascii_case(v)) {
+                warn!(
+                    "schedule.active_days contains unknown day {:?} \
+                     (expected one of mon/tue/wed/thu/fri/sat/sun); entry will never match",
+                    day
+                );
+            }
+        }
     }
 }
 
@@ -33,20 +51,24 @@ fn is_within_active_hours_at(schedule: &Schedule, now: NaiveDateTime) -> bool {
         return true;
     }
 
-    // Check active days first (cheap).
+    // Check active days first (cheap).  Day strings are compared case-insensitively
+    // without allocation; malformed entries silently never match.
     if let Some(ref days) = schedule.active_days {
         let day_str = weekday_str(now.weekday());
-        if !days.iter().any(|d| d.to_lowercase() == day_str) {
+        if !days.iter().any(|d| d.eq_ignore_ascii_case(day_str)) {
             return false;
         }
     }
 
-    // Check active hours window.  Malformed strings are silently ignored (no hours
-    // constraint applied) — callers should invoke `warn_if_invalid` at startup.
+    // Check active hours window.  Malformed strings are silently ignored (treated as
+    // "no hours constraint") — `warn_if_invalid` is called at startup to surface them.
     if let Some(ref hours) = schedule.active_hours
         && let Some((start, end)) = parse_active_hours(hours)
     {
         let current = now.time();
+        // When start == end (e.g. "00:00-00:00"), start <= end is true and the window
+        // `current >= start && current < end` is empty — the schedule is never active.
+        // This is intentional: an equal-endpoint range means "always inactive".
         let within = if start <= end {
             // Normal range e.g. 09:00-18:00
             current >= start && current < end
@@ -190,6 +212,15 @@ mod tests {
     }
 
     #[test]
+    fn test_equal_start_end_is_never_active() {
+        // "00:00-00:00": start == end means the window is empty — always inactive.
+        let s = schedule(Some("00:00-00:00"), None);
+        assert!(!is_within_active_hours_at(&s, mon(0, 0)));
+        assert!(!is_within_active_hours_at(&s, mon(12, 0)));
+        assert!(!is_within_active_hours_at(&s, mon(23, 59)));
+    }
+
+    #[test]
     fn test_weekday_filter_active_on_configured_days() {
         let s = schedule(Some("09:00-18:00"), Some(vec!["mon", "wed"]));
         assert!(is_within_active_hours_at(&s, mon(10, 0)));
@@ -230,11 +261,20 @@ mod tests {
 
     #[test]
     fn test_malformed_hours_treated_as_unrestricted() {
-        // When hours is malformed, the hours constraint is ignored (warn is emitted
-        // at runtime but doesn't panic). Days constraint still applies.
+        // When hours is malformed, the hours constraint is silently ignored at runtime
+        // (warn_if_invalid logs a warning at startup). Days constraint still applies.
         let s = schedule(Some("9am-5pm"), Some(vec!["mon"]));
         // Monday — days pass; malformed hours → hours ignored → active
         assert!(is_within_active_hours_at(&s, mon(10, 0)));
+    }
+
+    #[test]
+    fn test_active_days_case_insensitive() {
+        // Day names are matched case-insensitively.
+        let s = schedule(None, Some(vec!["Mon", "WED", "FRI"]));
+        assert!(is_within_active_hours_at(&s, mon(10, 0)));
+        assert!(is_within_active_hours_at(&s, wed(10, 0)));
+        assert!(!is_within_active_hours_at(&s, sat(10, 0)));
     }
 
     #[test]
@@ -253,15 +293,40 @@ mod tests {
         }
     }
 
+    // ── is_within_active_hours (public API, uses Local::now()) ─────────────
+
     #[test]
-    fn test_is_within_active_hours_delegates_to_local_now() {
-        // Smoke-test the public API: an empty schedule is always active regardless of time.
+    fn test_is_within_active_hours_empty_schedule_always_active() {
+        // An unconstrained schedule is always active regardless of Local::now().
         assert!(is_within_active_hours(&Schedule::default()));
-        // All 7 days — never blocked by day filter.
-        let all_days = schedule(
+    }
+
+    #[test]
+    fn test_is_within_active_hours_all_days_no_hours() {
+        // All 7 days configured, no hours constraint — always active.
+        let s = schedule(
             None,
             Some(vec!["mon", "tue", "wed", "thu", "fri", "sat", "sun"]),
         );
-        assert!(is_within_active_hours(&all_days));
+        assert!(is_within_active_hours(&s));
+    }
+
+    // ── warn_if_invalid ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_warn_if_invalid_valid_schedule_no_panic() {
+        warn_if_invalid(&schedule(Some("09:00-18:00"), Some(vec!["mon", "fri"])));
+    }
+
+    #[test]
+    fn test_warn_if_invalid_malformed_hours_no_panic() {
+        // Should log a warning but not panic.
+        warn_if_invalid(&schedule(Some("not-a-time"), None));
+    }
+
+    #[test]
+    fn test_warn_if_invalid_unknown_day_no_panic() {
+        // Should log a warning but not panic.
+        warn_if_invalid(&schedule(None, Some(vec!["monday", "xyz"])));
     }
 }

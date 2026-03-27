@@ -122,7 +122,15 @@ impl MergePrsCapability {
     }
 }
 
-/// Current workspace config version. Bump when adding new fields or changing semantics.
+/// Current workspace config version.
+///
+/// Bump this constant whenever you:
+/// - Add, remove, or rename a config field
+/// - Change the meaning or valid values of an existing field
+/// - Change default behaviour in a way that affects existing configs
+///
+/// The daemon's doctor check (`apiari doctor`) compares the on-disk `config_version`
+/// against this value and warns users whose configs are older than the current version.
 pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
 /// Schedule configuration — defines when watchers and signal hooks are active.
