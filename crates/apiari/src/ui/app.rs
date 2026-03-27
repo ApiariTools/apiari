@@ -422,6 +422,24 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
     cards
 }
 
+/// Remove stale entries from `kanban_dismissed` so it doesn't grow without
+/// bound over a long TUI session.  An ID is kept only if its underlying
+/// worker or signal still exists in the workspace.
+fn prune_kanban_dismissed(ws: &mut WorkspaceState) {
+    ws.kanban_dismissed.retain(|id| {
+        if let Some(worker_id) = id.strip_prefix("worker:") {
+            ws.workers.iter().any(|w| w.id == worker_id)
+        } else if let Some(sig_id_str) = id.strip_prefix("signal:") {
+            sig_id_str
+                .parse::<i64>()
+                .map(|sig_id| ws.signals.iter().any(|s| s.id == sig_id))
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    });
+}
+
 /// Check if a signal is already represented by a worker's PR card.
 fn signal_covered_by_worker(
     sig: &SignalRecord,
@@ -444,9 +462,12 @@ fn signal_covered_by_worker(
     false
 }
 
-/// How many cards in `stage` are actually visible in the kanban strip,
-/// using the same height formula as `render::kanban_strip_height`.
-/// Navigation and clamping use this to avoid selecting off-screen cards.
+/// How many cards in `stage` are actually visible in the kanban strip.
+/// Uses the same strip-height formula as the renderer (inlined here to
+/// avoid a circular dependency on the render module): strip height is
+/// `(max_cards * 2 + 3).clamp(3, 8)`, cards_fit = `(strip_h - 3) / 2`.
+/// Navigation and clamping use this so Enter/Dismiss never target an
+/// off-screen card.
 fn ws_kanban_visible_count(ws: &WorkspaceState, stage: KanbanStage) -> usize {
     let total = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
     if total == 0 {
@@ -2753,7 +2774,8 @@ impl App {
             }
 
             ws.prev_signal_ids = current_ids;
-            // Rebuild kanban cards from updated state
+            // Rebuild kanban cards from updated state (prune stale dismissed IDs first)
+            prune_kanban_dismissed(ws);
             ws.kanban_cards = build_kanban_cards(ws);
         }
         self.last_signal_refresh = Instant::now();
@@ -2866,7 +2888,8 @@ impl App {
                     .collect();
 
                 ws.workers = new_workers;
-                // Rebuild kanban cards from updated state
+                // Rebuild kanban cards from updated state (prune stale dismissed IDs first)
+                prune_kanban_dismissed(ws);
                 ws.kanban_cards = build_kanban_cards(ws);
             }
         }
@@ -2915,7 +2938,8 @@ impl App {
 
                 ws.prev_signal_ids = current_ids;
                 ws.signals = new_signals;
-                // Rebuild kanban cards from updated state
+                // Rebuild kanban cards from updated state (prune stale dismissed IDs first)
+                prune_kanban_dismissed(ws);
                 ws.kanban_cards = build_kanban_cards(ws);
             }
         }
