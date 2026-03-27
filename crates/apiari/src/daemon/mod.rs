@@ -1005,7 +1005,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .as_ref()
                     .and_then(|g| g.active_hours.as_deref()),
             );
-            registry.add_with_interval_and_hours(
+            registry.add_with_interval_and_schedule(
                 Box::new(gh_watcher),
                 gh_config.interval_secs,
                 gh_sched.clone(),
@@ -1028,7 +1028,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     },
                     query_names.join(", ")
                 );
-                registry.add_with_interval_and_hours(
+                registry.add_with_interval_and_schedule(
                     Box::new(ReviewQueueWatcher::new(gh_config)),
                     gh_config.interval_secs,
                     gh_sched,
@@ -1051,7 +1051,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .as_ref()
                     .and_then(|s| s.active_hours.as_deref()),
             );
-            registry.add_with_interval_and_hours(
+            registry.add_with_interval_and_schedule(
                 Box::new(SentryWatcher::new(sentry_config.clone())),
                 sentry_config.interval_secs,
                 sentry_sched,
@@ -1077,7 +1077,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .as_ref()
                     .and_then(|s| s.active_hours.as_deref()),
             );
-            registry.add_with_interval_and_hours(
+            registry.add_with_interval_and_schedule(
                 Box::new(SwarmWatcher::new(ws.config.root.clone())),
                 swarm_config.interval_secs,
                 swarm_sched,
@@ -1108,7 +1108,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .get(i)
                     .and_then(|e| e.active_hours.as_deref()),
             );
-            registry.add_with_interval_and_hours(
+            registry.add_with_interval_and_schedule(
                 Box::new(watcher),
                 email_config.interval_secs,
                 email_sched,
@@ -1137,7 +1137,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .get(i)
                     .and_then(|n| n.active_hours.as_deref()),
             );
-            registry.add_with_interval_and_hours(
+            registry.add_with_interval_and_schedule(
                 Box::new(watcher),
                 notion_config.interval_secs,
                 notion_sched,
@@ -1184,7 +1184,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .get(i)
                     .and_then(|l| l.active_hours.as_deref()),
             );
-            registry.add_with_interval_and_hours(
+            registry.add_with_interval_and_schedule(
                 Box::new(watcher),
                 linear_config.poll_interval_secs,
                 linear_sched,
@@ -1204,7 +1204,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .get(i)
                     .and_then(|s| s.active_hours.as_deref()),
             );
-            registry.add_with_interval_and_hours(
+            registry.add_with_interval_and_schedule(
                 Box::new(ScriptWatcher::new(script_config.clone())),
                 script_config.interval_secs,
                 script_sched,
@@ -2340,7 +2340,7 @@ pub fn show_status(workspace_filter: Option<&str>) -> Result<()> {
                         .join(", ")
                 })
                 .unwrap_or_else(|| "all days".to_string());
-            println!("  Schedule: paused (active {hours_str}, {days_str})\n");
+            println!("  Schedule: paused (active {hours_str}, {days_str})");
         }
     }
 

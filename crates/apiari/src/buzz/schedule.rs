@@ -51,10 +51,28 @@ fn is_within_active_hours_at(schedule: &Schedule, now: NaiveDateTime) -> bool {
         return true;
     }
 
-    // Check active days first (cheap).  Day strings are compared case-insensitively
-    // without allocation; malformed entries silently never match.
+    // Determine whether we're in the post-midnight tail of an overnight window.
+    // For active_days purposes the "logical day" for such times is the *previous*
+    // calendar day — e.g. 01:00 Saturday during a "22:00-06:00 fri" window should
+    // still be considered Friday.
+    let is_overnight_tail = if let Some(ref hours) = schedule.active_hours
+        && let Some((start, end)) = parse_active_hours(hours)
+        && start > end
+    {
+        now.time() < end
+    } else {
+        false
+    };
+
+    // Check active days.  Day strings are compared case-insensitively without
+    // allocation; malformed entries silently never match.
     if let Some(ref days) = schedule.active_days {
-        let day_str = weekday_str(now.weekday());
+        let logical_day = if is_overnight_tail {
+            now.weekday().pred()
+        } else {
+            now.weekday()
+        };
+        let day_str = weekday_str(logical_day);
         if !days.iter().any(|d| d.eq_ignore_ascii_case(day_str)) {
             return false;
         }
@@ -130,6 +148,9 @@ mod tests {
     }
     fn wed(h: u32, m: u32) -> NaiveDateTime {
         at(2, h, m)
+    }
+    fn fri(h: u32, m: u32) -> NaiveDateTime {
+        at(4, h, m)
     }
     fn sat(h: u32, m: u32) -> NaiveDateTime {
         at(5, h, m)
@@ -209,6 +230,29 @@ mod tests {
         assert!(!is_within_active_hours_at(&s, mon(6, 0)));
         assert!(!is_within_active_hours_at(&s, mon(12, 0)));
         assert!(!is_within_active_hours_at(&s, mon(21, 59)));
+    }
+
+    #[test]
+    fn test_overnight_days_pre_midnight_uses_current_day() {
+        // 22:30 Friday is within "22:00-06:00" and the logical day is Friday.
+        let s = schedule(Some("22:00-06:00"), Some(vec!["fri"]));
+        assert!(is_within_active_hours_at(&s, fri(22, 30)));
+    }
+
+    #[test]
+    fn test_overnight_days_post_midnight_uses_previous_day() {
+        // 01:00 Saturday is the post-midnight tail of a "22:00-06:00 fri" window.
+        // The logical day for this time is Friday, so it should be active.
+        let s = schedule(Some("22:00-06:00"), Some(vec!["fri"]));
+        assert!(is_within_active_hours_at(&s, sat(1, 0)));
+    }
+
+    #[test]
+    fn test_overnight_days_post_midnight_excluded_day() {
+        // 01:00 Saturday is the post-midnight tail, logical day = Friday.
+        // If only Saturday is configured, the window should NOT match.
+        let s = schedule(Some("22:00-06:00"), Some(vec!["sat"]));
+        assert!(!is_within_active_hours_at(&s, sat(1, 0)));
     }
 
     #[test]

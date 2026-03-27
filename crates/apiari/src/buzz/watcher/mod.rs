@@ -175,7 +175,7 @@ impl WatcherRegistry {
     /// Add a watcher with a poll interval and a precomputed effective schedule.
     /// The caller is responsible for merging per-watcher and workspace schedules before calling.
     /// Prefer this over `add_with_interval` to keep schedule wiring in one place.
-    pub fn add_with_interval_and_hours(
+    pub fn add_with_interval_and_schedule(
         &mut self,
         watcher: Box<dyn Watcher>,
         interval_secs: u64,
