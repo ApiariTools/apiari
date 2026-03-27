@@ -4507,26 +4507,31 @@ mod tests {
         let mut ws = empty_ws();
         ws.signals = vec![make_signal("github_release", "rel-v1.0", None)];
         let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].icon, "🚀");
 
         // Email → 📧
         ws.signals = vec![make_signal("email", "email-1", None)];
         let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].icon, "📧");
 
         // Notion → 📓
         ws.signals = vec![make_signal("notion", "notion-1", None)];
         let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].icon, "📓");
 
         // Linear → 📋
         ws.signals = vec![make_signal("linear", "lin-1", None)];
         let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].icon, "📋");
 
         // Unknown → ⚡
         ws.signals = vec![make_signal("unknown_source", "unk-1", None)];
         let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].icon, "⚡");
     }
 }
