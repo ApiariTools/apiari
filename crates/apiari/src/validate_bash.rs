@@ -123,14 +123,7 @@ fn is_merge_allowed() -> bool {
 /// Separated from `is_merge_allowed()` so tests can inject workspaces directly
 /// without mutating environment variables.
 fn check_merge_allowed(cwd: &std::path::Path, workspaces: &[config::Workspace]) -> bool {
-    // Find the most specific (longest root) matching workspace to handle
-    // nested workspace roots correctly.
-    let best = workspaces
-        .iter()
-        .filter(|ws| cwd.starts_with(&ws.config.root))
-        .max_by_key(|ws| ws.config.root.as_os_str().len());
-
-    if let Some(ws) = best {
+    if let Some(ws) = config::workspace_for_cwd(workspaces, cwd) {
         let caps = ws.config.capabilities.resolved(ws.config.authority);
         return match caps.merge_prs {
             config::MergePrsCapability::Bool(allowed) => allowed,
