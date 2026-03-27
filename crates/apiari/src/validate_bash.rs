@@ -73,7 +73,11 @@ fn evaluate(input: &str) -> Verdict {
         BashClassification::ReadOnly => Verdict::Allow,
         BashClassification::PotentiallyMutating { matched_pattern } => {
             // Allow gh pr merge if the workspace has merge_prs capability enabled
-            if matched_pattern == "gh pr merge" && is_merge_allowed() {
+            // AND the command is a single invocation (no chaining).
+            if matched_pattern == "gh pr merge"
+                && !contains_command_chaining(&command)
+                && is_merge_allowed()
+            {
                 return Verdict::Allow;
             }
             Verdict::Deny {
@@ -128,13 +132,26 @@ fn check_merge_allowed(cwd: &std::path::Path, workspaces: &[config::Workspace]) 
         return match caps.merge_prs {
             config::MergePrsCapability::Bool(allowed) => allowed,
             // validate-bash can't determine the target branch from the command
-            // line, so branch-scoped configs are treated as "enabled" here.
-            // The coordinator enforces the per-branch restriction later.
-            config::MergePrsCapability::Branches(_) => true,
+            // line, so branch-scoped configs fail closed here. The coordinator
+            // has full context and enforces branch-scoped merges itself.
+            config::MergePrsCapability::Branches(_) => false,
         };
     }
 
     false
+}
+
+/// Check if a command contains shell chaining operators that could bypass
+/// the allowlist (e.g. `gh pr merge 123 && git push`).
+fn contains_command_chaining(command: &str) -> bool {
+    // Check for shell operators that chain or compose commands.
+    // This is intentionally conservative — reject anything suspicious.
+    command.contains("&&")
+        || command.contains("||")
+        || command.contains('|')
+        || command.contains(';')
+        || command.contains('`')
+        || command.contains("$(")
 }
 
 /// Extract the command string from the hook JSON input.
@@ -149,6 +166,38 @@ fn extract_command(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Tests that mutate HOME must hold this lock to avoid interfering with each other.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that sets HOME on creation and restores (or removes) it on drop.
+    /// Holds the HOME_LOCK for the duration, and handles panics via Drop.
+    struct HomeGuard {
+        orig: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl HomeGuard {
+        fn new(new_home: &std::path::Path) -> Self {
+            let lock = HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let orig = std::env::var("HOME").ok();
+            // Safety: HOME_LOCK serializes all HOME-mutating tests in this module.
+            unsafe { std::env::set_var("HOME", new_home) };
+            Self { orig, _lock: lock }
+        }
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match &self.orig {
+                Some(h) => unsafe { std::env::set_var("HOME", h) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
 
     /// Build a test workspace by parsing a TOML config string.
     fn test_workspace(toml_content: &str) -> config::Workspace {
@@ -274,6 +323,78 @@ mod tests {
         );
     }
 
+    // -- evaluate() end-to-end tests for gh pr merge --
+
+    #[test]
+    fn test_evaluate_denies_gh_pr_merge_without_config() {
+        // evaluate() should deny gh pr merge when no workspace config matches
+        // (is_merge_allowed fails closed). Use empty temp HOME.
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = HomeGuard::new(tmp.path());
+
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --repo Org/repo --squash --delete-branch"}}"#;
+        match evaluate(input) {
+            Verdict::Deny { reason } => {
+                assert!(
+                    reason.contains("gh pr merge"),
+                    "reason should reference gh pr merge: {reason}"
+                );
+            }
+            Verdict::Allow => panic!("expected Deny for gh pr merge without config"),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_allows_gh_pr_merge_with_config() {
+        // evaluate() should allow gh pr merge when workspace has merge_prs=true.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = true\n");
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        let _guard = HomeGuard::new(tmp.path());
+
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
+        assert_eq!(
+            evaluate(input),
+            Verdict::Allow,
+            "evaluate() should allow gh pr merge when merge_prs=true"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_denies_gh_pr_merge_with_chaining() {
+        // Command chaining must always be denied, even with merge_prs enabled.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = true\n");
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        let _guard = HomeGuard::new(tmp.path());
+
+        let cases = &[
+            r#"gh pr merge 123 --squash && git push"#,
+            r#"gh pr merge 123 --squash; rm -rf /"#,
+            r#"gh pr merge 123 --squash || echo fail"#,
+            r#"gh pr merge 123 --squash | tee log"#,
+            r#"gh pr merge `echo 123` --squash"#,
+            r#"gh pr merge $(echo 123) --squash"#,
+        ];
+        for cmd in cases {
+            let input = format!(r#"{{"tool_name":"Bash","tool_input":{{"command":"{cmd}"}}}}"#,);
+            match evaluate(&input) {
+                Verdict::Deny { .. } => {} // expected
+                Verdict::Allow => panic!("expected Deny for chained command: {cmd}"),
+            }
+        }
+    }
+
     // -- check_merge_allowed tests: use injected workspaces, no env var mutation --
 
     #[test]
@@ -299,14 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_allowed_when_branch_scoped() {
+    fn test_merge_denied_when_branch_scoped() {
         // validate-bash can't determine the target branch, so branch-scoped
-        // configs are treated as "enabled" — the coordinator enforces the
-        // per-branch restriction later.
+        // configs fail closed. The coordinator enforces branch-scoped merges.
         let cwd = std::env::current_dir().unwrap();
         let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = [\"main\"]\n");
         let ws = test_workspace(&toml);
-        assert!(check_merge_allowed(&cwd, &[ws]));
+        assert!(!check_merge_allowed(&cwd, &[ws]));
     }
 
     #[test]
