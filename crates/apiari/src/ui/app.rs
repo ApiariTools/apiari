@@ -444,6 +444,33 @@ fn signal_covered_by_worker(
     false
 }
 
+/// How many cards in `stage` are actually visible in the kanban strip,
+/// using the same height formula as `render::kanban_strip_height`.
+/// Navigation and clamping use this to avoid selecting off-screen cards.
+fn ws_kanban_visible_count(ws: &WorkspaceState, stage: KanbanStage) -> usize {
+    let total = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
+    if total == 0 {
+        return 0;
+    }
+    // strip_h = (max_cards_any * 2 + 1 + 2).clamp(3, 8)  [mirrors render.rs]
+    let max_cards = [
+        KanbanStage::Incoming,
+        KanbanStage::InProgress,
+        KanbanStage::NeedsMe,
+        KanbanStage::Done,
+    ]
+    .iter()
+    .map(|&s| ws.kanban_cards.iter().filter(|c| c.stage == s).count())
+    .max()
+    .unwrap_or(0);
+    let content_h = max_cards * 2 + 1;
+    let strip_h = (content_h + 2).clamp(3, 8); // includes 2-row border
+    // inner = strip_h - 2 (borders), available = inner - 1 (header row)
+    let available = strip_h.saturating_sub(3);
+    let cards_fit = available / 2;
+    cards_fit.min(total)
+}
+
 /// Extract PR number from a kanban card subtitle like "PR #42 · merge?".
 fn kanban_extract_pr_number(subtitle: &str) -> Option<u64> {
     let start = subtitle.find("PR #")? + 4;
@@ -1677,9 +1704,9 @@ impl App {
                 return;
             }
         };
-        let count = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
-        if count > 0 {
-            let new_idx = (idx + 1) % count;
+        let visible = ws_kanban_visible_count(ws, stage);
+        if visible > 0 {
+            let new_idx = (idx + 1) % visible;
             if let Some(ws) = self.current_ws_mut() {
                 ws.kanban_selected = Some((stage, new_idx));
             }
@@ -1709,9 +1736,9 @@ impl App {
                 return;
             }
         };
-        let count = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
-        if count > 0 {
-            let new_idx = if idx == 0 { count - 1 } else { idx - 1 };
+        let visible = ws_kanban_visible_count(ws, stage);
+        if visible > 0 {
+            let new_idx = if idx == 0 { visible - 1 } else { idx - 1 };
             if let Some(ws) = self.current_ws_mut() {
                 ws.kanban_selected = Some((stage, new_idx));
             }
@@ -1863,15 +1890,16 @@ impl App {
             self.shell_selection = shell_count - 1;
         }
 
-        // Clamp kanban selection
+        // Clamp kanban selection to the visible range (not just total count).
+        // This ensures Enter/Dismiss never act on an off-screen card.
         if let Some(ws) = self.current_ws_mut()
             && let Some((stage, idx)) = ws.kanban_selected
         {
-            let count = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
-            ws.kanban_selected = if count == 0 {
+            let visible = ws_kanban_visible_count(ws, stage);
+            ws.kanban_selected = if visible == 0 {
                 None
-            } else if idx >= count {
-                Some((stage, count - 1))
+            } else if idx >= visible {
+                Some((stage, visible - 1))
             } else {
                 Some((stage, idx))
             };

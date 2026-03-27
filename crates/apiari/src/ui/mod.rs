@@ -950,6 +950,7 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                     if let Some(ws) = app.current_ws_mut() {
                         ws.input = msg;
                         ws.cursor_pos = msg_len;
+                        ws.has_unread_response = false;
                     }
                     app.focused_panel = Panel::Chat;
                     app.chat_focused = true;
