@@ -416,6 +416,9 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
     let cutoff = now - chrono::Duration::minutes(30);
     cards.retain(|c| c.stage != KanbanStage::Done || c.entered_stage_at > cutoff);
 
+    // Filter out dismissed cards
+    cards.retain(|c| !ws.kanban_dismissed.contains(&c.id));
+
     cards
 }
 
@@ -439,6 +442,16 @@ fn signal_covered_by_worker(
         }
     }
     false
+}
+
+/// Extract PR number from a kanban card subtitle like "PR #42 · merge?".
+fn kanban_extract_pr_number(subtitle: &str) -> Option<u64> {
+    let start = subtitle.find("PR #")? + 4;
+    let end = subtitle[start..]
+        .find(|c: char| !c.is_ascii_digit())
+        .map(|i| start + i)
+        .unwrap_or(subtitle.len());
+    subtitle[start..end].parse().ok()
 }
 
 /// Try to extract a PR number from a signal's external_id or metadata.
@@ -699,6 +712,10 @@ pub struct WorkspaceState {
     pub pending_notifications: Vec<String>,
     /// Derived kanban cards (rebuilt on signal/worker refresh).
     pub kanban_cards: Vec<KanbanCard>,
+    /// Currently selected kanban card: (stage, card_index_within_that_stage).
+    pub kanban_selected: Option<(KanbanStage, usize)>,
+    /// Dismissed kanban card IDs (filtered out when building cards).
+    pub kanban_dismissed: std::collections::HashSet<String>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -818,6 +835,8 @@ impl App {
                     shell_windows: Vec::new(),
                     pending_notifications: Vec::new(),
                     kanban_cards: Vec::new(),
+                    kanban_selected: None,
+                    kanban_dismissed: std::collections::HashSet::new(),
                 }
             })
             .collect();
@@ -960,6 +979,8 @@ impl App {
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
             kanban_cards: Vec::new(),
+            kanban_selected: None,
+            kanban_dismissed: std::collections::HashSet::new(),
         };
 
         let setup = SetupState {
@@ -1089,6 +1110,8 @@ impl App {
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
             kanban_cards: Vec::new(),
+            kanban_selected: None,
+            kanban_dismissed: std::collections::HashSet::new(),
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1286,6 +1309,8 @@ impl App {
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
             kanban_cards: Vec::new(),
+            kanban_selected: None,
+            kanban_dismissed: std::collections::HashSet::new(),
         };
 
         if is_add {
@@ -1571,6 +1596,202 @@ impl App {
         self.needs_redraw = true;
     }
 
+    // ── Kanban navigation ─────────────────────────────────
+
+    const KANBAN_STAGES: [KanbanStage; 4] = [
+        KanbanStage::Incoming,
+        KanbanStage::InProgress,
+        KanbanStage::NeedsMe,
+        KanbanStage::Done,
+    ];
+
+    /// Move kanban selection to the next non-empty column (right).
+    pub fn kanban_navigate_right(&mut self) {
+        let ws = match self.current_ws() {
+            Some(w) => w,
+            None => return,
+        };
+        let current_stage = ws
+            .kanban_selected
+            .map(|(s, _)| s)
+            .unwrap_or(Self::KANBAN_STAGES[0]);
+        let current_idx = Self::KANBAN_STAGES
+            .iter()
+            .position(|&s| s == current_stage)
+            .unwrap_or(0);
+        for &stage in &Self::KANBAN_STAGES[current_idx + 1..] {
+            if ws.kanban_cards.iter().any(|c| c.stage == stage) {
+                if let Some(ws) = self.current_ws_mut() {
+                    ws.kanban_selected = Some((stage, 0));
+                }
+                self.needs_redraw = true;
+                return;
+            }
+        }
+    }
+
+    /// Move kanban selection to the previous non-empty column (left).
+    pub fn kanban_navigate_left(&mut self) {
+        let ws = match self.current_ws() {
+            Some(w) => w,
+            None => return,
+        };
+        let current_stage = ws
+            .kanban_selected
+            .map(|(s, _)| s)
+            .unwrap_or(Self::KANBAN_STAGES[0]);
+        let current_idx = Self::KANBAN_STAGES
+            .iter()
+            .position(|&s| s == current_stage)
+            .unwrap_or(0);
+        for &stage in Self::KANBAN_STAGES[..current_idx].iter().rev() {
+            if ws.kanban_cards.iter().any(|c| c.stage == stage) {
+                if let Some(ws) = self.current_ws_mut() {
+                    ws.kanban_selected = Some((stage, 0));
+                }
+                self.needs_redraw = true;
+                return;
+            }
+        }
+    }
+
+    /// Move kanban selection down within the current column (wraps).
+    pub fn kanban_navigate_down(&mut self) {
+        let ws = match self.current_ws() {
+            Some(w) => w,
+            None => return,
+        };
+        let (stage, idx) = match ws.kanban_selected {
+            Some(s) => s,
+            None => {
+                // Auto-select first card in first non-empty column
+                for &stage in &Self::KANBAN_STAGES {
+                    if ws.kanban_cards.iter().any(|c| c.stage == stage) {
+                        if let Some(ws) = self.current_ws_mut() {
+                            ws.kanban_selected = Some((stage, 0));
+                        }
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                return;
+            }
+        };
+        let count = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
+        if count > 0 {
+            let new_idx = (idx + 1) % count;
+            if let Some(ws) = self.current_ws_mut() {
+                ws.kanban_selected = Some((stage, new_idx));
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Move kanban selection up within the current column (wraps).
+    pub fn kanban_navigate_up(&mut self) {
+        let ws = match self.current_ws() {
+            Some(w) => w,
+            None => return,
+        };
+        let (stage, idx) = match ws.kanban_selected {
+            Some(s) => s,
+            None => {
+                // Auto-select first card in first non-empty column
+                for &stage in &Self::KANBAN_STAGES {
+                    if ws.kanban_cards.iter().any(|c| c.stage == stage) {
+                        if let Some(ws) = self.current_ws_mut() {
+                            ws.kanban_selected = Some((stage, 0));
+                        }
+                        self.needs_redraw = true;
+                        return;
+                    }
+                }
+                return;
+            }
+        };
+        let count = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
+        if count > 0 {
+            let new_idx = if idx == 0 { count - 1 } else { idx - 1 };
+            if let Some(ws) = self.current_ws_mut() {
+                ws.kanban_selected = Some((stage, new_idx));
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Return the chat message to inject for the currently selected kanban card, or None.
+    pub fn kanban_action_selected(&self) -> Option<String> {
+        let ws = self.current_ws()?;
+        let (stage, idx) = ws.kanban_selected?;
+        let card = ws
+            .kanban_cards
+            .iter()
+            .filter(|c| c.stage == stage)
+            .nth(idx)?;
+        let msg = match stage {
+            KanbanStage::Done => return None,
+            KanbanStage::NeedsMe => {
+                if card.source == "worker" {
+                    // subtitle like "PR #42 · merge?"
+                    if let Some(num) = kanban_extract_pr_number(&card.subtitle) {
+                        format!("Merge PR #{num}")
+                    } else {
+                        format!("What's the status of {}?", card.title)
+                    }
+                } else if card.source == "github_review_queue" {
+                    format!("Review {}", card.title)
+                } else {
+                    format!("Tell me about this signal: {}", card.title)
+                }
+            }
+            KanbanStage::Incoming => {
+                if card.source == "github_review_queue" {
+                    format!("Review {}", card.title)
+                } else {
+                    format!("Tell me about this signal: {}", card.title)
+                }
+            }
+            KanbanStage::InProgress => {
+                if card.source == "worker" {
+                    let worker_id = card.id.strip_prefix("worker:").unwrap_or(&card.id);
+                    format!("What's the status of worker {worker_id}?")
+                } else {
+                    format!("Tell me about this signal: {}", card.title)
+                }
+            }
+        };
+        Some(msg)
+    }
+
+    /// Dismiss the currently selected kanban card (remove from board).
+    pub fn kanban_dismiss_selected(&mut self) {
+        let ws = match self.current_ws_mut() {
+            Some(w) => w,
+            None => return,
+        };
+        let (stage, idx) = match ws.kanban_selected {
+            Some(s) => s,
+            None => return,
+        };
+        let card_id = ws
+            .kanban_cards
+            .iter()
+            .filter(|c| c.stage == stage)
+            .nth(idx)
+            .map(|c| c.id.clone());
+        if let Some(id) = card_id {
+            ws.kanban_dismissed.insert(id.clone());
+            ws.kanban_cards.retain(|c| c.id != id);
+            let count = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
+            ws.kanban_selected = if count == 0 {
+                None
+            } else {
+                Some((stage, idx.min(count - 1)))
+            };
+        }
+        self.needs_redraw = true;
+    }
+
     fn signal_selectable_count(&self) -> usize {
         self.current_ws().map_or(0, |ws| {
             ws.signals
@@ -1640,6 +1861,20 @@ impl App {
             self.shell_selection = 0;
         } else if self.shell_selection >= shell_count {
             self.shell_selection = shell_count - 1;
+        }
+
+        // Clamp kanban selection
+        if let Some(ws) = self.current_ws_mut()
+            && let Some((stage, idx)) = ws.kanban_selected
+        {
+            let count = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
+            ws.kanban_selected = if count == 0 {
+                None
+            } else if idx >= count {
+                Some((stage, count - 1))
+            } else {
+                Some((stage, idx))
+            };
         }
     }
 
@@ -4096,6 +4331,8 @@ mod tests {
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
             kanban_cards: Vec::new(),
+            kanban_selected: None,
+            kanban_dismissed: Default::default(),
         };
         app.workspaces = vec![ws];
         app.setup = None;
@@ -4347,6 +4584,8 @@ mod tests {
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
             kanban_cards: Vec::new(),
+            kanban_selected: None,
+            kanban_dismissed: Default::default(),
         }
     }
 

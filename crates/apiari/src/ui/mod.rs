@@ -922,6 +922,47 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         }
     }
 
+    // Home panel (kanban strip) navigation — intercept before common handlers
+    if app.focused_panel == Panel::Home {
+        match key.code {
+            KeyCode::Left | KeyCode::Char('h') if app.zoomed_panel.is_none() => {
+                app.kanban_navigate_left();
+                return KeyAction::Redraw;
+            }
+            KeyCode::Right | KeyCode::Char('l') if app.zoomed_panel.is_none() => {
+                app.kanban_navigate_right();
+                return KeyAction::Redraw;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.kanban_navigate_down();
+                return KeyAction::Redraw;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.kanban_navigate_up();
+                return KeyAction::Redraw;
+            }
+            KeyCode::Enter => {
+                let maybe_msg = app.kanban_action_selected();
+                if let Some(msg) = maybe_msg {
+                    let msg_len = msg.len();
+                    if let Some(ws) = app.current_ws_mut() {
+                        ws.input = msg;
+                        ws.cursor_pos = msg_len;
+                    }
+                    app.focused_panel = Panel::Chat;
+                    app.chat_focused = true;
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('d') | KeyCode::Delete => {
+                app.kanban_dismiss_selected();
+                return KeyAction::Redraw;
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Tab => app.next_panel(),
         KeyCode::BackTab => app.prev_panel(),
