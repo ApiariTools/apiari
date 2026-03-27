@@ -196,7 +196,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Kanban strip + Chat layout
-    let kanban_h = compute_kanban_height(ws);
+    let kanban_h = app::compute_kanban_height(ws);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -205,6 +205,9 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(5),           // Chat (gets everything else)
         ])
         .split(area);
+
+    // Record actual allocated height so navigation can stay within visible cards.
+    app.kanban_allocated_height.set(rows[0].height);
 
     draw_kanban_strip(frame, app, ws, rows[0]);
     draw_chat_panel(frame, app, ws, rows[1]);
@@ -448,32 +451,8 @@ fn draw_kpi_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: 
 
 // ── Kanban strip ─────────────────────────────────────────
 
-/// Compute the height of the kanban strip based on card count.
-fn compute_kanban_height(ws: &app::WorkspaceState) -> u16 {
-    if ws.kanban_cards.is_empty() {
-        return 3; // header + "all clear" + border
-    }
-
-    // Count cards per visible column
-    let mut counts = [0u16; 4]; // Incoming, InProgress, NeedsMe, Done
-    for card in &ws.kanban_cards {
-        let idx = match card.stage {
-            app::KanbanStage::Incoming => 0,
-            app::KanbanStage::InProgress => 1,
-            app::KanbanStage::NeedsMe => 2,
-            app::KanbanStage::Done => 3,
-        };
-        counts[idx] += 1;
-    }
-
-    // Tallest column determines height: each card = 2 lines, + 1 header line + 2 border
-    let max_cards = counts.iter().copied().max().unwrap_or(0);
-    let content_h = max_cards * 2 + 1; // header line + cards
-    (content_h + 2).clamp(3, 8) // +2 for borders, clamp to reasonable range
-}
-
 /// Draw the kanban strip with columns for each stage.
-fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, area: Rect) {
+fn draw_kanban_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {
     // Build status line for the header
     let healthy = ws.watcher_health.iter().filter(|w| w.healthy).count();
     let total = ws.watcher_health.len();
@@ -562,10 +541,26 @@ fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, ar
         .constraints(constraints)
         .split(inner);
 
+    let is_focused = app.focused_panel == app::Panel::Home;
+
     for (i, (stage, cards)) in columns.iter().enumerate() {
         let area_idx = i * 2; // skip divider slots
         let col_area = col_areas[area_idx];
-        draw_kanban_column(frame, *stage, cards, col_area);
+
+        // Determine selected card index within this column
+        let selected_idx = if is_focused {
+            ws.kanban_selected.and_then(|(sel_stage, sel_idx)| {
+                if sel_stage == *stage {
+                    Some(sel_idx)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
+        draw_kanban_column(frame, *stage, cards, col_area, selected_idx);
 
         // Draw divider after this column (before the next)
         if i + 1 < columns.len() {
@@ -583,6 +578,7 @@ fn draw_kanban_column(
     stage: app::KanbanStage,
     cards: &[&app::KanbanCard],
     area: Rect,
+    selected: Option<usize>,
 ) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -649,19 +645,42 @@ fn draw_kanban_column(
         Style::default().fg(theme::SMOKE)
     };
 
-    for card in cards.iter().take(show_count) {
+    // Clamp selected index to the visible range; if the selected card is
+    // scrolled off (e.g. narrow terminal fits fewer cards), suppress highlight.
+    let visible_selected = selected.filter(|&i| i < show_count);
+
+    for (card_idx, card) in cards.iter().take(show_count).enumerate() {
+        let is_selected = visible_selected == Some(card_idx);
+
+        let effective_card_style = if is_selected {
+            card_style.add_modifier(Modifier::REVERSED)
+        } else {
+            card_style
+        };
+        let effective_subtitle_style = if is_selected {
+            subtitle_style.add_modifier(Modifier::REVERSED)
+        } else {
+            subtitle_style
+        };
+
         // Line 1: icon + title + action hint for NeedsMe
         let mut title_spans = vec![
-            Span::styled(&card.icon, card_style),
+            Span::styled(&card.icon, effective_card_style),
             Span::raw(" "),
-            Span::styled(&card.title, card_style),
+            Span::styled(&card.title, effective_card_style),
         ];
         if is_needs_me {
             title_spans.push(Span::styled(
                 " \u{2192}",
-                Style::default()
-                    .fg(theme::HONEY)
-                    .add_modifier(Modifier::BOLD),
+                if is_selected {
+                    Style::default()
+                        .fg(theme::HONEY)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+                } else {
+                    Style::default()
+                        .fg(theme::HONEY)
+                        .add_modifier(Modifier::BOLD)
+                },
             ));
         }
         lines.push(Line::from(title_spans));
@@ -669,7 +688,7 @@ fn draw_kanban_column(
         // Line 2: subtitle (indented)
         let sub_line = Line::from(vec![
             Span::raw("  "),
-            Span::styled(&card.subtitle, subtitle_style),
+            Span::styled(&card.subtitle, effective_subtitle_style),
         ]);
         lines.push(sub_line);
     }
