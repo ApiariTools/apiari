@@ -196,7 +196,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Kanban strip + Chat layout
-    let kanban_h = compute_kanban_height(ws);
+    let kanban_h = app::compute_kanban_height(ws);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -205,6 +205,9 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Min(5),           // Chat (gets everything else)
         ])
         .split(area);
+
+    // Record actual allocated height so navigation can stay within visible cards.
+    app.kanban_allocated_height.set(rows[0].height);
 
     draw_kanban_strip(frame, app, ws, rows[0]);
     draw_chat_panel(frame, app, ws, rows[1]);
@@ -447,30 +450,6 @@ fn draw_kpi_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: 
 }
 
 // ── Kanban strip ─────────────────────────────────────────
-
-/// Compute the height of the kanban strip based on card count.
-fn compute_kanban_height(ws: &app::WorkspaceState) -> u16 {
-    if ws.kanban_cards.is_empty() {
-        return 3; // header + "all clear" + border
-    }
-
-    // Count cards per visible column
-    let mut counts = [0u16; 4]; // Incoming, InProgress, NeedsMe, Done
-    for card in &ws.kanban_cards {
-        let idx = match card.stage {
-            app::KanbanStage::Incoming => 0,
-            app::KanbanStage::InProgress => 1,
-            app::KanbanStage::NeedsMe => 2,
-            app::KanbanStage::Done => 3,
-        };
-        counts[idx] += 1;
-    }
-
-    // Tallest column determines height: each card = 2 lines, + 1 header line + 2 border
-    let max_cards = counts.iter().copied().max().unwrap_or(0);
-    let content_h = max_cards * 2 + 1; // header line + cards
-    (content_h + 2).clamp(3, 8) // +2 for borders, clamp to reasonable range
-}
 
 /// Draw the kanban strip with columns for each stage.
 fn draw_kanban_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area: Rect) {

@@ -462,15 +462,12 @@ fn signal_covered_by_worker(
     false
 }
 
-/// How many cards in `stage` are actually visible in the kanban strip.
-/// Mirrors the height logic in `render::compute_kanban_height` and the
-/// per-column clamping based on `area.height` in `render::draw_kanban_column`.
-fn ws_kanban_visible_count(ws: &WorkspaceState, stage: KanbanStage) -> usize {
-    let total = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
-    if total == 0 {
-        return 0;
+/// Compute the ideal height (in terminal rows) for the kanban strip.
+/// Called by the renderer for layout; also used as a fallback before the first frame.
+pub fn compute_kanban_height(ws: &WorkspaceState) -> u16 {
+    if ws.kanban_cards.is_empty() {
+        return 3; // header + "all clear" + border
     }
-    // strip_h = (max_cards_any * 2 + 1 + 2).clamp(3, 8)  [mirrors render.rs]
     let max_cards = [
         KanbanStage::Incoming,
         KanbanStage::InProgress,
@@ -478,13 +475,29 @@ fn ws_kanban_visible_count(ws: &WorkspaceState, stage: KanbanStage) -> usize {
         KanbanStage::Done,
     ]
     .iter()
-    .map(|&s| ws.kanban_cards.iter().filter(|c| c.stage == s).count())
+    .map(|&s| ws.kanban_cards.iter().filter(|c| c.stage == s).count() as u16)
     .max()
     .unwrap_or(0);
-    let content_h = max_cards * 2 + 1;
-    let strip_h = (content_h + 2).clamp(3, 8); // includes 2-row border
-    // inner = strip_h - 2 (borders), available = inner - 1 (header row)
-    let available = strip_h.saturating_sub(3);
+    let content_h = max_cards * 2 + 1; // header line + cards
+    (content_h + 2).clamp(3, 8) // +2 for borders
+}
+
+/// How many cards in `stage` are actually visible given `strip_h` terminal rows.
+/// Pass `App::kanban_allocated_height` (recorded by the renderer after layout) so
+/// navigation never targets a card that ratatui shrank off-screen.
+fn ws_kanban_visible_count(ws: &WorkspaceState, stage: KanbanStage, strip_h: u16) -> usize {
+    let total = ws.kanban_cards.iter().filter(|c| c.stage == stage).count();
+    if total == 0 {
+        return 0;
+    }
+    // Use actual allocated height; fall back to ideal height before the first frame.
+    let h = if strip_h > 0 {
+        strip_h
+    } else {
+        compute_kanban_height(ws)
+    };
+    // inner = h - 2 borders; available for cards = inner - 1 header row
+    let available = (h as usize).saturating_sub(3);
     let cards_fit = available / 2;
     cards_fit.min(total)
 }
@@ -809,6 +822,10 @@ pub struct App {
     pub last_extras_refresh: Instant,
     // Terminal size (updated each frame)
     pub terminal_width: u16,
+    /// Actual height (rows) allocated to the kanban strip by ratatui's layout engine.
+    /// Set during each render pass so navigation never targets a card clipped by
+    /// the `Min(5)` chat constraint.
+    pub kanban_allocated_height: std::cell::Cell<u16>,
     // Activity graph (network-style throughput chart in status bar)
     pub activity_buf: Vec<u8>, // fixed array, each value = bar height 0-7
     // Snooze
@@ -941,6 +958,7 @@ impl App {
             daemon_uptime_secs: None,
             last_extras_refresh: Instant::now(),
             terminal_width: 80,
+            kanban_allocated_height: std::cell::Cell::new(0),
             activity_buf: vec![0; 18],
             snooze_selection: 0,
             signals_debug_mode: false,
@@ -1075,6 +1093,7 @@ impl App {
             daemon_uptime_secs: None,
             last_extras_refresh: Instant::now(),
             terminal_width: 80,
+            kanban_allocated_height: std::cell::Cell::new(0),
             activity_buf: vec![0; 18],
             snooze_selection: 0,
             onboarding: OnboardingState::new_active(), // only Chat panel visible
@@ -1722,7 +1741,7 @@ impl App {
                 return;
             }
         };
-        let visible = ws_kanban_visible_count(ws, stage);
+        let visible = ws_kanban_visible_count(ws, stage, self.kanban_allocated_height.get());
         if visible > 0 {
             let new_idx = (idx + 1) % visible;
             if let Some(ws) = self.current_ws_mut() {
@@ -1754,7 +1773,7 @@ impl App {
                 return;
             }
         };
-        let visible = ws_kanban_visible_count(ws, stage);
+        let visible = ws_kanban_visible_count(ws, stage, self.kanban_allocated_height.get());
         if visible > 0 {
             let new_idx = if idx == 0 { visible - 1 } else { idx - 1 };
             if let Some(ws) = self.current_ws_mut() {
@@ -1910,10 +1929,11 @@ impl App {
 
         // Clamp kanban selection to the visible range (not just total count).
         // This ensures Enter/Dismiss never act on an off-screen card.
+        let allocated_h = self.kanban_allocated_height.get();
         if let Some(ws) = self.current_ws_mut()
             && let Some((stage, idx)) = ws.kanban_selected
         {
-            let visible = ws_kanban_visible_count(ws, stage);
+            let visible = ws_kanban_visible_count(ws, stage, allocated_h);
             ws.kanban_selected = if visible == 0 {
                 None
             } else if idx >= visible {
