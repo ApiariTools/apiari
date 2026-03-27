@@ -13,9 +13,12 @@ const VALID_DAYS: &[&str] = &["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 /// malformed fields.  Call this once per watcher/workspace at startup — not
 /// in the poll hot path.
 ///
-/// Malformed constraints are silently ignored at runtime (the constraint is
-/// treated as absent) so that a misconfigured schedule does not break polling
-/// entirely.  This function is the single place where the user is notified.
+/// Runtime behaviour for malformed entries:
+/// - `active_hours`: a string that cannot be parsed is treated as absent (no
+///   hours constraint), so polling continues unrestricted.
+/// - `active_days`: unknown day strings never match, so if every entry in the
+///   list is invalid the schedule will never be active.  `warn_if_invalid`
+///   surfaces this at startup so the user can correct the config.
 pub fn warn_if_invalid(schedule: &Schedule) {
     if let Some(ref hours) = schedule.active_hours
         && parse_active_hours(hours).is_none()

@@ -311,10 +311,8 @@ impl SettingsState {
                     .as_ref()
                     .map(|l| l.poll_interval_secs)
                     .unwrap_or(60),
-                review_queue: config
-                    .watchers
-                    .linear
-                    .first()
+                review_queue: existing
+                    .as_ref()
                     .map(|l| l.review_queue.clone())
                     .unwrap_or_default(),
                 active_hours: existing.and_then(|l| l.active_hours),
