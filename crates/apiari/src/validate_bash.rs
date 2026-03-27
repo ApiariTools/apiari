@@ -11,6 +11,7 @@
 //! (which can deregister the tool for the session).
 
 use crate::buzz::coordinator::audit::{self, BashClassification};
+use crate::config;
 use std::io::Read;
 
 /// The hook's verdict: either allow (no stdout) or deny (JSON on stdout).
@@ -70,12 +71,45 @@ fn evaluate(input: &str) -> Verdict {
 
     match audit::classify_bash_command_with_devmode(&command) {
         BashClassification::ReadOnly => Verdict::Allow,
-        BashClassification::PotentiallyMutating { matched_pattern } => Verdict::Deny {
-            reason: format!(
-                "BLOCKED: coordinator attempted mutating Bash command (matched: {matched_pattern})"
-            ),
-        },
+        BashClassification::PotentiallyMutating { matched_pattern } => {
+            // Allow gh pr merge if the workspace has merge_prs capability enabled
+            if matched_pattern == "gh pr merge" && is_merge_allowed() {
+                return Verdict::Allow;
+            }
+            Verdict::Deny {
+                reason: format!(
+                    "BLOCKED: coordinator attempted mutating Bash command (matched: {matched_pattern})"
+                ),
+            }
+        }
     }
+}
+
+/// Check if the current workspace allows PR merging.
+///
+/// Scans `~/.config/apiari/workspaces/*.toml` for a workspace whose `root`
+/// matches the current working directory (or is a parent of it). If found,
+/// checks the `merge_prs` capability. Fails closed (returns false) if the
+/// config can't be loaded or no matching workspace is found.
+fn is_merge_allowed() -> bool {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    let workspaces = match config::discover_workspaces() {
+        Ok(ws) => ws,
+        Err(_) => return false,
+    };
+
+    for ws in &workspaces {
+        if cwd.starts_with(&ws.config.root) {
+            let caps = ws.config.capabilities.resolved(ws.config.authority);
+            return caps.merge_prs.is_allowed(None);
+        }
+    }
+
+    false
 }
 
 /// Extract the command string from the hook JSON input.
@@ -90,6 +124,10 @@ fn extract_command(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Tests that mutate HOME must hold this lock to avoid interfering with each other.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_extract_command_valid() {
@@ -208,10 +246,22 @@ mod tests {
 
     #[test]
     fn test_verdict_deny_for_gh_pr_merge_squash() {
-        // gh pr merge is mutating — must be denied, and the reason should
-        // reference "gh pr merge", NOT "shell passthrough".
+        let _guard = HOME_LOCK.lock().unwrap();
+        // gh pr merge is mutating — denied when no workspace config matches
+        // (is_merge_allowed fails closed). The reason should reference
+        // "gh pr merge", NOT "shell passthrough".
+        // Use an empty temp HOME so no real workspace config interferes.
+        let tmp = tempfile::tempdir().unwrap();
+        let orig_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
         let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --repo Org/repo --squash --delete-branch"}}"#;
         let verdict = evaluate(input);
+
+        if let Some(h) = orig_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+
         match verdict {
             Verdict::Deny { reason } => {
                 assert!(
@@ -220,6 +270,68 @@ mod tests {
                 );
             }
             Verdict::Allow => panic!("expected Deny for gh pr merge"),
+        }
+    }
+
+    #[test]
+    fn test_verdict_allow_gh_pr_merge_when_capability_enabled() {
+        let _guard = HOME_LOCK.lock().unwrap();
+        // When a workspace config with merge_prs=true exists and its root
+        // matches the current directory, gh pr merge should be allowed.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = true\n",);
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        // Point config dir to our temp dir
+        let orig_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
+        let verdict = evaluate(input);
+
+        // Restore HOME
+        if let Some(h) = orig_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+
+        assert_eq!(
+            verdict,
+            Verdict::Allow,
+            "gh pr merge should be allowed when merge_prs capability is enabled"
+        );
+    }
+
+    #[test]
+    fn test_verdict_deny_gh_pr_merge_when_capability_disabled() {
+        let _guard = HOME_LOCK.lock().unwrap();
+        // When merge_prs is explicitly false, gh pr merge should be denied.
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = false\n",);
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        let orig_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
+        let verdict = evaluate(input);
+
+        if let Some(h) = orig_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+
+        match verdict {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("gh pr merge"));
+            }
+            Verdict::Allow => panic!("expected Deny when merge_prs is false"),
         }
     }
 
