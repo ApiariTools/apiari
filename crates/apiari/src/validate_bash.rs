@@ -152,6 +152,11 @@ fn contains_command_chaining(command: &str) -> bool {
         || command.contains(';')
         || command.contains('`')
         || command.contains("$(")
+        || command.contains('&')
+        || command.contains('\n')
+        || command.contains('\r')
+        || command.contains(">(")
+        || command.contains("<(")
 }
 
 /// Extract the command string from the hook JSON input.
@@ -169,6 +174,10 @@ mod tests {
     use std::sync::Mutex;
 
     /// Tests that mutate HOME must hold this lock to avoid interfering with each other.
+    /// Note: this only serializes tests within this module. Tests in other modules that
+    /// read HOME could observe the temporary value. This is an accepted tradeoff — the
+    /// pure-logic check_merge_allowed() tests cover most cases without env mutation;
+    /// only the evaluate() end-to-end tests need HOME isolation.
     static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     /// RAII guard that sets HOME on creation and restores (or removes) it on drop.
@@ -385,7 +394,15 @@ mod tests {
             r#"gh pr merge 123 --squash | tee log"#,
             r#"gh pr merge `echo 123` --squash"#,
             r#"gh pr merge $(echo 123) --squash"#,
+            "gh pr merge 123 --squash & rm -rf /",
+            "gh pr merge 123 >(tee log) --squash",
+            "gh pr merge 123 <(cat prs) --squash",
         ];
+
+        // Newlines/carriage returns can't be embedded in JSON test strings,
+        // so test contains_command_chaining directly for those.
+        assert!(contains_command_chaining("gh pr merge 123\nrm -rf /"));
+        assert!(contains_command_chaining("gh pr merge 123\rrm -rf /"));
         for cmd in cases {
             let input = format!(r#"{{"tool_name":"Bash","tool_input":{{"command":"{cmd}"}}}}"#,);
             match evaluate(&input) {
