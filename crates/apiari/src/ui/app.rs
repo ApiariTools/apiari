@@ -1743,7 +1743,8 @@ impl App {
         };
         let visible = ws_kanban_visible_count(ws, stage, self.kanban_allocated_height.get());
         if visible > 0 {
-            let new_idx = (idx + 1) % visible;
+            let clamped = idx.min(visible - 1);
+            let new_idx = (clamped + 1) % visible;
             if let Some(ws) = self.current_ws_mut() {
                 ws.kanban_selected = Some((stage, new_idx));
             }
@@ -1775,7 +1776,12 @@ impl App {
         };
         let visible = ws_kanban_visible_count(ws, stage, self.kanban_allocated_height.get());
         if visible > 0 {
-            let new_idx = if idx == 0 { visible - 1 } else { idx - 1 };
+            let clamped = idx.min(visible - 1);
+            let new_idx = if clamped == 0 {
+                visible - 1
+            } else {
+                clamped - 1
+            };
             if let Some(ws) = self.current_ws_mut() {
                 ws.kanban_selected = Some((stage, new_idx));
             }
@@ -1787,6 +1793,10 @@ impl App {
     pub fn kanban_action_selected(&self) -> Option<String> {
         let ws = self.current_ws()?;
         let (stage, idx) = ws.kanban_selected?;
+        let visible = ws_kanban_visible_count(ws, stage, self.kanban_allocated_height.get());
+        if idx >= visible {
+            return None;
+        }
         let card = ws
             .kanban_cards
             .iter()
@@ -1829,6 +1839,7 @@ impl App {
 
     /// Dismiss the currently selected kanban card (remove from board).
     pub fn kanban_dismiss_selected(&mut self) {
+        let allocated_h = self.kanban_allocated_height.get();
         let ws = match self.current_ws_mut() {
             Some(w) => w,
             None => return,
@@ -1837,6 +1848,10 @@ impl App {
             Some(s) => s,
             None => return,
         };
+        let visible = ws_kanban_visible_count(ws, stage, allocated_h);
+        if idx >= visible {
+            return;
+        }
         let card_id = ws
             .kanban_cards
             .iter()
