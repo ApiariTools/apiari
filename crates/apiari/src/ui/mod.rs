@@ -2645,6 +2645,7 @@ mod tests {
             shell_selection: 0,
             shell_input_active: false,
             shell_input: String::new(),
+            kanban_allocated_height: std::cell::Cell::new(0),
         }
     }
 
