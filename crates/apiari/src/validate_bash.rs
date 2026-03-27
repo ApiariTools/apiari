@@ -111,7 +111,9 @@ fn is_merge_allowed() -> bool {
 
     if let Some(ws) = best {
         let caps = ws.config.capabilities.resolved(ws.config.authority);
-        return caps.merge_prs.is_allowed(None);
+        // Pass Some("") so branch-scoped configs (e.g. ["main"]) fail closed
+        // when the target branch is unknown from the command line.
+        return caps.merge_prs.is_allowed(Some(""));
     }
 
     false
@@ -143,7 +145,9 @@ mod tests {
 
     impl HomeGuard {
         fn new(new_home: &std::path::Path) -> Self {
-            let lock = HOME_LOCK.lock().unwrap();
+            let lock = HOME_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let orig = std::env::var("HOME").ok();
             unsafe { std::env::set_var("HOME", new_home) };
             Self { orig, _lock: lock }
@@ -319,6 +323,33 @@ mod tests {
             Verdict::Allow,
             "gh pr merge should be allowed when merge_prs capability is enabled"
         );
+    }
+
+    #[test]
+    fn test_verdict_deny_gh_pr_merge_when_branch_scoped() {
+        // merge_prs = ["main"] should deny because we can't determine the
+        // target branch from the command — fails closed with Some("").
+        let tmp = tempfile::tempdir().unwrap();
+        let ws_dir = tmp.path().join(".config/apiari/workspaces");
+        std::fs::create_dir_all(&ws_dir).unwrap();
+
+        let cwd = std::env::current_dir().unwrap();
+        let config_content = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = [\"main\"]\n",);
+        std::fs::write(ws_dir.join("test.toml"), &config_content).unwrap();
+
+        let _guard = HomeGuard::new(tmp.path());
+
+        let input = r#"{"tool_name":"Bash","tool_input":{"command":"gh pr merge 123 --squash"}}"#;
+        let verdict = evaluate(input);
+
+        match verdict {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("gh pr merge"));
+            }
+            Verdict::Allow => {
+                panic!("expected Deny for branch-scoped merge_prs when target branch is unknown")
+            }
+        }
     }
 
     #[test]
