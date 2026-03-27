@@ -1004,6 +1004,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .github
                     .as_ref()
                     .and_then(|g| g.active_hours.as_deref()),
+                "github",
             );
             registry.add_with_interval_and_schedule(
                 Box::new(gh_watcher),
@@ -1050,6 +1051,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .sentry
                     .as_ref()
                     .and_then(|s| s.active_hours.as_deref()),
+                "sentry",
             );
             registry.add_with_interval_and_schedule(
                 Box::new(SentryWatcher::new(sentry_config.clone())),
@@ -1076,6 +1078,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .swarm
                     .as_ref()
                     .and_then(|s| s.active_hours.as_deref()),
+                "swarm",
             );
             registry.add_with_interval_and_schedule(
                 Box::new(SwarmWatcher::new(ws.config.root.clone())),
@@ -1107,6 +1110,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .email
                     .get(i)
                     .and_then(|e| e.active_hours.as_deref()),
+                &email_config.name,
             );
             registry.add_with_interval_and_schedule(
                 Box::new(watcher),
@@ -1136,6 +1140,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .notion
                     .get(i)
                     .and_then(|n| n.active_hours.as_deref()),
+                &notion_config.name,
             );
             registry.add_with_interval_and_schedule(
                 Box::new(watcher),
@@ -1183,6 +1188,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .linear
                     .get(i)
                     .and_then(|l| l.active_hours.as_deref()),
+                &linear_config.name,
             );
             registry.add_with_interval_and_schedule(
                 Box::new(watcher),
@@ -1203,6 +1209,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     .script
                     .get(i)
                     .and_then(|s| s.active_hours.as_deref()),
+                &script_config.name,
             );
             registry.add_with_interval_and_schedule(
                 Box::new(ScriptWatcher::new(script_config.clone())),
@@ -1763,21 +1770,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         );
                     }
 
-                    for (source, (signals, hook)) in &hook_events {
-                        if follow_through_active {
-                            info!(
-                                "[follow-through] dispatching: workspace={} source={source} signal_count={} has_action={} ttl_secs={}",
-                                slot.name,
-                                signals.len(),
-                                hook.action.is_some(),
-                                hook.ttl_secs,
-                            );
-                        }
-                    }
                     for (source, (signals, hook)) in hook_events {
                         if !follow_through_active {
                             continue;
                         }
+                        info!(
+                            "[follow-through] dispatching: workspace={} source={source} signal_count={} has_action={} ttl_secs={}",
+                            slot.name,
+                            signals.len(),
+                            hook.action.is_some(),
+                            hook.ttl_secs,
+                        );
                         let telegram_info = slot.config.telegram.as_ref().and_then(|tg| {
                             telegram_channels.get(&tg.bot_token).map(|ch| {
                                 (ch.clone(), tg.chat_id, tg.topic_id)
@@ -2324,22 +2327,21 @@ pub fn show_status(workspace_filter: Option<&str>) -> Result<()> {
             && !crate::buzz::schedule::is_within_active_hours(schedule)
         {
             let hours_str = schedule.active_hours.as_deref().unwrap_or("all hours");
-            let days_str = schedule
-                .active_days
-                .as_ref()
-                .map(|d| {
-                    d.iter()
-                        .map(|s| {
-                            let mut c = s.chars();
-                            match c.next() {
-                                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                                None => String::new(),
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_else(|| "all days".to_string());
+            let days_str = match schedule.active_days.as_ref() {
+                None => "all days".to_string(),
+                Some(d) if d.is_empty() => "no days".to_string(),
+                Some(d) => d
+                    .iter()
+                    .map(|s| {
+                        let mut c = s.chars();
+                        match c.next() {
+                            Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                            None => String::new(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
             println!("  Schedule: paused (active {hours_str}, {days_str})");
         }
     }
@@ -3123,14 +3125,19 @@ async fn build_full_status(slot: &WorkspaceSlot) -> String {
 fn effective_watcher_schedule(
     workspace: Option<&crate::config::Schedule>,
     watcher_hours: Option<&str>,
+    watcher_name: &str,
 ) -> crate::config::Schedule {
     match watcher_hours {
         Some(ah) => {
             // Validate only the per-watcher override; workspace hours were validated at startup.
-            crate::buzz::schedule::warn_if_invalid(&crate::config::Schedule {
-                active_hours: Some(ah.to_string()),
-                active_days: None,
-            });
+            // Pass the watcher name so any warning identifies which watcher is misconfigured.
+            if crate::buzz::schedule::parse_active_hours(ah).is_none() {
+                warn!(
+                    "[{}] active_hours {:?} is malformed (expected HH:MM-HH:MM); \
+                     hours constraint will be ignored",
+                    watcher_name, ah
+                );
+            }
             crate::config::Schedule {
                 active_hours: Some(ah.to_string()),
                 active_days: workspace.and_then(|s| s.active_days.clone()),

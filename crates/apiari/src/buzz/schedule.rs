@@ -114,7 +114,7 @@ fn weekday_str(weekday: Weekday) -> &'static str {
     }
 }
 
-fn parse_active_hours(s: &str) -> Option<(NaiveTime, NaiveTime)> {
+pub(crate) fn parse_active_hours(s: &str) -> Option<(NaiveTime, NaiveTime)> {
     let (start_str, end_str) = s.split_once('-')?;
     let start = NaiveTime::parse_from_str(start_str.trim(), "%H:%M").ok()?;
     let end = NaiveTime::parse_from_str(end_str.trim(), "%H:%M").ok()?;
