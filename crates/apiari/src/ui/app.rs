@@ -4484,6 +4484,7 @@ mod tests {
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].stage, KanbanStage::Incoming);
+        assert_eq!(cards[0].icon, "⚡");
     }
 
     #[test]
@@ -4497,5 +4498,35 @@ mod tests {
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].stage, KanbanStage::NeedsMe);
+        assert_eq!(cards[0].icon, "🔍");
+    }
+
+    #[test]
+    fn test_kanban_signal_icon_mappings() {
+        // Release → 🚀
+        let mut ws = empty_ws();
+        ws.signals = vec![make_signal("github_release", "rel-v1.0", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards[0].icon, "🚀");
+
+        // Email → 📧
+        ws.signals = vec![make_signal("email", "email-1", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards[0].icon, "📧");
+
+        // Notion → 📓
+        ws.signals = vec![make_signal("notion", "notion-1", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards[0].icon, "📓");
+
+        // Linear → 📋
+        ws.signals = vec![make_signal("linear", "lin-1", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards[0].icon, "📋");
+
+        // Unknown → ⚡
+        ws.signals = vec![make_signal("unknown_source", "unk-1", None)];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards[0].icon, "⚡");
     }
 }

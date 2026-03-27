@@ -498,9 +498,9 @@ fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, ar
     } else {
         "\u{26a0}\u{fe0f}"
     };
-    let today_signals = ws.signals.len();
+    let open_signals = ws.signals.len();
     let title = format!(
-        " Kanban \u{00b7} Watchers: {healthy}/{total} {health_icon} \u{00b7} Last poll: {last_poll} \u{00b7} Today: {today_signals} signals "
+        " Kanban \u{00b7} Watchers: {healthy}/{total} {health_icon} \u{00b7} Last poll: {last_poll} \u{00b7} Open: {open_signals} signals "
     );
 
     let block = Block::default()
@@ -611,7 +611,7 @@ fn draw_kanban_column(
             "DONE",
             Style::default()
                 .fg(theme::STEEL)
-                .add_modifier(Modifier::DIM | Modifier::UNDERLINED),
+                .add_modifier(Modifier::BOLD | Modifier::DIM | Modifier::UNDERLINED),
         ),
     };
 
@@ -652,7 +652,7 @@ fn draw_kanban_column(
     for card in cards.iter().take(show_count) {
         // Line 1: icon + title + action hint for NeedsMe
         let mut title_spans = vec![
-            Span::raw(&card.icon),
+            Span::styled(&card.icon, card_style),
             Span::raw(" "),
             Span::styled(&card.title, card_style),
         ];
