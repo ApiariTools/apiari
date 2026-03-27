@@ -4773,4 +4773,21 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].icon, "⚡");
     }
+
+    #[test]
+    fn test_kanban_dismissed_cards_filtered() {
+        let mut ws = empty_ws();
+        ws.workers = vec![
+            make_worker("abc-1234", "running", None),
+            make_worker("def-5678", "running", None),
+        ];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 2);
+
+        // Dismiss the first card
+        ws.kanban_dismissed.insert(cards[0].id.clone());
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(cards.len(), 1, "dismissed card should be filtered out");
+        assert!(!cards[0].id.contains("abc-1234"));
+    }
 }

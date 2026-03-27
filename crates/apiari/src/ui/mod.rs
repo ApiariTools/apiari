@@ -925,6 +925,8 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
     // Home panel (kanban strip) navigation — intercept before common handlers
     if app.focused_panel == Panel::Home {
         match key.code {
+            // Note: narrow-terminal auto-focus doesn't set zoomed_panel, so
+            // Left/Right column navigation won't fire in that edge case.
             KeyCode::Left | KeyCode::Char('h') if app.zoomed_panel.is_none() => {
                 app.kanban_navigate_left();
                 return KeyAction::Redraw;
@@ -3131,5 +3133,224 @@ mod tests {
         handle_dashboard_key(&mut app, key(KeyCode::Char('n')));
 
         assert!(!app.shell_input_active, "n should be ignored without tmux");
+    }
+
+    // ── Kanban navigation tests ───────────────────────────
+
+    fn push_kanban_card(
+        app: &mut App,
+        id: &str,
+        stage: app::KanbanStage,
+        source: &str,
+        subtitle: &str,
+    ) {
+        app.workspaces[0].kanban_cards.push(app::KanbanCard {
+            id: id.to_string(),
+            stage,
+            icon: "🐛".to_string(),
+            title: id.to_string(),
+            subtitle: subtitle.to_string(),
+            source: source.to_string(),
+            url: None,
+            entered_stage_at: chrono::Utc::now(),
+        });
+    }
+
+    #[test]
+    fn test_kanban_navigate_down_selects_first_card_when_none() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        push_kanban_card(
+            &mut app,
+            "card-1",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+
+        handle_dashboard_key(&mut app, key(KeyCode::Down));
+
+        assert_eq!(
+            app.current_ws().unwrap().kanban_selected,
+            Some((app::KanbanStage::InProgress, 0))
+        );
+    }
+
+    #[test]
+    fn test_kanban_navigate_down_wraps_to_first() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        push_kanban_card(
+            &mut app,
+            "card-1",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+        push_kanban_card(
+            &mut app,
+            "card-2",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::InProgress, 1));
+
+        handle_dashboard_key(&mut app, key(KeyCode::Down));
+
+        assert_eq!(
+            app.current_ws().unwrap().kanban_selected,
+            Some((app::KanbanStage::InProgress, 0)),
+            "down from last card should wrap to first"
+        );
+    }
+
+    #[test]
+    fn test_kanban_navigate_up_wraps_to_last() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        push_kanban_card(
+            &mut app,
+            "card-1",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+        push_kanban_card(
+            &mut app,
+            "card-2",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::InProgress, 0));
+
+        handle_dashboard_key(&mut app, key(KeyCode::Up));
+
+        assert_eq!(
+            app.current_ws().unwrap().kanban_selected,
+            Some((app::KanbanStage::InProgress, 1)),
+            "up from first card should wrap to last"
+        );
+    }
+
+    #[test]
+    fn test_kanban_navigate_right_skips_empty_column() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        // Incoming is empty; only InProgress and NeedsMe have cards
+        push_kanban_card(
+            &mut app,
+            "card-1",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+        push_kanban_card(
+            &mut app,
+            "card-2",
+            app::KanbanStage::NeedsMe,
+            "worker",
+            "PR #1 · merge?",
+        );
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::InProgress, 0));
+
+        handle_dashboard_key(&mut app, key(KeyCode::Right));
+
+        assert_eq!(
+            app.current_ws().unwrap().kanban_selected,
+            Some((app::KanbanStage::NeedsMe, 0)),
+            "right should skip to next non-empty column"
+        );
+    }
+
+    #[test]
+    fn test_kanban_enter_injects_merge_message_for_needsme_worker() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        push_kanban_card(
+            &mut app,
+            "card-1",
+            app::KanbanStage::NeedsMe,
+            "worker",
+            "PR #42 · merge?",
+        );
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::NeedsMe, 0));
+
+        handle_dashboard_key(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.current_ws().unwrap().input, "Merge PR #42");
+        assert_eq!(app.focused_panel, Panel::Chat);
+        assert!(app.chat_focused);
+    }
+
+    #[test]
+    fn test_kanban_enter_injects_status_message_for_inprogress_worker() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        push_kanban_card(
+            &mut app,
+            "worker:abc-1234",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running 5m",
+        );
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::InProgress, 0));
+
+        handle_dashboard_key(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(
+            app.current_ws().unwrap().input,
+            "What's the status of worker abc-1234?"
+        );
+    }
+
+    #[test]
+    fn test_kanban_enter_noop_for_done_card() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        push_kanban_card(
+            &mut app,
+            "card-1",
+            app::KanbanStage::Done,
+            "worker",
+            "completed",
+        );
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::Done, 0));
+
+        handle_dashboard_key(&mut app, key(KeyCode::Enter));
+
+        // Focus should NOT shift to Chat for done cards
+        assert_eq!(app.focused_panel, Panel::Home);
+        assert!(app.current_ws().unwrap().input.is_empty());
+    }
+
+    #[test]
+    fn test_kanban_dismiss_removes_card_and_clamps_selection() {
+        let mut app = test_app();
+        app.focused_panel = Panel::Home;
+        push_kanban_card(
+            &mut app,
+            "card-1",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+        push_kanban_card(
+            &mut app,
+            "card-2",
+            app::KanbanStage::InProgress,
+            "worker",
+            "running",
+        );
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::InProgress, 1));
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('d')));
+
+        let ws = app.current_ws().unwrap();
+        assert_eq!(ws.kanban_cards.len(), 1, "dismissed card should be gone");
+        assert!(ws.kanban_dismissed.contains("card-2"));
+        // Selection should clamp to last remaining card (index 0)
+        assert_eq!(ws.kanban_selected, Some((app::KanbanStage::InProgress, 0)));
     }
 }

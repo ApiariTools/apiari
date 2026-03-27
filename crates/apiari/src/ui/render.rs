@@ -670,12 +670,12 @@ fn draw_kanban_column(
         let is_selected = selected == Some(card_idx);
 
         let effective_card_style = if is_selected {
-            Style::default().add_modifier(Modifier::REVERSED)
+            card_style.add_modifier(Modifier::REVERSED)
         } else {
             card_style
         };
         let effective_subtitle_style = if is_selected {
-            Style::default().add_modifier(Modifier::REVERSED)
+            subtitle_style.add_modifier(Modifier::REVERSED)
         } else {
             subtitle_style
         };
@@ -690,7 +690,9 @@ fn draw_kanban_column(
             title_spans.push(Span::styled(
                 " \u{2192}",
                 if is_selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
+                    Style::default()
+                        .fg(theme::HONEY)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
                 } else {
                     Style::default()
                         .fg(theme::HONEY)
