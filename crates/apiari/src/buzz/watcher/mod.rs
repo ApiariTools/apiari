@@ -25,6 +25,7 @@ use tracing::info;
 
 use crate::buzz::signal::SignalUpdate;
 use crate::buzz::signal::store::SignalStore;
+use crate::config::Schedule;
 
 /// A pluggable source that can be polled for new signals.
 #[async_trait]
@@ -68,9 +69,11 @@ pub struct ThrottledWatcher {
     last_poll: Option<Instant>,
     /// External IDs from the last successful poll, for auto-reconciliation.
     last_poll_ids: Option<Vec<String>>,
-    /// Optional per-watcher active-hours override (e.g. "09:00-17:00").
-    /// When set, this overrides the workspace-level schedule for this watcher.
-    active_hours: Option<String>,
+    /// Precomputed effective schedule for this watcher.
+    /// Combines the per-watcher `active_hours` override (if any) with the workspace-level
+    /// `active_days`. Only `active_hours` can be overridden per-watcher; `active_days`
+    /// always comes from the workspace schedule. Defaults to an empty (always-active) schedule.
+    effective_schedule: Schedule,
 }
 
 impl ThrottledWatcher {
@@ -80,18 +83,13 @@ impl ThrottledWatcher {
             interval: Duration::from_secs(interval_secs),
             last_poll: None,
             last_poll_ids: None,
-            active_hours: None,
+            effective_schedule: Schedule::default(),
         }
     }
 
-    /// Set a per-watcher active-hours override.
-    pub fn set_active_hours(&mut self, hours: Option<String>) {
-        self.active_hours = hours;
-    }
-
-    /// Return the per-watcher active-hours override, if set.
-    pub fn active_hours(&self) -> Option<&str> {
-        self.active_hours.as_deref()
+    /// Return the precomputed effective schedule for this watcher.
+    pub fn effective_schedule(&self) -> &Schedule {
+        &self.effective_schedule
     }
 
     /// Returns true if this watcher has never been polled or enough time has elapsed.
@@ -174,16 +172,17 @@ impl WatcherRegistry {
             .push(ThrottledWatcher::new(watcher, interval_secs));
     }
 
-    /// Add a watcher with a poll interval and an optional per-watcher active-hours override.
-    /// Prefer this over `add_with_interval` + `last_watcher_mut` to keep wiring in one place.
+    /// Add a watcher with a poll interval and a precomputed effective schedule.
+    /// The caller is responsible for merging per-watcher and workspace schedules before calling.
+    /// Prefer this over `add_with_interval` to keep schedule wiring in one place.
     pub fn add_with_interval_and_hours(
         &mut self,
         watcher: Box<dyn Watcher>,
         interval_secs: u64,
-        active_hours: Option<String>,
+        effective_schedule: Schedule,
     ) {
         let mut tw = ThrottledWatcher::new(watcher, interval_secs);
-        tw.set_active_hours(active_hours);
+        tw.effective_schedule = effective_schedule;
         self.watchers.push(tw);
     }
 

@@ -6,6 +6,21 @@ use tracing::warn;
 
 use crate::config::Schedule;
 
+/// Validate a schedule at configuration-load time and emit a `warn!` for any
+/// malformed fields.  Call this once per watcher/workspace at startup — not
+/// in the poll hot path.
+pub fn warn_if_invalid(schedule: &Schedule) {
+    if let Some(ref hours) = schedule.active_hours
+        && parse_active_hours(hours).is_none()
+    {
+        warn!(
+            "schedule.active_hours {:?} is malformed (expected HH:MM-HH:MM); \
+             hours constraint will be ignored",
+            hours
+        );
+    }
+}
+
 /// Returns `true` if the current local time is within the active window defined
 /// by `schedule`.  Returns `true` (always active) when no constraints are set.
 pub fn is_within_active_hours(schedule: &Schedule) -> bool {
@@ -26,30 +41,21 @@ fn is_within_active_hours_at(schedule: &Schedule, now: NaiveDateTime) -> bool {
         }
     }
 
-    // Check active hours window.
-    if let Some(ref hours) = schedule.active_hours {
-        match parse_active_hours(hours) {
-            Some((start, end)) => {
-                let current = now.time();
-                let within = if start <= end {
-                    // Normal range e.g. 09:00-18:00
-                    current >= start && current < end
-                } else {
-                    // Overnight range e.g. 22:00-06:00: active if >= 22:00 OR < 06:00
-                    current >= start || current < end
-                };
-                if !within {
-                    return false;
-                }
-            }
-            None => {
-                // Malformed — warn once and treat as no hours restriction for this field.
-                warn!(
-                    "schedule.active_hours {:?} is malformed (expected HH:MM-HH:MM); \
-                     ignoring hours constraint",
-                    hours
-                );
-            }
+    // Check active hours window.  Malformed strings are silently ignored (no hours
+    // constraint applied) — callers should invoke `warn_if_invalid` at startup.
+    if let Some(ref hours) = schedule.active_hours
+        && let Some((start, end)) = parse_active_hours(hours)
+    {
+        let current = now.time();
+        let within = if start <= end {
+            // Normal range e.g. 09:00-18:00
+            current >= start && current < end
+        } else {
+            // Overnight range e.g. 22:00-06:00: active if >= 22:00 OR < 06:00
+            current >= start || current < end
+        };
+        if !within {
+            return false;
         }
     }
 

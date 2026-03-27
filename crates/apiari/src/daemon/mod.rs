@@ -979,6 +979,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         };
         let buzz_config = to_buzz_config(&ws.config);
 
+        // Validate workspace-level schedule once at startup (warns on malformed active_hours).
+        if let Some(ref ws_sched) = ws.config.schedule {
+            crate::buzz::schedule::warn_if_invalid(ws_sched);
+        }
+
         let mut registry = WatcherRegistry::new();
 
         if let Some(gh_config) = &buzz_config.watchers.github
@@ -992,16 +997,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             );
             let mut gh_watcher = GithubWatcher::new(gh_config.clone());
             gh_watcher.load_cursors(&store);
-            let gh_active_hours = ws
-                .config
-                .watchers
-                .github
-                .as_ref()
-                .and_then(|g| g.active_hours.clone());
+            let gh_sched = effective_watcher_schedule(
+                ws.config.schedule.as_ref(),
+                ws.config
+                    .watchers
+                    .github
+                    .as_ref()
+                    .and_then(|g| g.active_hours.as_deref()),
+            );
+            crate::buzz::schedule::warn_if_invalid(&gh_sched);
             registry.add_with_interval_and_hours(
                 Box::new(gh_watcher),
                 gh_config.interval_secs,
-                gh_active_hours.clone(),
+                gh_sched.clone(),
             );
 
             if !gh_config.review_queue.is_empty() {
@@ -1024,7 +1032,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 registry.add_with_interval_and_hours(
                     Box::new(ReviewQueueWatcher::new(gh_config)),
                     gh_config.interval_secs,
-                    gh_active_hours,
+                    gh_sched,
                 );
             }
         }
@@ -1036,14 +1044,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling sentry watcher ({}/{})",
                 ws.name, sentry_config.org, sentry_config.project
             );
-            registry.add_with_interval_and_hours(
-                Box::new(SentryWatcher::new(sentry_config.clone())),
-                sentry_config.interval_secs,
+            let sentry_sched = effective_watcher_schedule(
+                ws.config.schedule.as_ref(),
                 ws.config
                     .watchers
                     .sentry
                     .as_ref()
-                    .and_then(|s| s.active_hours.clone()),
+                    .and_then(|s| s.active_hours.as_deref()),
+            );
+            crate::buzz::schedule::warn_if_invalid(&sentry_sched);
+            registry.add_with_interval_and_hours(
+                Box::new(SentryWatcher::new(sentry_config.clone())),
+                sentry_config.interval_secs,
+                sentry_sched,
             );
         }
 
@@ -1058,14 +1071,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 ws.name,
                 ws.config.root.display()
             );
-            registry.add_with_interval_and_hours(
-                Box::new(SwarmWatcher::new(ws.config.root.clone())),
-                swarm_config.interval_secs,
+            let swarm_sched = effective_watcher_schedule(
+                ws.config.schedule.as_ref(),
                 ws.config
                     .watchers
                     .swarm
                     .as_ref()
-                    .and_then(|s| s.active_hours.clone()),
+                    .and_then(|s| s.active_hours.as_deref()),
+            );
+            crate::buzz::schedule::warn_if_invalid(&swarm_sched);
+            registry.add_with_interval_and_hours(
+                Box::new(SwarmWatcher::new(ws.config.root.clone())),
+                swarm_config.interval_secs,
+                swarm_sched,
             );
         }
 
@@ -1085,14 +1103,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling email watcher '{}' ({})",
                 ws.name, email_config.name, email_config.host
             );
-            registry.add_with_interval_and_hours(
-                Box::new(watcher),
-                email_config.interval_secs,
+            let email_sched = effective_watcher_schedule(
+                ws.config.schedule.as_ref(),
                 ws.config
                     .watchers
                     .email
                     .get(i)
-                    .and_then(|e| e.active_hours.clone()),
+                    .and_then(|e| e.active_hours.as_deref()),
+            );
+            crate::buzz::schedule::warn_if_invalid(&email_sched);
+            registry.add_with_interval_and_hours(
+                Box::new(watcher),
+                email_config.interval_secs,
+                email_sched,
             );
         }
 
@@ -1110,14 +1133,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling notion watcher '{}'",
                 ws.name, notion_config.name
             );
-            registry.add_with_interval_and_hours(
-                Box::new(watcher),
-                notion_config.interval_secs,
+            let notion_sched = effective_watcher_schedule(
+                ws.config.schedule.as_ref(),
                 ws.config
                     .watchers
                     .notion
                     .get(i)
-                    .and_then(|n| n.active_hours.clone()),
+                    .and_then(|n| n.active_hours.as_deref()),
+            );
+            crate::buzz::schedule::warn_if_invalid(&notion_sched);
+            registry.add_with_interval_and_hours(
+                Box::new(watcher),
+                notion_config.interval_secs,
+                notion_sched,
             );
         }
 
@@ -1153,14 +1181,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 },
                 query_names.join(", ")
             );
-            registry.add_with_interval_and_hours(
-                Box::new(watcher),
-                linear_config.poll_interval_secs,
+            let linear_sched = effective_watcher_schedule(
+                ws.config.schedule.as_ref(),
                 ws.config
                     .watchers
                     .linear
                     .get(i)
-                    .and_then(|l| l.active_hours.clone()),
+                    .and_then(|l| l.active_hours.as_deref()),
+            );
+            crate::buzz::schedule::warn_if_invalid(&linear_sched);
+            registry.add_with_interval_and_hours(
+                Box::new(watcher),
+                linear_config.poll_interval_secs,
+                linear_sched,
             );
         }
 
@@ -1169,14 +1202,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling script watcher '{}'",
                 ws.name, script_config.name
             );
-            registry.add_with_interval_and_hours(
-                Box::new(ScriptWatcher::new(script_config.clone())),
-                script_config.interval_secs,
+            let script_sched = effective_watcher_schedule(
+                ws.config.schedule.as_ref(),
                 ws.config
                     .watchers
                     .script
                     .get(i)
-                    .and_then(|s| s.active_hours.clone()),
+                    .and_then(|s| s.active_hours.as_deref()),
+            );
+            crate::buzz::schedule::warn_if_invalid(&script_sched);
+            registry.add_with_interval_and_hours(
+                Box::new(ScriptWatcher::new(script_config.clone())),
+                script_config.interval_secs,
+                script_sched,
             );
         }
 
@@ -1509,18 +1547,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         }
                         let watcher_name = throttled.watcher().name().to_string();
 
-                        // Check active-hours schedule before polling.
-                        // Per-watcher active_hours overrides workspace schedule (hours only;
-                        // active_days still come from workspace schedule when a per-watcher
-                        // override is set).
-                        let effective_schedule = match throttled.active_hours() {
-                            Some(ah) => crate::config::Schedule {
-                                active_hours: Some(ah.to_string()),
-                                active_days: slot.config.schedule.as_ref().and_then(|s| s.active_days.clone()),
-                            },
-                            None => slot.config.schedule.clone().unwrap_or_default(),
-                        };
-                        if !crate::buzz::schedule::is_within_active_hours(&effective_schedule) {
+                        // Schedule check: effective_schedule was precomputed at registration.
+                        if !crate::buzz::schedule::is_within_active_hours(throttled.effective_schedule()) {
                             tracing::trace!(
                                 "[{}] [{}] skipping poll: outside active hours",
                                 slot.name,
@@ -3083,6 +3111,25 @@ async fn build_full_status(slot: &WorkspaceSlot) -> String {
     }
 
     summary
+}
+
+/// Compute the effective schedule for a single watcher.
+///
+/// A per-watcher `active_hours` string overrides the workspace-level `active_hours`.
+/// `active_days` is always inherited from the workspace schedule — per-watcher configs
+/// cannot override it.  The result is precomputed once at registration time so the
+/// poll loop never allocates.
+fn effective_watcher_schedule(
+    workspace: Option<&crate::config::Schedule>,
+    watcher_hours: Option<&str>,
+) -> crate::config::Schedule {
+    match watcher_hours {
+        Some(ah) => crate::config::Schedule {
+            active_hours: Some(ah.to_string()),
+            active_days: workspace.and_then(|s| s.active_days.clone()),
+        },
+        None => workspace.cloned().unwrap_or_default(),
+    }
 }
 
 /// Format signal events into a system notification for the coordinator.
