@@ -2550,6 +2550,7 @@ mod tests {
             tmux: None,
             shell_windows: Vec::new(),
             pending_notifications: Vec::new(),
+            kanban_cards: Vec::new(),
         };
         let ws_name = ws.name.clone();
         App {
