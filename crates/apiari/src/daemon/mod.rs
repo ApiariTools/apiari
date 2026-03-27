@@ -992,16 +992,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             );
             let mut gh_watcher = GithubWatcher::new(gh_config.clone());
             gh_watcher.load_cursors(&store);
-            registry.add_with_interval(Box::new(gh_watcher), gh_config.interval_secs);
-            if let Some(tw) = registry.last_watcher_mut() {
-                tw.set_active_hours(
-                    ws.config
-                        .watchers
-                        .github
-                        .as_ref()
-                        .and_then(|g| g.active_hours.clone()),
-                );
-            }
+            let gh_active_hours = ws
+                .config
+                .watchers
+                .github
+                .as_ref()
+                .and_then(|g| g.active_hours.clone());
+            registry.add_with_interval_and_hours(
+                Box::new(gh_watcher),
+                gh_config.interval_secs,
+                gh_active_hours.clone(),
+            );
 
             if !gh_config.review_queue.is_empty() {
                 let query_names: Vec<&str> = gh_config
@@ -1020,19 +1021,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                     },
                     query_names.join(", ")
                 );
-                registry.add_with_interval(
+                registry.add_with_interval_and_hours(
                     Box::new(ReviewQueueWatcher::new(gh_config)),
                     gh_config.interval_secs,
+                    gh_active_hours,
                 );
-                if let Some(tw) = registry.last_watcher_mut() {
-                    tw.set_active_hours(
-                        ws.config
-                            .watchers
-                            .github
-                            .as_ref()
-                            .and_then(|g| g.active_hours.clone()),
-                    );
-                }
             }
         }
 
@@ -1043,19 +1036,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling sentry watcher ({}/{})",
                 ws.name, sentry_config.org, sentry_config.project
             );
-            registry.add_with_interval(
+            registry.add_with_interval_and_hours(
                 Box::new(SentryWatcher::new(sentry_config.clone())),
                 sentry_config.interval_secs,
+                ws.config
+                    .watchers
+                    .sentry
+                    .as_ref()
+                    .and_then(|s| s.active_hours.clone()),
             );
-            if let Some(tw) = registry.last_watcher_mut() {
-                tw.set_active_hours(
-                    ws.config
-                        .watchers
-                        .sentry
-                        .as_ref()
-                        .and_then(|s| s.active_hours.clone()),
-                );
-            }
         }
 
         if let Some(swarm_config) = &buzz_config.watchers.swarm
@@ -1069,19 +1058,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 ws.name,
                 ws.config.root.display()
             );
-            registry.add_with_interval(
+            registry.add_with_interval_and_hours(
                 Box::new(SwarmWatcher::new(ws.config.root.clone())),
                 swarm_config.interval_secs,
+                ws.config
+                    .watchers
+                    .swarm
+                    .as_ref()
+                    .and_then(|s| s.active_hours.clone()),
             );
-            if let Some(tw) = registry.last_watcher_mut() {
-                tw.set_active_hours(
-                    ws.config
-                        .watchers
-                        .swarm
-                        .as_ref()
-                        .and_then(|s| s.active_hours.clone()),
-                );
-            }
         }
 
         for (i, email_config) in buzz_config.watchers.email.iter().enumerate() {
@@ -1100,16 +1085,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling email watcher '{}' ({})",
                 ws.name, email_config.name, email_config.host
             );
-            registry.add_with_interval(Box::new(watcher), email_config.interval_secs);
-            if let Some(tw) = registry.last_watcher_mut() {
-                tw.set_active_hours(
-                    ws.config
-                        .watchers
-                        .email
-                        .get(i)
-                        .and_then(|e| e.active_hours.clone()),
-                );
-            }
+            registry.add_with_interval_and_hours(
+                Box::new(watcher),
+                email_config.interval_secs,
+                ws.config
+                    .watchers
+                    .email
+                    .get(i)
+                    .and_then(|e| e.active_hours.clone()),
+            );
         }
 
         for (i, notion_config) in buzz_config.watchers.notion.iter().enumerate() {
@@ -1126,16 +1110,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling notion watcher '{}'",
                 ws.name, notion_config.name
             );
-            registry.add_with_interval(Box::new(watcher), notion_config.interval_secs);
-            if let Some(tw) = registry.last_watcher_mut() {
-                tw.set_active_hours(
-                    ws.config
-                        .watchers
-                        .notion
-                        .get(i)
-                        .and_then(|n| n.active_hours.clone()),
-                );
-            }
+            registry.add_with_interval_and_hours(
+                Box::new(watcher),
+                notion_config.interval_secs,
+                ws.config
+                    .watchers
+                    .notion
+                    .get(i)
+                    .and_then(|n| n.active_hours.clone()),
+            );
         }
 
         for (i, linear_config) in buzz_config.watchers.linear.iter().enumerate() {
@@ -1170,16 +1153,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 },
                 query_names.join(", ")
             );
-            registry.add_with_interval(Box::new(watcher), linear_config.poll_interval_secs);
-            if let Some(tw) = registry.last_watcher_mut() {
-                tw.set_active_hours(
-                    ws.config
-                        .watchers
-                        .linear
-                        .get(i)
-                        .and_then(|l| l.active_hours.clone()),
-                );
-            }
+            registry.add_with_interval_and_hours(
+                Box::new(watcher),
+                linear_config.poll_interval_secs,
+                ws.config
+                    .watchers
+                    .linear
+                    .get(i)
+                    .and_then(|l| l.active_hours.clone()),
+            );
         }
 
         for (i, script_config) in buzz_config.watchers.script.iter().enumerate() {
@@ -1187,19 +1169,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "[{}] enabling script watcher '{}'",
                 ws.name, script_config.name
             );
-            registry.add_with_interval(
+            registry.add_with_interval_and_hours(
                 Box::new(ScriptWatcher::new(script_config.clone())),
                 script_config.interval_secs,
+                ws.config
+                    .watchers
+                    .script
+                    .get(i)
+                    .and_then(|s| s.active_hours.clone()),
             );
-            if let Some(tw) = registry.last_watcher_mut() {
-                tw.set_active_hours(
-                    ws.config
-                        .watchers
-                        .script
-                        .get(i)
-                        .and_then(|s| s.active_hours.clone()),
-                );
-            }
         }
 
         let mut coordinator = build_coordinator(&ws.name, &ws.config);

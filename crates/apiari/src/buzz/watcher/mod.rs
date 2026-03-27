@@ -174,6 +174,19 @@ impl WatcherRegistry {
             .push(ThrottledWatcher::new(watcher, interval_secs));
     }
 
+    /// Add a watcher with a poll interval and an optional per-watcher active-hours override.
+    /// Prefer this over `add_with_interval` + `last_watcher_mut` to keep wiring in one place.
+    pub fn add_with_interval_and_hours(
+        &mut self,
+        watcher: Box<dyn Watcher>,
+        interval_secs: u64,
+        active_hours: Option<String>,
+    ) {
+        let mut tw = ThrottledWatcher::new(watcher, interval_secs);
+        tw.set_active_hours(active_hours);
+        self.watchers.push(tw);
+    }
+
     pub fn watchers_mut(&mut self) -> &mut [ThrottledWatcher] {
         &mut self.watchers
     }

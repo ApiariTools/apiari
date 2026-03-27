@@ -123,7 +123,7 @@ impl MergePrsCapability {
 }
 
 /// Current workspace config version. Bump when adding new fields or changing semantics.
-pub const CURRENT_CONFIG_VERSION: u32 = 1;
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
 
 /// Schedule configuration — defines when watchers and signal hooks are active.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
