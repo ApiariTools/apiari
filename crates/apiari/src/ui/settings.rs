@@ -277,6 +277,7 @@ impl SettingsState {
                     interval_secs: 120,
                     review_queue: vec![],
                     filters: HashMap::new(),
+                    active_hours: None,
                 });
             config.watchers.github = Some(config::GithubWatcherConfig { repos, ..existing });
         } else {
@@ -293,7 +294,8 @@ impl SettingsState {
                 org: self.sentry_org.trim().to_string(),
                 project: self.sentry_project.trim().to_string(),
                 token: self.sentry_token.trim().to_string(),
-                interval_secs: existing.map(|s| s.interval_secs).unwrap_or(120),
+                interval_secs: existing.as_ref().map(|s| s.interval_secs).unwrap_or(120),
+                active_hours: existing.and_then(|s| s.active_hours),
             });
         } else {
             config.watchers.sentry = None;
@@ -305,13 +307,17 @@ impl SettingsState {
             config.watchers.linear = vec![config::LinearWatcherConfig {
                 name: self.linear_name.trim().to_string(),
                 api_key: self.linear_api_key.trim().to_string(),
-                poll_interval_secs: existing.map(|l| l.poll_interval_secs).unwrap_or(60),
+                poll_interval_secs: existing
+                    .as_ref()
+                    .map(|l| l.poll_interval_secs)
+                    .unwrap_or(60),
                 review_queue: config
                     .watchers
                     .linear
                     .first()
                     .map(|l| l.review_queue.clone())
                     .unwrap_or_default(),
+                active_hours: existing.and_then(|l| l.active_hours),
             }];
         } else {
             config.watchers.linear = vec![];
@@ -322,7 +328,8 @@ impl SettingsState {
             let existing = config.watchers.swarm.take();
             config.watchers.swarm = Some(config::SwarmWatcherConfig {
                 state_path: self.swarm_state_path.trim().into(),
-                interval_secs: existing.map(|s| s.interval_secs).unwrap_or(15),
+                interval_secs: existing.as_ref().map(|s| s.interval_secs).unwrap_or(15),
+                active_hours: existing.and_then(|s| s.active_hours),
             });
         } else {
             config.watchers.swarm = None;

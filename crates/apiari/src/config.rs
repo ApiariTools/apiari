@@ -125,6 +125,21 @@ impl MergePrsCapability {
 /// Current workspace config version. Bump when adding new fields or changing semantics.
 pub const CURRENT_CONFIG_VERSION: u32 = 1;
 
+/// Schedule configuration — defines when watchers and signal hooks are active.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Schedule {
+    /// Active time window in "HH:MM-HH:MM" 24h local time (e.g. "09:00-18:00").
+    /// Supports overnight ranges like "22:00-06:00".
+    /// If absent, all hours are active.
+    #[serde(default)]
+    pub active_hours: Option<String>,
+    /// Active days of the week as lowercase 3-letter abbreviations
+    /// (e.g. ["mon", "tue", "wed", "thu", "fri"]).
+    /// If absent, all days are active.
+    #[serde(default)]
+    pub active_days: Option<Vec<String>>,
+}
+
 /// A fully self-contained workspace configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
@@ -205,6 +220,10 @@ pub struct WorkspaceConfig {
     /// Shell management configuration (tmux integration).
     #[serde(default)]
     pub shells: ShellsConfig,
+
+    /// Active-hours schedule — when absent, watchers and signal hooks run 24/7.
+    #[serde(default)]
+    pub schedule: Option<Schedule>,
 }
 
 /// A single daemon TCP endpoint (host + port).
@@ -408,6 +427,9 @@ pub struct EmailMailboxConfig {
     pub interval_secs: u64,
     #[serde(default)]
     pub summarizer: Option<EmailSummarizerConfig>,
+    /// Per-watcher active hours override. Overrides workspace schedule.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 /// Ollama/OpenAI-compatible summarizer configuration.
@@ -427,6 +449,9 @@ pub struct NotionWatcherConfig {
     pub poll_database_ids: Option<Vec<String>>,
     #[serde(default = "default_notion_interval")]
     pub interval_secs: u64,
+    /// Per-watcher active hours override. Overrides workspace schedule.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 /// Linear watcher configuration.
@@ -438,6 +463,9 @@ pub struct LinearWatcherConfig {
     pub poll_interval_secs: u64,
     #[serde(default)]
     pub review_queue: Vec<LinearReviewQueueEntry>,
+    /// Per-watcher active hours override. Overrides workspace schedule.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 /// A single review queue query for Linear.
@@ -460,6 +488,9 @@ pub struct ScriptWatcherConfig {
     pub severity_on_fail: String,
     #[serde(default = "default_script_timeout")]
     pub timeout_secs: u64,
+    /// Per-watcher active hours override. Overrides workspace schedule.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 fn default_script_interval() -> u64 {
@@ -520,6 +551,9 @@ pub struct GithubWatcherConfig {
     /// Per-event-type filters (e.g. `github_pr_push = "author:@me"`).
     #[serde(default)]
     pub filters: HashMap<String, String>,
+    /// Per-watcher active hours override (e.g. "09:00-17:00"). Overrides workspace schedule.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 /// A named review queue query.
@@ -539,6 +573,9 @@ pub struct SentryWatcherConfig {
     pub token: String,
     #[serde(default = "default_watcher_interval")]
     pub interval_secs: u64,
+    /// Per-watcher active hours override. Overrides workspace schedule.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 /// Swarm watcher configuration.
@@ -547,6 +584,9 @@ pub struct SwarmWatcherConfig {
     pub state_path: PathBuf,
     #[serde(default = "default_swarm_interval")]
     pub interval_secs: u64,
+    /// Per-watcher active hours override. Overrides workspace schedule.
+    #[serde(default)]
+    pub active_hours: Option<String>,
 }
 
 /// Morning brief configuration.
@@ -1235,6 +1275,7 @@ max_session_turns = 0
             daemon_port: None,
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
+            schedule: None,
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -1261,6 +1302,7 @@ max_session_turns = 0
             daemon_port: None,
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
+            schedule: None,
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -1291,6 +1333,7 @@ max_session_turns = 0
             daemon_port: None,
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
+            schedule: None,
         };
 
         let buzz = to_buzz_config(&ws);
@@ -1534,6 +1577,7 @@ max_session_turns = 0
                     interval_secs: default_watcher_interval(),
                     review_queue: vec![],
                     filters: HashMap::new(),
+                    active_hours: None,
                 }),
                 ..Default::default()
             },
@@ -1547,6 +1591,7 @@ max_session_turns = 0
             daemon_port: None,
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
+            schedule: None,
         }
     }
 

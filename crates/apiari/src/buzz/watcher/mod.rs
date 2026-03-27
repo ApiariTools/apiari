@@ -68,6 +68,9 @@ pub struct ThrottledWatcher {
     last_poll: Option<Instant>,
     /// External IDs from the last successful poll, for auto-reconciliation.
     last_poll_ids: Option<Vec<String>>,
+    /// Optional per-watcher active-hours override (e.g. "09:00-17:00").
+    /// When set, this overrides the workspace-level schedule for this watcher.
+    active_hours: Option<String>,
 }
 
 impl ThrottledWatcher {
@@ -77,7 +80,18 @@ impl ThrottledWatcher {
             interval: Duration::from_secs(interval_secs),
             last_poll: None,
             last_poll_ids: None,
+            active_hours: None,
         }
+    }
+
+    /// Set a per-watcher active-hours override.
+    pub fn set_active_hours(&mut self, hours: Option<String>) {
+        self.active_hours = hours;
+    }
+
+    /// Return the per-watcher active-hours override, if set.
+    pub fn active_hours(&self) -> Option<&str> {
+        self.active_hours.as_deref()
     }
 
     /// Returns true if this watcher has never been polled or enough time has elapsed.
@@ -162,6 +176,11 @@ impl WatcherRegistry {
 
     pub fn watchers_mut(&mut self) -> &mut [ThrottledWatcher] {
         &mut self.watchers
+    }
+
+    /// Return a mutable reference to the most-recently-added watcher.
+    pub fn last_watcher_mut(&mut self) -> Option<&mut ThrottledWatcher> {
+        self.watchers.last_mut()
     }
 
     pub fn is_empty(&self) -> bool {
