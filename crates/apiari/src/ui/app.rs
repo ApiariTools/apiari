@@ -392,11 +392,11 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
             }
             "github_ci_pass" | "github_bot_review" => continue,
             "github_merged_pr" => (KanbanStage::Done, "📋"),
-            "github_release" => (KanbanStage::Done, "📋"),
-            "sentry" => (KanbanStage::Incoming, "🐛"),
+            "github_release" => (KanbanStage::Done, "🚀"),
+            "sentry" => (KanbanStage::Incoming, "⚡"),
             "linear" => (KanbanStage::Incoming, "📋"),
-            "email" => (KanbanStage::Incoming, "📋"),
-            "notion" => (KanbanStage::Incoming, "📋"),
+            "email" => (KanbanStage::Incoming, "📧"),
+            "notion" => (KanbanStage::Incoming, "📓"),
             _ => (KanbanStage::Incoming, "⚡"),
         };
 

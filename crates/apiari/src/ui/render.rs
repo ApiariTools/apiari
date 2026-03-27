@@ -498,8 +498,9 @@ fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, ar
     } else {
         "\u{26a0}\u{fe0f}"
     };
+    let today_signals = ws.signals.len();
     let title = format!(
-        " Kanban \u{00b7} Watchers: {healthy}/{total} {health_icon} \u{00b7} Last poll: {last_poll} "
+        " Kanban \u{00b7} Watchers: {healthy}/{total} {health_icon} \u{00b7} Last poll: {last_poll} \u{00b7} Today: {today_signals} signals "
     );
 
     let block = Block::default()
@@ -547,20 +548,33 @@ fn draw_kanban_strip(frame: &mut Frame, _app: &App, ws: &app::WorkspaceState, ar
         return;
     }
 
-    // Split inner area into equal columns
-    let constraints: Vec<Constraint> = columns
-        .iter()
-        .map(|_| Constraint::Ratio(1, columns.len() as u32))
-        .collect();
+    // Build constraints with 1-char gaps for dividers between columns
+    let num_cols = columns.len() as u32;
+    let mut constraints: Vec<Constraint> = Vec::new();
+    for (i, _) in columns.iter().enumerate() {
+        if i > 0 {
+            constraints.push(Constraint::Length(1)); // divider
+        }
+        constraints.push(Constraint::Ratio(1, num_cols));
+    }
     let col_areas = Layout::default()
         .direction(Direction::Horizontal)
-        .spacing(1)
         .constraints(constraints)
         .split(inner);
 
     for (i, (stage, cards)) in columns.iter().enumerate() {
-        let col_area = col_areas[i];
+        let area_idx = i * 2; // skip divider slots
+        let col_area = col_areas[area_idx];
         draw_kanban_column(frame, *stage, cards, col_area);
+
+        // Draw divider after this column (before the next)
+        if i + 1 < columns.len() {
+            let div_area = col_areas[area_idx + 1];
+            let divider_lines: Vec<Line> = (0..div_area.height)
+                .map(|_| Line::from(Span::styled("│", Style::default().fg(theme::STEEL))))
+                .collect();
+            frame.render_widget(Paragraph::new(divider_lines), div_area);
+        }
     }
 }
 
@@ -575,19 +589,29 @@ fn draw_kanban_column(
     }
 
     let (header_text, header_style) = match stage {
-        app::KanbanStage::Incoming => ("INCOMING", Style::default().fg(theme::FROST)),
-        app::KanbanStage::InProgress => ("IN PROGRESS", Style::default().fg(theme::MINT)),
+        app::KanbanStage::Incoming => (
+            "INCOMING",
+            Style::default()
+                .fg(theme::FROST)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ),
+        app::KanbanStage::InProgress => (
+            "IN PROGRESS",
+            Style::default()
+                .fg(theme::MINT)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ),
         app::KanbanStage::NeedsMe => (
             "NEEDS ME",
             Style::default()
                 .fg(theme::HONEY)
-                .add_modifier(Modifier::BOLD),
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ),
         app::KanbanStage::Done => (
             "DONE",
             Style::default()
                 .fg(theme::STEEL)
-                .add_modifier(Modifier::DIM),
+                .add_modifier(Modifier::DIM | Modifier::UNDERLINED),
         ),
     };
 
@@ -603,27 +627,44 @@ fn draw_kanban_column(
     let overflow = cards.len().saturating_sub(show_count);
 
     let is_needs_me = stage == app::KanbanStage::NeedsMe;
+    let is_done = stage == app::KanbanStage::Done;
     let card_style = if is_needs_me {
         Style::default()
             .fg(theme::HONEY)
             .add_modifier(Modifier::BOLD)
+    } else if is_done {
+        Style::default()
+            .fg(theme::STEEL)
+            .add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(theme::FROST)
     };
     let subtitle_style = if is_needs_me {
         Style::default().fg(theme::HONEY)
+    } else if is_done {
+        Style::default()
+            .fg(theme::STEEL)
+            .add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(theme::SMOKE)
     };
 
     for card in cards.iter().take(show_count) {
-        // Line 1: icon + title
-        let title_line = Line::from(vec![
+        // Line 1: icon + title + action hint for NeedsMe
+        let mut title_spans = vec![
             Span::raw(&card.icon),
             Span::raw(" "),
             Span::styled(&card.title, card_style),
-        ]);
-        lines.push(title_line);
+        ];
+        if is_needs_me {
+            title_spans.push(Span::styled(
+                " \u{2192}",
+                Style::default()
+                    .fg(theme::HONEY)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.push(Line::from(title_spans));
 
         // Line 2: subtitle (indented)
         let sub_line = Line::from(vec![
