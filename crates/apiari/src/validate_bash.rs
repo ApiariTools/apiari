@@ -74,10 +74,13 @@ fn evaluate(input: &str) -> Verdict {
         BashClassification::PotentiallyMutating { matched_pattern } => {
             // Allow gh pr merge if the workspace has merge_prs capability enabled
             // AND the command is a single invocation (no chaining).
-            if matched_pattern == "gh pr merge"
-                && !contains_command_chaining(&command)
-                && is_merge_allowed()
-            {
+            // Check both matched_pattern (the audit classifier's match) and the
+            // raw command start as a fallback — the command could match a broader
+            // pattern first (e.g. a shell passthrough) while still being a
+            // plain `gh pr merge` invocation that should be allowed.
+            let is_gh_pr_merge =
+                matched_pattern == "gh pr merge" || command.trim_start().starts_with("gh pr merge");
+            if is_gh_pr_merge && !contains_command_chaining(&command) && is_merge_allowed() {
                 return Verdict::Allow;
             }
             Verdict::Deny {
