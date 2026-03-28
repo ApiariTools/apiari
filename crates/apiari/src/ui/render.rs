@@ -195,7 +195,7 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Kanban strip + Chat layout
+    // Kanban strip + Chat (+optional Triage sidebar) layout
     let kanban_h = app::compute_kanban_height(ws);
 
     let rows = Layout::default()
@@ -210,7 +210,18 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
     app.kanban_allocated_height.set(rows[0].height);
 
     draw_kanban_strip(frame, app, ws, rows[0]);
-    draw_chat_panel(frame, app, ws, rows[1]);
+
+    // Bottom area: Chat + optional Triage sidebar
+    if ws.triage_sidebar_open {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .split(rows[1]);
+        draw_chat_panel(frame, app, ws, cols[0]);
+        draw_triage_sidebar(frame, ws, cols[1]);
+    } else {
+        draw_chat_panel(frame, app, ws, rows[1]);
+    }
 
     // Onboarding: dim kanban area if Home panel not revealed
     if app.onboarding.active && !app.onboarding.is_revealed(Panel::Home) {
@@ -491,13 +502,11 @@ fn draw_kanban_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Always show all 5 columns — empty columns show a placeholder
+    // Always show all 3 columns — empty columns show a placeholder
     let stages = [
-        app::KanbanStage::Triage,
         app::KanbanStage::InProgress,
         app::KanbanStage::InReview,
         app::KanbanStage::MergeReady,
-        app::KanbanStage::Done,
     ];
 
     let columns: Vec<(app::KanbanStage, Vec<&app::KanbanCard>)> = stages
@@ -570,12 +579,6 @@ fn draw_kanban_column(
     }
 
     let (header_text, header_style) = match stage {
-        app::KanbanStage::Triage => (
-            "TRIAGE",
-            Style::default()
-                .fg(theme::FROST)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        ),
         app::KanbanStage::InProgress => (
             "IN PROGRESS",
             Style::default()
@@ -594,18 +597,15 @@ fn draw_kanban_column(
                 .fg(theme::HONEY)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ),
-        app::KanbanStage::Done => (
-            "DONE",
-            Style::default()
-                .fg(theme::STEEL)
-                .add_modifier(Modifier::BOLD | Modifier::DIM | Modifier::UNDERLINED),
-        ),
     };
 
     let mut lines: Vec<Line> = Vec::new();
 
     // Header line
-    lines.push(Line::from(Span::styled(header_text, header_style)));
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(header_text, header_style),
+    ]));
 
     // Empty column placeholder
     if cards.is_empty() {
@@ -626,24 +626,15 @@ fn draw_kanban_column(
     let overflow = cards.len().saturating_sub(show_count);
 
     let is_merge_ready = stage == app::KanbanStage::MergeReady;
-    let is_done = stage == app::KanbanStage::Done;
     let card_style = if is_merge_ready {
         Style::default()
             .fg(theme::HONEY)
             .add_modifier(Modifier::BOLD)
-    } else if is_done {
-        Style::default()
-            .fg(theme::STEEL)
-            .add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(theme::FROST)
     };
     let subtitle_style = if is_merge_ready {
         Style::default().fg(theme::HONEY)
-    } else if is_done {
-        Style::default()
-            .fg(theme::STEEL)
-            .add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(theme::SMOKE)
     };
@@ -668,6 +659,7 @@ fn draw_kanban_column(
 
         // Line 1: icon + title + action hint for MergeReady
         let mut title_spans = vec![
+            Span::raw(" "),
             Span::styled(&card.icon, effective_card_style),
             Span::raw(" "),
             Span::styled(&card.title, effective_card_style),
@@ -690,7 +682,7 @@ fn draw_kanban_column(
 
         // Line 2: subtitle (indented)
         let sub_line = Line::from(vec![
-            Span::raw("  "),
+            Span::raw("   "),
             Span::styled(&card.subtitle, effective_subtitle_style),
         ]);
         lines.push(sub_line);
@@ -706,6 +698,108 @@ fn draw_kanban_column(
     }
 
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
+    let items = app::triage_items(ws);
+
+    let count = items.len();
+    let title = format!(" Triage ({count}) ");
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme::STEEL))
+        .style(Style::default().bg(theme::COMB))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme::FROST)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if items.is_empty() {
+        let line = Line::from(Span::styled(
+            " All clear",
+            Style::default().fg(theme::SMOKE),
+        ));
+        frame.render_widget(Paragraph::new(vec![line]), inner);
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    let visible = (inner.height as usize).min(items.len());
+    let scroll = ws.triage_scroll.min(items.len().saturating_sub(visible));
+
+    for (i, item) in items.iter().skip(scroll).take(visible).enumerate() {
+        let age_str = format_age(&item.age);
+        let is_selected = i + scroll == ws.triage_selected;
+
+        let style = if is_selected {
+            Style::default()
+                .fg(theme::HONEY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::FROST)
+        };
+        let sub_style = if is_selected {
+            Style::default().fg(theme::HONEY)
+        } else {
+            Style::default().fg(theme::SMOKE)
+        };
+
+        lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(&item.icon, style),
+            Span::raw(" "),
+            Span::styled(
+                truncate_to_width(&item.title, inner.width.saturating_sub(6) as usize),
+                style,
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(&item.subtitle, sub_style),
+            Span::styled(format!(" · {age_str}"), sub_style),
+        ]));
+    }
+
+    if items.len() > visible + scroll {
+        let more = items.len() - visible - scroll;
+        lines.push(Line::from(Span::styled(
+            format!(" +{more} more"),
+            Style::default()
+                .fg(theme::STEEL)
+                .add_modifier(Modifier::DIM),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn format_age(dur: &chrono::Duration) -> String {
+    let mins = dur.num_minutes();
+    if mins < 1 {
+        "just now".to_string()
+    } else if mins < 60 {
+        format!("{mins}m")
+    } else if mins < 1440 {
+        format!("{}h", mins / 60)
+    } else {
+        format!("{}d", mins / 1440)
+    }
+}
+
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    if s.len() <= max_width {
+        s.to_string()
+    } else if max_width > 1 {
+        format!("{}…", &s[..max_width - 1])
+    } else {
+        "…".to_string()
+    }
 }
 
 // ── Action banner ────────────────────────────────────────
