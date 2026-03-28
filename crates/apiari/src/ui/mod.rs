@@ -2659,6 +2659,10 @@ mod tests {
             triage_sidebar_open: true,
             triage_selected: 0,
             triage_scroll: 0,
+            sidebar_view: app::SidebarView::Triage,
+            activity_events: Vec::new(),
+            activity_selected: 0,
+            activity_scroll: 0,
         };
         let ws_name = ws.name.clone();
         App {
