@@ -504,6 +504,211 @@ mod tests {
     }
 
     #[test]
+    fn test_full_lifecycle_spawn_to_merge() {
+        let store = TaskStore::open_memory().unwrap();
+
+        // 1. Create task (simulating swarm-spawned) in InProgress
+        let task = create_task_for_worker(
+            &store,
+            "acme",
+            "w-life1",
+            Some("agent: claude\nAdd payment integration"),
+        );
+        let fetched = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(fetched.stage, TaskStage::InProgress);
+
+        // 2. Update PR info + transition to InAiReview
+        let pr_url = "https://github.com/org/repo/pull/100";
+        let (repo, pr_number) =
+            crate::buzz::task::rules::extract_github_pr_from_url(pr_url).unwrap();
+        store.update_task_pr(&task.id, pr_url, pr_number).unwrap();
+        store.update_task_repo(&task.id, &repo).unwrap();
+        store
+            .transition_task(
+                &task.id,
+                &TaskStage::InProgress,
+                &TaskStage::InAiReview,
+                Some("PR opened".to_string()),
+            )
+            .unwrap();
+
+        let fetched = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(fetched.stage, TaskStage::InAiReview);
+
+        // 3. Process CI pass signal → should transition to MergeReady
+        let ci_pass = make_signal(
+            "github_ci_pass",
+            Some("https://github.com/org/repo/pull/100"),
+        );
+        let result = process_signal(&store, "acme", &ci_pass).unwrap();
+        assert!(result.transitioned);
+        assert_eq!(result.task.as_ref().unwrap().stage, TaskStage::MergeReady);
+        assert!(!result.notifications.is_empty());
+
+        // 4. Process merged PR signal → should transition to Merged
+        let merged = make_signal(
+            "github_merged_pr",
+            Some("https://github.com/org/repo/pull/100"),
+        );
+        let result = process_signal(&store, "acme", &merged).unwrap();
+        assert!(result.transitioned);
+        let final_task = result.task.unwrap();
+        assert_eq!(final_task.stage, TaskStage::Merged);
+        assert!(final_task.resolved_at.is_some());
+
+        // Verify events were logged
+        let events = store.get_task_events(&task.id).unwrap();
+        // Events: PR opened (manual), CI pass → MergeReady, merged → Merged
+        assert!(events.len() >= 3);
+    }
+
+    #[test]
+    fn test_lifecycle_ci_failure_backward_transition() {
+        let store = TaskStore::open_memory().unwrap();
+
+        // 1. Create task in InAiReview with PR
+        let task = make_task("acme", TaskStage::InAiReview, "org/repo", 200);
+        store.create_task(&task).unwrap();
+
+        // 2. Process CI failure → should go to InProgress
+        let ci_fail = make_signal(
+            "github_ci_failure",
+            Some("https://github.com/org/repo/pull/200"),
+        );
+        let result = process_signal(&store, "acme", &ci_fail).unwrap();
+        assert!(result.transitioned);
+        assert_eq!(result.task.as_ref().unwrap().stage, TaskStage::InProgress);
+        assert_eq!(result.worker_messages.len(), 1);
+
+        // 3. Process PR push while InProgress → no rule for InProgress+github_pr_push
+        // (the rule only exists for MergeReady+github_pr_push)
+        let pr_push = make_signal(
+            "github_pr_push",
+            Some("https://github.com/org/repo/pull/200"),
+        );
+        let result = process_signal(&store, "acme", &pr_push).unwrap();
+        assert!(!result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+
+        // 4. Manually transition back to InAiReview, then CI pass → MergeReady
+        let task_id = task.id.clone();
+        store
+            .transition_task(
+                &task_id,
+                &TaskStage::InProgress,
+                &TaskStage::InAiReview,
+                Some("Worker pushed fix".to_string()),
+            )
+            .unwrap();
+
+        let ci_pass = make_signal(
+            "github_ci_pass",
+            Some("https://github.com/org/repo/pull/200"),
+        );
+        let result = process_signal(&store, "acme", &ci_pass).unwrap();
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::MergeReady);
+    }
+
+    #[test]
+    fn test_review_verdict_approved_through_engine() {
+        let store = TaskStore::open_memory().unwrap();
+
+        // 1. Create task in InAiReview
+        let task = make_task("acme", TaskStage::InAiReview, "org/repo", 300);
+        store.create_task(&task).unwrap();
+
+        // 2. Process swarm_review_verdict signal with APPROVED
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            serde_json::json!({
+                "verdict": "APPROVED",
+                "comments": "",
+                "repo": "org/repo",
+                "pr_number": 300
+            })
+            .to_string(),
+        );
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        // 3. Verify task moved to MergeReady
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::MergeReady);
+
+        // 4. Verify notification was generated
+        assert!(!result.notifications.is_empty());
+        assert!(result.worker_messages.is_empty());
+    }
+
+    #[test]
+    fn test_review_verdict_changes_requested_through_engine() {
+        let store = TaskStore::open_memory().unwrap();
+
+        // 1. Create task in InAiReview with worker_id
+        let task = make_task("acme", TaskStage::InAiReview, "org/repo", 400);
+        store.create_task(&task).unwrap();
+
+        // 2. Process swarm_review_verdict signal with CHANGES_REQUESTED + comments
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            serde_json::json!({
+                "verdict": "CHANGES_REQUESTED",
+                "comments": "Fix the null pointer dereference on line 42.",
+                "repo": "org/repo",
+                "pr_number": 400
+            })
+            .to_string(),
+        );
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        // 3. Verify task moved to InProgress
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+
+        // 4. Verify worker_messages contains the comments
+        assert_eq!(result.worker_messages.len(), 1);
+        assert_eq!(result.worker_messages[0].0, "worker-1");
+        assert!(
+            result.worker_messages[0]
+                .1
+                .contains("null pointer dereference")
+        );
+    }
+
+    #[test]
+    fn test_reviewer_dedup_metadata_check() {
+        let store = TaskStore::open_memory().unwrap();
+
+        // 1. Create task in InAiReview
+        let task = make_task("acme", TaskStage::InAiReview, "org/repo", 500);
+        store.create_task(&task).unwrap();
+
+        // reviewer_worker_id is not set yet → should dispatch reviewer
+        let fetched = store.get_task(&task.id).unwrap().unwrap();
+        assert!(
+            fetched.metadata.get("reviewer_worker_id").is_none(),
+            "reviewer_worker_id should not be present initially"
+        );
+
+        // 2. Set metadata with reviewer_worker_id
+        let meta = serde_json::json!({"reviewer_worker_id": "reviewer-abc"});
+        store.update_task_metadata(&task.id, &meta).unwrap();
+
+        // 3. Verify the condition: task.metadata.get("reviewer_worker_id").is_some()
+        // means we would skip dispatching another reviewer
+        let fetched = store.get_task(&task.id).unwrap().unwrap();
+        assert!(
+            fetched.metadata.get("reviewer_worker_id").is_some(),
+            "reviewer_worker_id should be set after update"
+        );
+        // Also verify find_task_by_reviewer_worker works
+        let found = store
+            .find_task_by_reviewer_worker("acme", "reviewer-abc")
+            .unwrap();
+        assert!(found.is_some());
+    }
+
+    #[test]
     fn test_no_worker_id_skips_forward_to_worker() {
         let store = TaskStore::open_memory().unwrap();
         let mut task = make_task("acme", TaskStage::InAiReview, "org/repo", 7);

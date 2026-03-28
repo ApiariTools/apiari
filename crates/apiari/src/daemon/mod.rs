@@ -1770,15 +1770,27 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                         == Some(worker_id.as_str())
                                                                 })
                                                             });
-                                                        let verdict = worktree
-                                                            .and_then(|wt| wt.get("review_verdict"))
-                                                            .and_then(|v| v.as_str())
-                                                            .map(String::from);
-                                                        let comments = worktree
-                                                            .and_then(|wt| wt.get("review_comments"))
-                                                            .and_then(|v| v.as_str())
-                                                            .unwrap_or("")
-                                                            .to_string();
+                                                        let review_verdict_obj = worktree
+                                                            .and_then(|wt| wt.get("review_verdict"));
+                                                        let verdict = review_verdict_obj
+                                                            .and_then(|v| {
+                                                                let approved = v.get("approved").and_then(|a| a.as_bool())?;
+                                                                if approved {
+                                                                    Some("APPROVED".to_string())
+                                                                } else {
+                                                                    Some("CHANGES_REQUESTED".to_string())
+                                                                }
+                                                            });
+                                                        let comments = review_verdict_obj
+                                                            .and_then(|v| v.get("comments"))
+                                                            .and_then(|c| c.as_array())
+                                                            .map(|arr| {
+                                                                arr.iter()
+                                                                    .filter_map(|item| item.as_str())
+                                                                    .collect::<Vec<_>>()
+                                                                    .join("\n")
+                                                            })
+                                                            .unwrap_or_default();
 
                                                         if let Some(verdict) = verdict
                                                             && let (Some(pr_number), Some(repo)) = (task.pr_number, &task.repo)
