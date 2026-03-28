@@ -3280,7 +3280,7 @@ mod tests {
         push_kanban_card(
             &mut app,
             "card-2",
-            app::KanbanStage::MergeReady,
+            app::KanbanStage::HumanReview,
             "worker",
             "PR #1 · merge?",
         );
@@ -3290,23 +3290,23 @@ mod tests {
 
         assert_eq!(
             app.current_ws().unwrap().kanban_selected,
-            Some((app::KanbanStage::MergeReady, 0)),
+            Some((app::KanbanStage::HumanReview, 0)),
             "right should skip to next non-empty column"
         );
     }
 
     #[test]
-    fn test_kanban_enter_injects_merge_message_for_mergeready_worker() {
+    fn test_kanban_enter_injects_merge_message_for_human_review_worker() {
         let mut app = test_app();
         app.focused_panel = Panel::Home;
         push_kanban_card(
             &mut app,
             "card-1",
-            app::KanbanStage::MergeReady,
+            app::KanbanStage::HumanReview,
             "worker",
             "PR #42 · merge?",
         );
-        app.workspaces[0].kanban_selected = Some((app::KanbanStage::MergeReady, 0));
+        app.workspaces[0].kanban_selected = Some((app::KanbanStage::HumanReview, 0));
 
         handle_dashboard_key(&mut app, key(KeyCode::Enter));
 

@@ -73,7 +73,13 @@ impl TaskStore {
             CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id);
             ",
         )
-        .wrap_err("failed to create task tables")
+        .wrap_err("failed to create task tables")?;
+
+        // Migrate old 'Merge Ready' stage values to 'Human Review'
+        conn.execute_batch("UPDATE tasks SET stage = 'Human Review' WHERE stage = 'Merge Ready';")
+            .wrap_err("failed to migrate Merge Ready → Human Review")?;
+
+        Ok(())
     }
 
     fn init_schema(&self) -> Result<()> {
@@ -676,7 +682,7 @@ mod tests {
         let result = store.transition_task(
             &task.id,
             &TaskStage::InProgress,
-            &TaskStage::MergeReady,
+            &TaskStage::HumanReview,
             None,
         );
         assert!(result.is_err(), "should reject wrong from stage");

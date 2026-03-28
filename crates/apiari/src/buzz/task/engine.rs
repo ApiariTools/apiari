@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ci_pass_transitions_in_ai_review_to_merge_ready() {
+    fn test_ci_pass_transitions_in_ai_review_to_human_review() {
         let store = TaskStore::open_memory().unwrap();
         let task = make_task("acme", TaskStage::InAiReview, "org/repo", 42);
         store.create_task(&task).unwrap();
@@ -221,7 +221,7 @@ mod tests {
 
         assert!(result.transitioned);
         let updated = result.task.unwrap();
-        assert_eq!(updated.stage, TaskStage::MergeReady);
+        assert_eq!(updated.stage, TaskStage::HumanReview);
         assert!(!result.notifications.is_empty());
         assert!(result.worker_messages.is_empty());
     }
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_merged_pr_transitions_any_active_task_to_merged() {
         let store = TaskStore::open_memory().unwrap();
-        let task = make_task("acme", TaskStage::MergeReady, "org/repo", 10);
+        let task = make_task("acme", TaskStage::HumanReview, "org/repo", 10);
         store.create_task(&task).unwrap();
 
         let signal = make_signal(
@@ -535,14 +535,14 @@ mod tests {
         let fetched = store.get_task(&task.id).unwrap().unwrap();
         assert_eq!(fetched.stage, TaskStage::InAiReview);
 
-        // 3. Process CI pass signal → should transition to MergeReady
+        // 3. Process CI pass signal → should transition to HumanReview
         let ci_pass = make_signal(
             "github_ci_pass",
             Some("https://github.com/org/repo/pull/100"),
         );
         let result = process_signal(&store, "acme", &ci_pass).unwrap();
         assert!(result.transitioned);
-        assert_eq!(result.task.as_ref().unwrap().stage, TaskStage::MergeReady);
+        assert_eq!(result.task.as_ref().unwrap().stage, TaskStage::HumanReview);
         assert!(!result.notifications.is_empty());
 
         // 4. Process merged PR signal → should transition to Merged
@@ -558,7 +558,7 @@ mod tests {
 
         // Verify events were logged
         let events = store.get_task_events(&task.id).unwrap();
-        // Events: PR opened (manual), CI pass → MergeReady, merged → Merged
+        // Events: PR opened (manual), CI pass → HumanReview, merged → Merged
         assert!(events.len() >= 3);
     }
 
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(result.worker_messages.len(), 1);
 
         // 3. Process PR push while InProgress → no rule for InProgress+github_pr_push
-        // (the rule only exists for MergeReady+github_pr_push)
+        // (the rule only exists for HumanReview+github_pr_push)
         let pr_push = make_signal(
             "github_pr_push",
             Some("https://github.com/org/repo/pull/200"),
@@ -590,7 +590,7 @@ mod tests {
         assert!(!result.transitioned);
         assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
 
-        // 4. Manually transition back to InAiReview, then CI pass → MergeReady
+        // 4. Manually transition back to InAiReview, then CI pass → HumanReview
         let task_id = task.id.clone();
         store
             .transition_task(
@@ -607,7 +607,7 @@ mod tests {
         );
         let result = process_signal(&store, "acme", &ci_pass).unwrap();
         assert!(result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::MergeReady);
+        assert_eq!(result.task.unwrap().stage, TaskStage::HumanReview);
     }
 
     #[test]
@@ -631,9 +631,9 @@ mod tests {
         );
         let result = process_signal(&store, "acme", &signal).unwrap();
 
-        // 3. Verify task moved to MergeReady
+        // 3. Verify task moved to HumanReview
         assert!(result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::MergeReady);
+        assert_eq!(result.task.unwrap().stage, TaskStage::HumanReview);
 
         // 4. Verify notification was generated
         assert!(!result.notifications.is_empty());
