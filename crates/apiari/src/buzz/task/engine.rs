@@ -262,6 +262,231 @@ mod tests {
         assert!(updated.resolved_at.is_some());
     }
 
+    // ── Swarm worker lifecycle tests ──
+
+    /// Helper that mirrors the daemon's swarm-spawned-* task creation logic.
+    fn create_task_for_worker(
+        store: &TaskStore,
+        workspace: &str,
+        worker_id: &str,
+        body: Option<&str>,
+    ) -> Task {
+        let title = body
+            .and_then(|b| b.lines().nth(1))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("Worker {worker_id}"));
+        let title = if title.len() > 80 {
+            format!("{}…", &title[..79])
+        } else {
+            title
+        };
+        let now = Utc::now();
+        let task = Task {
+            id: Uuid::new_v4().to_string(),
+            workspace: workspace.to_string(),
+            title,
+            stage: TaskStage::InProgress,
+            source: Some("swarm".to_string()),
+            source_url: None,
+            worker_id: Some(worker_id.to_string()),
+            pr_url: None,
+            pr_number: None,
+            repo: None,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+            metadata: serde_json::json!({}),
+        };
+        store.create_task(&task).unwrap();
+        task
+    }
+
+    #[test]
+    fn test_swarm_spawned_creates_task_in_progress() {
+        let store = TaskStore::open_memory().unwrap();
+        let body = "agent: claude\nFix the login bug in auth module";
+        let task = create_task_for_worker(&store, "acme", "w-abc1", Some(body));
+
+        let found = store
+            .find_task_by_worker("acme", "w-abc1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, task.id);
+        assert_eq!(found.stage, TaskStage::InProgress);
+        assert_eq!(found.title, "Fix the login bug in auth module");
+        assert_eq!(found.source.as_deref(), Some("swarm"));
+        assert_eq!(found.worker_id.as_deref(), Some("w-abc1"));
+        assert!(found.pr_url.is_none());
+    }
+
+    #[test]
+    fn test_swarm_spawned_title_fallback_when_no_body() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = create_task_for_worker(&store, "acme", "w-xyz9", None);
+
+        let found = store
+            .find_task_by_worker("acme", "w-xyz9")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, task.id);
+        assert_eq!(found.title, "Worker w-xyz9");
+    }
+
+    #[test]
+    fn test_swarm_spawned_duplicate_does_not_create_second_task() {
+        let store = TaskStore::open_memory().unwrap();
+        let body = "agent: claude\nAdd dark mode";
+
+        create_task_for_worker(&store, "acme", "w-dup1", Some(body));
+
+        // Simulate duplicate: only create if not found
+        if store
+            .find_task_by_worker("acme", "w-dup1")
+            .unwrap()
+            .is_none()
+        {
+            create_task_for_worker(&store, "acme", "w-dup1", Some(body));
+        }
+
+        let all = store.get_all_tasks("acme").unwrap();
+        assert_eq!(
+            all.len(),
+            1,
+            "duplicate spawned signal must not create a second task"
+        );
+    }
+
+    #[test]
+    fn test_swarm_pr_updates_task_and_transitions_to_in_ai_review() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = create_task_for_worker(
+            &store,
+            "acme",
+            "w-pr1",
+            Some("agent: claude\nRefactor DB layer"),
+        );
+
+        // Simulate swarm-pr-* handler
+        let pr_url = "https://github.com/org/repo/pull/77";
+        let (repo, pr_number) =
+            crate::buzz::task::rules::extract_github_pr_from_url(pr_url).unwrap();
+        store.update_task_pr(&task.id, pr_url, pr_number).unwrap();
+        store.update_task_repo(&task.id, &repo).unwrap();
+        store
+            .transition_task(
+                &task.id,
+                &TaskStage::InProgress,
+                &TaskStage::InAiReview,
+                Some("PR opened".to_string()),
+            )
+            .unwrap();
+
+        let updated = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(updated.stage, TaskStage::InAiReview);
+        assert_eq!(updated.pr_url.as_deref(), Some(pr_url));
+        assert_eq!(updated.pr_number, Some(77));
+        assert_eq!(updated.repo.as_deref(), Some("org/repo"));
+    }
+
+    #[test]
+    fn test_swarm_closed_without_pr_dismisses_task() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = create_task_for_worker(
+            &store,
+            "acme",
+            "w-cls1",
+            Some("agent: claude\nFix flaky test"),
+        );
+
+        // Simulate swarm-closed-* handler: no PR, not terminal
+        let current = store
+            .find_task_by_worker("acme", "w-cls1")
+            .unwrap()
+            .unwrap();
+        assert!(!current.stage.is_terminal());
+        assert!(current.pr_url.is_none());
+
+        store
+            .transition_task(
+                &current.id,
+                &current.stage,
+                &TaskStage::Dismissed,
+                Some("Worker closed without PR".to_string()),
+            )
+            .unwrap();
+
+        let updated = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(updated.stage, TaskStage::Dismissed);
+        assert!(updated.resolved_at.is_some());
+    }
+
+    #[test]
+    fn test_swarm_closed_with_pr_does_not_dismiss() {
+        let store = TaskStore::open_memory().unwrap();
+        let task =
+            create_task_for_worker(&store, "acme", "w-cls2", Some("agent: claude\nAdd OAuth"));
+
+        // Give it a PR first
+        store
+            .update_task_pr(&task.id, "https://github.com/org/repo/pull/5", 5)
+            .unwrap();
+        store.update_task_repo(&task.id, "org/repo").unwrap();
+        store
+            .transition_task(
+                &task.id,
+                &TaskStage::InProgress,
+                &TaskStage::InAiReview,
+                None,
+            )
+            .unwrap();
+
+        // Simulate swarm-closed-* handler: has a PR, should NOT dismiss
+        let current = store
+            .find_task_by_worker("acme", "w-cls2")
+            .unwrap()
+            .unwrap();
+        assert!(!current.stage.is_terminal());
+        assert!(current.pr_url.is_some()); // pr_url is set → skip dismiss
+
+        // Because pr_url.is_some(), we don't call transition_task
+        let unchanged = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            unchanged.stage,
+            TaskStage::InAiReview,
+            "task with PR must not be dismissed on worker close"
+        );
+    }
+
+    #[test]
+    fn test_swarm_closed_terminal_task_not_touched() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = create_task_for_worker(
+            &store,
+            "acme",
+            "w-cls3",
+            Some("agent: claude\nAlready done"),
+        );
+
+        // Pre-transition to terminal
+        store
+            .transition_task(&task.id, &TaskStage::InProgress, &TaskStage::Merged, None)
+            .unwrap();
+
+        let current = store
+            .find_task_by_worker("acme", "w-cls3")
+            .unwrap()
+            .unwrap();
+        assert!(current.stage.is_terminal()); // already terminal → skip dismiss
+
+        let unchanged = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            unchanged.stage,
+            TaskStage::Merged,
+            "terminal task must not be touched on worker close"
+        );
+    }
+
     #[test]
     fn test_workspace_isolation() {
         let store = TaskStore::open_memory().unwrap();
