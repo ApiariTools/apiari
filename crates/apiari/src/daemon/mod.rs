@@ -1748,6 +1748,73 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 }
                                             }
 
+                                            // Dispatch reviewer on branch when task enters InAiReview via branch-ready flow
+                                            if is_new && update.source == "swarm_branch_ready" && update.external_id.starts_with("swarm-branch-ready-") {
+                                                let worker_id = update.external_id.strip_prefix("swarm-branch-ready-").unwrap_or("").to_string();
+                                                if !worker_id.is_empty()
+                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
+                                                        && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
+                                                            && task.stage == crate::buzz::task::TaskStage::InAiReview
+                                                            && task.metadata.get("reviewer_worker_id").is_none()
+                                                {
+                                                    // Extract branch_name from signal metadata
+                                                    let branch_name = update.metadata.as_ref()
+                                                        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                                                        .and_then(|v| v.get("branch_name").and_then(|b| b.as_str()).map(String::from))
+                                                        .unwrap_or_default();
+
+                                                    if !branch_name.is_empty() {
+                                                        // Store ready_branch in task metadata for later PR-open step
+                                                        let mut meta = task.metadata.clone();
+                                                        meta["ready_branch"] = serde_json::Value::String(branch_name.clone());
+                                                        let db_path = slot.store.db_path().to_path_buf();
+                                                        if let Err(e) = task_store.update_task_metadata(&task.id, &meta) {
+                                                            tracing::warn!("[task-engine] failed to store ready_branch in task metadata: {e}");
+                                                        }
+
+                                                        // Derive a short repo name from the signal metadata repo_path
+                                                        // (e.g. "/home/user/project/apiari" → "apiari")
+                                                        let short_repo = update.metadata.as_ref()
+                                                            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                                                            .and_then(|v| v.get("repo").and_then(|r| r.as_str()).map(String::from))
+                                                            .unwrap_or_default();
+                                                        let short_repo = short_repo
+                                                            .trim_end_matches('/')
+                                                            .rsplit('/')
+                                                            .next()
+                                                            .unwrap_or(&short_repo)
+                                                            .to_string();
+
+                                                        let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
+                                                            slot.config.root.clone(),
+                                                        );
+                                                        let task_id = task.id.clone();
+                                                        let task_title = task.title.clone();
+                                                        let mut meta2 = meta;
+                                                        tokio::spawn(async move {
+                                                            match swarm.create_reviewer_worker_for_branch(&short_repo, &branch_name).await {
+                                                                Ok(reviewer_id) if !reviewer_id.is_empty() => {
+                                                                    meta2["reviewer_worker_id"] = serde_json::Value::String(reviewer_id.clone());
+                                                                    if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path) {
+                                                                        if let Err(e) = ts.update_task_metadata(&task_id, &meta2) {
+                                                                            tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
+                                                                        } else {
+                                                                            info!("[task-engine] dispatched branch reviewer {reviewer_id} for task '{task_title}'");
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Ok(_) => {
+                                                                    tracing::warn!("[task-engine] branch reviewer dispatch for '{task_title}' returned empty id");
+                                                                }
+                                                                Err(e) => {
+                                                                    tracing::warn!("[task-engine] failed to dispatch branch reviewer for '{task_title}': {e}");
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                            }
+
                                             // Process reviewer worker completion — emit verdict signal
                                             if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-completed-") {
                                                 let worker_id = update.external_id.strip_prefix("swarm-completed-").unwrap_or("").to_string();
@@ -1792,20 +1859,41 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                             })
                                                             .unwrap_or_default();
 
-                                                        if let Some(verdict) = verdict
-                                                            && let (Some(pr_number), Some(repo)) = (task.pr_number, &task.repo)
-                                                        {
-                                                            let metadata = serde_json::json!({
-                                                                "verdict": verdict,
-                                                                "comments": comments,
-                                                                "repo": repo,
-                                                                "pr_number": pr_number,
-                                                                "reviewer_worker_id": worker_id,
-                                                            });
+                                                        if let Some(verdict) = verdict {
+                                                            // Build metadata and title for PR flow or branch-first flow
+                                                            let is_branch_flow = task.pr_number.is_none();
+                                                            let (metadata, signal_title) = if let (Some(pr_number), Some(repo)) = (task.pr_number, task.repo.as_deref()) {
+                                                                // Old PR flow
+                                                                (
+                                                                    serde_json::json!({
+                                                                        "verdict": verdict,
+                                                                        "comments": comments,
+                                                                        "repo": repo,
+                                                                        "pr_number": pr_number,
+                                                                        "reviewer_worker_id": worker_id,
+                                                                    }),
+                                                                    format!("Review verdict for PR #{pr_number}: {verdict}"),
+                                                                )
+                                                            } else {
+                                                                // Branch-first flow: no PR yet
+                                                                let ready_branch = task.metadata
+                                                                    .get("ready_branch")
+                                                                    .and_then(|v| v.as_str())
+                                                                    .unwrap_or("unknown");
+                                                                (
+                                                                    serde_json::json!({
+                                                                        "verdict": verdict,
+                                                                        "comments": comments,
+                                                                        "reviewer_worker_id": worker_id,
+                                                                        "ready_branch": ready_branch,
+                                                                    }),
+                                                                    format!("Review verdict for branch {ready_branch}: {verdict}"),
+                                                                )
+                                                            };
                                                             let verdict_signal = crate::buzz::signal::SignalUpdate::new(
                                                                 "swarm_review_verdict",
                                                                 format!("swarm-review-verdict-{worker_id}"),
-                                                                format!("Review verdict for PR #{pr_number}: {verdict}"),
+                                                                signal_title,
                                                                 crate::buzz::signal::Severity::Info,
                                                             )
                                                             .with_metadata(metadata.to_string());
@@ -1831,6 +1919,26 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                                     if let Some(ref server) = socket_server {
                                                                                         server.broadcast_activity("task", &slot.name, "transition", notification);
                                                                                     }
+                                                                                }
+
+                                                                                // Branch-first flow: after approval, tell the original worker to open a PR
+                                                                                if verdict == "APPROVED"
+                                                                                    && is_branch_flow
+                                                                                    && let Some(ref original_worker_id) = task.worker_id
+                                                                                {
+                                                                                    let task_title = task.title.clone();
+                                                                                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
+                                                                                    let wid = original_worker_id.clone();
+                                                                                    tokio::spawn(async move {
+                                                                                        let msg = format!(
+                                                                                            "Your code was approved by the reviewer. Please run: `gh pr create --title '{task_title}' --body 'Approved by AI reviewer'`"
+                                                                                        );
+                                                                                        if let Err(e) = swarm.send_message(&wid, &msg).await {
+                                                                                            tracing::warn!("[task-engine] failed to send PR-open message to worker {wid}: {e}");
+                                                                                        } else {
+                                                                                            info!("[task-engine] told worker {wid} to open PR for task '{task_title}'");
+                                                                                        }
+                                                                                    });
                                                                                 }
                                                                             }
                                                                             Err(e) => {

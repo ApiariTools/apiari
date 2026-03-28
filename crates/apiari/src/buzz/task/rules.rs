@@ -137,6 +137,32 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             })
         }
 
+        // ── In Progress: branch ready → In AI Review ──
+        // A worker pushed a branch and output BRANCH_READY, triggering this
+        // signal. The task moves to InAiReview so a reviewer worker can be
+        // dispatched. This is the branch-first alternative to PrOpened.
+        (TaskStage::InProgress, "swarm_branch_ready") => {
+            let meta = signal
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+            let branch_name = meta
+                .as_ref()
+                .and_then(|m| m.get("branch_name").and_then(|v| v.as_str()))
+                .unwrap_or("unknown branch")
+                .to_string();
+            Some(ProposedTransition {
+                task_id: task.id.clone(),
+                from: TaskStage::InProgress,
+                to: TaskStage::InAiReview,
+                reason: format!("Branch ready for review: {branch_name}"),
+                approval: Approval::Auto,
+                action: TransitionAction::Notify {
+                    message: format!("Branch {branch_name} is ready — dispatching AI reviewer"),
+                },
+            })
+        }
+
         // ── In Progress: CI failure (worker is still coding, CI ran on push) ──
         (TaskStage::InProgress, "github_ci_failure") => Some(ProposedTransition {
             task_id: task.id.clone(),
@@ -747,6 +773,45 @@ mod tests {
         let task = make_task(TaskStage::InAiReview);
         let signal = make_signal("swarm_review_verdict", None);
         // No metadata → verdict is "" → no rule matches
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    #[test]
+    fn test_branch_ready_in_progress_transitions_to_in_ai_review() {
+        let task = make_task(TaskStage::InProgress);
+        let mut signal = make_signal("swarm_branch_ready", None);
+        signal.metadata = Some(
+            r#"{"worker_id": "w-abc1", "branch_name": "swarm/my-feature", "repo": "/tmp/repo"}"#
+                .to_string(),
+        );
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::InProgress);
+        assert_eq!(result.to, TaskStage::InAiReview);
+        assert_eq!(result.approval, Approval::Auto);
+        assert!(matches!(result.action, TransitionAction::Notify { .. }));
+        if let TransitionAction::Notify { message } = result.action {
+            assert!(message.contains("swarm/my-feature"));
+        }
+    }
+
+    #[test]
+    fn test_branch_ready_in_progress_no_metadata_still_transitions() {
+        // Signal without metadata should still transition (branch_name defaults to "unknown branch")
+        let task = make_task(TaskStage::InProgress);
+        let signal = make_signal("swarm_branch_ready", None);
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::InProgress);
+        assert_eq!(result.to, TaskStage::InAiReview);
+    }
+
+    #[test]
+    fn test_branch_ready_in_ai_review_no_rule() {
+        // swarm_branch_ready while already InAiReview should not fire a rule
+        let task = make_task(TaskStage::InAiReview);
+        let mut signal = make_signal("swarm_branch_ready", None);
+        signal.metadata = Some(
+            r#"{"worker_id": "w-abc1", "branch_name": "swarm/my-feature", "repo": ""}"#.to_string(),
+        );
         assert!(evaluate_signal(&task, &signal).is_none());
     }
 

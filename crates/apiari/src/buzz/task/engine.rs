@@ -126,7 +126,7 @@ pub fn process_signal(
 }
 
 /// Find a task that matches this signal.
-/// Tries PR matching first.
+/// Tries PR matching first, then worker_id matching for branch-ready signals.
 fn find_task_for_signal(
     store: &TaskStore,
     workspace: &str,
@@ -135,6 +135,26 @@ fn find_task_for_signal(
     // Try matching by PR
     if let Some((repo, pr_number)) = rules::match_signal_to_task_pr(signal)
         && let Some(task) = store.find_task_by_pr(workspace, &repo, pr_number)?
+    {
+        return Ok(Some(task));
+    }
+
+    // For swarm_branch_ready signals, match by worker_id in metadata
+    if signal.source == "swarm_branch_ready"
+        && let Some(ref meta) = signal.metadata
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(meta)
+        && let Some(worker_id) = v.get("worker_id").and_then(|w| w.as_str())
+        && let Some(task) = store.find_task_by_worker(workspace, worker_id)?
+    {
+        return Ok(Some(task));
+    }
+
+    // For swarm_review_verdict signals in the branch-first flow (no PR), match by reviewer_worker_id
+    if signal.source == "swarm_review_verdict"
+        && let Some(ref meta) = signal.metadata
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(meta)
+        && let Some(reviewer_id) = v.get("reviewer_worker_id").and_then(|w| w.as_str())
+        && let Some(task) = store.find_task_by_reviewer_worker(workspace, reviewer_id)?
     {
         return Ok(Some(task));
     }
