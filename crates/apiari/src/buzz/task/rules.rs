@@ -156,6 +156,48 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             },
         }),
 
+        // ── Merge Ready: bot review with comments → back to In Progress ──
+        // CI can pass (→ MergeReady) before Copilot finishes reviewing. If Copilot
+        // then leaves inline comments, the task must go back to InProgress so the
+        // worker can address them.
+        (TaskStage::MergeReady, "github_bot_review") => {
+            let has_comments = signal
+                .body
+                .as_ref()
+                .map(|b| b.contains("generated") && b.contains("comment"))
+                .unwrap_or(false);
+
+            if has_comments {
+                Some(ProposedTransition {
+                    task_id: task.id.clone(),
+                    from: TaskStage::MergeReady,
+                    to: TaskStage::InProgress,
+                    reason: "Bot review has comments after reaching Merge Ready".to_string(),
+                    approval: Approval::Auto,
+                    action: TransitionAction::ForwardToWorker {
+                        message: format!(
+                            "Copilot reviewed your PR and left comments. Please address them.\n\nReview: {}",
+                            signal.url.as_deref().unwrap_or("")
+                        ),
+                    },
+                })
+            } else {
+                Some(ProposedTransition {
+                    task_id: task.id.clone(),
+                    from: TaskStage::MergeReady,
+                    to: TaskStage::MergeReady, // no stage change
+                    reason: "Bot review is clean".to_string(),
+                    approval: Approval::Auto,
+                    action: TransitionAction::Notify {
+                        message: format!(
+                            "Copilot review looks clean on {}",
+                            extract_pr_ref(signal).as_deref().unwrap_or("PR")
+                        ),
+                    },
+                })
+            }
+        }
+
         // ── Merge Ready: CI failure → back to In Progress ──
         (TaskStage::MergeReady, "github_ci_failure") => Some(ProposedTransition {
             task_id: task.id.clone(),
@@ -544,6 +586,32 @@ mod tests {
         let result = evaluate_signal(&task, &signal).unwrap();
         assert_eq!(result.from, TaskStage::InAiReview);
         assert_eq!(result.to, TaskStage::InAiReview);
+        assert!(matches!(result.action, TransitionAction::Notify { .. }));
+    }
+
+    #[test]
+    fn test_bot_review_with_comments_in_merge_ready_transitions_to_in_progress() {
+        let task = make_task(TaskStage::MergeReady);
+        let mut signal = make_signal("github_bot_review", None);
+        signal.body = Some("Copilot generated comment on line 5".to_string());
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::MergeReady);
+        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.approval, Approval::Auto);
+        assert!(matches!(
+            result.action,
+            TransitionAction::ForwardToWorker { .. }
+        ));
+    }
+
+    #[test]
+    fn test_bot_review_clean_in_merge_ready_stays() {
+        let task = make_task(TaskStage::MergeReady);
+        let mut signal = make_signal("github_bot_review", None);
+        signal.body = Some("Looks good!".to_string());
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::MergeReady);
+        assert_eq!(result.to, TaskStage::MergeReady);
         assert!(matches!(result.action, TransitionAction::Notify { .. }));
     }
 
