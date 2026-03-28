@@ -126,7 +126,7 @@ pub fn process_signal(
 }
 
 /// Find a task that matches this signal.
-/// Tries PR matching first, then worker_id matching for branch-ready signals.
+/// Tries PR matching first, then worker_id matching for branch-ready and swarm lifecycle signals.
 fn find_task_for_signal(
     store: &TaskStore,
     workspace: &str,
@@ -159,7 +159,50 @@ fn find_task_for_signal(
         return Ok(Some(task));
     }
 
+    // For swarm worker lifecycle signals, match by worker_id from metadata
+    if matches!(
+        signal.source.as_str(),
+        "swarm_worker_running" | "swarm_worker_closed"
+    ) && let Some(worker_id) = extract_worker_id_from_metadata(signal)
+    {
+        let role = extract_role_from_metadata(signal);
+
+        if role.as_deref() == Some("reviewer") {
+            // Reviewer: look up by reviewer_worker_id in task metadata
+            if let Some(task) = store.find_task_by_reviewer_worker(workspace, &worker_id)? {
+                return Ok(Some(task));
+            }
+        } else {
+            // Regular worker: look up by worker_id
+            if let Some(task) = store.find_task_by_worker(workspace, &worker_id)? {
+                return Ok(Some(task));
+            }
+        }
+    }
+
     Ok(None)
+}
+
+/// Extract the `worker_id` field from signal metadata JSON.
+fn extract_worker_id_from_metadata(signal: &SignalRecord) -> Option<String> {
+    signal
+        .metadata
+        .as_ref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| {
+            v.get("worker_id")
+                .and_then(|s| s.as_str())
+                .map(String::from)
+        })
+}
+
+/// Extract the `role` field from signal metadata JSON.
+fn extract_role_from_metadata(signal: &SignalRecord) -> Option<String> {
+    signal
+        .metadata
+        .as_ref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get("role").and_then(|s| s.as_str()).map(String::from))
 }
 
 #[cfg(test)]
@@ -742,5 +785,128 @@ mod tests {
         let result = process_signal(&store, "acme", &signal).unwrap();
         assert!(result.transitioned);
         assert!(result.worker_messages.is_empty()); // no worker to forward to
+    }
+
+    // ── swarm_worker_running rules ──
+
+    fn make_running_signal(worker_id: &str) -> SignalRecord {
+        let mut s = make_signal("swarm_worker_running", None);
+        s.external_id = format!("swarm-worker-running-{worker_id}-1");
+        s.metadata =
+            Some(serde_json::json!({"worker_id": worker_id, "role": "worker"}).to_string());
+        s
+    }
+
+    fn make_closed_signal(worker_id: &str, role: &str) -> SignalRecord {
+        let mut s = make_signal("swarm_worker_closed", None);
+        s.external_id = format!("swarm-worker-closed-{worker_id}");
+        s.metadata = Some(serde_json::json!({"worker_id": worker_id, "role": role}).to_string());
+        s
+    }
+
+    fn create_task_in_stage(
+        store: &TaskStore,
+        workspace: &str,
+        worker_id: &str,
+        stage: TaskStage,
+    ) -> Task {
+        let now = Utc::now();
+        let task = Task {
+            id: Uuid::new_v4().to_string(),
+            workspace: workspace.to_string(),
+            title: format!("Task for {worker_id}"),
+            stage,
+            source: Some("swarm".to_string()),
+            source_url: None,
+            worker_id: Some(worker_id.to_string()),
+            pr_url: None,
+            pr_number: None,
+            repo: None,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+            metadata: serde_json::json!({}),
+        };
+        store.create_task(&task).unwrap();
+        task
+    }
+
+    #[test]
+    fn test_swarm_worker_running_triage_to_in_progress() {
+        let store = TaskStore::open_memory().unwrap();
+        create_task_in_stage(&store, "acme", "w-run1", TaskStage::Triage);
+
+        let signal = make_running_signal("w-run1");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+    }
+
+    #[test]
+    fn test_swarm_worker_running_human_review_to_in_progress() {
+        let store = TaskStore::open_memory().unwrap();
+        create_task_in_stage(&store, "acme", "w-run2", TaskStage::HumanReview);
+
+        let signal = make_running_signal("w-run2");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+    }
+
+    #[test]
+    fn test_swarm_worker_running_in_ai_review_to_in_progress() {
+        let store = TaskStore::open_memory().unwrap();
+        create_task_in_stage(&store, "acme", "w-run3", TaskStage::InAiReview);
+
+        let signal = make_running_signal("w-run3");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+    }
+
+    #[test]
+    fn test_swarm_worker_closed_in_progress_non_reviewer_to_triage() {
+        let store = TaskStore::open_memory().unwrap();
+        create_task_in_stage(&store, "acme", "w-cls-np1", TaskStage::InProgress);
+
+        let signal = make_closed_signal("w-cls-np1", "worker");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::Triage);
+    }
+
+    #[test]
+    fn test_swarm_worker_closed_in_ai_review_reviewer_to_triage() {
+        let store = TaskStore::open_memory().unwrap();
+
+        // Create a task in InAiReview and set reviewer_worker_id in metadata
+        let task = create_task_in_stage(&store, "acme", "w-main1", TaskStage::InAiReview);
+        let meta = serde_json::json!({"reviewer_worker_id": "rev-closed1"});
+        store.update_task_metadata(&task.id, &meta).unwrap();
+
+        let signal = make_closed_signal("rev-closed1", "reviewer");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::Triage);
+    }
+
+    #[test]
+    fn test_swarm_worker_closed_in_progress_reviewer_no_match() {
+        // A reviewer closing while task is InProgress should NOT transition
+        let store = TaskStore::open_memory().unwrap();
+        let task = create_task_in_stage(&store, "acme", "w-main2", TaskStage::InProgress);
+        let meta = serde_json::json!({"reviewer_worker_id": "rev-np1"});
+        store.update_task_metadata(&task.id, &meta).unwrap();
+
+        let signal = make_closed_signal("rev-np1", "reviewer");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        // Rule doesn't fire: (InProgress, swarm_worker_closed, role=reviewer) → no match
+        assert!(!result.transitioned);
     }
 }

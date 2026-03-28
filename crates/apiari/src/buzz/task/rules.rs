@@ -304,6 +304,68 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             },
         }),
 
+        // ── Worker running → InProgress ──
+        // A non-reviewer worker transitioned to Running phase. Move the task to InProgress
+        // regardless of which stage it was in (e.g. Triage after worker closed+re-spawned,
+        // HumanReview after human sends rebase message, InAiReview after reviewer returns changes).
+        (
+            TaskStage::Triage | TaskStage::HumanReview | TaskStage::InAiReview,
+            "swarm_worker_running",
+        ) => Some(ProposedTransition {
+            task_id: task.id.clone(),
+            from: task.stage.clone(),
+            to: TaskStage::InProgress,
+            reason: "Worker resumed running".to_string(),
+            approval: Approval::Auto,
+            action: TransitionAction::Notify {
+                message: format!(
+                    "Worker is running — task moved to InProgress (was {})",
+                    task.stage.as_str()
+                ),
+            },
+        }),
+
+        // ── Worker closed without completing → Triage ──
+        // Non-reviewer worker disappeared while task was InProgress — needs attention.
+        (TaskStage::InProgress, "swarm_worker_closed") => {
+            let role = extract_metadata_str(signal, "role");
+            if role.as_deref() != Some("reviewer") {
+                Some(ProposedTransition {
+                    task_id: task.id.clone(),
+                    from: TaskStage::InProgress,
+                    to: TaskStage::Triage,
+                    reason: "Worker closed without completing".to_string(),
+                    approval: Approval::Auto,
+                    action: TransitionAction::Notify {
+                        message: "Worker closed unexpectedly — task needs attention".to_string(),
+                    },
+                })
+            } else {
+                None
+            }
+        }
+
+        // ── Reviewer closed without verdict → Triage ──
+        // Reviewer worker disappeared while task was InAiReview — needs attention.
+        (TaskStage::InAiReview, "swarm_worker_closed") => {
+            let role = extract_metadata_str(signal, "role");
+            if role.as_deref() == Some("reviewer") {
+                Some(ProposedTransition {
+                    task_id: task.id.clone(),
+                    from: TaskStage::InAiReview,
+                    to: TaskStage::Triage,
+                    reason: "Reviewer closed without verdict".to_string(),
+                    approval: Approval::Auto,
+                    action: TransitionAction::Notify {
+                        message: "AI reviewer closed without a verdict — task needs attention"
+                            .to_string(),
+                    },
+                })
+            } else {
+                None
+            }
+        }
+
         // ── Merged PR signal on any active task ──
         (stage, "github_merged_pr") if !stage.is_terminal() => Some(ProposedTransition {
             task_id: task.id.clone(),
@@ -318,6 +380,15 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
 
         _ => None,
     }
+}
+
+/// Extract a string field from signal metadata JSON.
+fn extract_metadata_str(signal: &SignalRecord, key: &str) -> Option<String> {
+    signal
+        .metadata
+        .as_ref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get(key).and_then(|s| s.as_str()).map(String::from))
 }
 
 /// Returns true if a bot review signal has actionable comments that require
@@ -838,6 +909,93 @@ mod tests {
         let task = make_task(TaskStage::InProgress);
         let mut signal = make_signal("github_bot_review", None);
         signal.body = Some("Copilot generated comment on line 5".to_string());
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    // ── swarm_worker_running rules ──
+
+    fn make_worker_running_signal(worker_id: &str) -> SignalRecord {
+        let mut s = make_signal("swarm_worker_running", None);
+        s.metadata =
+            Some(serde_json::json!({"worker_id": worker_id, "role": "worker"}).to_string());
+        s
+    }
+
+    fn make_worker_closed_signal(worker_id: &str, role: &str) -> SignalRecord {
+        let mut s = make_signal("swarm_worker_closed", None);
+        s.metadata = Some(serde_json::json!({"worker_id": worker_id, "role": role}).to_string());
+        s
+    }
+
+    #[test]
+    fn test_worker_running_triage_to_in_progress() {
+        let task = make_task(TaskStage::Triage);
+        let signal = make_worker_running_signal("w1");
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::Triage);
+        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.approval, Approval::Auto);
+    }
+
+    #[test]
+    fn test_worker_running_human_review_to_in_progress() {
+        let task = make_task(TaskStage::HumanReview);
+        let signal = make_worker_running_signal("w1");
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::HumanReview);
+        assert_eq!(result.to, TaskStage::InProgress);
+    }
+
+    #[test]
+    fn test_worker_running_in_ai_review_to_in_progress() {
+        let task = make_task(TaskStage::InAiReview);
+        let signal = make_worker_running_signal("w1");
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::InAiReview);
+        assert_eq!(result.to, TaskStage::InProgress);
+    }
+
+    #[test]
+    fn test_worker_running_already_in_progress_no_rule() {
+        // Already InProgress — no rule fires
+        let task = make_task(TaskStage::InProgress);
+        let signal = make_worker_running_signal("w1");
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    #[test]
+    fn test_worker_closed_in_progress_non_reviewer_to_triage() {
+        let task = make_task(TaskStage::InProgress);
+        let signal = make_worker_closed_signal("w1", "worker");
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::InProgress);
+        assert_eq!(result.to, TaskStage::Triage);
+        assert_eq!(result.approval, Approval::Auto);
+    }
+
+    #[test]
+    fn test_worker_closed_in_progress_reviewer_no_match() {
+        // Reviewer closing while InProgress should not match
+        let task = make_task(TaskStage::InProgress);
+        let signal = make_worker_closed_signal("rev1", "reviewer");
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    #[test]
+    fn test_worker_closed_in_ai_review_reviewer_to_triage() {
+        let task = make_task(TaskStage::InAiReview);
+        let signal = make_worker_closed_signal("rev1", "reviewer");
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::InAiReview);
+        assert_eq!(result.to, TaskStage::Triage);
+        assert_eq!(result.approval, Approval::Auto);
+    }
+
+    #[test]
+    fn test_worker_closed_in_ai_review_non_reviewer_no_match() {
+        // Non-reviewer closing while InAiReview — no rule fires (worker isn't the reviewer)
+        let task = make_task(TaskStage::InAiReview);
+        let signal = make_worker_closed_signal("w1", "worker");
         assert!(evaluate_signal(&task, &signal).is_none());
     }
 }
