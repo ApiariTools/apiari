@@ -22,6 +22,8 @@ pub struct EngineResult {
     pub notifications: Vec<String>,
     /// Whether a stage transition occurred.
     pub transitioned: bool,
+    /// Stage the task was in BEFORE the transition (None if no stage change, or no task matched).
+    pub from_stage: Option<super::TaskStage>,
 }
 
 /// Process a signal through the task engine.
@@ -40,6 +42,7 @@ pub fn process_signal(
         worker_messages: Vec::new(),
         notifications: Vec::new(),
         transitioned: false,
+        from_stage: None,
     };
 
     // Step 1: Match signal to task
@@ -83,6 +86,7 @@ pub fn process_signal(
     // A rule firing counts as "transitioned" even when from == to, because an
     // action (ForwardToWorker, Notify) is still performed.
     result.transitioned = true;
+    result.from_stage = Some(proposed.from.clone());
     if proposed.from != proposed.to {
         store.transition_task(
             &task.id,

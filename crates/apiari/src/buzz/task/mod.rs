@@ -4,8 +4,11 @@
 //! data types; `store` provides the SQLite-backed persistence layer.
 
 pub mod engine;
+pub mod event_store;
 pub mod rules;
 pub mod store;
+
+pub use event_store::{ActivityEvent, ActivityEventStore};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

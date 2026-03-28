@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use rusqlite::{Connection, params};
 
+use super::event_store::ActivityEventStore;
 use super::{Task, TaskEvent, TaskStage};
 
 /// SQLite task store.
@@ -74,6 +75,9 @@ impl TaskStore {
             ",
         )
         .wrap_err("failed to create task tables")?;
+
+        // Ensure activity_events table is present on the same connection.
+        ActivityEventStore::ensure_schema(conn)?;
 
         // Migrate old 'Merge Ready' stage values to 'Human Review' (runs only when needed)
         let needs_migration: bool = conn
