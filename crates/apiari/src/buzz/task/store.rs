@@ -271,32 +271,44 @@ impl TaskStore {
         to: &TaskStage,
         detail: Option<String>,
     ) -> Result<()> {
-        let current = self
-            .get_task(id)?
-            .ok_or_else(|| eyre!("task not found: {}", id))?;
-        if &current.stage != from {
+        let tx = self.conn.unchecked_transaction()?;
+
+        let current_stage: String = tx
+            .query_row(
+                "SELECT stage FROM tasks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|_| eyre!("task not found: {}", id))?;
+
+        if current_stage != from.as_str() {
             return Err(eyre!(
-                "task {} is in stage {:?}, expected {:?}",
+                "task {} is in stage {}, expected {}",
                 id,
-                current.stage,
-                from
+                current_stage,
+                from.as_str()
             ));
         }
 
-        self.update_task_stage(id, to)?;
-
-        let event = TaskEvent {
-            id: 0, // auto-assigned by DB
-            task_id: id.to_string(),
-            event_type: "stage_change".to_string(),
-            from_stage: Some(from.as_str().to_string()),
-            to_stage: Some(to.as_str().to_string()),
-            signal_id: None,
-            detail,
-            created_at: Utc::now(),
+        let now = Utc::now().to_rfc3339();
+        let resolved_at: Option<String> = if to.is_terminal() {
+            Some(now.clone())
+        } else {
+            None
         };
-        self.log_event(&event)?;
 
+        tx.execute(
+            "UPDATE tasks SET stage = ?1, updated_at = ?2, resolved_at = ?3 WHERE id = ?4",
+            params![to.as_str(), now, resolved_at, id],
+        )?;
+
+        tx.execute(
+            "INSERT INTO task_events (task_id, event_type, from_stage, to_stage, detail, created_at)
+             VALUES (?1, 'stage_change', ?2, ?3, ?4, ?5)",
+            params![id, from.as_str(), to.as_str(), detail, now],
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
 }
@@ -537,5 +549,59 @@ mod tests {
             .get_tasks_by_stage("acme", &TaskStage::InProgress)
             .unwrap();
         assert_eq!(in_progress.len(), 1);
+    }
+
+    #[test]
+    fn test_backward_transition_clears_resolved_at() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_task("acme", "Backward transition");
+        store.create_task(&task).unwrap();
+
+        // Transition to terminal (sets resolved_at)
+        store
+            .transition_task(&task.id, &TaskStage::Triage, &TaskStage::Merged, None)
+            .unwrap();
+        let updated = store.get_task(&task.id).unwrap().unwrap();
+        assert!(
+            updated.resolved_at.is_some(),
+            "resolved_at should be set after Merged"
+        );
+
+        // Transition back to non-terminal (clears resolved_at)
+        store
+            .transition_task(&task.id, &TaskStage::Merged, &TaskStage::InProgress, None)
+            .unwrap();
+        let updated = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(updated.stage, TaskStage::InProgress);
+        assert!(
+            updated.resolved_at.is_none(),
+            "resolved_at should be cleared after backward transition"
+        );
+    }
+
+    #[test]
+    fn test_transition_wrong_from_stage_rejected() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_task("acme", "Stage check");
+        store.create_task(&task).unwrap();
+
+        // Try to transition from wrong stage (task is Triage, not InProgress)
+        let result = store.transition_task(
+            &task.id,
+            &TaskStage::InProgress,
+            &TaskStage::MergeReady,
+            None,
+        );
+        assert!(result.is_err(), "should reject wrong from stage");
+
+        // Task should be unchanged
+        let unchanged = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(unchanged.stage, TaskStage::Triage);
+        // No events should have been logged
+        let events = store.get_task_events(&task.id).unwrap();
+        assert!(
+            events.is_empty(),
+            "no events should be logged on rejected transition"
+        );
     }
 }
