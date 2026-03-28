@@ -36,6 +36,9 @@ impl SwarmClient {
                 workspace: Some(self.work_dir.clone()),
                 profile: None,
                 task_dir: None,
+                role: None,
+                review_pr: None,
+                base_branch: None,
             })
             .await?;
 
@@ -65,8 +68,11 @@ impl SwarmClient {
                 repo: Some(repo.to_string()),
                 start_point: None,
                 workspace: Some(self.work_dir.clone()),
-                profile: Some("reviewer".to_string()),
+                profile: None,
                 task_dir: None,
+                role: Some("reviewer".to_string()),
+                review_pr: Some(pr_number as u64),
+                base_branch: Some("main".to_string()),
             })
             .await?;
 
