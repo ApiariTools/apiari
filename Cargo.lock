@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "a2a-types"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02e05f443013a7902f12a237ae3b876014a9b2e8a44ed03b83e62dab5e6fabc2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -202,10 +212,11 @@ dependencies = [
 
 [[package]]
 name = "apiari-swarm"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38c198715656ed61adf8c207673ebc0ffe48a8461a7311a4d27e83fe215b2925"
+checksum = "3b4debdba2b0640bbe58ae123722900e6205a902ab93e45e75b278fe7bc40ded"
 dependencies = [
+ "a2a-types",
  "apiari-claude-sdk",
  "apiari-codex-sdk",
  "apiari-common",

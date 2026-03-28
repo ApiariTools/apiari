@@ -624,6 +624,9 @@ mod tests {
             pr_state: pr_url.map(|_| "OPEN".to_string()),
             restart_count: 0,
             created_at: None,
+            role: None,
+            review_verdict: None,
+            agent_card: None,
         }
     }
 }
