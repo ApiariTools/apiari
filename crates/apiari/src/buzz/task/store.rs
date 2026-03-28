@@ -82,7 +82,7 @@ impl TaskStore {
                 [],
                 |row| row.get(0),
             )
-            .unwrap_or(false);
+            .wrap_err("failed to check for Merge Ready migration")?;
         if needs_migration {
             conn.execute_batch(
                 "UPDATE tasks SET stage = 'Human Review' WHERE stage = 'Merge Ready';",
