@@ -15,6 +15,9 @@ Key locations within `crates/apiari/src/`:
 - `config.rs` — workspace config parsing
 - `validate_bash.rs` — bash audit hook
 
+## Git Hooks
+Run `git config core.hooksPath .githooks` to activate pre-commit checks (fmt + clippy).
+
 ## Pre-Commit Checks
 Before every commit, run **both** of these and fix any issues:
 - `cargo fmt -p apiari`
