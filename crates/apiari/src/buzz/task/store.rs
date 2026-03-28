@@ -618,6 +618,55 @@ mod tests {
     }
 
     #[test]
+    fn test_find_task_by_reviewer_worker() {
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("acme", "Reviewer task");
+        task.metadata = serde_json::json!({"reviewer_worker_id": "reviewer-xyz"});
+        store.create_task(&task).unwrap();
+
+        let found = store
+            .find_task_by_reviewer_worker("acme", "reviewer-xyz")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, task.id);
+    }
+
+    #[test]
+    fn test_find_task_by_reviewer_worker_not_found() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_task("acme", "No reviewer");
+        store.create_task(&task).unwrap();
+
+        let result = store
+            .find_task_by_reviewer_worker("acme", "reviewer-xyz")
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_update_task_metadata() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_task("acme", "Metadata task");
+        store.create_task(&task).unwrap();
+
+        let new_meta = serde_json::json!({"reviewer_worker_id": "rev-001", "foo": "bar"});
+        store.update_task_metadata(&task.id, &new_meta).unwrap();
+
+        let fetched = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            fetched
+                .metadata
+                .get("reviewer_worker_id")
+                .and_then(|v| v.as_str()),
+            Some("rev-001")
+        );
+        assert_eq!(
+            fetched.metadata.get("foo").and_then(|v| v.as_str()),
+            Some("bar")
+        );
+    }
+
+    #[test]
     fn test_transition_wrong_from_stage_rejected() {
         let store = TaskStore::open_memory().unwrap();
         let task = make_task("acme", "Stage check");

@@ -617,4 +617,30 @@ mod tests {
         // No metadata → verdict is "" → no rule matches
         assert!(evaluate_signal(&task, &signal).is_none());
     }
+
+    #[test]
+    fn test_ci_pass_in_progress_no_rule() {
+        // CI pass while InProgress should return None (no rule matches)
+        // The task stays InProgress until PR push moves it back to review
+        let task = make_task(TaskStage::InProgress);
+        let signal = make_signal("github_ci_pass", None);
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    #[test]
+    fn test_ci_failure_in_triage_no_rule() {
+        // CI failure in Triage stage should return None
+        let task = make_task(TaskStage::Triage);
+        let signal = make_signal("github_ci_failure", None);
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    #[test]
+    fn test_bot_review_outside_ai_review_no_rule() {
+        // Bot review while InProgress should return None
+        let task = make_task(TaskStage::InProgress);
+        let mut signal = make_signal("github_bot_review", None);
+        signal.body = Some("Copilot generated comment on line 5".to_string());
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
 }
