@@ -464,10 +464,16 @@ fn parse_github_label(url: &str) -> Option<String> {
     let parts: Vec<&str> = url.split('/').collect();
     // Expected shape: ["https:", "", "github.com", "owner", "repo", "issues"|"pull", "123"]
     if parts.len() >= 7 && parts[2] == "github.com" {
-        let kind = parts[5];
+        let owner = parts[3];
         let repo = parts[4];
+        let kind = parts[5];
         let number = parts[6];
-        if (kind == "issues" || kind == "pull") && number.chars().all(|c| c.is_ascii_digit()) {
+        if !owner.is_empty()
+            && !repo.is_empty()
+            && (kind == "issues" || kind == "pull")
+            && !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+        {
             return Some(format!("{repo} #{number}"));
         }
     }
@@ -5146,6 +5152,15 @@ mod tests {
     fn test_parse_github_label_non_numeric_segment_returns_none() {
         assert_eq!(
             parse_github_label("https://github.com/owner/repo/issues/abc"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_empty_repo_segment_returns_none() {
+        // Double slash creates an empty repo segment; must not produce " #123"
+        assert_eq!(
+            parse_github_label("https://github.com/owner//issues/123"),
             None
         );
     }

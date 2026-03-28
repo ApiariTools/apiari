@@ -801,11 +801,12 @@ fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) 
             width: inner.width,
             height: 1,
         };
-        // prefix "▌  " = 3 chars; suffix " · {age}" reserves separator + age
+        // prefix "▌  " = 3 columns; suffix " · {age}" reserves separator + age
         let age_suffix = format!(" \u{b7} {age_str}");
+        let age_suffix_width: usize = age_suffix.chars().map(|c| c.width().unwrap_or(0)).sum();
         let label_max = (inner.width as usize)
             .saturating_sub(3) // bar + two spaces
-            .saturating_sub(age_suffix.chars().count());
+            .saturating_sub(age_suffix_width);
         let truncated_label = truncate_to_width(&item.source_label, label_max);
         let line2 = Line::from(vec![
             Span::styled("\u{258c}", Style::default().fg(bar_color)),
@@ -872,15 +873,25 @@ fn format_age(dur: &chrono::Duration) -> String {
 }
 
 fn truncate_to_width(s: &str, max_width: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_width {
-        s.to_string()
-    } else if max_width > 1 {
-        let truncated: String = s.chars().take(max_width - 1).collect();
-        format!("{truncated}…")
-    } else {
-        "…".to_string()
+    let display_width: usize = s.chars().map(|c| c.width().unwrap_or(0)).sum();
+    if display_width <= max_width {
+        return s.to_string();
     }
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+    let budget = max_width - 1; // reserve 1 column for "…"
+    let mut used = 0usize;
+    let mut truncated = String::new();
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        truncated.push(c);
+        used += w;
+    }
+    format!("{truncated}…")
 }
 
 // ── Action banner ────────────────────────────────────────
