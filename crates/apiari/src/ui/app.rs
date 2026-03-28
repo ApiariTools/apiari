@@ -456,12 +456,26 @@ pub struct TriageItem {
 
 /// Parse a GitHub URL into a short label like "repo #123".
 fn parse_github_label(url: &str) -> Option<String> {
+    // Strip query string and fragment before any other processing.
+    let url = url.split('?').next().unwrap_or(url);
+    let url = url.split('#').next().unwrap_or(url);
+    // Strip trailing slashes.
     let url = url.trim_end_matches('/');
     let parts: Vec<&str> = url.split('/').collect();
+    // Expected shape: ["https:", "", "github.com", "owner", "repo", "issues"|"pull", "123"]
     if parts.len() >= 7 && parts[2] == "github.com" {
+        let owner = parts[3];
         let repo = parts[4];
+        let kind = parts[5];
         let number = parts[6];
-        return Some(format!("{repo} #{number}"));
+        if !owner.is_empty()
+            && !repo.is_empty()
+            && (kind == "issues" || kind == "pull")
+            && !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+        {
+            return Some(format!("{repo} #{number}"));
+        }
     }
     None
 }
@@ -5082,5 +5096,72 @@ mod tests {
             cards[0].id
         );
         assert_eq!(cards[0].stage, KanbanStage::InProgress);
+    }
+
+    // ── parse_github_label tests ──────────────────────────────
+
+    #[test]
+    fn test_parse_github_label_issue() {
+        assert_eq!(
+            parse_github_label("https://github.com/owner/repo/issues/123"),
+            Some("repo #123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_pull() {
+        assert_eq!(
+            parse_github_label("https://github.com/owner/repo/pull/456"),
+            Some("repo #456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_trailing_slash() {
+        assert_eq!(
+            parse_github_label("https://github.com/owner/repo/issues/123/"),
+            Some("repo #123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_query_and_fragment() {
+        assert_eq!(
+            parse_github_label("https://github.com/owner/repo/issues/789?query=1#fragment"),
+            Some("repo #789".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_non_github_returns_none() {
+        assert_eq!(
+            parse_github_label("https://example.com/owner/repo/issues/1"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_tree_returns_none() {
+        assert_eq!(
+            parse_github_label("https://github.com/owner/repo/tree/main"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_non_numeric_segment_returns_none() {
+        assert_eq!(
+            parse_github_label("https://github.com/owner/repo/issues/abc"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_github_label_empty_repo_segment_returns_none() {
+        // Double slash creates an empty repo segment; must not produce " #123"
+        assert_eq!(
+            parse_github_label("https://github.com/owner//issues/123"),
+            None
+        );
     }
 }
