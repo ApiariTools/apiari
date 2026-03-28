@@ -12,6 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout sibling crates
+        run: |
+          git clone --depth=1 https://github.com/ApiariTools/swarm.git "$GITHUB_WORKSPACE/../swarm"
+          git clone --depth=1 https://github.com/ApiariTools/apiari-common.git "$GITHUB_WORKSPACE/../common"
+          git clone --depth=1 https://github.com/ApiariTools/tui.git "$GITHUB_WORKSPACE/../tui"
+          git clone --depth=1 https://github.com/ApiariTools/claude-sdk.git "$GITHUB_WORKSPACE/../claude-sdk"
+          git clone --depth=1 https://github.com/ApiariTools/codex-sdk.git "$GITHUB_WORKSPACE/../codex-sdk"
+          git clone --depth=1 https://github.com/ApiariTools/gemini-sdk.git "$GITHUB_WORKSPACE/../gemini-sdk"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
