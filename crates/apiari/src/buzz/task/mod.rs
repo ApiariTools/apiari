@@ -3,6 +3,8 @@
 //! Tasks move through stages on a kanban board. This module defines the
 //! data types; `store` provides the SQLite-backed persistence layer.
 
+pub mod engine;
+pub mod rules;
 pub mod store;
 
 use chrono::{DateTime, Utc};

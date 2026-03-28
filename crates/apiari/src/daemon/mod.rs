@@ -1582,6 +1582,38 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 for update in &updates {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, is_new)) => {
+                                            // Process signal through task engine
+                                            if is_new
+                                                && let Ok(Some(record)) = slot.store.get_signal(id)
+                                                && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
+                                            {
+                                                match crate::buzz::task::engine::process_signal(
+                                                    &task_store,
+                                                    &slot.name,
+                                                    &record,
+                                                ) {
+                                                    Ok(engine_result) => {
+                                                        for (worker_id, message) in &engine_result.worker_messages {
+                                                            info!("[task-engine] forwarding to worker {}: {}", worker_id, message);
+                                                            // swarm send will be wired up when swarm integration is ready
+                                                        }
+                                                        for notification in &engine_result.notifications {
+                                                            if let Some(ref server) = socket_server {
+                                                                server.broadcast_activity(
+                                                                    "task",
+                                                                    &slot.name,
+                                                                    "transition",
+                                                                    notification,
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!("[task-engine] error processing signal: {e}");
+                                                    }
+                                                }
+                                            }
+
                                             // Collect new signals matching a hook for coordinator follow-through
                                             if is_new
                                                 && let Some(hook) = slot.config.coordinator.signal_hooks
