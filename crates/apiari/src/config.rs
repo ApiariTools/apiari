@@ -59,18 +59,18 @@ pub struct WorkspaceCapabilities {
     #[serde(default = "default_true")]
     pub dispatch_workers: bool,
 
-    /// Whether the coordinator can merge PRs.
-    /// Default: false — must explicitly opt in.
-    /// Can be `true` (all branches) or a list of branch names.
+    /// Whether and how the coordinator can merge PRs.
+    /// Default: Never — must explicitly opt in.
+    /// Accepts: `false`/`"never"` (Never), `true`/`"on_command"` (OnCommand), `"autonomous"` (Autonomous).
     #[serde(default)]
-    pub merge_prs: MergePrsCapability,
+    pub merge_prs: MergePrsPolicy,
 }
 
 impl Default for WorkspaceCapabilities {
     fn default() -> Self {
         Self {
             dispatch_workers: true,
-            merge_prs: MergePrsCapability::default(),
+            merge_prs: MergePrsPolicy::default(),
         }
     }
 }
@@ -82,42 +82,73 @@ impl WorkspaceCapabilities {
         match authority {
             WorkspaceAuthority::Observe => Self {
                 dispatch_workers: false,
-                merge_prs: MergePrsCapability::Bool(false),
+                merge_prs: MergePrsPolicy::Never,
             },
             WorkspaceAuthority::Autonomous => self.clone(),
         }
     }
 }
 
-/// Whether and how merge_prs is enabled.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum MergePrsCapability {
-    /// Simple boolean: true = all branches, false = disabled.
-    Bool(bool),
-    /// Scoped to specific target branches.
-    Branches(Vec<String>),
+/// Granular merge control policy for `merge_prs`.
+///
+/// TOML values accepted (backward compatible):
+/// - `false` or `"never"` → `Never`
+/// - `true` or `"on_command"` → `OnCommand`
+/// - `"autonomous"` → `Autonomous`
+/// - `["branch", ...]` (legacy branch list) → `OnCommand`
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(from = "MergePrsRaw")]
+pub enum MergePrsPolicy {
+    /// PR merging is never allowed. This is the default.
+    #[default]
+    Never,
+    /// Merging is allowed only when the user explicitly requests it.
+    OnCommand,
+    /// Reserved for future autonomous merge behavior (not yet implemented).
+    Autonomous,
 }
 
-impl Default for MergePrsCapability {
-    fn default() -> Self {
-        Self::Bool(false)
+impl Serialize for MergePrsPolicy {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Never => s.serialize_bool(false),
+            Self::OnCommand => s.serialize_str("on_command"),
+            Self::Autonomous => s.serialize_str("autonomous"),
+        }
     }
 }
 
-impl MergePrsCapability {
-    /// Check if merging is allowed, optionally for a specific target branch.
-    pub fn is_allowed(&self, target_branch: Option<&str>) -> bool {
-        match self {
-            Self::Bool(b) => *b,
-            Self::Branches(branches) => {
-                if let Some(branch) = target_branch {
-                    branches.iter().any(|b| b == branch)
-                } else {
-                    // No specific branch requested — allowed if any branches are configured
-                    !branches.is_empty()
-                }
-            }
+impl MergePrsPolicy {
+    /// Returns true if merging is permitted under this policy.
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, Self::OnCommand | Self::Autonomous)
+    }
+}
+
+/// Serde intermediate for deserializing `merge_prs` with backward compatibility.
+#[derive(Deserialize)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum MergePrsRaw {
+    Bool(bool),
+    Str(String),
+    Branches(Vec<String>),
+}
+
+impl From<MergePrsRaw> for MergePrsPolicy {
+    fn from(raw: MergePrsRaw) -> Self {
+        match raw {
+            MergePrsRaw::Bool(false) => MergePrsPolicy::Never,
+            MergePrsRaw::Bool(true) => MergePrsPolicy::OnCommand,
+            MergePrsRaw::Str(s) => match s.as_str() {
+                "on_command" => MergePrsPolicy::OnCommand,
+                "autonomous" => MergePrsPolicy::Autonomous,
+                "never" | "false" => MergePrsPolicy::Never,
+                _ => MergePrsPolicy::Never,
+            },
+            // Legacy branch-scoped config: treat as OnCommand; the coordinator
+            // enforces branch constraints at the point of merge.
+            MergePrsRaw::Branches(_) => MergePrsPolicy::OnCommand,
         }
     }
 }
