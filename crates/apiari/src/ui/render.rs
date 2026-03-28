@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
@@ -701,6 +701,8 @@ fn draw_kanban_column(
 }
 
 fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
+    use crate::buzz::signal::Severity;
+
     let items = app::triage_items(ws);
 
     let count = items.len();
@@ -729,54 +731,138 @@ fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) 
         return;
     }
 
-    let mut lines: Vec<Line> = Vec::new();
-    let visible = (inner.height as usize).min(items.len());
+    // 4 lines per item: 3 content + 1 blank spacer
+    const LINES_PER_ITEM: usize = 4;
+    let visible = (inner.height as usize / LINES_PER_ITEM).min(items.len());
     let scroll = ws.triage_scroll.min(items.len().saturating_sub(visible));
 
-    for (i, item) in items.iter().skip(scroll).take(visible).enumerate() {
-        let age_str = format_age(&item.age);
-        let is_selected = i + scroll == ws.triage_selected;
+    let mut y_offset = 0u16;
 
-        let style = if is_selected {
+    for (i, item) in items.iter().skip(scroll).take(visible).enumerate() {
+        if y_offset + 3 > inner.height {
+            break;
+        }
+
+        let actual_idx = i + scroll;
+        let is_selected = actual_idx == ws.triage_selected;
+        let bar_color = theme::SIDEBAR_COLORS[actual_idx % theme::SIDEBAR_COLORS.len()];
+
+        let row_bg = if is_selected {
+            Style::default().bg(Color::Rgb(58, 50, 42))
+        } else {
+            Style::default().bg(theme::COMB)
+        };
+
+        // Paint background for the 3 content lines
+        for row in 0..3u16 {
+            let row_area = Rect {
+                x: inner.x,
+                y: inner.y + y_offset + row,
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new("").style(row_bg), row_area);
+        }
+
+        let age_str = format_age(&item.age);
+        let selector = if is_selected { "\u{25b8}" } else { " " };
+
+        let (sev_dot, sev_style) = match item.severity {
+            Severity::Critical | Severity::Error => {
+                ("●", Style::default().fg(Color::Rgb(200, 60, 60)))
+            }
+            Severity::Warning => ("●", Style::default().fg(theme::HONEY)),
+            Severity::Info => ("○", Style::default().fg(theme::SMOKE)),
+        };
+
+        let title_style = if is_selected {
             Style::default()
                 .fg(theme::HONEY)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme::FROST)
         };
-        let sub_style = if is_selected {
-            Style::default().fg(theme::HONEY)
+        let selector_style = if is_selected {
+            theme::selected()
         } else {
-            Style::default().fg(theme::SMOKE)
+            theme::muted()
         };
 
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(&item.icon, style),
-            Span::raw(" "),
+        // Line 1: ▌ selector dot title
+        let line1_area = Rect {
+            x: inner.x,
+            y: inner.y + y_offset,
+            width: inner.width,
+            height: 1,
+        };
+        let title_max = (inner.width as usize).saturating_sub(5);
+        let line1 = Line::from(vec![
+            Span::styled("\u{258c}", Style::default().fg(bar_color)),
+            Span::styled(selector, selector_style),
+            Span::styled(format!("{sev_dot} "), sev_style),
+            Span::styled(truncate_to_width(&item.title, title_max), title_style),
+        ]);
+        frame.render_widget(Paragraph::new(line1), line1_area);
+
+        // Line 2: ▌   source_label · age
+        let line2_area = Rect {
+            x: inner.x,
+            y: inner.y + y_offset + 1,
+            width: inner.width,
+            height: 1,
+        };
+        let line2 = Line::from(vec![
+            Span::styled("\u{258c}", Style::default().fg(bar_color)),
+            Span::raw("  "),
+            Span::styled(&item.source_label, Style::default().fg(theme::MINT)),
             Span::styled(
-                truncate_to_width(&item.title, inner.width.saturating_sub(6) as usize),
-                style,
+                format!(" \u{b7} {age_str}"),
+                Style::default().fg(Color::Rgb(80, 77, 70)),
             ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(&item.subtitle, sub_style),
-            Span::styled(format!(" · {age_str}"), sub_style),
-        ]));
+        ]);
+        frame.render_widget(Paragraph::new(line2), line2_area);
+
+        // Line 3: ▌   subtitle (muted description)
+        let line3_area = Rect {
+            x: inner.x,
+            y: inner.y + y_offset + 2,
+            width: inner.width,
+            height: 1,
+        };
+        let sub_max = (inner.width as usize).saturating_sub(3);
+        let line3 = Line::from(vec![
+            Span::styled("\u{258c}", Style::default().fg(bar_color)),
+            Span::raw("  "),
+            Span::styled(
+                truncate_to_width(&item.subtitle, sub_max),
+                Style::default().fg(Color::Rgb(90, 87, 80)),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line3), line3_area);
+
+        y_offset += LINES_PER_ITEM as u16;
     }
 
+    // "+N more" indicator at the bottom
     if items.len() > visible + scroll {
         let more = items.len() - visible - scroll;
-        lines.push(Line::from(Span::styled(
-            format!(" +{more} more"),
-            Style::default()
-                .fg(theme::STEEL)
-                .add_modifier(Modifier::DIM),
-        )));
+        let more_y = inner.y + inner.height.saturating_sub(1);
+        let more_area = Rect {
+            x: inner.x,
+            y: more_y,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" +{more} more"),
+                Style::default()
+                    .fg(theme::STEEL)
+                    .add_modifier(Modifier::DIM),
+            ))),
+            more_area,
+        );
     }
-
-    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn format_age(dur: &chrono::Duration) -> String {
