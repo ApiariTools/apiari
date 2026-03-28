@@ -3276,16 +3276,18 @@ async fn build_idle_nudge_detached(
         for wt in worktrees {
             let phase = wt.get("phase").and_then(|v| v.as_str()).unwrap_or("");
             if phase == "waiting" {
+                // Skip reviewer workers — auto-dispatched, not user-actionable
+                let prompt = wt.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+                if prompt.starts_with("Review PR") {
+                    continue;
+                }
+                // Skip workers that opened a PR — they're done, not stuck
+                let has_pr = wt.get("pr").and_then(|v| v.as_object()).is_some();
+                if has_pr {
+                    continue;
+                }
                 let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                let pr_info = wt
-                    .get("pr")
-                    .and_then(|v| v.as_object())
-                    .and_then(|pr| {
-                        let number = pr.get("number")?.as_u64()?;
-                        Some(format!(" (PR #{number})"))
-                    })
-                    .unwrap_or_default();
-                items.push(format!("Worker {id} is waiting{pr_info}"));
+                items.push(format!("Worker {id} is waiting for input (no PR yet)"));
             }
         }
     }
@@ -3316,7 +3318,7 @@ async fn build_idle_nudge_detached(
                 for line in stdout.lines() {
                     let line = line.trim();
                     if !line.is_empty() {
-                        items.push(format!("PR {line} has CI green — ready to merge?"));
+                        items.push(format!("PR {line} — CI green, mergeable"));
                     }
                 }
             }
@@ -3327,7 +3329,7 @@ async fn build_idle_nudge_detached(
         return None;
     }
 
-    let mut msg = String::from("Hey — a few things waiting on you:\n");
+    let mut msg = String::from("Pending items:\n");
     for item in &items {
         msg.push_str(&format!("• {item}\n"));
     }
