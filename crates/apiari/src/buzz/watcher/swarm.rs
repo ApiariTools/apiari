@@ -28,6 +28,11 @@ struct TrackedWorker {
     phase: WorkerPhase,
     has_pr: bool,
     ready_branch: Option<String>,
+    /// Role of this worker ("reviewer" or None/other = regular worker).
+    role: Option<String>,
+    /// Count of times this worker has transitioned into Running phase.
+    /// Used to make each Running-transition signal unique (so the task engine fires each time).
+    running_count: u32,
 }
 
 /// Watches swarm daemon for worker state changes via socket subscription.
@@ -93,11 +98,41 @@ impl SwarmWatcher {
         };
 
         for (id, phase) in events {
-            let prev = self.tracked.get(&id);
+            let prev_phase = self.tracked.get(&id).map(|p| p.phase.clone());
+            let role = self.tracked.get(&id).and_then(|p| p.role.clone());
+
+            // Running transition — emit swarm_worker_running for non-reviewer workers
+            if phase == WorkerPhase::Running
+                && prev_phase
+                    .as_ref()
+                    .is_some_and(|p| *p != WorkerPhase::Running)
+            {
+                let role_str = role.as_deref().unwrap_or("worker");
+                if role_str != "reviewer" {
+                    // Increment running_count first so external_id is unique per transition
+                    if let Some(tracked) = self.tracked.get_mut(&id) {
+                        tracked.running_count += 1;
+                    }
+                    let running_count = self.tracked.get(&id).map_or(1, |p| p.running_count);
+                    let metadata =
+                        serde_json::json!({"worker_id": id, "role": role_str}).to_string();
+                    signals.push(
+                        SignalUpdate::new(
+                            "swarm_worker_running",
+                            format!("swarm-worker-running-{id}-{running_count}"),
+                            format!("Worker running: {id}"),
+                            Severity::Info,
+                        )
+                        .with_metadata(metadata),
+                    );
+                }
+            }
 
             // Waiting transition
             if phase == WorkerPhase::Waiting
-                && prev.is_some_and(|p| p.phase != WorkerPhase::Waiting)
+                && prev_phase
+                    .as_ref()
+                    .is_some_and(|p| *p != WorkerPhase::Waiting)
             {
                 signals.push(
                     SignalUpdate::new(
@@ -111,7 +146,7 @@ impl SwarmWatcher {
             }
 
             // Completed/Failed transition — emit so daemon can read verdict before teardown
-            if phase.is_terminal() && prev.is_some_and(|p| !p.phase.is_terminal()) {
+            if phase.is_terminal() && prev_phase.as_ref().is_some_and(|p| !p.is_terminal()) {
                 signals.push(
                     SignalUpdate::new(
                         "swarm",
@@ -123,7 +158,7 @@ impl SwarmWatcher {
                 );
             }
 
-            // Update tracked phase (preserve has_pr since StateChanged doesn't carry it)
+            // Update tracked phase (preserve has_pr and role since StateChanged doesn't carry them)
             if let Some(tracked) = self.tracked.get_mut(&id) {
                 tracked.phase = phase;
             }
@@ -180,6 +215,7 @@ impl SwarmWatcher {
                 .get(id.as_str())
                 .map(|(_, r)| r.clone())
                 .unwrap_or_default();
+            let role = w.role.as_deref().unwrap_or("worker");
 
             if prev.is_none() {
                 // New worktree spawned
@@ -237,6 +273,26 @@ impl SwarmWatcher {
                 signals.push(signal);
             }
 
+            // Running transition — emit swarm_worker_running for non-reviewer workers
+            // (from ListWorkers, in case subscription missed it)
+            if w.phase == WorkerPhase::Running
+                && prev.is_some_and(|p| p.phase != WorkerPhase::Running)
+                && role != "reviewer"
+            {
+                let prev_running_count = prev.map_or(0, |p| p.running_count);
+                let new_running_count = prev_running_count + 1;
+                let metadata = serde_json::json!({"worker_id": id, "role": role}).to_string();
+                signals.push(
+                    SignalUpdate::new(
+                        "swarm_worker_running",
+                        format!("swarm-worker-running-{id}-{new_running_count}"),
+                        format!("Worker running: {id}"),
+                        Severity::Info,
+                    )
+                    .with_metadata(metadata),
+                );
+            }
+
             // Waiting transition (from ListWorkers, in case subscription missed it)
             if w.phase == WorkerPhase::Waiting
                 && prev.is_some_and(|p| p.phase != WorkerPhase::Waiting)
@@ -265,6 +321,19 @@ impl SwarmWatcher {
                 );
             }
 
+            // Compute new running_count (incremented if transitioning into Running)
+            let new_running_count = {
+                let prev_count = prev.map_or(0, |p| p.running_count);
+                if w.phase == WorkerPhase::Running
+                    && prev.is_some_and(|p| p.phase != WorkerPhase::Running)
+                    && role != "reviewer"
+                {
+                    prev_count + 1
+                } else {
+                    prev_count
+                }
+            };
+
             // Update tracked state
             self.tracked.insert(
                 id.clone(),
@@ -272,6 +341,8 @@ impl SwarmWatcher {
                     phase: w.phase.clone(),
                     has_pr,
                     ready_branch: ready_branch.clone(),
+                    role: w.role.clone(),
+                    running_count: new_running_count,
                 },
             );
         }
@@ -287,6 +358,12 @@ impl SwarmWatcher {
             .collect();
 
         for id in &closed {
+            let role_str = self
+                .tracked
+                .get(id)
+                .and_then(|t| t.role.as_deref())
+                .unwrap_or("worker");
+
             for prefix in &[
                 "swarm-spawned",
                 "swarm-waiting",
@@ -313,6 +390,19 @@ impl SwarmWatcher {
                 )
                 .with_status(SignalStatus::Resolved),
             );
+
+            // Emit active swarm_worker_closed signal for the task engine to process
+            let metadata = serde_json::json!({"worker_id": id, "role": role_str}).to_string();
+            signals.push(
+                SignalUpdate::new(
+                    "swarm_worker_closed",
+                    format!("swarm-worker-closed-{id}"),
+                    format!("Worker closed: {id}"),
+                    Severity::Info,
+                )
+                .with_metadata(metadata),
+            );
+
             self.tracked.remove(id);
         }
 
@@ -345,6 +435,8 @@ impl Watcher for SwarmWatcher {
                         phase: w.phase.clone(),
                         has_pr: w.pr_url.is_some(),
                         ready_branch: ready_branches.get(&w.id).map(|(b, _)| b.clone()),
+                        role: w.role.clone(),
+                        running_count: 0,
                     },
                 );
             }
@@ -607,6 +699,8 @@ mod tests {
                 phase: WorkerPhase::Running,
                 has_pr: false,
                 ready_branch: None,
+                role: None,
+                running_count: 1,
             },
         );
 
@@ -634,6 +728,8 @@ mod tests {
                 phase: WorkerPhase::Running,
                 has_pr: false,
                 ready_branch: None,
+                role: None,
+                running_count: 1,
             },
         );
 
@@ -653,13 +749,15 @@ mod tests {
                 phase: WorkerPhase::Running,
                 has_pr: false,
                 ready_branch: None,
+                role: None,
+                running_count: 1,
             },
         );
 
         let workers = vec![]; // w1 is gone
         let signals = watcher.diff_workers(&workers);
-        // 5 resolved (spawned/waiting/pr/completed/branch-ready) + 1 closed
-        assert_eq!(signals.len(), 6);
+        // 5 resolved (spawned/waiting/pr/completed/branch-ready) + 1 old closed + 1 swarm_worker_closed
+        assert_eq!(signals.len(), 7);
         assert!(signals.iter().all(|s| s.title.contains("closed")));
     }
 
@@ -673,12 +771,104 @@ mod tests {
                 phase: WorkerPhase::Running,
                 has_pr: false,
                 ready_branch: None,
+                role: None,
+                running_count: 1,
             },
         );
 
         let workers = vec![make_worker("w1", WorkerPhase::Running, None)];
         let signals = watcher.diff_workers(&workers);
         assert!(signals.is_empty(), "no transition = no signals");
+    }
+
+    #[test]
+    fn test_diff_workers_running_transition_emits_signal() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
+        watcher.tracked.insert(
+            "w1".to_string(),
+            TrackedWorker {
+                phase: WorkerPhase::Waiting,
+                has_pr: false,
+                ready_branch: None,
+                role: None,
+                running_count: 1,
+            },
+        );
+
+        let workers = vec![make_worker("w1", WorkerPhase::Running, None)];
+        let signals = watcher.diff_workers(&workers);
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].source, "swarm_worker_running");
+        assert!(signals[0].title.contains("running"));
+        assert!(
+            signals[0]
+                .metadata
+                .as_deref()
+                .unwrap_or("")
+                .contains("worker_id")
+        );
+    }
+
+    #[test]
+    fn test_diff_workers_running_transition_reviewer_no_signal() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
+        watcher.tracked.insert(
+            "r1".to_string(),
+            TrackedWorker {
+                phase: WorkerPhase::Waiting,
+                has_pr: false,
+                ready_branch: None,
+                role: Some("reviewer".to_string()),
+                running_count: 0,
+            },
+        );
+
+        let mut reviewer = make_worker("r1", WorkerPhase::Running, None);
+        reviewer.role = Some("reviewer".to_string());
+        let signals = watcher.diff_workers(&[reviewer]);
+        assert!(
+            signals.is_empty(),
+            "reviewer running transition should not emit swarm_worker_running"
+        );
+    }
+
+    #[test]
+    fn test_diff_workers_closed_emits_worker_closed_signal() {
+        let mut watcher = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        watcher.initialized = true;
+        watcher.tracked.insert(
+            "w1".to_string(),
+            TrackedWorker {
+                phase: WorkerPhase::Running,
+                has_pr: false,
+                ready_branch: None,
+                role: None,
+                running_count: 1,
+            },
+        );
+
+        let workers = vec![]; // w1 is gone
+        let signals = watcher.diff_workers(&workers);
+        let closed_signal = signals
+            .iter()
+            .find(|s| s.source == "swarm_worker_closed")
+            .expect("swarm_worker_closed signal should be emitted");
+        assert!(
+            closed_signal
+                .metadata
+                .as_deref()
+                .unwrap_or("")
+                .contains("worker_id")
+        );
+        assert!(
+            closed_signal
+                .metadata
+                .as_deref()
+                .unwrap_or("")
+                .contains("role")
+        );
     }
 
     /// Helper to build a WorkerInfo for testing.
@@ -713,6 +903,8 @@ mod tests {
                 phase: WorkerPhase::Running,
                 has_pr: false,
                 ready_branch: None,
+                role: None,
+                running_count: 1,
             },
         );
 
@@ -742,6 +934,8 @@ mod tests {
                 phase: WorkerPhase::Running,
                 has_pr: false,
                 ready_branch: Some("swarm/my-feature".to_string()),
+                role: None,
+                running_count: 1,
             },
         );
 
