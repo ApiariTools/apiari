@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use apiari_tui::conversation;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{self, App, ChatLine, Mode, Panel, PendingAction, View};
 use super::theme;
@@ -803,10 +803,9 @@ fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) 
         };
         // prefix "▌  " = 3 columns; suffix " · {age}" reserves separator + age
         let age_suffix = format!(" \u{b7} {age_str}");
-        let age_suffix_width: usize = age_suffix.chars().map(|c| c.width().unwrap_or(0)).sum();
         let label_max = (inner.width as usize)
             .saturating_sub(3) // bar + two spaces
-            .saturating_sub(age_suffix_width);
+            .saturating_sub(UnicodeWidthStr::width(age_suffix.as_str()));
         let truncated_label = truncate_to_width(&item.source_label, label_max);
         let line2 = Line::from(vec![
             Span::styled("\u{258c}", Style::default().fg(bar_color)),
@@ -873,8 +872,7 @@ fn format_age(dur: &chrono::Duration) -> String {
 }
 
 fn truncate_to_width(s: &str, max_width: usize) -> String {
-    let display_width: usize = s.chars().map(|c| c.width().unwrap_or(0)).sum();
-    if display_width <= max_width {
+    if UnicodeWidthStr::width(s) <= max_width {
         return s.to_string();
     }
     if max_width <= 1 {
@@ -882,16 +880,16 @@ fn truncate_to_width(s: &str, max_width: usize) -> String {
     }
     let budget = max_width - 1; // reserve 1 column for "…"
     let mut used = 0usize;
-    let mut truncated = String::new();
-    for c in s.chars() {
-        let w = c.width().unwrap_or(0);
+    let mut cut = 0usize;
+    for (byte_idx, ch) in s.char_indices() {
+        let w = ch.width().unwrap_or(0);
         if used + w > budget {
             break;
         }
-        truncated.push(c);
         used += w;
+        cut = byte_idx + ch.len_utf8();
     }
-    format!("{truncated}…")
+    format!("{}…", &s[..cut])
 }
 
 // ── Action banner ────────────────────────────────────────
