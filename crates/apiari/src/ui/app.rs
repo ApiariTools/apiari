@@ -337,6 +337,11 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
 
     // ── Workers → cards ──
     for w in &ws.workers {
+        // Reviewer workers are internal to the review process — hide them from the board
+        if w.prompt.starts_with("Review PR") {
+            continue;
+        }
+
         let phase = w.phase.as_deref().unwrap_or("");
 
         let elapsed = w
@@ -4954,6 +4959,24 @@ mod tests {
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1, "dismissed card should be filtered out");
         assert!(!cards[0].id.contains("abc-1234"));
+    }
+
+    #[test]
+    fn test_kanban_reviewer_worker_excluded() {
+        let mut ws = empty_ws();
+        // A reviewer worker has a prompt starting with "Review PR #"
+        let mut reviewer = make_worker("rev-1234", "running", None);
+        reviewer.prompt = "Review PR #42: verify the implementation".to_string();
+        // A regular worker should still appear
+        let regular = make_worker("abc-5678", "running", None);
+        ws.workers = vec![reviewer, regular];
+        let cards = build_kanban_cards(&ws);
+        assert_eq!(
+            cards.len(),
+            1,
+            "reviewer worker should not create a kanban card"
+        );
+        assert_eq!(cards[0].id, "worker:abc-5678");
     }
 
     // ── build_kanban_cards_from_tasks tests ──────────────────

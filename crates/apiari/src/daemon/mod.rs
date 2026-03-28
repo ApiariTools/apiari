@@ -1623,10 +1623,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 }
                                             }
 
-                                            // Create task for new swarm workers
+                                            // Create task for new swarm workers (skip reviewer workers)
                                             if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-spawned-") {
                                                 let worker_id = update.external_id.strip_prefix("swarm-spawned-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty()
+                                                let is_reviewer = update.body.as_ref()
+                                                    .and_then(|b| b.lines().nth(1))
+                                                    .map(|l| l.trim_start().starts_with("Review PR"))
+                                                    .unwrap_or(false);
+                                                if !is_reviewer && !worker_id.is_empty()
                                                     && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                                         && let Ok(None) = task_store.find_task_by_worker(&slot.name, &worker_id) {
                                                             let title = update.body.as_ref()
