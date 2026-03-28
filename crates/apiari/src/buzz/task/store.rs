@@ -218,6 +218,15 @@ impl TaskStore {
         }
     }
 
+    pub fn update_task_repo(&self, id: &str, repo: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE tasks SET repo = ?1, updated_at = ?2 WHERE id = ?3",
+            params![repo, now, id],
+        )?;
+        Ok(())
+    }
+
     pub fn find_task_by_worker(&self, workspace: &str, worker_id: &str) -> Result<Option<Task>> {
         let result = self.conn.query_row(
             "SELECT id, workspace, title, stage, source, source_url, worker_id,

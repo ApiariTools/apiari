@@ -1614,6 +1614,101 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 }
                                             }
 
+                                            // Create task for new swarm workers
+                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-spawned-") {
+                                                let worker_id = update.external_id.strip_prefix("swarm-spawned-").unwrap_or("").to_string();
+                                                if !worker_id.is_empty()
+                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
+                                                        && let Ok(None) = task_store.find_task_by_worker(&slot.name, &worker_id) {
+                                                            let title = update.body.as_ref()
+                                                                .and_then(|b| b.lines().nth(1))
+                                                                .map(|s| s.trim().to_string())
+                                                                .filter(|s| !s.is_empty())
+                                                                .unwrap_or_else(|| format!("Worker {worker_id}"));
+                                                            let title = if title.len() > 80 { format!("{}…", &title[..79]) } else { title };
+                                                            let now = chrono::Utc::now();
+                                                            let task = crate::buzz::task::Task {
+                                                                id: uuid::Uuid::new_v4().to_string(),
+                                                                workspace: slot.name.clone(),
+                                                                title,
+                                                                stage: crate::buzz::task::TaskStage::InProgress,
+                                                                source: Some("swarm".to_string()),
+                                                                source_url: None,
+                                                                worker_id: Some(worker_id.clone()),
+                                                                pr_url: None,
+                                                                pr_number: None,
+                                                                repo: None,
+                                                                created_at: now,
+                                                                updated_at: now,
+                                                                resolved_at: None,
+                                                                metadata: serde_json::json!({}),
+                                                            };
+                                                            if let Err(e) = task_store.create_task(&task) {
+                                                                tracing::warn!("[task-engine] failed to create task for worker {worker_id}: {e}");
+                                                            } else {
+                                                                info!("[task-engine] created task '{}' for worker {worker_id}", task.title);
+                                                            }
+                                                        }
+                                            }
+
+                                            // Update task when worker opens a PR
+                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
+                                                let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
+                                                if !worker_id.is_empty()
+                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
+                                                        && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id) {
+                                                            let pr_url = update.url.clone();
+                                                            let pr_number = pr_url.as_ref()
+                                                                .and_then(|u| crate::buzz::task::rules::extract_github_pr_from_url(u))
+                                                                .map(|(_, num)| num);
+                                                            let repo = pr_url.as_ref()
+                                                                .and_then(|u| crate::buzz::task::rules::extract_github_pr_from_url(u))
+                                                                .map(|(r, _)| r);
+
+                                                            if let Some(ref url) = pr_url
+                                                                && let Some(num) = pr_number
+                                                                    && let Err(e) = task_store.update_task_pr(&task.id, url, num) {
+                                                                        tracing::warn!("[task-engine] failed to update PR on task: {e}");
+                                                                    }
+                                                            if let Some(ref r) = repo
+                                                                && let Err(e) = task_store.update_task_repo(&task.id, r) {
+                                                                    tracing::warn!("[task-engine] failed to update repo on task: {e}");
+                                                                }
+                                                            if task.stage == crate::buzz::task::TaskStage::InProgress {
+                                                                if let Err(e) = task_store.transition_task(
+                                                                    &task.id,
+                                                                    &crate::buzz::task::TaskStage::InProgress,
+                                                                    &crate::buzz::task::TaskStage::InAiReview,
+                                                                    Some("PR opened".to_string()),
+                                                                ) {
+                                                                    tracing::warn!("[task-engine] failed to transition task to InAiReview: {e}");
+                                                                } else {
+                                                                    info!("[task-engine] task '{}' → In AI Review (PR opened)", task.title);
+                                                                }
+                                                            }
+                                                        }
+                                            }
+
+                                            // Handle worker closed — dismiss task if no PR was merged
+                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-closed-") {
+                                                let worker_id = update.external_id.strip_prefix("swarm-closed-").unwrap_or("").to_string();
+                                                if !worker_id.is_empty()
+                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
+                                                        && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
+                                                            && !task.stage.is_terminal() && task.pr_url.is_none() {
+                                                                if let Err(e) = task_store.transition_task(
+                                                                    &task.id,
+                                                                    &task.stage,
+                                                                    &crate::buzz::task::TaskStage::Dismissed,
+                                                                    Some("Worker closed without PR".to_string()),
+                                                                ) {
+                                                                    tracing::warn!("[task-engine] failed to dismiss task for closed worker: {e}");
+                                                                } else {
+                                                                    info!("[task-engine] dismissed task '{}' (worker closed without PR)", task.title);
+                                                                }
+                                                            }
+                                            }
+
                                             // Collect new signals matching a hook for coordinator follow-through
                                             if is_new
                                                 && let Some(hook) = slot.config.coordinator.signal_hooks
