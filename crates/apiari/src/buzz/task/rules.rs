@@ -58,13 +58,15 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
         // PrOpened signal carries structured data (pr_url, pr_number) that needs
         // to be written to the task before transitioning.
 
-        // ── In AI Review: CI failed → back to In Progress ──
+        // ── In AI Review: CI failed → stay in AI Review, notify worker ──
+        // InProgress is reserved for when a worker is actively coding.
+        // CI failures during review are notifications — not state regressions.
         (TaskStage::InAiReview, "github_ci_failure") => {
             let pr_ref = extract_pr_ref(signal);
             Some(ProposedTransition {
                 task_id: task.id.clone(),
                 from: TaskStage::InAiReview,
-                to: TaskStage::InProgress,
+                to: TaskStage::InAiReview,
                 reason: format!("CI failed on {}", pr_ref.as_deref().unwrap_or("PR")),
                 approval: Approval::Auto,
                 action: TransitionAction::ForwardToWorker {
@@ -76,7 +78,9 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             })
         }
 
-        // ── In AI Review: bot review with comments → back to In Progress ──
+        // ── In AI Review: bot review → stay in AI Review, forward to worker if comments ──
+        // InProgress is reserved for when a worker is actively coding.
+        // Bot review comments are forwarded as notifications, not state regressions.
         (TaskStage::InAiReview, "github_bot_review") => {
             let has_comments = bot_review_has_comments(signal);
 
@@ -84,7 +88,7 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
                 Some(ProposedTransition {
                     task_id: task.id.clone(),
                     from: TaskStage::InAiReview,
-                    to: TaskStage::InProgress,
+                    to: TaskStage::InAiReview,
                     reason: "Bot review has comments".to_string(),
                     approval: Approval::Auto,
                     action: TransitionAction::ForwardToWorker {
@@ -148,10 +152,9 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             },
         }),
 
-        // ── Human Review: bot review with comments → back to In Progress ──
-        // CI can pass (→ HumanReview) before Copilot finishes reviewing. If Copilot
-        // then leaves inline comments, the task must go back to InProgress so the
-        // worker can address them.
+        // ── Human Review: bot review → stay in Human Review, forward to worker if comments ──
+        // InProgress is reserved for when a worker is actively coding.
+        // Bot review comments during human review are forwarded as notifications.
         (TaskStage::HumanReview, "github_bot_review") => {
             let has_comments = bot_review_has_comments(signal);
 
@@ -159,7 +162,7 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
                 Some(ProposedTransition {
                     task_id: task.id.clone(),
                     from: TaskStage::HumanReview,
-                    to: TaskStage::InProgress,
+                    to: TaskStage::HumanReview,
                     reason: "Bot review has comments after reaching human review".to_string(),
                     approval: Approval::Auto,
                     action: TransitionAction::ForwardToWorker {
@@ -186,11 +189,13 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             }
         }
 
-        // ── Human Review: CI failure → back to In Progress ──
+        // ── Human Review: CI failure → stay in Human Review, notify worker ──
+        // InProgress is reserved for when a worker is actively coding.
+        // CI failures during review are forwarded as notifications, not state regressions.
         (TaskStage::HumanReview, "github_ci_failure") => Some(ProposedTransition {
             task_id: task.id.clone(),
             from: TaskStage::HumanReview,
-            to: TaskStage::InProgress,
+            to: TaskStage::HumanReview,
             reason: "CI failed after reaching human review".to_string(),
             approval: Approval::Auto,
             action: TransitionAction::ForwardToWorker {
@@ -408,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ci_failure_in_ai_review_transitions_to_in_progress() {
+    fn test_ci_failure_in_ai_review_stays_in_ai_review() {
         let task = make_task(TaskStage::InAiReview);
         let signal = make_signal(
             "github_ci_failure",
@@ -416,7 +421,7 @@ mod tests {
         );
         let result = evaluate_signal(&task, &signal).unwrap();
         assert_eq!(result.from, TaskStage::InAiReview);
-        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.to, TaskStage::InAiReview);
         assert_eq!(result.approval, Approval::Auto);
         assert!(matches!(
             result.action,
@@ -451,12 +456,16 @@ mod tests {
     }
 
     #[test]
-    fn test_ci_failure_in_human_review_transitions_to_in_progress() {
+    fn test_ci_failure_in_human_review_stays_in_human_review() {
         let task = make_task(TaskStage::HumanReview);
         let signal = make_signal("github_ci_failure", None);
         let result = evaluate_signal(&task, &signal).unwrap();
         assert_eq!(result.from, TaskStage::HumanReview);
-        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.to, TaskStage::HumanReview);
+        assert!(matches!(
+            result.action,
+            TransitionAction::ForwardToWorker { .. }
+        ));
     }
 
     #[test]
@@ -579,12 +588,17 @@ mod tests {
     }
 
     #[test]
-    fn test_bot_review_with_comments_transitions_to_in_progress() {
+    fn test_bot_review_with_comments_stays_in_ai_review() {
         let task = make_task(TaskStage::InAiReview);
         let mut signal = make_signal("github_bot_review", None);
         signal.body = Some("Copilot generated comment on line 5".to_string());
         let result = evaluate_signal(&task, &signal).unwrap();
-        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.from, TaskStage::InAiReview);
+        assert_eq!(result.to, TaskStage::InAiReview);
+        assert!(matches!(
+            result.action,
+            TransitionAction::ForwardToWorker { .. }
+        ));
     }
 
     #[test]
@@ -599,8 +613,9 @@ mod tests {
     }
 
     #[test]
-    fn test_bot_review_changes_requested_via_metadata_transitions_to_in_progress() {
-        // Verify structured review_state takes precedence over body text matching.
+    fn test_bot_review_changes_requested_via_metadata_stays_in_stage() {
+        // Verify structured review_state takes precedence over body text matching,
+        // and that the task stays in its current stage (no regression to InProgress).
         for stage in [TaskStage::InAiReview, TaskStage::HumanReview] {
             let task = make_task(stage.clone());
             let mut signal = make_signal("github_bot_review", None);
@@ -611,7 +626,12 @@ mod tests {
                     .to_string(),
             );
             let result = evaluate_signal(&task, &signal).unwrap();
-            assert_eq!(result.to, TaskStage::InProgress, "stage={}", stage.as_str());
+            assert_eq!(result.to, stage, "stage={}", stage.as_str());
+            assert!(
+                matches!(result.action, TransitionAction::ForwardToWorker { .. }),
+                "stage={}",
+                stage.as_str()
+            );
         }
     }
 
@@ -634,13 +654,13 @@ mod tests {
     }
 
     #[test]
-    fn test_bot_review_with_comments_in_human_review_transitions_to_in_progress() {
+    fn test_bot_review_with_comments_in_human_review_stays_in_human_review() {
         let task = make_task(TaskStage::HumanReview);
         let mut signal = make_signal("github_bot_review", None);
         signal.body = Some("Copilot generated comment on line 5".to_string());
         let result = evaluate_signal(&task, &signal).unwrap();
         assert_eq!(result.from, TaskStage::HumanReview);
-        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.to, TaskStage::HumanReview);
         assert_eq!(result.approval, Approval::Auto);
         assert!(matches!(
             result.action,
