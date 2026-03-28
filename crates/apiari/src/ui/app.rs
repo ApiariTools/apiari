@@ -4862,7 +4862,7 @@ mod tests {
         )];
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::NeedsMe);
+        assert_eq!(cards[0].stage, KanbanStage::MergeReady);
         assert!(cards[0].subtitle.contains("merge?"));
     }
 
@@ -4961,7 +4961,7 @@ mod tests {
         ws.signals = vec![make_signal("sentry", "sentry-err-1", None)];
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::Incoming);
+        assert_eq!(cards[0].stage, KanbanStage::Triage);
         assert_eq!(cards[0].icon, "⚡");
     }
 
@@ -4975,7 +4975,7 @@ mod tests {
         )];
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::NeedsMe);
+        assert_eq!(cards[0].stage, KanbanStage::MergeReady);
         assert_eq!(cards[0].icon, "🔍");
     }
 
@@ -5070,10 +5070,10 @@ mod tests {
         let cards = build_kanban_cards_from_tasks(&tasks);
         // Dismissed is filtered out
         assert_eq!(cards.len(), 5);
-        assert_eq!(cards[0].stage, KanbanStage::Incoming); // Triage
+        assert_eq!(cards[0].stage, KanbanStage::Triage); // Triage
         assert_eq!(cards[1].stage, KanbanStage::InProgress); // InProgress
-        assert_eq!(cards[2].stage, KanbanStage::InProgress); // InAiReview
-        assert_eq!(cards[3].stage, KanbanStage::NeedsMe); // MergeReady
+        assert_eq!(cards[2].stage, KanbanStage::InReview); // InAiReview
+        assert_eq!(cards[3].stage, KanbanStage::MergeReady); // MergeReady
         assert_eq!(cards[4].stage, KanbanStage::Done); // Merged
     }
 
