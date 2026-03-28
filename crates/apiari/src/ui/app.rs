@@ -450,6 +450,20 @@ pub struct TriageItem {
     pub subtitle: String,
     pub url: Option<String>,
     pub age: chrono::Duration,
+    pub source_label: String,
+    pub severity: Severity,
+}
+
+/// Parse a GitHub URL into a short label like "repo #123".
+fn parse_github_label(url: &str) -> Option<String> {
+    let url = url.trim_end_matches('/');
+    let parts: Vec<&str> = url.split('/').collect();
+    if parts.len() >= 7 && parts[2] == "github.com" {
+        let repo = parts[4];
+        let number = parts[6];
+        return Some(format!("{repo} #{number}"));
+    }
+    None
 }
 
 /// Get items for the triage sidebar — tasks in Triage stage + unmatched signals.
@@ -459,6 +473,11 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
     // Tasks in Triage stage
     for t in &ws.tasks {
         if t.stage == crate::buzz::task::TaskStage::Triage {
+            let source_label = t
+                .source_url
+                .as_deref()
+                .and_then(parse_github_label)
+                .unwrap_or_else(|| t.source.clone().unwrap_or_else(|| "task".to_string()));
             items.push(TriageItem {
                 id: format!("task:{}", t.id),
                 icon: match t.source.as_deref() {
@@ -472,6 +491,8 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
                 subtitle: t.source.clone().unwrap_or_else(|| "task".to_string()),
                 url: t.source_url.clone(),
                 age: chrono::Utc::now().signed_duration_since(t.created_at),
+                source_label,
+                severity: Severity::Info,
             });
         }
     }
@@ -491,6 +512,21 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
         if dominated {
             continue;
         }
+        let source_label = match sig.source.as_str() {
+            "github_review_queue" => sig
+                .url
+                .as_deref()
+                .and_then(parse_github_label)
+                .unwrap_or_else(|| sig.source.clone()),
+            "sentry" => {
+                if sig.external_id.is_empty() {
+                    "sentry".to_string()
+                } else {
+                    format!("sentry {}", sig.external_id)
+                }
+            }
+            other => other.to_string(),
+        };
         items.push(TriageItem {
             id: format!("signal:{}", sig.id),
             icon: match sig.source.as_str() {
@@ -509,6 +545,8 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
             subtitle: sig.source.clone(),
             url: sig.url.clone(),
             age: chrono::Utc::now().signed_duration_since(sig.created_at),
+            source_label,
+            severity: sig.severity.clone(),
         });
     }
 
