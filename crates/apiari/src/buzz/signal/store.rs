@@ -7,7 +7,7 @@
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr};
 use rusqlite::{Connection, params};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{Severity, SignalRecord, SignalStatus, SignalUpdate};
 
@@ -15,6 +15,7 @@ use super::{Severity, SignalRecord, SignalStatus, SignalUpdate};
 pub struct SignalStore {
     conn: Connection,
     workspace: String,
+    db_path: PathBuf,
 }
 
 impl SignalStore {
@@ -26,6 +27,7 @@ impl SignalStore {
         let store = Self {
             conn,
             workspace: workspace.to_string(),
+            db_path: path.to_path_buf(),
         };
         store.init_schema()?;
         Ok(store)
@@ -37,6 +39,7 @@ impl SignalStore {
         let store = Self {
             conn,
             workspace: workspace.to_string(),
+            db_path: PathBuf::new(),
         };
         store.init_schema()?;
         Ok(store)
@@ -45,6 +48,11 @@ impl SignalStore {
     /// The workspace this store is scoped to.
     pub fn workspace(&self) -> &str {
         &self.workspace
+    }
+
+    /// The path to the SQLite database file.
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
     }
 
     /// Create tables if they don't exist.
