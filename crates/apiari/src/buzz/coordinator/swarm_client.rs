@@ -55,15 +55,32 @@ impl SwarmClient {
         }
     }
 
+    /// Load the code-review skill from `.apiari/skills/code-review.md` if it exists.
+    fn load_review_skill(&self) -> String {
+        let path = self.work_dir.join(".apiari/skills/code-review.md");
+        std::fs::read_to_string(&path).unwrap_or_default()
+    }
+
+    /// Build the reviewer prompt, prepending the skill file if present.
+    fn reviewer_prompt(&self, base: &str) -> String {
+        let skill = self.load_review_skill();
+        if skill.is_empty() {
+            base.to_string()
+        } else {
+            format!("{skill}\n\n---\n\n{base}")
+        }
+    }
+
     /// Create a reviewer worker for a PR. Returns the worktree ID.
     ///
     /// Uses the `reviewer` profile, which instructs the agent to review the diff
     /// and emit a structured verdict (`REVIEW_VERDICT: APPROVED` or
     /// `REVIEW_VERDICT: CHANGES_REQUESTED`).
     pub async fn create_reviewer_worker(&self, repo: &str, pr_number: i64) -> Result<String> {
+        let prompt = self.reviewer_prompt(&format!("Review PR #{pr_number}"));
         let resp = self
             .request(DaemonRequest::CreateWorker {
-                prompt: format!("Review PR #{pr_number}"),
+                prompt,
                 agent: "claude".to_string(),
                 repo: Some(repo.to_string()),
                 start_point: None,
@@ -84,6 +101,42 @@ impl SwarmClient {
                 Ok(id)
             }
             DaemonResponse::Error { message } => bail!("create_reviewer_worker failed: {message}"),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
+    /// Create a reviewer worker for a branch. Returns the worktree ID.
+    pub async fn create_reviewer_worker_for_branch(
+        &self,
+        repo: &str,
+        branch_name: &str,
+    ) -> Result<String> {
+        let prompt = self.reviewer_prompt(&format!("Review branch {branch_name}"));
+        let resp = self
+            .request(DaemonRequest::CreateWorker {
+                prompt,
+                agent: "claude".to_string(),
+                repo: Some(repo.to_string()),
+                start_point: None,
+                workspace: Some(self.work_dir.clone()),
+                profile: None,
+                task_dir: None,
+                role: Some("reviewer".to_string()),
+                review_pr: None,
+                base_branch: Some("main".to_string()),
+            })
+            .await?;
+
+        match resp {
+            DaemonResponse::Ok { data } => {
+                let id = data
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                Ok(id)
+            }
+            DaemonResponse::Error { message } => {
+                bail!("create_reviewer_worker_for_branch failed: {message}")
+            }
             other => bail!("unexpected response: {other:?}"),
         }
     }
