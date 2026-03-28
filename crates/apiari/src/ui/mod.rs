@@ -567,6 +567,9 @@ async fn event_loop(
                     AppUpdate::Signals(data) => {
                         app.apply_signal_update(data);
                     }
+                    AppUpdate::Tasks(data) => {
+                        app.apply_task_update(data);
+                    }
                     AppUpdate::ShellWindows(data) => {
                         for (name, windows) in &data {
                             if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == *name) {
@@ -2090,6 +2093,7 @@ async fn background_refresh_task(
     do_worker_refresh(&update_tx, &workspace_infos).await;
     do_shell_refresh(&update_tx, &workspace_infos, &mut tmux_available).await;
     do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
+    do_task_refresh(&update_tx, &workspace_infos, &db_path).await;
     do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
 
     let mut worker_interval = tokio::time::interval(Duration::from_secs(2));
@@ -2115,6 +2119,7 @@ async fn background_refresh_task(
             }
             _ = signal_interval.tick() => {
                 do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
+                do_task_refresh(&update_tx, &workspace_infos, &db_path).await;
             }
             _ = extras_interval.tick() => {
                 do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
@@ -2188,6 +2193,20 @@ async fn do_signal_refresh(
         tokio::task::spawn_blocking(move || app::load_all_signals_blocking(&db, &names)).await
     {
         let _ = tx.send(AppUpdate::Signals(result)).await;
+    }
+}
+
+async fn do_task_refresh(
+    tx: &mpsc::Sender<AppUpdate>,
+    infos: &[app::WorkspaceRefreshInfo],
+    db_path: &std::path::Path,
+) {
+    let db = db_path.to_path_buf();
+    let names: Vec<String> = infos.iter().map(|i| i.name.clone()).collect();
+    if let Ok(result) =
+        tokio::task::spawn_blocking(move || app::load_all_tasks_blocking(&db, &names)).await
+    {
+        let _ = tx.send(AppUpdate::Tasks(result)).await;
     }
 }
 
@@ -2597,6 +2616,7 @@ mod tests {
             kanban_cards: Vec::new(),
             kanban_selected: None,
             kanban_dismissed: Default::default(),
+            tasks: Vec::new(),
         };
         let ws_name = ws.name.clone();
         App {

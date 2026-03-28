@@ -170,6 +170,7 @@ pub(super) enum AppUpdate {
         window_name: String,
         preview: String,
     },
+    Tasks(Vec<(String, Vec<crate::buzz::task::Task>)>),
 }
 
 // ── Worker info from state.json ───────────────────────────
@@ -252,6 +253,49 @@ pub struct KanbanCard {
     pub source: String,
     pub url: Option<String>,
     pub entered_stage_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Build kanban cards from tasks. Task cards take priority over worker/signal cards
+/// for the same work item.
+pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<KanbanCard> {
+    tasks
+        .iter()
+        .filter(|t| !matches!(t.stage, crate::buzz::task::TaskStage::Dismissed))
+        .map(|t| {
+            let stage = match t.stage {
+                crate::buzz::task::TaskStage::Triage => KanbanStage::Incoming,
+                crate::buzz::task::TaskStage::InProgress => KanbanStage::InProgress,
+                crate::buzz::task::TaskStage::InAiReview => KanbanStage::InProgress,
+                crate::buzz::task::TaskStage::MergeReady => KanbanStage::NeedsMe,
+                crate::buzz::task::TaskStage::Merged => KanbanStage::Done,
+                crate::buzz::task::TaskStage::Dismissed => KanbanStage::Done, // filtered above
+            };
+            let icon = match t.source.as_deref() {
+                Some("sentry") => "⚡",
+                Some("github_issue") => "📋",
+                Some("manual") => "📝",
+                Some("email") => "📧",
+                _ => "📋",
+            };
+            let subtitle = if let Some(pr_num) = t.pr_number {
+                format!("PR #{pr_num}")
+            } else if let Some(ref worker_id) = t.worker_id {
+                format!("worker: {}", worker_id)
+            } else {
+                t.stage.as_str().to_string()
+            };
+            KanbanCard {
+                id: format!("task:{}", t.id),
+                stage,
+                icon: icon.to_string(),
+                title: truncate_title(&t.title, 40),
+                subtitle,
+                source: t.source.clone().unwrap_or_else(|| "task".to_string()),
+                url: t.pr_url.clone().or_else(|| t.source_url.clone()),
+                entered_stage_at: t.updated_at,
+            }
+        })
+        .collect()
 }
 
 /// Build kanban cards by deriving them from worker and signal state.
@@ -412,6 +456,25 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
         });
     }
 
+    // ── Task cards: merge with priority over matching worker cards ──
+    let task_cards = build_kanban_cards_from_tasks(&ws.tasks);
+    if !task_cards.is_empty() {
+        // Drop worker cards whose worker_id is covered by a task
+        let covered_worker_ids: std::collections::HashSet<&str> = ws
+            .tasks
+            .iter()
+            .filter_map(|t| t.worker_id.as_deref())
+            .collect();
+        cards.retain(|c| {
+            if let Some(wid) = c.id.strip_prefix("worker:") {
+                !covered_worker_ids.contains(wid)
+            } else {
+                true
+            }
+        });
+        cards.extend(task_cards);
+    }
+
     // Filter out Done cards older than 30 minutes
     let cutoff = now - chrono::Duration::minutes(30);
     cards.retain(|c| c.stage != KanbanStage::Done || c.entered_stage_at > cutoff);
@@ -434,6 +497,8 @@ fn prune_kanban_dismissed(ws: &mut WorkspaceState) {
                 .parse::<i64>()
                 .map(|sig_id| ws.signals.iter().any(|s| s.id == sig_id))
                 .unwrap_or(false)
+        } else if let Some(task_id) = id.strip_prefix("task:") {
+            ws.tasks.iter().any(|t| t.id == task_id)
         } else {
             false
         }
@@ -774,6 +839,8 @@ pub struct WorkspaceState {
     pub kanban_selected: Option<(KanbanStage, usize)>,
     /// Dismissed kanban card IDs (filtered out when building cards).
     pub kanban_dismissed: std::collections::HashSet<String>,
+    /// Tasks loaded from SQLite (rebuilt on task refresh).
+    pub tasks: Vec<crate::buzz::task::Task>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -899,6 +966,7 @@ impl App {
                     kanban_cards: Vec::new(),
                     kanban_selected: None,
                     kanban_dismissed: std::collections::HashSet::new(),
+                    tasks: Vec::new(),
                 }
             })
             .collect();
@@ -1044,6 +1112,7 @@ impl App {
             kanban_cards: Vec::new(),
             kanban_selected: None,
             kanban_dismissed: std::collections::HashSet::new(),
+            tasks: Vec::new(),
         };
 
         let setup = SetupState {
@@ -1176,6 +1245,7 @@ impl App {
             kanban_cards: Vec::new(),
             kanban_selected: None,
             kanban_dismissed: std::collections::HashSet::new(),
+            tasks: Vec::new(),
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1375,6 +1445,7 @@ impl App {
             kanban_cards: Vec::new(),
             kanban_selected: None,
             kanban_dismissed: std::collections::HashSet::new(),
+            tasks: Vec::new(),
         };
 
         if is_add {
@@ -2980,6 +3051,18 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Apply task data from background refresh.
+    pub(super) fn apply_task_update(&mut self, data: Vec<(String, Vec<crate::buzz::task::Task>)>) {
+        for (name, tasks) in data {
+            if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
+                ws.tasks = tasks;
+                prune_kanban_dismissed(ws);
+                ws.kanban_cards = build_kanban_cards(ws);
+            }
+        }
+        self.needs_redraw = true;
+    }
+
     /// Apply extras data from background refresh.
     pub(super) fn apply_extras_update(
         &mut self,
@@ -3545,6 +3628,24 @@ pub(super) fn load_all_signals_blocking(
                 Vec::new()
             };
             (name.clone(), signals)
+        })
+        .collect()
+}
+
+/// Load active tasks for all workspaces (blocking SQLite queries).
+pub(super) fn load_all_tasks_blocking(
+    db_path: &Path,
+    names: &[String],
+) -> Vec<(String, Vec<crate::buzz::task::Task>)> {
+    names
+        .iter()
+        .map(|name| {
+            let tasks = if let Ok(store) = crate::buzz::task::store::TaskStore::open(db_path) {
+                store.get_active_tasks(name).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            (name.clone(), tasks)
         })
         .collect()
 }
@@ -4417,6 +4518,7 @@ mod tests {
             kanban_cards: Vec::new(),
             kanban_selected: None,
             kanban_dismissed: Default::default(),
+            tasks: Vec::new(),
         };
         app.workspaces = vec![ws];
         app.setup = None;
@@ -4670,6 +4772,7 @@ mod tests {
             kanban_cards: Vec::new(),
             kanban_selected: None,
             kanban_dismissed: Default::default(),
+            tasks: Vec::new(),
         }
     }
 
@@ -4873,5 +4976,73 @@ mod tests {
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1, "dismissed card should be filtered out");
         assert!(!cards[0].id.contains("abc-1234"));
+    }
+
+    // ── build_kanban_cards_from_tasks tests ──────────────────
+
+    fn make_task_for_test(
+        id: &str,
+        stage: crate::buzz::task::TaskStage,
+        worker_id: Option<&str>,
+    ) -> crate::buzz::task::Task {
+        let now = chrono::Utc::now();
+        crate::buzz::task::Task {
+            id: id.to_string(),
+            workspace: "test".to_string(),
+            title: format!("Task {id}"),
+            stage,
+            source: Some("manual".to_string()),
+            source_url: None,
+            worker_id: worker_id.map(str::to_string),
+            pr_url: None,
+            pr_number: None,
+            repo: None,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+
+    #[test]
+    fn test_build_kanban_cards_from_tasks_stage_mapping() {
+        use crate::buzz::task::TaskStage;
+        let tasks = vec![
+            make_task_for_test("t1", TaskStage::Triage, None),
+            make_task_for_test("t2", TaskStage::InProgress, None),
+            make_task_for_test("t3", TaskStage::InAiReview, None),
+            make_task_for_test("t4", TaskStage::MergeReady, None),
+            make_task_for_test("t5", TaskStage::Merged, None),
+            make_task_for_test("t6", TaskStage::Dismissed, None),
+        ];
+        let cards = build_kanban_cards_from_tasks(&tasks);
+        // Dismissed is filtered out
+        assert_eq!(cards.len(), 5);
+        assert_eq!(cards[0].stage, KanbanStage::Incoming); // Triage
+        assert_eq!(cards[1].stage, KanbanStage::InProgress); // InProgress
+        assert_eq!(cards[2].stage, KanbanStage::InProgress); // InAiReview
+        assert_eq!(cards[3].stage, KanbanStage::NeedsMe); // MergeReady
+        assert_eq!(cards[4].stage, KanbanStage::Done); // Merged
+    }
+
+    #[test]
+    fn test_build_kanban_cards_task_replaces_worker_card() {
+        use crate::buzz::task::TaskStage;
+        let mut ws = empty_ws();
+        ws.workers = vec![make_worker("abc-1234", "running", None)];
+        ws.tasks = vec![{
+            let mut t = make_task_for_test("task-uuid-1", TaskStage::InProgress, Some("abc-1234"));
+            t.title = "Fix the bug".to_string();
+            t
+        }];
+        let cards = build_kanban_cards(&ws);
+        // Worker card should be replaced by task card
+        assert_eq!(cards.len(), 1);
+        assert!(
+            cards[0].id.starts_with("task:"),
+            "should be a task card, got {}",
+            cards[0].id
+        );
+        assert_eq!(cards[0].stage, KanbanStage::InProgress);
     }
 }
