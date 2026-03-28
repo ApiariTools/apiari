@@ -875,7 +875,10 @@ fn truncate_to_width(s: &str, max_width: usize) -> String {
     if UnicodeWidthStr::width(s) <= max_width {
         return s.to_string();
     }
-    if max_width <= 1 {
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
         return "…".to_string();
     }
     let budget = max_width - 1; // reserve 1 column for "…"
