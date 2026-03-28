@@ -236,9 +236,10 @@ pub enum WorkerEventKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KanbanStage {
-    Incoming,
+    Triage,
     InProgress,
-    NeedsMe,
+    InReview,
+    MergeReady,
     Done,
 }
 
@@ -263,10 +264,10 @@ pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<K
         .filter(|t| !matches!(t.stage, crate::buzz::task::TaskStage::Dismissed))
         .map(|t| {
             let stage = match t.stage {
-                crate::buzz::task::TaskStage::Triage => KanbanStage::Incoming,
+                crate::buzz::task::TaskStage::Triage => KanbanStage::Triage,
                 crate::buzz::task::TaskStage::InProgress => KanbanStage::InProgress,
-                crate::buzz::task::TaskStage::InAiReview => KanbanStage::InProgress,
-                crate::buzz::task::TaskStage::MergeReady => KanbanStage::NeedsMe,
+                crate::buzz::task::TaskStage::InAiReview => KanbanStage::InReview,
+                crate::buzz::task::TaskStage::MergeReady => KanbanStage::MergeReady,
                 crate::buzz::task::TaskStage::Merged => KanbanStage::Done,
                 crate::buzz::task::TaskStage::Dismissed => KanbanStage::Done, // filtered above
             };
@@ -277,12 +278,54 @@ pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<K
                 Some("email") => "📧",
                 _ => "📋",
             };
-            let subtitle = if let Some(pr_num) = t.pr_number {
-                format!("PR #{pr_num}")
-            } else if let Some(ref worker_id) = t.worker_id {
-                format!("worker: {}", worker_id)
-            } else {
-                t.stage.as_str().to_string()
+            let subtitle = match t.stage {
+                crate::buzz::task::TaskStage::Triage => {
+                    if let Some(ref src) = t.source {
+                        format!("from {src}")
+                    } else {
+                        "needs triage".to_string()
+                    }
+                }
+                crate::buzz::task::TaskStage::InProgress => {
+                    if t.pr_url.is_some() {
+                        if let Some(pr_num) = t.pr_number {
+                            format!("PR #{pr_num} · coding")
+                        } else {
+                            "coding · PR open".to_string()
+                        }
+                    } else if let Some(ref wid) = t.worker_id {
+                        let short = if wid.len() > 12 {
+                            &wid[wid.len() - 8..]
+                        } else {
+                            wid.as_str()
+                        };
+                        format!("{short} · coding")
+                    } else {
+                        "in progress".to_string()
+                    }
+                }
+                crate::buzz::task::TaskStage::InAiReview => {
+                    if let Some(pr_num) = t.pr_number {
+                        format!("PR #{pr_num} · awaiting CI/review")
+                    } else {
+                        "awaiting review".to_string()
+                    }
+                }
+                crate::buzz::task::TaskStage::MergeReady => {
+                    if let Some(pr_num) = t.pr_number {
+                        format!("PR #{pr_num} · ready to merge")
+                    } else {
+                        "ready to merge".to_string()
+                    }
+                }
+                crate::buzz::task::TaskStage::Merged => {
+                    if let Some(pr_num) = t.pr_number {
+                        format!("PR #{pr_num} · merged \u{2713}")
+                    } else {
+                        "merged \u{2713}".to_string()
+                    }
+                }
+                crate::buzz::task::TaskStage::Dismissed => "dismissed".to_string(),
             };
             KanbanCard {
                 id: format!("task:{}", t.id),
@@ -353,7 +396,7 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                 // Waiting worker with a PR → likely needs user attention
                 cards.push(KanbanCard {
                     id: format!("worker:{}", w.id),
-                    stage: KanbanStage::NeedsMe,
+                    stage: KanbanStage::MergeReady,
                     icon: "👷".to_string(),
                     title: short_id(&w.id),
                     subtitle: format!("PR #{} · merge?", pr.number),
@@ -424,24 +467,24 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                     })
                     .unwrap_or_default();
                 if query.contains("Review Requested") {
-                    (KanbanStage::NeedsMe, "🔍")
+                    (KanbanStage::MergeReady, "🔍")
                 } else {
-                    (KanbanStage::Incoming, "🔍")
+                    (KanbanStage::Triage, "🔍")
                 }
             }
             "github_ci_failure" => {
                 // If there's a matching worker, it's in progress via the worker card already.
-                // Otherwise incoming.
-                (KanbanStage::Incoming, "🐛")
+                // Otherwise triage.
+                (KanbanStage::Triage, "🐛")
             }
             "github_ci_pass" | "github_bot_review" => continue,
             "github_merged_pr" => (KanbanStage::Done, "📋"),
             "github_release" => (KanbanStage::Done, "🚀"),
-            "sentry" => (KanbanStage::Incoming, "⚡"),
-            "linear" => (KanbanStage::Incoming, "📋"),
-            "email" => (KanbanStage::Incoming, "📧"),
-            "notion" => (KanbanStage::Incoming, "📓"),
-            _ => (KanbanStage::Incoming, "⚡"),
+            "sentry" => (KanbanStage::Triage, "⚡"),
+            "linear" => (KanbanStage::Triage, "📋"),
+            "email" => (KanbanStage::Triage, "📧"),
+            "notion" => (KanbanStage::Triage, "📓"),
+            _ => (KanbanStage::Triage, "⚡"),
         };
 
         cards.push(KanbanCard {
@@ -531,12 +574,13 @@ fn signal_covered_by_worker(
 /// Called by the renderer for layout; also used as a fallback before the first frame.
 pub fn compute_kanban_height(ws: &WorkspaceState) -> u16 {
     if ws.kanban_cards.is_empty() {
-        return 3; // header + "all clear" + border
+        return 5; // header + empty placeholders + borders
     }
     let max_cards = [
-        KanbanStage::Incoming,
+        KanbanStage::Triage,
         KanbanStage::InProgress,
-        KanbanStage::NeedsMe,
+        KanbanStage::InReview,
+        KanbanStage::MergeReady,
         KanbanStage::Done,
     ]
     .iter()
@@ -544,7 +588,7 @@ pub fn compute_kanban_height(ws: &WorkspaceState) -> u16 {
     .max()
     .unwrap_or(0);
     let content_h = max_cards * 2 + 1; // header line + cards
-    (content_h + 2).clamp(3, 8) // +2 for borders
+    (content_h + 2).clamp(5, 12) // +2 for borders
 }
 
 /// How many cards in `stage` are actually visible given `strip_h` terminal rows.
@@ -1733,10 +1777,11 @@ impl App {
 
     // ── Kanban navigation ─────────────────────────────────
 
-    const KANBAN_STAGES: [KanbanStage; 4] = [
-        KanbanStage::Incoming,
+    const KANBAN_STAGES: [KanbanStage; 5] = [
+        KanbanStage::Triage,
         KanbanStage::InProgress,
-        KanbanStage::NeedsMe,
+        KanbanStage::InReview,
+        KanbanStage::MergeReady,
         KanbanStage::Done,
     ];
 
@@ -1875,7 +1920,7 @@ impl App {
             .nth(idx)?;
         let msg = match stage {
             KanbanStage::Done => return None,
-            KanbanStage::NeedsMe => {
+            KanbanStage::MergeReady => {
                 if card.source == "worker" {
                     // subtitle like "PR #42 · merge?"
                     if let Some(num) = kanban_extract_pr_number(&card.subtitle) {
@@ -1889,11 +1934,18 @@ impl App {
                     format!("Tell me about this signal: {}", card.title)
                 }
             }
-            KanbanStage::Incoming => {
+            KanbanStage::Triage => {
                 if card.source == "github_review_queue" {
                     format!("Review {}", card.title)
                 } else {
                     format!("Tell me about this signal: {}", card.title)
+                }
+            }
+            KanbanStage::InReview => {
+                if let Some(num) = kanban_extract_pr_number(&card.subtitle) {
+                    format!("What's the review status of PR #{num}?")
+                } else {
+                    format!("What's the review status of {}?", card.title)
                 }
             }
             KanbanStage::InProgress => {
@@ -4810,7 +4862,7 @@ mod tests {
         )];
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::NeedsMe);
+        assert_eq!(cards[0].stage, KanbanStage::MergeReady);
         assert!(cards[0].subtitle.contains("merge?"));
     }
 
@@ -4909,7 +4961,7 @@ mod tests {
         ws.signals = vec![make_signal("sentry", "sentry-err-1", None)];
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::Incoming);
+        assert_eq!(cards[0].stage, KanbanStage::Triage);
         assert_eq!(cards[0].icon, "⚡");
     }
 
@@ -4923,7 +4975,7 @@ mod tests {
         )];
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::NeedsMe);
+        assert_eq!(cards[0].stage, KanbanStage::MergeReady);
         assert_eq!(cards[0].icon, "🔍");
     }
 
@@ -5018,10 +5070,10 @@ mod tests {
         let cards = build_kanban_cards_from_tasks(&tasks);
         // Dismissed is filtered out
         assert_eq!(cards.len(), 5);
-        assert_eq!(cards[0].stage, KanbanStage::Incoming); // Triage
+        assert_eq!(cards[0].stage, KanbanStage::Triage); // Triage
         assert_eq!(cards[1].stage, KanbanStage::InProgress); // InProgress
-        assert_eq!(cards[2].stage, KanbanStage::InProgress); // InAiReview
-        assert_eq!(cards[3].stage, KanbanStage::NeedsMe); // MergeReady
+        assert_eq!(cards[2].stage, KanbanStage::InReview); // InAiReview
+        assert_eq!(cards[3].stage, KanbanStage::MergeReady); // MergeReady
         assert_eq!(cards[4].stage, KanbanStage::Done); // Merged
     }
 
