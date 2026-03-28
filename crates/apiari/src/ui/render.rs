@@ -491,41 +491,26 @@ fn draw_kanban_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if ws.kanban_cards.is_empty() {
-        let line = Line::from(vec![
-            Span::styled(" \u{1f41d} ", Style::default().fg(theme::HONEY)),
-            Span::styled(
-                "All clear \u{2014} nothing in flight",
-                Style::default().fg(theme::SMOKE),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(vec![line]), inner);
-        return;
-    }
-
-    // Group cards by stage
+    // Always show all 5 columns — empty columns show a placeholder
     let stages = [
-        app::KanbanStage::Incoming,
+        app::KanbanStage::Triage,
         app::KanbanStage::InProgress,
-        app::KanbanStage::NeedsMe,
+        app::KanbanStage::InReview,
+        app::KanbanStage::MergeReady,
         app::KanbanStage::Done,
     ];
 
-    let mut columns: Vec<(app::KanbanStage, Vec<&app::KanbanCard>)> = Vec::new();
-    for stage in &stages {
-        let cards: Vec<&app::KanbanCard> = ws
-            .kanban_cards
-            .iter()
-            .filter(|c| c.stage == *stage)
-            .collect();
-        if !cards.is_empty() {
-            columns.push((*stage, cards));
-        }
-    }
-
-    if columns.is_empty() {
-        return;
-    }
+    let columns: Vec<(app::KanbanStage, Vec<&app::KanbanCard>)> = stages
+        .iter()
+        .map(|&stage| {
+            let cards: Vec<&app::KanbanCard> = ws
+                .kanban_cards
+                .iter()
+                .filter(|c| c.stage == stage)
+                .collect();
+            (stage, cards)
+        })
+        .collect();
 
     // Build constraints with 1-char gaps for dividers between columns
     let num_cols = columns.len() as u32;
@@ -585,8 +570,8 @@ fn draw_kanban_column(
     }
 
     let (header_text, header_style) = match stage {
-        app::KanbanStage::Incoming => (
-            "INCOMING",
+        app::KanbanStage::Triage => (
+            "TRIAGE",
             Style::default()
                 .fg(theme::FROST)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -597,8 +582,14 @@ fn draw_kanban_column(
                 .fg(theme::MINT)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ),
-        app::KanbanStage::NeedsMe => (
-            "NEEDS ME",
+        app::KanbanStage::InReview => (
+            "AI REVIEW",
+            Style::default()
+                .fg(theme::POLLEN)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ),
+        app::KanbanStage::MergeReady => (
+            "MERGE READY",
             Style::default()
                 .fg(theme::HONEY)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -616,15 +607,27 @@ fn draw_kanban_column(
     // Header line
     lines.push(Line::from(Span::styled(header_text, header_style)));
 
+    // Empty column placeholder
+    if cards.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  \u{2014}",
+            Style::default()
+                .fg(theme::STEEL)
+                .add_modifier(Modifier::DIM),
+        )));
+        frame.render_widget(Paragraph::new(lines), area);
+        return;
+    }
+
     // How many cards can we fit? Each card = 2 lines, reserve 1 for header
     let available = area.height.saturating_sub(1) as usize;
     let cards_fit = available / 2;
     let show_count = cards_fit.min(cards.len());
     let overflow = cards.len().saturating_sub(show_count);
 
-    let is_needs_me = stage == app::KanbanStage::NeedsMe;
+    let is_merge_ready = stage == app::KanbanStage::MergeReady;
     let is_done = stage == app::KanbanStage::Done;
-    let card_style = if is_needs_me {
+    let card_style = if is_merge_ready {
         Style::default()
             .fg(theme::HONEY)
             .add_modifier(Modifier::BOLD)
@@ -635,7 +638,7 @@ fn draw_kanban_column(
     } else {
         Style::default().fg(theme::FROST)
     };
-    let subtitle_style = if is_needs_me {
+    let subtitle_style = if is_merge_ready {
         Style::default().fg(theme::HONEY)
     } else if is_done {
         Style::default()
@@ -663,13 +666,13 @@ fn draw_kanban_column(
             subtitle_style
         };
 
-        // Line 1: icon + title + action hint for NeedsMe
+        // Line 1: icon + title + action hint for MergeReady
         let mut title_spans = vec![
             Span::styled(&card.icon, effective_card_style),
             Span::raw(" "),
             Span::styled(&card.title, effective_card_style),
         ];
-        if is_needs_me {
+        if is_merge_ready {
             title_spans.push(Span::styled(
                 " \u{2192}",
                 if is_selected {
