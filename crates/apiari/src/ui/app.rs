@@ -236,11 +236,9 @@ pub enum WorkerEventKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KanbanStage {
-    Triage,
     InProgress,
     InReview,
     MergeReady,
-    Done,
 }
 
 #[derive(Debug, Clone)]
@@ -261,15 +259,20 @@ pub struct KanbanCard {
 pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<KanbanCard> {
     tasks
         .iter()
-        .filter(|t| !matches!(t.stage, crate::buzz::task::TaskStage::Dismissed))
+        .filter(|t| {
+            matches!(
+                t.stage,
+                crate::buzz::task::TaskStage::InProgress
+                    | crate::buzz::task::TaskStage::InAiReview
+                    | crate::buzz::task::TaskStage::MergeReady
+            )
+        })
         .map(|t| {
             let stage = match t.stage {
-                crate::buzz::task::TaskStage::Triage => KanbanStage::Triage,
                 crate::buzz::task::TaskStage::InProgress => KanbanStage::InProgress,
                 crate::buzz::task::TaskStage::InAiReview => KanbanStage::InReview,
                 crate::buzz::task::TaskStage::MergeReady => KanbanStage::MergeReady,
-                crate::buzz::task::TaskStage::Merged => KanbanStage::Done,
-                crate::buzz::task::TaskStage::Dismissed => KanbanStage::Done, // filtered above
+                _ => unreachable!("filtered above"),
             };
             let icon = match t.source.as_deref() {
                 Some("sentry") => "⚡",
@@ -279,13 +282,6 @@ pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<K
                 _ => "📋",
             };
             let subtitle = match t.stage {
-                crate::buzz::task::TaskStage::Triage => {
-                    if let Some(ref src) = t.source {
-                        format!("from {src}")
-                    } else {
-                        "needs triage".to_string()
-                    }
-                }
                 crate::buzz::task::TaskStage::InProgress => {
                     if t.pr_url.is_some() {
                         if let Some(pr_num) = t.pr_number {
@@ -318,14 +314,7 @@ pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<K
                         "ready to merge".to_string()
                     }
                 }
-                crate::buzz::task::TaskStage::Merged => {
-                    if let Some(pr_num) = t.pr_number {
-                        format!("PR #{pr_num} · merged \u{2713}")
-                    } else {
-                        "merged \u{2713}".to_string()
-                    }
-                }
-                crate::buzz::task::TaskStage::Dismissed => "dismissed".to_string(),
+                _ => unreachable!("filtered above"),
             };
             KanbanCard {
                 id: format!("task:{}", t.id),
@@ -345,12 +334,11 @@ pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<K
 pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
     let now = chrono::Utc::now();
     let mut cards: Vec<KanbanCard> = Vec::new();
-    // Track PR numbers covered by worker cards so we can dedup signals.
-    let mut covered_prs: std::collections::HashSet<u64> = std::collections::HashSet::new();
 
     // ── Workers → cards ──
     for w in &ws.workers {
         let phase = w.phase.as_deref().unwrap_or("");
+
         let elapsed = w
             .created_at
             .map(|t| {
@@ -374,24 +362,13 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
             phase.eq_ignore_ascii_case("completed") || phase.eq_ignore_ascii_case("closed");
 
         if let Some(pr) = &w.pr {
-            covered_prs.insert(pr.number);
             let pr_done =
                 pr.state.eq_ignore_ascii_case("closed") || pr.state.eq_ignore_ascii_case("merged");
             let waiting =
                 phase == "waiting" || w.agent_session_status.as_deref() == Some("waiting");
             if is_done_phase || pr_done {
-                cards.push(KanbanCard {
-                    id: format!("worker:{}", w.id),
-                    stage: KanbanStage::Done,
-                    icon: "👷".to_string(),
-                    title: short_id(&w.id),
-                    subtitle: format!("PR #{} · completed", pr.number),
-                    source: "worker".to_string(),
-                    url: Some(pr.url.clone()),
-                    // Use now() so long-running workers aren't filtered out
-                    // immediately on completion by the 30m cutoff.
-                    entered_stage_at: now,
-                });
+                // Done workers disappear from the board
+                continue;
             } else if waiting {
                 // Waiting worker with a PR → likely needs user attention
                 cards.push(KanbanCard {
@@ -417,16 +394,8 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                 });
             }
         } else if is_done_phase {
-            cards.push(KanbanCard {
-                id: format!("worker:{}", w.id),
-                stage: KanbanStage::Done,
-                icon: "👷".to_string(),
-                title: short_id(&w.id),
-                subtitle: "completed".to_string(),
-                source: "worker".to_string(),
-                url: None,
-                entered_stage_at: now,
-            });
+            // Done workers without PR disappear from the board
+            continue;
         } else {
             // Running, no PR yet
             cards.push(KanbanCard {
@@ -440,63 +409,6 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                 entered_stage_at: created_utc,
             });
         }
-    }
-
-    // ── Signals → cards ──
-    for sig in &ws.signals {
-        // Skip noise signals
-        if is_noise_signal(sig) {
-            continue;
-        }
-        // Skip signals that are covered by worker PR cards
-        if signal_covered_by_worker(sig, &covered_prs) {
-            continue;
-        }
-
-        let src = sig.source.as_str();
-        let (stage, icon) = match src {
-            "github_review_queue" => {
-                let query = sig
-                    .metadata
-                    .as_deref()
-                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                    .and_then(|v| {
-                        v.get("query_name")
-                            .and_then(|q| q.as_str())
-                            .map(String::from)
-                    })
-                    .unwrap_or_default();
-                if query.contains("Review Requested") {
-                    (KanbanStage::MergeReady, "🔍")
-                } else {
-                    (KanbanStage::Triage, "🔍")
-                }
-            }
-            "github_ci_failure" => {
-                // If there's a matching worker, it's in progress via the worker card already.
-                // Otherwise triage.
-                (KanbanStage::Triage, "🐛")
-            }
-            "github_ci_pass" | "github_bot_review" => continue,
-            "github_merged_pr" => (KanbanStage::Done, "📋"),
-            "github_release" => (KanbanStage::Done, "🚀"),
-            "sentry" => (KanbanStage::Triage, "⚡"),
-            "linear" => (KanbanStage::Triage, "📋"),
-            "email" => (KanbanStage::Triage, "📧"),
-            "notion" => (KanbanStage::Triage, "📓"),
-            _ => (KanbanStage::Triage, "⚡"),
-        };
-
-        cards.push(KanbanCard {
-            id: format!("signal:{}", sig.id),
-            stage,
-            icon: icon.to_string(),
-            title: truncate_title(&sig.title, 40),
-            subtitle: src.to_string(),
-            source: src.to_string(),
-            url: sig.url.clone(),
-            entered_stage_at: sig.created_at,
-        });
     }
 
     // ── Task cards: merge with priority over matching worker cards ──
@@ -518,56 +430,99 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
         cards.extend(task_cards);
     }
 
-    // Filter out Done cards older than 30 minutes
-    let cutoff = now - chrono::Duration::minutes(30);
-    cards.retain(|c| c.stage != KanbanStage::Done || c.entered_stage_at > cutoff);
-
     // Filter out dismissed cards
     cards.retain(|c| !ws.kanban_dismissed.contains(&c.id));
 
     cards
 }
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct TriageItem {
+    pub id: String,
+    pub icon: String,
+    pub title: String,
+    pub subtitle: String,
+    pub url: Option<String>,
+    pub age: chrono::Duration,
+}
+
+/// Get items for the triage sidebar — tasks in Triage stage + unmatched signals.
+pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
+    let mut items = Vec::new();
+
+    // Tasks in Triage stage
+    for t in &ws.tasks {
+        if t.stage == crate::buzz::task::TaskStage::Triage {
+            items.push(TriageItem {
+                id: format!("task:{}", t.id),
+                icon: match t.source.as_deref() {
+                    Some("sentry") => "⚡".to_string(),
+                    Some("github_issue") => "📋".to_string(),
+                    Some("email") => "📧".to_string(),
+                    Some("manual") => "📝".to_string(),
+                    _ => "📋".to_string(),
+                },
+                title: t.title.clone(),
+                subtitle: t.source.clone().unwrap_or_else(|| "task".to_string()),
+                url: t.source_url.clone(),
+                age: chrono::Utc::now().signed_duration_since(t.created_at),
+            });
+        }
+    }
+
+    // Open signals that aren't noise
+    for sig in &ws.signals {
+        // Skip noise signals
+        let dominated = matches!(
+            sig.source.as_str(),
+            "github_ci_pass"
+                | "github_bot_review"
+                | "github_merged_pr"
+                | "github_release"
+                | "github_pr_push"
+                | "github_ci_failure"
+        );
+        if dominated {
+            continue;
+        }
+        items.push(TriageItem {
+            id: format!("signal:{}", sig.id),
+            icon: match sig.source.as_str() {
+                "sentry" => "⚡".to_string(),
+                "github_review_queue" => "🔍".to_string(),
+                "linear" => "📋".to_string(),
+                "email" => "📧".to_string(),
+                "notion" => "📓".to_string(),
+                _ => "⚡".to_string(),
+            },
+            title: if sig.title.len() > 50 {
+                format!("{}…", &sig.title[..49])
+            } else {
+                sig.title.clone()
+            },
+            subtitle: sig.source.clone(),
+            url: sig.url.clone(),
+            age: chrono::Utc::now().signed_duration_since(sig.created_at),
+        });
+    }
+
+    items
+}
+
 /// Remove stale entries from `kanban_dismissed` so it doesn't grow without
 /// bound over a long TUI session.  An ID is kept only if its underlying
-/// worker or signal still exists in the workspace.
+/// worker or task still exists in the workspace.
 fn prune_kanban_dismissed(ws: &mut WorkspaceState) {
     ws.kanban_dismissed.retain(|id| {
         if let Some(worker_id) = id.strip_prefix("worker:") {
             ws.workers.iter().any(|w| w.id == worker_id)
-        } else if let Some(sig_id_str) = id.strip_prefix("signal:") {
-            sig_id_str
-                .parse::<i64>()
-                .map(|sig_id| ws.signals.iter().any(|s| s.id == sig_id))
-                .unwrap_or(false)
         } else if let Some(task_id) = id.strip_prefix("task:") {
             ws.tasks.iter().any(|t| t.id == task_id)
         } else {
             false
         }
     });
-}
-
-/// Check if a signal is already represented by a worker's PR card.
-fn signal_covered_by_worker(
-    sig: &SignalRecord,
-    covered_prs: &std::collections::HashSet<u64>,
-) -> bool {
-    if covered_prs.is_empty() {
-        return false;
-    }
-    let src = sig.source.as_str();
-    // These signal types are PR-specific and get folded into worker cards
-    if matches!(
-        src,
-        "github_ci_pass" | "github_ci_failure" | "github_bot_review"
-    ) {
-        // Try to extract PR number from external_id
-        if let Some(pr_num) = extract_pr_number_from_signal(sig) {
-            return covered_prs.contains(&pr_num);
-        }
-    }
-    false
 }
 
 /// Compute the ideal height (in terminal rows) for the kanban strip.
@@ -577,11 +532,9 @@ pub fn compute_kanban_height(ws: &WorkspaceState) -> u16 {
         return 5; // header + empty placeholders + borders
     }
     let max_cards = [
-        KanbanStage::Triage,
         KanbanStage::InProgress,
         KanbanStage::InReview,
         KanbanStage::MergeReady,
-        KanbanStage::Done,
     ]
     .iter()
     .map(|&s| ws.kanban_cards.iter().filter(|c| c.stage == s).count() as u16)
@@ -619,21 +572,6 @@ fn kanban_extract_pr_number(subtitle: &str) -> Option<u64> {
         .map(|i| start + i)
         .unwrap_or(subtitle.len());
     subtitle[start..end].parse().ok()
-}
-
-/// Try to extract a PR number from a signal's external_id or metadata.
-fn extract_pr_number_from_signal(sig: &SignalRecord) -> Option<u64> {
-    // Try metadata first
-    if let Some(meta) = &sig.metadata
-        && let Ok(v) = serde_json::from_str::<serde_json::Value>(meta)
-        && let Some(n) = v.get("pr_number").and_then(|n| n.as_u64())
-    {
-        return Some(n);
-    }
-    // Try parsing from external_id (format: "ci-{repo}-{number}" or "rq-{repo}-{number}")
-    let eid = &sig.external_id;
-    let last_dash = eid.rfind('-')?;
-    eid[last_dash + 1..].parse().ok()
 }
 
 fn short_id(id: &str) -> String {
@@ -885,6 +823,12 @@ pub struct WorkspaceState {
     pub kanban_dismissed: std::collections::HashSet<String>,
     /// Tasks loaded from SQLite (rebuilt on task refresh).
     pub tasks: Vec<crate::buzz::task::Task>,
+    /// Whether the triage sidebar is visible.
+    pub triage_sidebar_open: bool,
+    /// Selected index in the triage sidebar list.
+    pub triage_selected: usize,
+    /// Scroll offset for the triage sidebar.
+    pub triage_scroll: usize,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -1011,6 +955,9 @@ impl App {
                     kanban_selected: None,
                     kanban_dismissed: std::collections::HashSet::new(),
                     tasks: Vec::new(),
+                    triage_sidebar_open: true,
+                    triage_selected: 0,
+                    triage_scroll: 0,
                 }
             })
             .collect();
@@ -1157,6 +1104,9 @@ impl App {
             kanban_selected: None,
             kanban_dismissed: std::collections::HashSet::new(),
             tasks: Vec::new(),
+            triage_sidebar_open: true,
+            triage_selected: 0,
+            triage_scroll: 0,
         };
 
         let setup = SetupState {
@@ -1290,6 +1240,9 @@ impl App {
             kanban_selected: None,
             kanban_dismissed: std::collections::HashSet::new(),
             tasks: Vec::new(),
+            triage_sidebar_open: true,
+            triage_selected: 0,
+            triage_scroll: 0,
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1490,6 +1443,9 @@ impl App {
             kanban_selected: None,
             kanban_dismissed: std::collections::HashSet::new(),
             tasks: Vec::new(),
+            triage_sidebar_open: true,
+            triage_selected: 0,
+            triage_scroll: 0,
         };
 
         if is_add {
@@ -1777,12 +1733,10 @@ impl App {
 
     // ── Kanban navigation ─────────────────────────────────
 
-    const KANBAN_STAGES: [KanbanStage; 5] = [
-        KanbanStage::Triage,
+    const KANBAN_STAGES: [KanbanStage; 3] = [
         KanbanStage::InProgress,
         KanbanStage::InReview,
         KanbanStage::MergeReady,
-        KanbanStage::Done,
     ];
 
     /// Move kanban selection to the next non-empty column (right).
@@ -1919,7 +1873,6 @@ impl App {
             .filter(|c| c.stage == stage)
             .nth(idx)?;
         let msg = match stage {
-            KanbanStage::Done => return None,
             KanbanStage::MergeReady => {
                 if card.source == "worker" {
                     // subtitle like "PR #42 · merge?"
@@ -1929,13 +1882,6 @@ impl App {
                         format!("What's the status of {}?", card.title)
                     }
                 } else if card.source == "github_review_queue" {
-                    format!("Review {}", card.title)
-                } else {
-                    format!("Tell me about this signal: {}", card.title)
-                }
-            }
-            KanbanStage::Triage => {
-                if card.source == "github_review_queue" {
                     format!("Review {}", card.title)
                 } else {
                     format!("Tell me about this signal: {}", card.title)
@@ -4571,6 +4517,9 @@ mod tests {
             kanban_selected: None,
             kanban_dismissed: Default::default(),
             tasks: Vec::new(),
+            triage_sidebar_open: true,
+            triage_selected: 0,
+            triage_scroll: 0,
         };
         app.workspaces = vec![ws];
         app.setup = None;
@@ -4825,6 +4774,9 @@ mod tests {
             kanban_selected: None,
             kanban_dismissed: Default::default(),
             tasks: Vec::new(),
+            triage_sidebar_open: true,
+            triage_selected: 0,
+            triage_scroll: 0,
         }
     }
 
@@ -4869,15 +4821,14 @@ mod tests {
     #[test]
     fn test_kanban_pr_state_case_insensitive() {
         let mut ws = empty_ws();
-        // Test uppercase "CLOSED"
+        // Test uppercase "CLOSED" — done workers disappear from board
         ws.workers = vec![make_worker(
             "abc-1234",
             "running",
             Some(make_pr(42, "CLOSED")),
         )];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::Done);
+        assert!(cards.is_empty());
 
         // Test "MERGED"
         ws.workers = vec![make_worker(
@@ -4886,8 +4837,7 @@ mod tests {
             Some(make_pr(43, "MERGED")),
         )];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::Done);
+        assert!(cards.is_empty());
 
         // Test mixed case "Closed"
         ws.workers = vec![make_worker(
@@ -4896,31 +4846,27 @@ mod tests {
             Some(make_pr(44, "Closed")),
         )];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::Done);
+        assert!(cards.is_empty());
     }
 
     #[test]
     fn test_kanban_done_cards_not_immediately_filtered() {
-        // Done cards use now() for entered_stage_at, so they should survive the 30m cutoff
+        // Completed workers without PR disappear from the board
         let mut ws = empty_ws();
         ws.workers = vec![make_worker("abc-1234", "completed", None)];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::Done);
+        assert!(cards.is_empty());
     }
 
     #[test]
     fn test_kanban_old_done_signal_filtered() {
+        // Signals don't appear in kanban at all (they go to the triage sidebar instead)
         let mut ws = empty_ws();
         let mut sig = make_signal("github_merged_pr", "merge-123", None);
         sig.created_at = Utc::now() - chrono::Duration::hours(1);
         ws.signals = vec![sig];
         let cards = build_kanban_cards(&ws);
-        assert!(
-            cards.is_empty(),
-            "Done signals older than 30m should be filtered"
-        );
+        assert!(cards.is_empty(), "Signals should not create kanban cards");
     }
 
     #[test]
@@ -4942,7 +4888,7 @@ mod tests {
             "running",
             Some(make_pr(42, "open")),
         )];
-        // CI failure for the same PR — should be deduped
+        // CI failure signal — signals don't create kanban cards; only worker card appears
         let mut sig = make_signal("github_ci_failure", "ci-org/repo-42", None);
         sig.metadata = Some(r#"{"pr_number":42}"#.to_string());
         ws.signals = vec![sig];
@@ -4950,23 +4896,26 @@ mod tests {
         assert_eq!(
             cards.len(),
             1,
-            "Signal should be deduped with worker PR card"
+            "Only worker card should appear; signals don't create kanban cards"
         );
         assert_eq!(cards[0].id, "worker:abc-1234");
     }
 
     #[test]
     fn test_kanban_sentry_signal_maps_to_incoming() {
+        // Sentry signals now go to the triage sidebar, not kanban
         let mut ws = empty_ws();
         ws.signals = vec![make_signal("sentry", "sentry-err-1", None)];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::Triage);
-        assert_eq!(cards[0].icon, "⚡");
+        assert!(
+            cards.is_empty(),
+            "Sentry signals should not create kanban cards"
+        );
     }
 
     #[test]
     fn test_kanban_review_requested_maps_to_needs_me() {
+        // Signals no longer create kanban cards — they go to the triage sidebar
         let mut ws = empty_ws();
         ws.signals = vec![make_signal(
             "github_review_queue",
@@ -4974,43 +4923,33 @@ mod tests {
             Some(r#"{"query_name":"Review Requested","repo":"org/repo","pr_number":10}"#),
         )];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::MergeReady);
-        assert_eq!(cards[0].icon, "🔍");
+        assert!(cards.is_empty(), "Signals should not create kanban cards");
     }
 
     #[test]
     fn test_kanban_signal_icon_mappings() {
-        // Release → 🚀
+        // Signals no longer create kanban cards — they go to the triage sidebar
         let mut ws = empty_ws();
+
         ws.signals = vec![make_signal("github_release", "rel-v1.0", None)];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].icon, "🚀");
+        assert!(cards.is_empty());
 
-        // Email → 📧
         ws.signals = vec![make_signal("email", "email-1", None)];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].icon, "📧");
+        assert!(cards.is_empty());
 
-        // Notion → 📓
         ws.signals = vec![make_signal("notion", "notion-1", None)];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].icon, "📓");
+        assert!(cards.is_empty());
 
-        // Linear → 📋
         ws.signals = vec![make_signal("linear", "lin-1", None)];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].icon, "📋");
+        assert!(cards.is_empty());
 
-        // Unknown → ⚡
         ws.signals = vec![make_signal("unknown_source", "unk-1", None)];
         let cards = build_kanban_cards(&ws);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].icon, "⚡");
+        assert!(cards.is_empty());
     }
 
     #[test]
@@ -5068,13 +5007,12 @@ mod tests {
             make_task_for_test("t6", TaskStage::Dismissed, None),
         ];
         let cards = build_kanban_cards_from_tasks(&tasks);
-        // Dismissed is filtered out
-        assert_eq!(cards.len(), 5);
-        assert_eq!(cards[0].stage, KanbanStage::Triage); // Triage
-        assert_eq!(cards[1].stage, KanbanStage::InProgress); // InProgress
-        assert_eq!(cards[2].stage, KanbanStage::InReview); // InAiReview
-        assert_eq!(cards[3].stage, KanbanStage::MergeReady); // MergeReady
-        assert_eq!(cards[4].stage, KanbanStage::Done); // Merged
+        // Only InProgress, InAiReview, MergeReady appear in kanban
+        // Triage, Merged, Dismissed are filtered out
+        assert_eq!(cards.len(), 3);
+        assert_eq!(cards[0].stage, KanbanStage::InProgress); // InProgress
+        assert_eq!(cards[1].stage, KanbanStage::InReview); // InAiReview
+        assert_eq!(cards[2].stage, KanbanStage::MergeReady); // MergeReady
     }
 
     #[test]

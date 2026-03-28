@@ -1025,6 +1025,12 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 }
             }
         }
+        KeyCode::Char('t') => {
+            if let Some(ws) = app.current_ws_mut() {
+                ws.triage_sidebar_open = !ws.triage_sidebar_open;
+                app.needs_redraw = true;
+            }
+        }
         KeyCode::Char('p') => app.enter_pr_list(),
         KeyCode::Char('S') => app.enter_signal_list(),
         KeyCode::Char('r') => {
@@ -2617,6 +2623,9 @@ mod tests {
             kanban_selected: None,
             kanban_dismissed: Default::default(),
             tasks: Vec::new(),
+            triage_sidebar_open: true,
+            triage_selected: 0,
+            triage_scroll: 0,
         };
         let ws_name = ws.name.clone();
         App {
@@ -3328,21 +3337,15 @@ mod tests {
     }
 
     #[test]
-    fn test_kanban_enter_noop_for_done_card() {
+    fn test_kanban_enter_noop_for_no_selection() {
         let mut app = test_app();
         app.focused_panel = Panel::Home;
-        push_kanban_card(
-            &mut app,
-            "card-1",
-            app::KanbanStage::Done,
-            "worker",
-            "completed",
-        );
-        app.workspaces[0].kanban_selected = Some((app::KanbanStage::Done, 0));
+        // No kanban selection → Enter should be a noop
+        app.workspaces[0].kanban_selected = None;
 
         handle_dashboard_key(&mut app, key(KeyCode::Enter));
 
-        // Focus should NOT shift to Chat for done cards
+        // Focus should NOT shift to Chat when nothing is selected
         assert_eq!(app.focused_panel, Panel::Home);
         assert!(app.current_ws().unwrap().input.is_empty());
     }
