@@ -527,21 +527,8 @@ fn prune_kanban_dismissed(ws: &mut WorkspaceState) {
 
 /// Compute the ideal height (in terminal rows) for the kanban strip.
 /// Called by the renderer for layout; also used as a fallback before the first frame.
-pub fn compute_kanban_height(ws: &WorkspaceState) -> u16 {
-    if ws.kanban_cards.is_empty() {
-        return 5; // header + empty placeholders + borders
-    }
-    let max_cards = [
-        KanbanStage::InProgress,
-        KanbanStage::InReview,
-        KanbanStage::MergeReady,
-    ]
-    .iter()
-    .map(|&s| ws.kanban_cards.iter().filter(|c| c.stage == s).count() as u16)
-    .max()
-    .unwrap_or(0);
-    let content_h = max_cards * 2 + 1; // header line + cards
-    (content_h + 2).clamp(5, 12) // +2 for borders
+pub fn compute_kanban_height(_ws: &WorkspaceState) -> u16 {
+    9
 }
 
 /// How many cards in `stage` are actually visible given `strip_h` terminal rows.
