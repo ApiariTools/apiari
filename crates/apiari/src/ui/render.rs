@@ -753,17 +753,6 @@ fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) 
             Style::default().bg(theme::COMB)
         };
 
-        // Paint background for the 3 content lines
-        for row in 0..3u16 {
-            let row_area = Rect {
-                x: inner.x,
-                y: inner.y + y_offset + row,
-                width: inner.width,
-                height: 1,
-            };
-            frame.render_widget(Paragraph::new("").style(row_bg), row_area);
-        }
-
         let age_str = format_age(&item.age);
         let selector = if is_selected { "\u{25b8}" } else { " " };
 
@@ -802,25 +791,29 @@ fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) 
             Span::styled(format!("{sev_dot} "), sev_style),
             Span::styled(truncate_to_width(&item.title, title_max), title_style),
         ]);
-        frame.render_widget(Paragraph::new(line1), line1_area);
+        frame.render_widget(Paragraph::new(line1).style(row_bg), line1_area);
 
         // Line 2: ▌   source_label · age
+        // Reserve width for " · {age}" so the age is never pushed off-screen.
         let line2_area = Rect {
             x: inner.x,
             y: inner.y + y_offset + 1,
             width: inner.width,
             height: 1,
         };
+        // prefix "▌  " = 3 chars; suffix " · {age}" reserves separator + age
+        let age_suffix = format!(" \u{b7} {age_str}");
+        let label_max = (inner.width as usize)
+            .saturating_sub(3) // bar + two spaces
+            .saturating_sub(age_suffix.chars().count());
+        let truncated_label = truncate_to_width(&item.source_label, label_max);
         let line2 = Line::from(vec![
             Span::styled("\u{258c}", Style::default().fg(bar_color)),
             Span::raw("  "),
-            Span::styled(&item.source_label, Style::default().fg(theme::MINT)),
-            Span::styled(
-                format!(" \u{b7} {age_str}"),
-                Style::default().fg(Color::Rgb(80, 77, 70)),
-            ),
+            Span::styled(truncated_label, Style::default().fg(theme::MINT)),
+            Span::styled(age_suffix, Style::default().fg(Color::Rgb(80, 77, 70))),
         ]);
-        frame.render_widget(Paragraph::new(line2), line2_area);
+        frame.render_widget(Paragraph::new(line2).style(row_bg), line2_area);
 
         // Line 3: ▌   subtitle (muted description)
         let line3_area = Rect {
@@ -838,7 +831,7 @@ fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) 
                 Style::default().fg(Color::Rgb(90, 87, 80)),
             ),
         ]);
-        frame.render_widget(Paragraph::new(line3), line3_area);
+        frame.render_widget(Paragraph::new(line3).style(row_bg), line3_area);
 
         y_offset += LINES_PER_ITEM as u16;
     }
@@ -879,10 +872,12 @@ fn format_age(dur: &chrono::Duration) -> String {
 }
 
 fn truncate_to_width(s: &str, max_width: usize) -> String {
-    if s.len() <= max_width {
+    let char_count = s.chars().count();
+    if char_count <= max_width {
         s.to_string()
     } else if max_width > 1 {
-        format!("{}…", &s[..max_width - 1])
+        let truncated: String = s.chars().take(max_width - 1).collect();
+        format!("{truncated}…")
     } else {
         "…".to_string()
     }
