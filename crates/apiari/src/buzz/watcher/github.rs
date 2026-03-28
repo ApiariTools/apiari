@@ -865,8 +865,13 @@ impl GithubWatcher {
                 let key = format!("pr-push-{repo}-{number}-{sha}");
                 let msg = format!("New commits on PR #{number}: {title} ({repo})");
                 let url = format!("https://github.com/{repo}/pull/{number}");
-                let signal =
-                    SignalUpdate::new("github_pr_push", &key, &msg, Severity::Info).with_url(url);
+                let metadata = serde_json::json!({
+                    "repo": repo,
+                    "pr_number": number,
+                });
+                let signal = SignalUpdate::new("github_pr_push", &key, &msg, Severity::Info)
+                    .with_url(url)
+                    .with_metadata(metadata.to_string());
                 signals.push(signal);
             }
         }
@@ -1065,7 +1070,12 @@ impl GithubWatcher {
                 }
                 let key = format!("merged-{repo}-{}", pr.number);
                 let msg = format!("\u{2705} Merged: {} #{}", pr.title, pr.number);
-                let mut signal = SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info);
+                let metadata = serde_json::json!({
+                    "repo": repo,
+                    "pr_number": pr.number,
+                });
+                let mut signal = SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info)
+                    .with_metadata(metadata.to_string());
                 if !pr.url.is_empty() {
                     signal = signal.with_url(&pr.url);
                 }
@@ -1102,12 +1112,17 @@ impl GithubWatcher {
                     ci_pass_prs.remove(&pr.number);
                     let sha_short = &pr.head_sha[..7.min(pr.head_sha.len())];
                     let key = format!("ci-failure-{repo}-{}-{sha_short}", pr.number);
+                    let metadata = serde_json::json!({
+                        "repo": repo,
+                        "pr_number": pr.number,
+                    });
                     let mut signal = SignalUpdate::new(
                         "github_ci_failure",
                         &key,
                         format!("CI failed: {} (#{})", pr.title, pr.number),
                         Severity::Error,
-                    );
+                    )
+                    .with_metadata(metadata.to_string());
                     if let Some(url) = first_failing_url(&pr.check_suites) {
                         signal = signal.with_body(&url).with_url(&url);
                     }
@@ -1116,12 +1131,17 @@ impl GithubWatcher {
                     ci_pass_prs.insert(pr.number);
                     let sha_short = &pr.head_sha[..7.min(pr.head_sha.len())];
                     let key = format!("ci-pass-{repo}-{}-{sha_short}", pr.number);
+                    let metadata = serde_json::json!({
+                        "repo": repo,
+                        "pr_number": pr.number,
+                    });
                     let mut signal = SignalUpdate::new(
                         "github_ci_pass",
                         &key,
                         format!("\u{2705} CI passed on PR #{}: {}", pr.number, pr.title),
                         Severity::Info,
-                    );
+                    )
+                    .with_metadata(metadata.to_string());
                     if let Some(suite) = pr.check_suites.first()
                         && !suite.url.is_empty()
                     {
@@ -1390,12 +1410,14 @@ mod tests {
         let run_url = "https://github.com/org/repo/actions/runs/456";
 
         let key = format!("ci-failure-{repo}-{pr_number}-{sha_short}");
+        let metadata = serde_json::json!({ "repo": repo, "pr_number": pr_number });
         let signal = SignalUpdate::new(
             "github_ci_failure",
             &key,
             format!("CI failed: {pr_title} (#{pr_number})"),
             Severity::Error,
         )
+        .with_metadata(metadata.to_string())
         .with_body(run_url)
         .with_url(run_url);
 
@@ -1405,6 +1427,10 @@ mod tests {
         assert!(signal.title.contains("#42"));
         assert_eq!(signal.url.as_deref(), Some(run_url));
         assert_eq!(signal.body.as_deref(), Some(run_url));
+        let meta: serde_json::Value =
+            serde_json::from_str(signal.metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(meta["repo"], "org/repo");
+        assert_eq!(meta["pr_number"], 42);
     }
 
     #[test]
@@ -1415,18 +1441,24 @@ mod tests {
         let sha_short = "def5678";
 
         let key = format!("ci-pass-{repo}-{pr_number}-{sha_short}");
+        let metadata = serde_json::json!({ "repo": repo, "pr_number": pr_number });
         let signal = SignalUpdate::new(
             "github_ci_pass",
             &key,
             format!("\u{2705} CI passed on PR #{pr_number}: {pr_title}"),
             Severity::Info,
-        );
+        )
+        .with_metadata(metadata.to_string());
 
         assert_eq!(signal.source, "github_ci_pass");
         assert_eq!(signal.external_id, "ci-pass-org/repo-42-def5678");
         assert_eq!(signal.severity, Severity::Info);
         assert!(signal.title.contains("CI passed on PR #42"));
         assert!(signal.title.contains("Add feature X"));
+        let meta: serde_json::Value =
+            serde_json::from_str(signal.metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(meta["repo"], "org/repo");
+        assert_eq!(meta["pr_number"], 42);
     }
 
     #[test]
@@ -1480,8 +1512,10 @@ mod tests {
 
         let key = format!("merged-{repo}-{pr_number}");
         let msg = format!("\u{2705} Merged: {title} #{pr_number}");
-        let signal =
-            SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info).with_url(url);
+        let metadata = serde_json::json!({ "repo": repo, "pr_number": pr_number });
+        let signal = SignalUpdate::new("github_merged_pr", &key, &msg, Severity::Info)
+            .with_metadata(metadata.to_string())
+            .with_url(url);
 
         assert_eq!(signal.source, "github_merged_pr");
         assert_eq!(signal.external_id, "merged-org/repo-53");
@@ -1489,6 +1523,10 @@ mod tests {
         assert!(signal.title.contains("Merged:"));
         assert!(signal.title.contains("#53"));
         assert_eq!(signal.url.as_deref(), Some(url));
+        let meta: serde_json::Value =
+            serde_json::from_str(signal.metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(meta["repo"], "org/repo");
+        assert_eq!(meta["pr_number"], 53);
     }
 
     #[test]
@@ -1630,6 +1668,10 @@ mod tests {
             signal.url.as_deref(),
             Some("https://github.com/org/repo/pull/42")
         );
+        let meta: serde_json::Value =
+            serde_json::from_str(signal.metadata.as_ref().unwrap()).unwrap();
+        assert_eq!(meta["repo"], "org/repo");
+        assert_eq!(meta["pr_number"], 42);
         assert_eq!(new_cursors[&42], "newsha999");
     }
 
