@@ -34,10 +34,3 @@ apiari-gemini-sdk = "0.1.0"
 chrono-tz = "0.9"
 apiari-swarm = { version = "0.1.6", default-features = false, features = ["client"] }
 
-[patch.crates-io]
-apiari-swarm = { path = "../swarm", default-features = false, features = ["client"] }
-apiari-common = { path = "../common" }
-apiari-tui = { path = "../tui" }
-apiari-claude-sdk = { path = "../claude-sdk" }
-apiari-codex-sdk = { path = "../codex-sdk" }
-apiari-gemini-sdk = { path = "../gemini-sdk" }
