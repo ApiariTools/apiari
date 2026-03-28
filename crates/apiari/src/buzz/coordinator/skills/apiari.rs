@@ -26,8 +26,8 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          ```toml\n\
          [capabilities]\n\
          dispatch_workers = true   # default true in autonomous, false in observe\n\
-         merge_prs = false         # default false — must explicitly opt in\n\
-         # merge_prs = [\"develop\", \"staging\"]   # scope to specific branches\n\
+         merge_prs = false            # default — never allow merging\n\
+         # merge_prs = \"on_command\"  # allow when user explicitly requests it\n\
          ```\n\n\
          ### Communication Style (Soul)\n\
          `{root}/.apiari/soul.md` is automatically loaded into every coordinator session. \

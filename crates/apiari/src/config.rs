@@ -95,9 +95,11 @@ impl WorkspaceCapabilities {
 /// - `false` or `"never"` → `Never`
 /// - `true` or `"on_command"` → `OnCommand`
 /// - `"autonomous"` → `Autonomous`
-/// - `["branch", ...]` (legacy branch list) → `OnCommand`
+/// - `[]` (empty legacy branch list) → `Never`
+/// - `["branch", ...]` (non-empty legacy branch list) → `OnCommand`
+/// - Any other string value → parse error
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(from = "MergePrsRaw")]
+#[serde(try_from = "MergePrsRaw")]
 pub enum MergePrsPolicy {
     /// PR merging is never allowed. This is the default.
     #[default]
@@ -135,20 +137,33 @@ enum MergePrsRaw {
     Branches(Vec<String>),
 }
 
-impl From<MergePrsRaw> for MergePrsPolicy {
-    fn from(raw: MergePrsRaw) -> Self {
+impl TryFrom<MergePrsRaw> for MergePrsPolicy {
+    type Error = String;
+
+    fn try_from(raw: MergePrsRaw) -> Result<Self, Self::Error> {
         match raw {
-            MergePrsRaw::Bool(false) => MergePrsPolicy::Never,
-            MergePrsRaw::Bool(true) => MergePrsPolicy::OnCommand,
+            MergePrsRaw::Bool(false) => Ok(MergePrsPolicy::Never),
+            MergePrsRaw::Bool(true) => Ok(MergePrsPolicy::OnCommand),
             MergePrsRaw::Str(s) => match s.as_str() {
-                "on_command" => MergePrsPolicy::OnCommand,
-                "autonomous" => MergePrsPolicy::Autonomous,
-                "never" | "false" => MergePrsPolicy::Never,
-                _ => MergePrsPolicy::Never,
+                "on_command" => Ok(MergePrsPolicy::OnCommand),
+                "autonomous" => Ok(MergePrsPolicy::Autonomous),
+                "never" | "false" => Ok(MergePrsPolicy::Never),
+                other => Err(format!(
+                    "unknown merge_prs value {:?}; expected false, true, \"never\", \"on_command\", or \"autonomous\"",
+                    other
+                )),
             },
-            // Legacy branch-scoped config: treat as OnCommand; the coordinator
-            // enforces branch constraints at the point of merge.
-            MergePrsRaw::Branches(_) => MergePrsPolicy::OnCommand,
+            // Legacy branch-scoped lists: empty list → Never (no branches = no
+            // merging), non-empty → OnCommand (merging was previously permitted).
+            // Note: branch constraints from the old config are not enforced by
+            // apiari; users relying on them should migrate to `"on_command"`.
+            MergePrsRaw::Branches(branches) => {
+                if branches.is_empty() {
+                    Ok(MergePrsPolicy::Never)
+                } else {
+                    Ok(MergePrsPolicy::OnCommand)
+                }
+            }
         }
     }
 }
@@ -162,7 +177,7 @@ impl From<MergePrsRaw> for MergePrsPolicy {
 ///
 /// The daemon's doctor check (`apiari doctor`) compares the on-disk `config_version`
 /// against this value and warns users whose configs are older than the current version.
-pub const CURRENT_CONFIG_VERSION: u32 = 2;
+pub const CURRENT_CONFIG_VERSION: u32 = 3;
 
 /// Schedule configuration — defines when watchers and signal hooks are active.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1871,5 +1886,74 @@ model = "gemini-2.0-flash"
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.coordinator.provider, "gemini");
+    }
+
+    // -- MergePrsPolicy parsing tests --
+
+    fn parse_merge_prs(value: &str) -> Result<MergePrsPolicy, toml::de::Error> {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            merge_prs: MergePrsPolicy,
+        }
+        let s = format!("merge_prs = {value}");
+        toml::from_str::<Wrapper>(&s).map(|w| w.merge_prs)
+    }
+
+    #[test]
+    fn test_merge_prs_false_is_never() {
+        assert_eq!(parse_merge_prs("false").unwrap(), MergePrsPolicy::Never);
+    }
+
+    #[test]
+    fn test_merge_prs_true_is_on_command() {
+        assert_eq!(parse_merge_prs("true").unwrap(), MergePrsPolicy::OnCommand);
+    }
+
+    #[test]
+    fn test_merge_prs_string_never() {
+        assert_eq!(parse_merge_prs("\"never\"").unwrap(), MergePrsPolicy::Never);
+    }
+
+    #[test]
+    fn test_merge_prs_string_on_command() {
+        assert_eq!(
+            parse_merge_prs("\"on_command\"").unwrap(),
+            MergePrsPolicy::OnCommand
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_string_autonomous() {
+        assert_eq!(
+            parse_merge_prs("\"autonomous\"").unwrap(),
+            MergePrsPolicy::Autonomous
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_empty_branch_list_is_never() {
+        assert_eq!(parse_merge_prs("[]").unwrap(), MergePrsPolicy::Never);
+    }
+
+    #[test]
+    fn test_merge_prs_nonempty_branch_list_is_on_command() {
+        assert_eq!(
+            parse_merge_prs("[\"main\"]").unwrap(),
+            MergePrsPolicy::OnCommand
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_unknown_string_is_error() {
+        assert!(
+            parse_merge_prs("\"typo\"").is_err(),
+            "unknown string should fail to parse"
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_default_is_never() {
+        let config: WorkspaceConfig = toml::from_str("root = \"/tmp\"").unwrap();
+        assert_eq!(config.capabilities.merge_prs, MergePrsPolicy::Never);
     }
 }

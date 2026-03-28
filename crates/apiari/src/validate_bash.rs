@@ -468,12 +468,22 @@ mod tests {
 
     #[test]
     fn test_merge_allowed_when_branch_scoped() {
-        // Legacy branch-scoped configs are treated as OnCommand — the
-        // coordinator enforces the branch constraints at the point of merge.
+        // Legacy non-empty branch lists migrate to OnCommand — merging was
+        // previously permitted for those branches, so we preserve that intent.
+        // Users should migrate to `merge_prs = "on_command"` explicitly.
         let cwd = std::env::current_dir().unwrap();
         let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = [\"main\"]\n");
         let ws = test_workspace(&toml);
         assert!(check_merge_allowed(&cwd, &[ws]));
+    }
+
+    #[test]
+    fn test_merge_denied_when_empty_branch_list() {
+        // An empty branch list maps to Never — no merging was ever permitted.
+        let cwd = std::env::current_dir().unwrap();
+        let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = []\n");
+        let ws = test_workspace(&toml);
+        assert!(!check_merge_allowed(&cwd, &[ws]));
     }
 
     #[test]

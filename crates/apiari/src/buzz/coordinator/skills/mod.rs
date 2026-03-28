@@ -263,7 +263,7 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
             if !ctx.capabilities.merge_prs.is_allowed() {
                 prompt.push_str(
                     "Note: PR merging is disabled. Do NOT merge PRs — this capability must be \
-                     explicitly enabled in the workspace config (`[workspace.capabilities] merge_prs = true`).\n",
+                     explicitly enabled in the workspace config (`[capabilities] merge_prs = \"on_command\"`).\n",
                 );
             }
         }
