@@ -238,7 +238,7 @@ pub enum WorkerEventKind {
 pub enum KanbanStage {
     InProgress,
     InReview,
-    MergeReady,
+    HumanReview,
 }
 
 #[derive(Debug, Clone)]
@@ -264,14 +264,14 @@ pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<K
                 t.stage,
                 crate::buzz::task::TaskStage::InProgress
                     | crate::buzz::task::TaskStage::InAiReview
-                    | crate::buzz::task::TaskStage::MergeReady
+                    | crate::buzz::task::TaskStage::HumanReview
             )
         })
         .map(|t| {
             let stage = match t.stage {
                 crate::buzz::task::TaskStage::InProgress => KanbanStage::InProgress,
                 crate::buzz::task::TaskStage::InAiReview => KanbanStage::InReview,
-                crate::buzz::task::TaskStage::MergeReady => KanbanStage::MergeReady,
+                crate::buzz::task::TaskStage::HumanReview => KanbanStage::HumanReview,
                 _ => unreachable!("filtered above"),
             };
             let icon = match t.source.as_deref() {
@@ -307,7 +307,7 @@ pub fn build_kanban_cards_from_tasks(tasks: &[crate::buzz::task::Task]) -> Vec<K
                         "awaiting review".to_string()
                     }
                 }
-                crate::buzz::task::TaskStage::MergeReady => {
+                crate::buzz::task::TaskStage::HumanReview => {
                     if let Some(pr_num) = t.pr_number {
                         format!("PR #{pr_num} · ready to merge")
                     } else {
@@ -378,7 +378,7 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                 // Waiting worker with a PR → likely needs user attention
                 cards.push(KanbanCard {
                     id: format!("worker:{}", w.id),
-                    stage: KanbanStage::MergeReady,
+                    stage: KanbanStage::HumanReview,
                     icon: "👷".to_string(),
                     title: short_id(&w.id),
                     subtitle: format!("PR #{} · merge?", pr.number),
@@ -1780,7 +1780,7 @@ impl App {
     const KANBAN_STAGES: [KanbanStage; 3] = [
         KanbanStage::InProgress,
         KanbanStage::InReview,
-        KanbanStage::MergeReady,
+        KanbanStage::HumanReview,
     ];
 
     /// Move kanban selection to the next non-empty column (right).
@@ -1917,7 +1917,7 @@ impl App {
             .filter(|c| c.stage == stage)
             .nth(idx)?;
         let msg = match stage {
-            KanbanStage::MergeReady => {
+            KanbanStage::HumanReview => {
                 if card.source == "worker" {
                     // subtitle like "PR #42 · merge?"
                     if let Some(num) = kanban_extract_pr_number(&card.subtitle) {
@@ -4858,7 +4858,7 @@ mod tests {
         )];
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].stage, KanbanStage::MergeReady);
+        assert_eq!(cards[0].stage, KanbanStage::HumanReview);
         assert!(cards[0].subtitle.contains("merge?"));
     }
 
@@ -5064,17 +5064,17 @@ mod tests {
             make_task_for_test("t1", TaskStage::Triage, None),
             make_task_for_test("t2", TaskStage::InProgress, None),
             make_task_for_test("t3", TaskStage::InAiReview, None),
-            make_task_for_test("t4", TaskStage::MergeReady, None),
+            make_task_for_test("t4", TaskStage::HumanReview, None),
             make_task_for_test("t5", TaskStage::Merged, None),
             make_task_for_test("t6", TaskStage::Dismissed, None),
         ];
         let cards = build_kanban_cards_from_tasks(&tasks);
-        // Only InProgress, InAiReview, MergeReady appear in kanban
+        // Only InProgress, InAiReview, HumanReview appear in kanban
         // Triage, Merged, Dismissed are filtered out
         assert_eq!(cards.len(), 3);
         assert_eq!(cards[0].stage, KanbanStage::InProgress); // InProgress
         assert_eq!(cards[1].stage, KanbanStage::InReview); // InAiReview
-        assert_eq!(cards[2].stage, KanbanStage::MergeReady); // MergeReady
+        assert_eq!(cards[2].stage, KanbanStage::HumanReview); // HumanReview
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub enum TaskStage {
     Triage,
     InProgress,
     InAiReview,
-    MergeReady,
+    HumanReview,
     Merged,
     Dismissed,
 }
@@ -28,7 +28,7 @@ impl TaskStage {
             Self::Triage => "Triage",
             Self::InProgress => "In Progress",
             Self::InAiReview => "In AI Review",
-            Self::MergeReady => "Merge Ready",
+            Self::HumanReview => "Human Review",
             Self::Merged => "Merged",
             Self::Dismissed => "Dismissed",
         }
@@ -39,7 +39,8 @@ impl TaskStage {
             "Triage" => Some(Self::Triage),
             "In Progress" => Some(Self::InProgress),
             "In AI Review" => Some(Self::InAiReview),
-            "Merge Ready" => Some(Self::MergeReady),
+            "Human Review" => Some(Self::HumanReview),
+            "Merge Ready" => Some(Self::HumanReview), // migration: old serialized value
             "Merged" => Some(Self::Merged),
             "Dismissed" => Some(Self::Dismissed),
             _ => None,
@@ -52,7 +53,7 @@ impl TaskStage {
             Self::Triage,
             Self::InProgress,
             Self::InAiReview,
-            Self::MergeReady,
+            Self::HumanReview,
         ]
     }
 

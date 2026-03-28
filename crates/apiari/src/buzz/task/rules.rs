@@ -95,10 +95,10 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
                     },
                 })
             } else {
-                // Clean review — propose move to MergeReady (but only if we could
+                // Clean review — propose move to HumanReview (but only if we could
                 // also verify CI is green, which we can't from a single signal).
                 // For now, just notify. The github_ci_pass rule handles the actual
-                // MergeReady transition.
+                // HumanReview transition.
                 Some(ProposedTransition {
                     task_id: task.id.clone(),
                     from: TaskStage::InAiReview,
@@ -115,18 +115,18 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             }
         }
 
-        // ── In AI Review: CI passed + reviews clean → Merge Ready ──
+        // ── In AI Review: CI passed + reviews clean → Human Review ──
         (TaskStage::InAiReview, "github_ci_pass") => {
             let pr_ref = extract_pr_ref(signal);
             Some(ProposedTransition {
                 task_id: task.id.clone(),
                 from: TaskStage::InAiReview,
-                to: TaskStage::MergeReady,
+                to: TaskStage::HumanReview,
                 reason: format!("CI passed on {}", pr_ref.as_deref().unwrap_or("PR")),
                 approval: Approval::Auto,
                 action: TransitionAction::Notify {
                     message: format!(
-                        "CI passed on {} — ready for merge review",
+                        "CI passed on {} — ready for human review",
                         pr_ref.as_deref().unwrap_or("PR")
                     ),
                 },
@@ -148,19 +148,19 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             },
         }),
 
-        // ── Merge Ready: bot review with comments → back to In Progress ──
-        // CI can pass (→ MergeReady) before Copilot finishes reviewing. If Copilot
+        // ── Human Review: bot review with comments → back to In Progress ──
+        // CI can pass (→ HumanReview) before Copilot finishes reviewing. If Copilot
         // then leaves inline comments, the task must go back to InProgress so the
         // worker can address them.
-        (TaskStage::MergeReady, "github_bot_review") => {
+        (TaskStage::HumanReview, "github_bot_review") => {
             let has_comments = bot_review_has_comments(signal);
 
             if has_comments {
                 Some(ProposedTransition {
                     task_id: task.id.clone(),
-                    from: TaskStage::MergeReady,
+                    from: TaskStage::HumanReview,
                     to: TaskStage::InProgress,
-                    reason: "Bot review has comments after reaching Merge Ready".to_string(),
+                    reason: "Bot review has comments after reaching human review".to_string(),
                     approval: Approval::Auto,
                     action: TransitionAction::ForwardToWorker {
                         message: format!(
@@ -172,8 +172,8 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             } else {
                 Some(ProposedTransition {
                     task_id: task.id.clone(),
-                    from: TaskStage::MergeReady,
-                    to: TaskStage::MergeReady, // no stage change
+                    from: TaskStage::HumanReview,
+                    to: TaskStage::HumanReview, // no stage change
                     reason: "Bot review is clean".to_string(),
                     approval: Approval::Auto,
                     action: TransitionAction::Notify {
@@ -186,27 +186,27 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             }
         }
 
-        // ── Merge Ready: CI failure → back to In Progress ──
-        (TaskStage::MergeReady, "github_ci_failure") => Some(ProposedTransition {
+        // ── Human Review: CI failure → back to In Progress ──
+        (TaskStage::HumanReview, "github_ci_failure") => Some(ProposedTransition {
             task_id: task.id.clone(),
-            from: TaskStage::MergeReady,
+            from: TaskStage::HumanReview,
             to: TaskStage::InProgress,
-            reason: "CI failed after reaching Merge Ready".to_string(),
+            reason: "CI failed after reaching human review".to_string(),
             approval: Approval::Auto,
             action: TransitionAction::ForwardToWorker {
                 message: format!(
-                    "CI failed after PR was merge-ready. Please fix.\n\nSignal: {}",
+                    "CI failed after PR was in human review. Please fix.\n\nSignal: {}",
                     signal.title
                 ),
             },
         }),
 
-        // ── Merge Ready: new commits pushed → back to In AI Review ──
-        (TaskStage::MergeReady, "github_pr_push") => Some(ProposedTransition {
+        // ── Human Review: new commits pushed → back to In AI Review ──
+        (TaskStage::HumanReview, "github_pr_push") => Some(ProposedTransition {
             task_id: task.id.clone(),
-            from: TaskStage::MergeReady,
+            from: TaskStage::HumanReview,
             to: TaskStage::InAiReview,
-            reason: "New commits pushed after reaching Merge Ready".to_string(),
+            reason: "New commits pushed after reaching human review".to_string(),
             approval: Approval::Auto,
             action: TransitionAction::Notify {
                 message: "New commits pushed — moved back to AI Review".to_string(),
@@ -233,11 +233,11 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
                 "APPROVED" => Some(ProposedTransition {
                     task_id: task.id.clone(),
                     from: TaskStage::InAiReview,
-                    to: TaskStage::MergeReady,
+                    to: TaskStage::HumanReview,
                     reason: "AI reviewer approved PR".to_string(),
                     approval: Approval::Auto,
                     action: TransitionAction::Notify {
-                        message: "AI reviewer approved — PR is ready for merge".to_string(),
+                        message: "AI reviewer approved — PR is ready for human review".to_string(),
                     },
                 }),
                 "CHANGES_REQUESTED" => Some(ProposedTransition {
@@ -425,7 +425,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ci_pass_in_ai_review_transitions_to_merge_ready() {
+    fn test_ci_pass_in_ai_review_transitions_to_human_review() {
         let task = make_task(TaskStage::InAiReview);
         let signal = make_signal(
             "github_ci_pass",
@@ -433,7 +433,7 @@ mod tests {
         );
         let result = evaluate_signal(&task, &signal).unwrap();
         assert_eq!(result.from, TaskStage::InAiReview);
-        assert_eq!(result.to, TaskStage::MergeReady);
+        assert_eq!(result.to, TaskStage::HumanReview);
         assert_eq!(result.approval, Approval::Auto);
     }
 
@@ -451,20 +451,20 @@ mod tests {
     }
 
     #[test]
-    fn test_ci_failure_in_merge_ready_transitions_to_in_progress() {
-        let task = make_task(TaskStage::MergeReady);
+    fn test_ci_failure_in_human_review_transitions_to_in_progress() {
+        let task = make_task(TaskStage::HumanReview);
         let signal = make_signal("github_ci_failure", None);
         let result = evaluate_signal(&task, &signal).unwrap();
-        assert_eq!(result.from, TaskStage::MergeReady);
+        assert_eq!(result.from, TaskStage::HumanReview);
         assert_eq!(result.to, TaskStage::InProgress);
     }
 
     #[test]
-    fn test_pr_push_in_merge_ready_transitions_to_ai_review() {
-        let task = make_task(TaskStage::MergeReady);
+    fn test_pr_push_in_human_review_transitions_to_ai_review() {
+        let task = make_task(TaskStage::HumanReview);
         let signal = make_signal("github_pr_push", None);
         let result = evaluate_signal(&task, &signal).unwrap();
-        assert_eq!(result.from, TaskStage::MergeReady);
+        assert_eq!(result.from, TaskStage::HumanReview);
         assert_eq!(result.to, TaskStage::InAiReview);
     }
 
@@ -483,7 +483,7 @@ mod tests {
             TaskStage::Triage,
             TaskStage::InProgress,
             TaskStage::InAiReview,
-            TaskStage::MergeReady,
+            TaskStage::HumanReview,
         ] {
             let task = make_task(stage.clone());
             let signal = make_signal("github_merged_pr", None);
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn test_bot_review_changes_requested_via_metadata_transitions_to_in_progress() {
         // Verify structured review_state takes precedence over body text matching.
-        for stage in [TaskStage::InAiReview, TaskStage::MergeReady] {
+        for stage in [TaskStage::InAiReview, TaskStage::HumanReview] {
             let task = make_task(stage.clone());
             let mut signal = make_signal("github_bot_review", None);
             // No body text matching keywords — relies entirely on metadata.
@@ -620,7 +620,7 @@ mod tests {
         // APPROVED review_state → clean, no transition back to InProgress.
         for (stage, expected_to) in [
             (TaskStage::InAiReview, TaskStage::InAiReview),
-            (TaskStage::MergeReady, TaskStage::MergeReady),
+            (TaskStage::HumanReview, TaskStage::HumanReview),
         ] {
             let task = make_task(stage);
             let mut signal = make_signal("github_bot_review", None);
@@ -634,12 +634,12 @@ mod tests {
     }
 
     #[test]
-    fn test_bot_review_with_comments_in_merge_ready_transitions_to_in_progress() {
-        let task = make_task(TaskStage::MergeReady);
+    fn test_bot_review_with_comments_in_human_review_transitions_to_in_progress() {
+        let task = make_task(TaskStage::HumanReview);
         let mut signal = make_signal("github_bot_review", None);
         signal.body = Some("Copilot generated comment on line 5".to_string());
         let result = evaluate_signal(&task, &signal).unwrap();
-        assert_eq!(result.from, TaskStage::MergeReady);
+        assert_eq!(result.from, TaskStage::HumanReview);
         assert_eq!(result.to, TaskStage::InProgress);
         assert_eq!(result.approval, Approval::Auto);
         assert!(matches!(
@@ -649,18 +649,18 @@ mod tests {
     }
 
     #[test]
-    fn test_bot_review_clean_in_merge_ready_stays() {
-        let task = make_task(TaskStage::MergeReady);
+    fn test_bot_review_clean_in_human_review_stays() {
+        let task = make_task(TaskStage::HumanReview);
         let mut signal = make_signal("github_bot_review", None);
         signal.body = Some("Looks good!".to_string());
         let result = evaluate_signal(&task, &signal).unwrap();
-        assert_eq!(result.from, TaskStage::MergeReady);
-        assert_eq!(result.to, TaskStage::MergeReady);
+        assert_eq!(result.from, TaskStage::HumanReview);
+        assert_eq!(result.to, TaskStage::HumanReview);
         assert!(matches!(result.action, TransitionAction::Notify { .. }));
     }
 
     #[test]
-    fn test_review_verdict_approved_transitions_to_merge_ready() {
+    fn test_review_verdict_approved_transitions_to_human_review() {
         let task = make_task(TaskStage::InAiReview);
         let mut signal = make_signal("swarm_review_verdict", None);
         signal.metadata = Some(
@@ -669,7 +669,7 @@ mod tests {
         );
         let result = evaluate_signal(&task, &signal).unwrap();
         assert_eq!(result.from, TaskStage::InAiReview);
-        assert_eq!(result.to, TaskStage::MergeReady);
+        assert_eq!(result.to, TaskStage::HumanReview);
         assert_eq!(result.approval, Approval::Auto);
         assert!(matches!(result.action, TransitionAction::Notify { .. }));
     }

@@ -506,7 +506,7 @@ fn draw_kanban_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, are
     let stages = [
         app::KanbanStage::InProgress,
         app::KanbanStage::InReview,
-        app::KanbanStage::MergeReady,
+        app::KanbanStage::HumanReview,
     ];
 
     let columns: Vec<(app::KanbanStage, Vec<&app::KanbanCard>)> = stages
@@ -591,8 +591,8 @@ fn draw_kanban_column(
                 .fg(theme::POLLEN)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         ),
-        app::KanbanStage::MergeReady => (
-            "MERGE READY",
+        app::KanbanStage::HumanReview => (
+            "HUMAN REVIEW",
             Style::default()
                 .fg(theme::HONEY)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
@@ -625,15 +625,15 @@ fn draw_kanban_column(
     let show_count = cards_fit.min(cards.len());
     let overflow = cards.len().saturating_sub(show_count);
 
-    let is_merge_ready = stage == app::KanbanStage::MergeReady;
-    let card_style = if is_merge_ready {
+    let is_human_review = stage == app::KanbanStage::HumanReview;
+    let card_style = if is_human_review {
         Style::default()
             .fg(theme::HONEY)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme::FROST)
     };
-    let subtitle_style = if is_merge_ready {
+    let subtitle_style = if is_human_review {
         Style::default().fg(theme::HONEY)
     } else {
         Style::default().fg(theme::SMOKE)
@@ -657,14 +657,14 @@ fn draw_kanban_column(
             subtitle_style
         };
 
-        // Line 1: icon + title + action hint for MergeReady
+        // Line 1: icon + title + action hint for HumanReview
         let mut title_spans = vec![
             Span::raw(" "),
             Span::styled(&card.icon, effective_card_style),
             Span::raw(" "),
             Span::styled(&card.title, effective_card_style),
         ];
-        if is_merge_ready {
+        if is_human_review {
             title_spans.push(Span::styled(
                 " \u{2192}",
                 if is_selected {
