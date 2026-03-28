@@ -3287,7 +3287,7 @@ async fn build_idle_nudge_detached(
                     continue;
                 }
                 let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                items.push(format!("Worker {id} is idle (no PR yet)"));
+                items.push(format!("Worker {id} is waiting for input (no PR yet)"));
             }
         }
     }
