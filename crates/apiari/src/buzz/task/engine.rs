@@ -79,7 +79,10 @@ pub fn process_signal(
         return Ok(result);
     }
 
-    // Step 4: Apply transition (if stage actually changes)
+    // Step 4: Apply transition (persists to DB only if stage actually changes)
+    // A rule firing counts as "transitioned" even when from == to, because an
+    // action (ForwardToWorker, Notify) is still performed.
+    result.transitioned = true;
     if proposed.from != proposed.to {
         store.transition_task(
             &task.id,
@@ -94,7 +97,13 @@ pub fn process_signal(
             proposed.to.as_str(),
             proposed.reason,
         );
-        result.transitioned = true;
+    } else {
+        info!(
+            "[task-engine] rule fired for task '{}' (stage={}, reason: {})",
+            task.title,
+            proposed.from.as_str(),
+            proposed.reason,
+        );
     }
 
     // Step 5: Collect side effects
@@ -563,44 +572,35 @@ mod tests {
     }
 
     #[test]
-    fn test_lifecycle_ci_failure_backward_transition() {
+    fn test_lifecycle_ci_failure_stays_in_review_and_forwards() {
+        // CI failure during InAiReview should NOT regress the task to InProgress.
+        // The worker is notified but the task stage stays where it is.
         let store = TaskStore::open_memory().unwrap();
 
         // 1. Create task in InAiReview with PR
         let task = make_task("acme", TaskStage::InAiReview, "org/repo", 200);
         store.create_task(&task).unwrap();
 
-        // 2. Process CI failure → should go to InProgress
+        // 2. Process CI failure → should stay in InAiReview, worker gets a message
         let ci_fail = make_signal(
             "github_ci_failure",
             Some("https://github.com/org/repo/pull/200"),
         );
         let result = process_signal(&store, "acme", &ci_fail).unwrap();
-        assert!(result.transitioned);
-        assert_eq!(result.task.as_ref().unwrap().stage, TaskStage::InProgress);
+        assert!(result.transitioned); // rule fired
+        assert_eq!(result.task.as_ref().unwrap().stage, TaskStage::InAiReview); // no regression
         assert_eq!(result.worker_messages.len(), 1);
 
-        // 3. Process PR push while InProgress → no rule for InProgress+github_pr_push
-        // (the rule only exists for HumanReview+github_pr_push)
+        // 3. Process PR push while still in InAiReview → stays in InAiReview
         let pr_push = make_signal(
             "github_pr_push",
             Some("https://github.com/org/repo/pull/200"),
         );
         let result = process_signal(&store, "acme", &pr_push).unwrap();
-        assert!(!result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+        assert!(result.transitioned); // rule fired (pr_push in InAiReview stays+notifies)
+        assert_eq!(result.task.unwrap().stage, TaskStage::InAiReview);
 
-        // 4. Manually transition back to InAiReview, then CI pass → HumanReview
-        let task_id = task.id.clone();
-        store
-            .transition_task(
-                &task_id,
-                &TaskStage::InProgress,
-                &TaskStage::InAiReview,
-                Some("Worker pushed fix".to_string()),
-            )
-            .unwrap();
-
+        // 4. CI pass → HumanReview
         let ci_pass = make_signal(
             "github_ci_pass",
             Some("https://github.com/org/repo/pull/200"),
