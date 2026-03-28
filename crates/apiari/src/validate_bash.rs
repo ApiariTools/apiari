@@ -125,13 +125,7 @@ fn is_merge_allowed() -> bool {
 fn check_merge_allowed(cwd: &std::path::Path, workspaces: &[config::Workspace]) -> bool {
     if let Some(ws) = config::workspace_for_cwd(workspaces, cwd) {
         let caps = ws.config.capabilities.resolved(ws.config.authority);
-        return match caps.merge_prs {
-            config::MergePrsCapability::Bool(allowed) => allowed,
-            // validate-bash can't determine the target branch from the command
-            // line, so branch-scoped configs fail closed here. The coordinator
-            // has full context and enforces branch-scoped merges itself.
-            config::MergePrsCapability::Branches(_) => false,
-        };
+        return caps.merge_prs.is_allowed();
     }
 
     false
@@ -473,11 +467,21 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_denied_when_branch_scoped() {
-        // validate-bash can't determine the target branch, so branch-scoped
-        // configs fail closed. The coordinator enforces branch-scoped merges.
+    fn test_merge_allowed_when_branch_scoped() {
+        // Legacy non-empty branch lists migrate to OnCommand — merging was
+        // previously permitted for those branches, so we preserve that intent.
+        // Users should migrate to `merge_prs = "on_command"` explicitly.
         let cwd = std::env::current_dir().unwrap();
         let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = [\"main\"]\n");
+        let ws = test_workspace(&toml);
+        assert!(check_merge_allowed(&cwd, &[ws]));
+    }
+
+    #[test]
+    fn test_merge_denied_when_empty_branch_list() {
+        // An empty branch list maps to Never — no merging was ever permitted.
+        let cwd = std::env::current_dir().unwrap();
+        let toml = format!("root = {cwd:?}\n\n[capabilities]\nmerge_prs = []\n");
         let ws = test_workspace(&toml);
         assert!(!check_merge_allowed(&cwd, &[ws]));
     }

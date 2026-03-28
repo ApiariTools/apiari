@@ -260,10 +260,10 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
                 "\n## Authority Level: Autonomous\n\
                  You have full operational access to this workspace.\n",
             );
-            if !ctx.capabilities.merge_prs.is_allowed(None) {
+            if !ctx.capabilities.merge_prs.is_allowed() {
                 prompt.push_str(
                     "Note: PR merging is disabled. Do NOT merge PRs — this capability must be \
-                     explicitly enabled in the workspace config (`[workspace.capabilities] merge_prs = true`).\n",
+                     explicitly enabled in the workspace config (`[capabilities] merge_prs = \"on_command\"`).\n",
                 );
             }
         }

@@ -59,18 +59,18 @@ pub struct WorkspaceCapabilities {
     #[serde(default = "default_true")]
     pub dispatch_workers: bool,
 
-    /// Whether the coordinator can merge PRs.
-    /// Default: false — must explicitly opt in.
-    /// Can be `true` (all branches) or a list of branch names.
+    /// Whether and how the coordinator can merge PRs.
+    /// Default: Never — must explicitly opt in.
+    /// Accepts: `false`/`"never"` (Never), `true`/`"on_command"` (OnCommand), `"autonomous"` (Autonomous).
     #[serde(default)]
-    pub merge_prs: MergePrsCapability,
+    pub merge_prs: MergePrsPolicy,
 }
 
 impl Default for WorkspaceCapabilities {
     fn default() -> Self {
         Self {
             dispatch_workers: true,
-            merge_prs: MergePrsCapability::default(),
+            merge_prs: MergePrsPolicy::default(),
         }
     }
 }
@@ -82,40 +82,86 @@ impl WorkspaceCapabilities {
         match authority {
             WorkspaceAuthority::Observe => Self {
                 dispatch_workers: false,
-                merge_prs: MergePrsCapability::Bool(false),
+                merge_prs: MergePrsPolicy::Never,
             },
             WorkspaceAuthority::Autonomous => self.clone(),
         }
     }
 }
 
-/// Whether and how merge_prs is enabled.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum MergePrsCapability {
-    /// Simple boolean: true = all branches, false = disabled.
-    Bool(bool),
-    /// Scoped to specific target branches.
-    Branches(Vec<String>),
+/// Granular merge control policy for `merge_prs`.
+///
+/// TOML values accepted (backward compatible):
+/// - `false` or `"never"` → `Never`
+/// - `true` or `"on_command"` → `OnCommand`
+/// - `"autonomous"` → `Autonomous`
+/// - `[]` (empty legacy branch list) → `Never`
+/// - `["branch", ...]` (non-empty legacy branch list) → `OnCommand`
+/// - Any other string value → parse error
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(try_from = "MergePrsRaw")]
+pub enum MergePrsPolicy {
+    /// PR merging is never allowed. This is the default.
+    #[default]
+    Never,
+    /// Merging is allowed only when the user explicitly requests it.
+    OnCommand,
+    /// Reserved for future autonomous merge behavior (not yet implemented).
+    Autonomous,
 }
 
-impl Default for MergePrsCapability {
-    fn default() -> Self {
-        Self::Bool(false)
+impl Serialize for MergePrsPolicy {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Never => s.serialize_bool(false),
+            Self::OnCommand => s.serialize_str("on_command"),
+            Self::Autonomous => s.serialize_str("autonomous"),
+        }
     }
 }
 
-impl MergePrsCapability {
-    /// Check if merging is allowed, optionally for a specific target branch.
-    pub fn is_allowed(&self, target_branch: Option<&str>) -> bool {
-        match self {
-            Self::Bool(b) => *b,
-            Self::Branches(branches) => {
-                if let Some(branch) = target_branch {
-                    branches.iter().any(|b| b == branch)
+impl MergePrsPolicy {
+    /// Returns true if merging is permitted under this policy.
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, Self::OnCommand | Self::Autonomous)
+    }
+}
+
+/// Serde intermediate for deserializing `merge_prs` with backward compatibility.
+#[derive(Deserialize)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum MergePrsRaw {
+    Bool(bool),
+    Str(String),
+    Branches(Vec<String>),
+}
+
+impl TryFrom<MergePrsRaw> for MergePrsPolicy {
+    type Error = String;
+
+    fn try_from(raw: MergePrsRaw) -> Result<Self, Self::Error> {
+        match raw {
+            MergePrsRaw::Bool(false) => Ok(MergePrsPolicy::Never),
+            MergePrsRaw::Bool(true) => Ok(MergePrsPolicy::OnCommand),
+            MergePrsRaw::Str(s) => match s.as_str() {
+                "on_command" => Ok(MergePrsPolicy::OnCommand),
+                "autonomous" => Ok(MergePrsPolicy::Autonomous),
+                "never" | "false" => Ok(MergePrsPolicy::Never),
+                other => Err(format!(
+                    "unknown merge_prs value {:?}; expected false, true, \"never\", \"on_command\", or \"autonomous\"",
+                    other
+                )),
+            },
+            // Legacy branch-scoped lists: empty list → Never (no branches = no
+            // merging), non-empty → OnCommand (merging was previously permitted).
+            // Note: branch constraints from the old config are not enforced by
+            // apiari; users relying on them should migrate to `"on_command"`.
+            MergePrsRaw::Branches(branches) => {
+                if branches.is_empty() {
+                    Ok(MergePrsPolicy::Never)
                 } else {
-                    // No specific branch requested — allowed if any branches are configured
-                    !branches.is_empty()
+                    Ok(MergePrsPolicy::OnCommand)
                 }
             }
         }
@@ -131,7 +177,7 @@ impl MergePrsCapability {
 ///
 /// The daemon's doctor check (`apiari doctor`) compares the on-disk `config_version`
 /// against this value and warns users whose configs are older than the current version.
-pub const CURRENT_CONFIG_VERSION: u32 = 2;
+pub const CURRENT_CONFIG_VERSION: u32 = 3;
 
 /// Schedule configuration — defines when watchers and signal hooks are active.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1840,5 +1886,74 @@ model = "gemini-2.0-flash"
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.coordinator.provider, "gemini");
+    }
+
+    // -- MergePrsPolicy parsing tests --
+
+    fn parse_merge_prs(value: &str) -> Result<MergePrsPolicy, toml::de::Error> {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            merge_prs: MergePrsPolicy,
+        }
+        let s = format!("merge_prs = {value}");
+        toml::from_str::<Wrapper>(&s).map(|w| w.merge_prs)
+    }
+
+    #[test]
+    fn test_merge_prs_false_is_never() {
+        assert_eq!(parse_merge_prs("false").unwrap(), MergePrsPolicy::Never);
+    }
+
+    #[test]
+    fn test_merge_prs_true_is_on_command() {
+        assert_eq!(parse_merge_prs("true").unwrap(), MergePrsPolicy::OnCommand);
+    }
+
+    #[test]
+    fn test_merge_prs_string_never() {
+        assert_eq!(parse_merge_prs("\"never\"").unwrap(), MergePrsPolicy::Never);
+    }
+
+    #[test]
+    fn test_merge_prs_string_on_command() {
+        assert_eq!(
+            parse_merge_prs("\"on_command\"").unwrap(),
+            MergePrsPolicy::OnCommand
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_string_autonomous() {
+        assert_eq!(
+            parse_merge_prs("\"autonomous\"").unwrap(),
+            MergePrsPolicy::Autonomous
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_empty_branch_list_is_never() {
+        assert_eq!(parse_merge_prs("[]").unwrap(), MergePrsPolicy::Never);
+    }
+
+    #[test]
+    fn test_merge_prs_nonempty_branch_list_is_on_command() {
+        assert_eq!(
+            parse_merge_prs("[\"main\"]").unwrap(),
+            MergePrsPolicy::OnCommand
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_unknown_string_is_error() {
+        assert!(
+            parse_merge_prs("\"typo\"").is_err(),
+            "unknown string should fail to parse"
+        );
+    }
+
+    #[test]
+    fn test_merge_prs_default_is_never() {
+        let config: WorkspaceConfig = toml::from_str("root = \"/tmp\"").unwrap();
+        assert_eq!(config.capabilities.merge_prs, MergePrsPolicy::Never);
     }
 }
