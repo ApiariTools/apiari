@@ -52,6 +52,36 @@ impl SwarmClient {
         }
     }
 
+    /// Create a reviewer worker for a PR. Returns the worktree ID.
+    ///
+    /// Uses the `reviewer` profile, which instructs the agent to review the diff
+    /// and emit a structured verdict (`REVIEW_VERDICT: APPROVED` or
+    /// `REVIEW_VERDICT: CHANGES_REQUESTED`).
+    pub async fn create_reviewer_worker(&self, repo: &str, pr_number: i64) -> Result<String> {
+        let resp = self
+            .request(DaemonRequest::CreateWorker {
+                prompt: format!("Review PR #{pr_number}"),
+                agent: "claude".to_string(),
+                repo: Some(repo.to_string()),
+                start_point: None,
+                workspace: Some(self.work_dir.clone()),
+                profile: Some("reviewer".to_string()),
+                task_dir: None,
+            })
+            .await?;
+
+        match resp {
+            DaemonResponse::Ok { data } => {
+                let id = data
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_default();
+                Ok(id)
+            }
+            DaemonResponse::Error { message } => bail!("create_reviewer_worker failed: {message}"),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
     /// Send a follow-up message to a running worker.
     pub async fn send_message(&self, worktree_id: &str, message: &str) -> Result<()> {
         let resp = self

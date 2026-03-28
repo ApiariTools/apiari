@@ -183,6 +183,54 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             },
         }),
 
+        // ── In AI Review: review verdict from AI reviewer worker ──
+        (TaskStage::InAiReview, "swarm_review_verdict") => {
+            let meta = signal
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok());
+            let verdict = meta
+                .as_ref()
+                .and_then(|m| m.get("verdict").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let comments = meta
+                .as_ref()
+                .and_then(|m| m.get("comments").and_then(|c| c.as_str()))
+                .unwrap_or("")
+                .to_string();
+
+            match verdict {
+                "APPROVED" => Some(ProposedTransition {
+                    task_id: task.id.clone(),
+                    from: TaskStage::InAiReview,
+                    to: TaskStage::MergeReady,
+                    reason: "AI reviewer approved PR".to_string(),
+                    approval: Approval::Auto,
+                    action: TransitionAction::Notify {
+                        message: "AI reviewer approved — PR is ready for merge".to_string(),
+                    },
+                }),
+                "CHANGES_REQUESTED" => Some(ProposedTransition {
+                    task_id: task.id.clone(),
+                    from: TaskStage::InAiReview,
+                    to: TaskStage::InProgress,
+                    reason: "AI reviewer requested changes".to_string(),
+                    approval: Approval::Auto,
+                    action: TransitionAction::ForwardToWorker {
+                        message: if comments.is_empty() {
+                            "AI reviewer requested changes. Please address the review feedback."
+                                .to_string()
+                        } else {
+                            format!(
+                                "AI reviewer requested changes. Please address the following:\n\n{comments}"
+                            )
+                        },
+                    },
+                }),
+                _ => None,
+            }
+        }
+
         // ── In AI Review: new commits pushed → stay (re-review needed) ──
         (TaskStage::InAiReview, "github_pr_push") => Some(ProposedTransition {
             task_id: task.id.clone(),
@@ -497,5 +545,76 @@ mod tests {
         assert_eq!(result.from, TaskStage::InAiReview);
         assert_eq!(result.to, TaskStage::InAiReview);
         assert!(matches!(result.action, TransitionAction::Notify { .. }));
+    }
+
+    #[test]
+    fn test_review_verdict_approved_transitions_to_merge_ready() {
+        let task = make_task(TaskStage::InAiReview);
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            r#"{"verdict": "APPROVED", "comments": "", "repo": "org/repo", "pr_number": 42}"#
+                .to_string(),
+        );
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::InAiReview);
+        assert_eq!(result.to, TaskStage::MergeReady);
+        assert_eq!(result.approval, Approval::Auto);
+        assert!(matches!(result.action, TransitionAction::Notify { .. }));
+    }
+
+    #[test]
+    fn test_review_verdict_changes_requested_transitions_to_in_progress() {
+        let task = make_task(TaskStage::InAiReview);
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            r#"{"verdict": "CHANGES_REQUESTED", "comments": "Fix the null check on line 42.", "repo": "org/repo", "pr_number": 42}"#
+                .to_string(),
+        );
+        let result = evaluate_signal(&task, &signal).unwrap();
+        assert_eq!(result.from, TaskStage::InAiReview);
+        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.approval, Approval::Auto);
+        assert!(matches!(
+            result.action,
+            TransitionAction::ForwardToWorker { .. }
+        ));
+        if let TransitionAction::ForwardToWorker { message } = result.action {
+            assert!(message.contains("Fix the null check on line 42."));
+        }
+    }
+
+    #[test]
+    fn test_review_verdict_changes_requested_no_comments_uses_fallback_message() {
+        let task = make_task(TaskStage::InAiReview);
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            r#"{"verdict": "CHANGES_REQUESTED", "comments": "", "repo": "org/repo", "pr_number": 42}"#
+                .to_string(),
+        );
+        let result = evaluate_signal(&task, &signal).unwrap();
+        if let TransitionAction::ForwardToWorker { message } = result.action {
+            assert!(message.contains("review feedback"));
+        } else {
+            panic!("expected ForwardToWorker");
+        }
+    }
+
+    #[test]
+    fn test_review_verdict_unknown_returns_none() {
+        let task = make_task(TaskStage::InAiReview);
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            r#"{"verdict": "UNKNOWN_VERDICT", "repo": "org/repo", "pr_number": 42}"#.to_string(),
+        );
+        // Unknown verdict — no rule matches
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    #[test]
+    fn test_review_verdict_no_metadata_returns_none() {
+        let task = make_task(TaskStage::InAiReview);
+        let signal = make_signal("swarm_review_verdict", None);
+        // No metadata → verdict is "" → no rule matches
+        assert!(evaluate_signal(&task, &signal).is_none());
     }
 }
