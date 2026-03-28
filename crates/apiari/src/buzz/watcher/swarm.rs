@@ -109,6 +109,19 @@ impl SwarmWatcher {
                 );
             }
 
+            // Completed/Failed transition — emit so daemon can read verdict before teardown
+            if phase.is_terminal() && prev.is_some_and(|p| !p.phase.is_terminal()) {
+                signals.push(
+                    SignalUpdate::new(
+                        "swarm",
+                        format!("swarm-completed-{id}"),
+                        format!("Worker completed: {id}"),
+                        Severity::Info,
+                    )
+                    .with_body(format!("Worker {id} has completed")),
+                );
+            }
+
             // Update tracked phase (preserve has_pr since StateChanged doesn't carry it)
             if let Some(tracked) = self.tracked.get_mut(&id) {
                 tracked.phase = phase;
@@ -176,6 +189,19 @@ impl SwarmWatcher {
                 );
             }
 
+            // Completed/Failed transition (from ListWorkers, in case subscription missed it)
+            if w.phase.is_terminal() && prev.is_some_and(|p| !p.phase.is_terminal()) {
+                signals.push(
+                    SignalUpdate::new(
+                        "swarm",
+                        format!("swarm-completed-{id}"),
+                        format!("Worker completed: {id}"),
+                        Severity::Info,
+                    )
+                    .with_body(format!("Worker {id} has completed")),
+                );
+            }
+
             // Update tracked state
             self.tracked.insert(
                 id.clone(),
@@ -197,7 +223,12 @@ impl SwarmWatcher {
             .collect();
 
         for id in &closed {
-            for prefix in &["swarm-spawned", "swarm-waiting", "swarm-pr"] {
+            for prefix in &[
+                "swarm-spawned",
+                "swarm-waiting",
+                "swarm-pr",
+                "swarm-completed",
+            ] {
                 signals.push(
                     SignalUpdate::new(
                         "swarm",
@@ -284,6 +315,7 @@ impl Watcher for SwarmWatcher {
                     format!("swarm-spawned-{id}"),
                     format!("swarm-waiting-{id}"),
                     format!("swarm-pr-{id}"),
+                    format!("swarm-completed-{id}"),
                 ]
             })
             .collect();
@@ -555,8 +587,8 @@ mod tests {
 
         let workers = vec![]; // w1 is gone
         let signals = watcher.diff_workers(&workers);
-        // 3 resolved (spawned/waiting/pr) + 1 closed
-        assert_eq!(signals.len(), 4);
+        // 4 resolved (spawned/waiting/pr/completed) + 1 closed
+        assert_eq!(signals.len(), 5);
         assert!(signals.iter().all(|s| s.title.contains("closed")));
     }
 

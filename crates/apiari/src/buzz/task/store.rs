@@ -242,6 +242,35 @@ impl TaskStore {
         }
     }
 
+    /// Find a task whose metadata JSON contains `reviewer_worker_id == reviewer_id`.
+    pub fn find_task_by_reviewer_worker(
+        &self,
+        workspace: &str,
+        reviewer_id: &str,
+    ) -> Result<Option<Task>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workspace, title, stage, source, source_url, worker_id,
+             pr_url, pr_number, repo, created_at, updated_at, resolved_at, metadata
+             FROM tasks WHERE workspace = ?1
+             AND json_extract(metadata, '$.reviewer_worker_id') = ?2",
+        )?;
+        let mut tasks = stmt
+            .query_map(params![workspace, reviewer_id], row_to_task)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .wrap_err("failed to find task by reviewer worker")?;
+        Ok(tasks.pop())
+    }
+
+    /// Update the task's metadata JSON blob.
+    pub fn update_task_metadata(&self, id: &str, metadata: &serde_json::Value) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE tasks SET metadata = ?1, updated_at = ?2 WHERE id = ?3",
+            params![metadata.to_string(), now, id],
+        )?;
+        Ok(())
+    }
+
     pub fn log_event(&self, event: &TaskEvent) -> Result<()> {
         self.conn.execute(
             "INSERT INTO task_events
