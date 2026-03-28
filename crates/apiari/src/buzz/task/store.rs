@@ -75,9 +75,20 @@ impl TaskStore {
         )
         .wrap_err("failed to create task tables")?;
 
-        // Migrate old 'Merge Ready' stage values to 'Human Review'
-        conn.execute_batch("UPDATE tasks SET stage = 'Human Review' WHERE stage = 'Merge Ready';")
+        // Migrate old 'Merge Ready' stage values to 'Human Review' (runs only when needed)
+        let needs_migration: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tasks WHERE stage = 'Merge Ready' LIMIT 1)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if needs_migration {
+            conn.execute_batch(
+                "UPDATE tasks SET stage = 'Human Review' WHERE stage = 'Merge Ready';",
+            )
             .wrap_err("failed to migrate Merge Ready → Human Review")?;
+        }
 
         Ok(())
     }
