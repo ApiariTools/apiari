@@ -40,6 +40,7 @@ async-imap = "0.10"
 async-native-tls = "0.5"
 mail-parser = "0.9"
 unicode-width = "0.2"
+uuid = { version = "1", features = ["v4"] }
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ binary-ext }"

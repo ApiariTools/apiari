@@ -8,4 +8,5 @@ pub mod daemon;
 pub mod pipeline;
 pub mod schedule;
 pub mod signal;
+pub mod task;
 pub mod watcher;
