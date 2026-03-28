@@ -249,6 +249,7 @@ mod tests {
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
             schedule: None,
+            activity: crate::config::ActivityConfig::default(),
         }
     }
 

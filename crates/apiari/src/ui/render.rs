@@ -701,12 +701,21 @@ fn draw_kanban_column(
 }
 
 fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
+    use app::SidebarView;
+
+    match ws.sidebar_view {
+        SidebarView::Triage => draw_triage_view(frame, ws, area),
+        SidebarView::Activity => draw_activity_view(frame, ws, area),
+    }
+}
+
+fn draw_triage_view(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
     use crate::buzz::signal::Severity;
 
     let items = app::triage_items(ws);
 
     let count = items.len();
-    let title = format!(" Triage ({count}) ");
+    let title = format!(" [Triage] ({count}) · Tab=Activity ");
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -839,6 +848,147 @@ fn draw_triage_sidebar(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) 
     // "+N more" indicator at the bottom
     if items.len() > visible + scroll {
         let more = items.len() - visible - scroll;
+        let more_y = inner.y + inner.height.saturating_sub(1);
+        let more_area = Rect {
+            x: inner.x,
+            y: more_y,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" +{more} more"),
+                Style::default()
+                    .fg(theme::STEEL)
+                    .add_modifier(Modifier::DIM),
+            ))),
+            more_area,
+        );
+    }
+}
+
+fn draw_activity_view(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
+    let events = &ws.activity_events;
+    let count = events.len();
+    let title = format!(" [Activity] ({count}) · Tab=Triage ");
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme::STEEL))
+        .style(Style::default().bg(theme::COMB))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme::FROST)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if events.is_empty() {
+        let line = Line::from(Span::styled(
+            " No activity yet",
+            Style::default().fg(theme::SMOKE),
+        ));
+        frame.render_widget(Paragraph::new(vec![line]), inner);
+        return;
+    }
+
+    // 3 lines per event: timestamp+type line, summary line, 1 spacer
+    const LINES_PER_EVENT: usize = 3;
+    let visible = (inner.height as usize / LINES_PER_EVENT).min(events.len());
+    let scroll = ws.activity_scroll.min(events.len().saturating_sub(visible));
+
+    let mut y_offset = 0u16;
+
+    for (i, event) in events.iter().skip(scroll).take(visible).enumerate() {
+        if y_offset + 2 > inner.height {
+            break;
+        }
+
+        let actual_idx = i + scroll;
+        let is_selected = actual_idx == ws.activity_selected;
+        let bar_color = theme::SIDEBAR_COLORS[actual_idx % theme::SIDEBAR_COLORS.len()];
+
+        let row_bg = if is_selected {
+            Style::default().bg(Color::Rgb(58, 50, 42))
+        } else {
+            Style::default().bg(theme::COMB)
+        };
+
+        let age = chrono::Utc::now().signed_duration_since(event.created_at);
+        let age_str = format_age(&age);
+
+        let (type_icon, type_color) = match event.event_type.as_str() {
+            "stage_change" => ("→", theme::MINT),
+            "signal" => ("⚡", theme::HONEY),
+            "worker" => ("⚙", Color::Rgb(100, 180, 220)),
+            "review" => ("🔍", Color::Rgb(180, 120, 220)),
+            "pr" => ("⎇", Color::Rgb(100, 200, 140)),
+            "note" => ("✎", theme::SMOKE),
+            _ => ("·", theme::SMOKE),
+        };
+
+        let selector = if is_selected { "\u{25b8}" } else { " " };
+        let selector_style = if is_selected {
+            theme::selected()
+        } else {
+            theme::muted()
+        };
+        let title_style = if is_selected {
+            Style::default()
+                .fg(theme::HONEY)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::FROST)
+        };
+
+        // Line 1: ▌ selector icon  age
+        let line1_area = Rect {
+            x: inner.x,
+            y: inner.y + y_offset,
+            width: inner.width,
+            height: 1,
+        };
+        let title_max = (inner.width as usize).saturating_sub(8);
+        let line1 = Line::from(vec![
+            Span::styled("\u{258c}", Style::default().fg(bar_color)),
+            Span::styled(selector, selector_style),
+            Span::styled(format!("{type_icon} "), Style::default().fg(type_color)),
+            Span::styled(truncate_to_width(&event.summary, title_max), title_style),
+        ]);
+        frame.render_widget(Paragraph::new(line1).style(row_bg), line1_area);
+
+        // Line 2: ▌   source · age
+        let line2_area = Rect {
+            x: inner.x,
+            y: inner.y + y_offset + 1,
+            width: inner.width,
+            height: 1,
+        };
+        let source_label = event.source.as_deref().unwrap_or(event.event_type.as_str());
+        let age_suffix = format!(" \u{b7} {age_str}");
+        let label_max = (inner.width as usize)
+            .saturating_sub(3)
+            .saturating_sub(UnicodeWidthStr::width(age_suffix.as_str()));
+        let line2 = Line::from(vec![
+            Span::styled("\u{258c}", Style::default().fg(bar_color)),
+            Span::raw("  "),
+            Span::styled(
+                truncate_to_width(source_label, label_max),
+                Style::default().fg(theme::MINT),
+            ),
+            Span::styled(age_suffix, Style::default().fg(Color::Rgb(80, 77, 70))),
+        ]);
+        frame.render_widget(Paragraph::new(line2).style(row_bg), line2_area);
+
+        y_offset += LINES_PER_EVENT as u16;
+    }
+
+    // "+N more" indicator
+    if events.len() > visible + scroll {
+        let more = events.len() - visible - scroll;
         let more_y = inner.y + inner.height.saturating_sub(1);
         let more_area = Rect {
             x: inner.x,

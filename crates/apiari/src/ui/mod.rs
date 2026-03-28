@@ -570,6 +570,9 @@ async fn event_loop(
                     AppUpdate::Tasks(data) => {
                         app.apply_task_update(data);
                     }
+                    AppUpdate::ActivityEvents(data) => {
+                        app.apply_activity_update(data);
+                    }
                     AppUpdate::ShellWindows(data) => {
                         for (name, windows) in &data {
                             if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == *name) {
@@ -970,7 +973,21 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
     }
 
     match key.code {
-        KeyCode::Tab => app.next_panel(),
+        KeyCode::Tab => {
+            // When the triage sidebar is open, Tab toggles between Triage and Activity views.
+            // Otherwise it advances the focused panel.
+            if app.current_ws().is_some_and(|ws| ws.triage_sidebar_open) {
+                if let Some(ws) = app.current_ws_mut() {
+                    ws.sidebar_view = match ws.sidebar_view {
+                        app::SidebarView::Triage => app::SidebarView::Activity,
+                        app::SidebarView::Activity => app::SidebarView::Triage,
+                    };
+                    app.needs_redraw = true;
+                }
+            } else {
+                app.next_panel();
+            }
+        }
         KeyCode::BackTab => app.prev_panel(),
         KeyCode::Char('j') | KeyCode::Down => app.select_next_in_panel(),
         KeyCode::Char('k') | KeyCode::Up => app.select_prev_in_panel(),
@@ -2100,6 +2117,7 @@ async fn background_refresh_task(
     do_shell_refresh(&update_tx, &workspace_infos, &mut tmux_available).await;
     do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
     do_task_refresh(&update_tx, &workspace_infos, &db_path).await;
+    do_activity_refresh(&update_tx, &workspace_infos, &db_path).await;
     do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
 
     let mut worker_interval = tokio::time::interval(Duration::from_secs(2));
@@ -2126,6 +2144,7 @@ async fn background_refresh_task(
             _ = signal_interval.tick() => {
                 do_signal_refresh(&update_tx, &workspace_infos, &db_path).await;
                 do_task_refresh(&update_tx, &workspace_infos, &db_path).await;
+                do_activity_refresh(&update_tx, &workspace_infos, &db_path).await;
             }
             _ = extras_interval.tick() => {
                 do_extras_refresh(&update_tx, &workspace_infos, &db_path, &pid_path).await;
@@ -2213,6 +2232,20 @@ async fn do_task_refresh(
         tokio::task::spawn_blocking(move || app::load_all_tasks_blocking(&db, &names)).await
     {
         let _ = tx.send(AppUpdate::Tasks(result)).await;
+    }
+}
+
+async fn do_activity_refresh(
+    tx: &mpsc::Sender<AppUpdate>,
+    infos: &[app::WorkspaceRefreshInfo],
+    db_path: &std::path::Path,
+) {
+    let db = db_path.to_path_buf();
+    let names: Vec<String> = infos.iter().map(|i| i.name.clone()).collect();
+    if let Ok(result) =
+        tokio::task::spawn_blocking(move || app::load_all_activity_blocking(&db, &names)).await
+    {
+        let _ = tx.send(AppUpdate::ActivityEvents(result)).await;
     }
 }
 
@@ -2626,6 +2659,10 @@ mod tests {
             triage_sidebar_open: true,
             triage_selected: 0,
             triage_scroll: 0,
+            sidebar_view: app::SidebarView::Triage,
+            activity_events: Vec::new(),
+            activity_selected: 0,
+            activity_scroll: 0,
         };
         let ws_name = ws.name.clone();
         App {

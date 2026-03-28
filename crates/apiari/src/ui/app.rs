@@ -64,6 +64,15 @@ pub enum Mode {
     Help,
 }
 
+/// Which view is shown in the triage sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarView {
+    /// Actionable triage items (signals + tasks in Triage stage).
+    Triage,
+    /// Chronological workspace activity feed.
+    Activity,
+}
+
 /// Where a chat message originated from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageSource {
@@ -171,6 +180,7 @@ pub(super) enum AppUpdate {
         preview: String,
     },
     Tasks(Vec<(String, Vec<crate::buzz::task::Task>)>),
+    ActivityEvents(Vec<(String, Vec<crate::buzz::task::ActivityEvent>)>),
 }
 
 // ── Worker info from state.json ───────────────────────────
@@ -511,19 +521,14 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
         }
     }
 
-    // Open signals that aren't noise
+    // Open signals — only show actionable sources in triage.
     for sig in &ws.signals {
-        // Skip noise signals
-        let dominated = matches!(
+        // Only allow explicitly actionable signal sources in triage.
+        let actionable = matches!(
             sig.source.as_str(),
-            "github_ci_pass"
-                | "github_bot_review"
-                | "github_merged_pr"
-                | "github_release"
-                | "github_pr_push"
-                | "github_ci_failure"
+            "sentry" | "github_review_queue" | "email" | "linear"
         );
-        if dominated {
+        if !actionable {
             continue;
         }
         let source_label = match sig.source.as_str() {
@@ -873,6 +878,14 @@ pub struct WorkspaceState {
     pub triage_selected: usize,
     /// Scroll offset for the triage sidebar.
     pub triage_scroll: usize,
+    /// Which view is shown in the sidebar (Triage or Activity).
+    pub sidebar_view: SidebarView,
+    /// Activity feed events loaded from SQLite.
+    pub activity_events: Vec<crate::buzz::task::ActivityEvent>,
+    /// Selected index in the activity feed list.
+    pub activity_selected: usize,
+    /// Scroll offset for the activity feed.
+    pub activity_scroll: usize,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -1002,6 +1015,10 @@ impl App {
                     triage_sidebar_open: true,
                     triage_selected: 0,
                     triage_scroll: 0,
+                    sidebar_view: SidebarView::Triage,
+                    activity_events: Vec::new(),
+                    activity_selected: 0,
+                    activity_scroll: 0,
                 }
             })
             .collect();
@@ -1151,6 +1168,10 @@ impl App {
             triage_sidebar_open: true,
             triage_selected: 0,
             triage_scroll: 0,
+            sidebar_view: SidebarView::Triage,
+            activity_events: Vec::new(),
+            activity_selected: 0,
+            activity_scroll: 0,
         };
 
         let setup = SetupState {
@@ -1287,6 +1308,10 @@ impl App {
             triage_sidebar_open: true,
             triage_selected: 0,
             triage_scroll: 0,
+            sidebar_view: SidebarView::Triage,
+            activity_events: Vec::new(),
+            activity_selected: 0,
+            activity_scroll: 0,
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1490,6 +1515,10 @@ impl App {
             triage_sidebar_open: true,
             triage_selected: 0,
             triage_scroll: 0,
+            sidebar_view: SidebarView::Triage,
+            activity_events: Vec::new(),
+            activity_selected: 0,
+            activity_scroll: 0,
         };
 
         if is_add {
@@ -3105,6 +3134,19 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Apply activity feed data from background refresh.
+    pub(super) fn apply_activity_update(
+        &mut self,
+        data: Vec<(String, Vec<crate::buzz::task::ActivityEvent>)>,
+    ) {
+        for (name, events) in data {
+            if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
+                ws.activity_events = events;
+            }
+        }
+        self.needs_redraw = true;
+    }
+
     /// Apply extras data from background refresh.
     pub(super) fn apply_extras_update(
         &mut self,
@@ -3688,6 +3730,24 @@ pub(super) fn load_all_tasks_blocking(
                 Vec::new()
             };
             (name.clone(), tasks)
+        })
+        .collect()
+}
+
+/// Load activity feed events for all workspaces (blocking SQLite queries).
+pub(super) fn load_all_activity_blocking(
+    db_path: &Path,
+    names: &[String],
+) -> Vec<(String, Vec<crate::buzz::task::ActivityEvent>)> {
+    names
+        .iter()
+        .map(|name| {
+            let events = if let Ok(store) = crate::buzz::task::ActivityEventStore::open(db_path) {
+                store.get_activity_feed(name, 50, 0).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            (name.clone(), events)
         })
         .collect()
 }
@@ -4564,6 +4624,10 @@ mod tests {
             triage_sidebar_open: true,
             triage_selected: 0,
             triage_scroll: 0,
+            sidebar_view: SidebarView::Triage,
+            activity_events: Vec::new(),
+            activity_selected: 0,
+            activity_scroll: 0,
         };
         app.workspaces = vec![ws];
         app.setup = None;
@@ -4821,6 +4885,10 @@ mod tests {
             triage_sidebar_open: true,
             triage_selected: 0,
             triage_scroll: 0,
+            sidebar_view: SidebarView::Triage,
+            activity_events: Vec::new(),
+            activity_selected: 0,
+            activity_scroll: 0,
         }
     }
 

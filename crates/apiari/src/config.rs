@@ -194,6 +194,26 @@ pub struct Schedule {
     pub active_days: Option<Vec<String>>,
 }
 
+/// Activity feed / event retention configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityConfig {
+    /// How many days to retain activity events. Default: 30.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
+}
+
+fn default_retention_days() -> u32 {
+    30
+}
+
+impl Default for ActivityConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: default_retention_days(),
+        }
+    }
+}
+
 /// A fully self-contained workspace configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
@@ -278,6 +298,10 @@ pub struct WorkspaceConfig {
     /// Active-hours schedule — when absent, watchers and signal hooks run 24/7.
     #[serde(default)]
     pub schedule: Option<Schedule>,
+
+    /// Activity feed / event retention configuration.
+    #[serde(default)]
+    pub activity: ActivityConfig,
 }
 
 /// A single daemon TCP endpoint (host + port).
@@ -1330,6 +1354,7 @@ max_session_turns = 0
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
             schedule: None,
+            activity: ActivityConfig::default(),
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -1357,6 +1382,7 @@ max_session_turns = 0
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
             schedule: None,
+            activity: ActivityConfig::default(),
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -1388,6 +1414,7 @@ max_session_turns = 0
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
             schedule: None,
+            activity: ActivityConfig::default(),
         };
 
         let buzz = to_buzz_config(&ws);
@@ -1646,6 +1673,7 @@ max_session_turns = 0
             daemon_endpoints: vec![],
             shells: ShellsConfig::default(),
             schedule: None,
+            activity: ActivityConfig::default(),
         }
     }
 

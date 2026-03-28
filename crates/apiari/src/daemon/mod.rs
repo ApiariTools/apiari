@@ -1396,6 +1396,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
     let mut idle_timer = tokio::time::interval(std::time::Duration::from_secs(60));
     idle_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    let mut prune_timer = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
+    prune_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Prune old activity events on startup.
+    for slot in &slots {
+        let retention_days = slot.config.activity.retention_days;
+        if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&db)
+            && let Err(e) = ae.prune(&slot.name, retention_days)
+        {
+            warn!("[{}] failed to prune activity events: {e}", slot.name);
+        }
+    }
+
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
@@ -1616,6 +1629,44 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                 );
                                                             }
                                                         }
+                                                        // Log activity events for signal match and stage change.
+                                                        if let Some(ref task) = engine_result.task
+                                                            && let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
+                                                                // Log signal event
+                                                                let _ = ae.log_event(
+                                                                    &slot.name,
+                                                                    Some(&task.id),
+                                                                    "signal",
+                                                                    &format!("Signal: {}", record.title),
+                                                                    record.body.as_deref(),
+                                                                    Some(&record.source),
+                                                                    Some(record.id),
+                                                                    None,
+                                                                );
+                                                                // Log stage_change if a transition occurred
+                                                                if engine_result.transitioned
+                                                                    && let Some(ref from) = engine_result.from_stage
+                                                                {
+                                                                    let to = &task.stage;
+                                                                    if from != to {
+                                                                        let meta = serde_json::json!({
+                                                                            "from": from.as_str(),
+                                                                            "to": to.as_str(),
+                                                                            "reason": record.source,
+                                                                        });
+                                                                        let _ = ae.log_event(
+                                                                            &slot.name,
+                                                                            Some(&task.id),
+                                                                            "stage_change",
+                                                                            &format!("{} → {}", from.as_str(), to.as_str()),
+                                                                            None,
+                                                                            Some(&record.source),
+                                                                            Some(record.id),
+                                                                            Some(&meta.to_string()),
+                                                                        );
+                                                                    }
+                                                                }
+                                                            }
                                                     }
                                                     Err(e) => {
                                                         tracing::warn!("[task-engine] error processing signal: {e}");
@@ -1660,6 +1711,34 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                 tracing::warn!("[task-engine] failed to create task for worker {worker_id}: {e}");
                                                             } else {
                                                                 info!("[task-engine] created task '{}' for worker {worker_id}", task.title);
+                                                                // Log worker spawn and initial stage to activity feed.
+                                                                if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
+                                                                    let meta = serde_json::json!({
+                                                                        "from": serde_json::Value::Null,
+                                                                        "to": "In Progress",
+                                                                        "worker_id": worker_id,
+                                                                    });
+                                                                    let _ = ae.log_event(
+                                                                        &slot.name,
+                                                                        Some(&task.id),
+                                                                        "stage_change",
+                                                                        &format!("Task created: {}", task.title),
+                                                                        None,
+                                                                        Some("swarm"),
+                                                                        None,
+                                                                        Some(&meta.to_string()),
+                                                                    );
+                                                                    let _ = ae.log_event(
+                                                                        &slot.name,
+                                                                        Some(&task.id),
+                                                                        "worker",
+                                                                        &format!("Worker {} spawned", worker_id),
+                                                                        None,
+                                                                        Some("swarm"),
+                                                                        None,
+                                                                        Some(&serde_json::json!({"worker_id": worker_id}).to_string()),
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                             }
@@ -1697,6 +1776,36 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                     tracing::warn!("[task-engine] failed to transition task to InAiReview: {e}");
                                                                 } else {
                                                                     info!("[task-engine] task '{}' → In AI Review (PR opened)", task.title);
+                                                                    // Log PR opened + stage change to activity feed.
+                                                                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
+                                                                        let pr_label = pr_url.as_deref().unwrap_or("(unknown)");
+                                                                        let meta = serde_json::json!({
+                                                                            "from": "In Progress",
+                                                                            "to": "In AI Review",
+                                                                            "reason": "PR opened",
+                                                                            "pr_url": pr_label,
+                                                                        });
+                                                                        let _ = ae.log_event(
+                                                                            &slot.name,
+                                                                            Some(&task.id),
+                                                                            "pr",
+                                                                            &format!("PR opened: {pr_label}"),
+                                                                            None,
+                                                                            Some("swarm"),
+                                                                            None,
+                                                                            Some(&serde_json::json!({"pr_url": pr_label}).to_string()),
+                                                                        );
+                                                                        let _ = ae.log_event(
+                                                                            &slot.name,
+                                                                            Some(&task.id),
+                                                                            "stage_change",
+                                                                            "In Progress → In AI Review",
+                                                                            None,
+                                                                            Some("swarm"),
+                                                                            None,
+                                                                            Some(&meta.to_string()),
+                                                                        );
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -1725,6 +1834,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                     let task_title = task.title.clone();
                                                     let mut meta = task.metadata.clone();
                                                     let db_path = slot.store.db_path().to_path_buf();
+                                                    let ws_name_for_review = slot.name.clone();
                                                     tokio::spawn(async move {
                                                         match swarm.create_reviewer_worker(&short_repo, pr_number).await {
                                                             Ok(reviewer_id) if !reviewer_id.is_empty() => {
@@ -1734,6 +1844,18 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                         tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
                                                                     } else {
                                                                         info!("[task-engine] dispatched reviewer {reviewer_id} for task '{task_title}'");
+                                                                        if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&db_path) {
+                                                                            let _ = ae.log_event(
+                                                                                &ws_name_for_review,
+                                                                                Some(&task_id),
+                                                                                "worker",
+                                                                                &format!("Reviewer {} dispatched", reviewer_id),
+                                                                                None,
+                                                                                Some("swarm"),
+                                                                                None,
+                                                                                Some(&serde_json::json!({"reviewer_worker_id": reviewer_id}).to_string()),
+                                                                            );
+                                                                        }
                                                                     }
                                                                 }
                                                             }
@@ -1791,6 +1913,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                         let task_id = task.id.clone();
                                                         let task_title = task.title.clone();
                                                         let mut meta2 = meta;
+                                                        let ws_name_branch = slot.name.clone();
                                                         tokio::spawn(async move {
                                                             match swarm.create_reviewer_worker_for_branch(&short_repo, &branch_name).await {
                                                                 Ok(reviewer_id) if !reviewer_id.is_empty() => {
@@ -1800,6 +1923,18 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                             tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
                                                                         } else {
                                                                             info!("[task-engine] dispatched branch reviewer {reviewer_id} for task '{task_title}'");
+                                                                            if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&db_path) {
+                                                                                let _ = ae.log_event(
+                                                                                    &ws_name_branch,
+                                                                                    Some(&task_id),
+                                                                                    "worker",
+                                                                                    &format!("Branch reviewer {} dispatched", reviewer_id),
+                                                                                    None,
+                                                                                    Some("swarm"),
+                                                                                    None,
+                                                                                    Some(&serde_json::json!({"reviewer_worker_id": reviewer_id, "branch": branch_name}).to_string()),
+                                                                                );
+                                                                            }
                                                                         }
                                                                     }
                                                                 }
@@ -1901,6 +2036,23 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                             match slot.store.upsert_signal(&verdict_signal) {
                                                                 Ok((vid, true)) => {
                                                                     info!("[task-engine] emitted review verdict '{verdict}' for task '{}'", task.title);
+                                                                    // Log review event to activity feed.
+                                                                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
+                                                                        let review_meta = serde_json::json!({
+                                                                            "verdict": verdict,
+                                                                            "reviewer_worker_id": worker_id,
+                                                                        });
+                                                                        let _ = ae.log_event(
+                                                                            &slot.name,
+                                                                            Some(&task.id),
+                                                                            "review",
+                                                                            &format!("Review verdict: {verdict}"),
+                                                                            if comments.is_empty() { None } else { Some(comments.as_str()) },
+                                                                            Some("swarm"),
+                                                                            Some(vid),
+                                                                            Some(&review_meta.to_string()),
+                                                                        );
+                                                                    }
                                                                     // Process immediately through task engine
                                                                     if let Ok(Some(vrecord)) = slot.store.get_signal(vid)
                                                                         && let Ok(ts2) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
@@ -1964,6 +2116,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                     && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                                         && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
                                                             && !task.stage.is_terminal() && task.pr_url.is_none() {
+                                                                let from_stage = task.stage.clone();
                                                                 if let Err(e) = task_store.transition_task(
                                                                     &task.id,
                                                                     &task.stage,
@@ -1973,6 +2126,23 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                     tracing::warn!("[task-engine] failed to dismiss task for closed worker: {e}");
                                                                 } else {
                                                                     info!("[task-engine] dismissed task '{}' (worker closed without PR)", task.title);
+                                                                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
+                                                                        let meta = serde_json::json!({
+                                                                            "from": from_stage.as_str(),
+                                                                            "to": "Dismissed",
+                                                                            "reason": "Worker closed without PR",
+                                                                        });
+                                                                        let _ = ae.log_event(
+                                                                            &slot.name,
+                                                                            Some(&task.id),
+                                                                            "stage_change",
+                                                                            &format!("{} → Dismissed", from_stage.as_str()),
+                                                                            None,
+                                                                            Some("swarm"),
+                                                                            None,
+                                                                            Some(&meta.to_string()),
+                                                                        );
+                                                                    }
                                                                 }
                                                             }
                                             }
@@ -2657,6 +2827,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             );
                         }
                     });
+                }
+            }
+            _ = prune_timer.tick() => {
+                for slot in &slots {
+                    let retention_days = slot.config.activity.retention_days;
+                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path())
+                        && let Err(e) = ae.prune(&slot.name, retention_days)
+                    {
+                        warn!("[{}] failed to prune activity events: {e}", slot.name);
+                    }
                 }
             }
         }
