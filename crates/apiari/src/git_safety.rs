@@ -3,9 +3,11 @@
 //! Takes a snapshot of `git status --porcelain` across all repo subdirectories
 //! in a workspace, and can diff two snapshots to find newly dirty files.
 
-use std::any::Any;
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::{
+    any::Any,
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use crate::buzz::coordinator::SafetyHooks;
 

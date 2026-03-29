@@ -10,13 +10,15 @@ pub mod rule;
 
 use std::time::Duration;
 
-use crate::buzz::signal::SignalRecord;
 use rule::{PipelineAction, PipelineRule, default_rules};
 use tracing::debug;
 
-use self::batch::BatchCollector;
-use self::format::{format_batch_notification, format_signal_notification};
-use self::log::NotificationLog;
+use self::{
+    batch::BatchCollector,
+    format::{format_batch_notification, format_signal_notification},
+    log::NotificationLog,
+};
+use crate::buzz::signal::SignalRecord;
 
 /// Notification pipeline: process signals through rules, dedup, rate-limit, batch.
 pub struct Pipeline {
@@ -122,10 +124,11 @@ impl Pipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::buzz::signal::{Severity, SignalStatus};
     use chrono::Utc;
     use rule::PipelineRule;
+
+    use super::*;
+    use crate::buzz::signal::{Severity, SignalStatus};
 
     fn make_signal(source: &str, ext_id: &str, title: &str, severity: Severity) -> SignalRecord {
         SignalRecord {

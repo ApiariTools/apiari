@@ -4,23 +4,26 @@
 //! and, if so, builds a prompt from open signals + worker state, invokes
 //! a fresh coordinator session, and sends the result via Telegram.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
+use apiari_claude_sdk::SessionOptions;
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
-use apiari_claude_sdk::SessionOptions;
-
-use crate::buzz::channel::telegram::TelegramChannel;
-use crate::buzz::channel::{Channel, OutboundMessage};
-use crate::buzz::coordinator::Coordinator;
-use crate::buzz::signal::{Severity, SignalRecord};
-use crate::config::MorningBriefConfig;
-
 use super::socket;
+use crate::{
+    buzz::{
+        channel::{Channel, OutboundMessage, telegram::TelegramChannel},
+        coordinator::Coordinator,
+        signal::{Severity, SignalRecord},
+    },
+    config::MorningBriefConfig,
+};
 
 // ── Swarm state types (minimal, for reading .swarm/state.json) ──
 
@@ -342,9 +345,10 @@ pub async fn execute_brief(params: BriefParams) {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use super::*;
     use crate::buzz::signal::{Severity, SignalStatus};
-    use chrono::TimeZone;
 
     fn make_signal(source: &str, title: &str, severity: Severity) -> SignalRecord {
         SignalRecord {

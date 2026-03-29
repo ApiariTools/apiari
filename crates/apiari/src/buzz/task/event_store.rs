@@ -6,10 +6,11 @@
 //! Uses a separate `activity_events` table (not `task_events`) so it can carry
 //! richer fields: workspace, summary, source, and a JSON metadata blob.
 
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr};
 use rusqlite::{Connection, params};
-use std::path::Path;
 
 /// A single activity event in the task lifecycle or workspace feed.
 #[derive(Debug, Clone)]

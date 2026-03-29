@@ -4,8 +4,10 @@
 //! review queue entry. Deduplicates across queries: lowest index (highest
 //! priority) wins. Source: `github_review_queue`.
 
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use color_eyre::Result;
@@ -15,9 +17,10 @@ use tracing::{info, warn};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::Watcher;
-use crate::buzz::config::{GithubWatcherConfig, ReviewQueueEntry};
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalUpdate};
+use crate::buzz::{
+    config::{GithubWatcherConfig, ReviewQueueEntry},
+    signal::{Severity, SignalUpdate, store::SignalStore},
+};
 
 const SOURCE: &str = "github_review_queue";
 

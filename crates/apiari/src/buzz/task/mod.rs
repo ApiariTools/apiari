@@ -8,9 +8,8 @@ pub mod event_store;
 pub mod rules;
 pub mod store;
 
-pub use event_store::{ActivityEvent, ActivityEventStore};
-
 use chrono::{DateTime, Utc};
+pub use event_store::{ActivityEvent, ActivityEventStore};
 use serde::{Deserialize, Serialize};
 
 /// The stages a task moves through. These are the default stages.

@@ -6,12 +6,17 @@
 //! - Per-client `mpsc::unbounded_channel` for unicast (Token/Done/Error for the requesting client)
 //! - `tokio::sync::broadcast` for Activity events pushed to ALL connected clients
 
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, UnixListener};
-use tokio::sync::{broadcast, mpsc};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    net::{TcpListener, UnixListener},
+    sync::{broadcast, mpsc},
+};
 use tracing::{error, info, warn};
 
 // ── Protocol types ──────────────────────────────────────

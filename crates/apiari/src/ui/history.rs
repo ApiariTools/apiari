@@ -1,10 +1,13 @@
 //! Chat history persistence — append-only JSONL in `~/.config/apiari/chat_history/`.
 
+use std::{
+    fs::OpenOptions,
+    io::{BufRead, Write},
+    path::PathBuf,
+};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
-use std::io::{BufRead, Write};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {

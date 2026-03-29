@@ -3,8 +3,9 @@
 //! Parses dot-separated key paths (e.g. `telegram.bot_token`), sets the value,
 //! validates the result against `WorkspaceConfig`, and writes it back.
 
-use color_eyre::eyre::{Result, WrapErr, bail};
 use std::path::{Path, PathBuf};
+
+use color_eyre::eyre::{Result, WrapErr, bail};
 
 /// Find the workspace config file path.
 ///

@@ -3,12 +3,13 @@
 //! Uses long-polling via `getUpdates` and sends responses via `sendMessage`.
 //! Chunks messages at 4000 chars and retries without Markdown on parse failure.
 
-use super::{Channel, ChannelEvent, OutboundMessage};
 use async_trait::async_trait;
 use color_eyre::eyre::Result;
 use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 use tracing::warn;
+
+use super::{Channel, ChannelEvent, OutboundMessage};
 
 const MAX_MESSAGE_LEN: usize = 4000;
 

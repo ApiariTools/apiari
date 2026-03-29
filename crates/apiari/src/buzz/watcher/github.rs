@@ -3,8 +3,10 @@
 //! Queries open issues, PR review requests, watched labels, and CI status.
 //! Stateless — emits all signals every poll; the DB handles dedup via UNIQUE constraints.
 
-use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 use async_trait::async_trait;
 use color_eyre::Result;
@@ -12,9 +14,10 @@ use futures::future::join_all;
 use tracing::{info, warn};
 
 use super::Watcher;
-use crate::buzz::config::GithubWatcherConfig;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalUpdate};
+use crate::buzz::{
+    config::GithubWatcherConfig,
+    signal::{Severity, SignalUpdate, store::SignalStore},
+};
 
 /// Minimum remaining API calls before we skip the poll entirely.
 const RATE_LIMIT_CRITICAL: u32 = 50;

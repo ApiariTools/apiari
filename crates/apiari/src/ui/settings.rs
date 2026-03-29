@@ -4,10 +4,12 @@
 
 use std::collections::HashMap;
 
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::prelude::*;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::{
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    prelude::*,
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+};
 
 use super::theme;
 use crate::config::{self, WorkspaceConfig};

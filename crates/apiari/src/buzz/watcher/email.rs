@@ -16,9 +16,10 @@ use futures::TryStreamExt;
 use tracing::{info, warn};
 
 use super::Watcher;
-use crate::buzz::config::EmailMailboxConfig;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate};
+use crate::buzz::{
+    config::EmailMailboxConfig,
+    signal::{Severity, SignalStatus, SignalUpdate, store::SignalStore},
+};
 
 /// Parsed email data (decoupled from IMAP for testability).
 #[derive(Debug, Clone)]

@@ -149,8 +149,9 @@ impl<'a> MemoryStore<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rusqlite::Connection;
+
+    use super::*;
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

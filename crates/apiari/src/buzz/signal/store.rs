@@ -4,10 +4,11 @@
 //! The store uses WAL mode for concurrent readers.
 //! All queries are scoped to a workspace name.
 
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr};
 use rusqlite::{Connection, params};
-use std::path::{Path, PathBuf};
 
 use super::{Severity, SignalRecord, SignalStatus, SignalUpdate};
 

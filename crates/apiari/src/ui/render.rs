@@ -2,18 +2,21 @@
 
 use std::borrow::Cow;
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols::border;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-
 use apiari_tui::conversation;
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    symbols::border,
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::app::{self, App, ChatLine, Mode, Panel, PendingAction, View};
-use super::theme;
+use super::{
+    app::{self, App, ChatLine, Mode, Panel, PendingAction, View},
+    theme,
+};
 
 const SPINNER: &[&str] = &["|", "/", "-", "\\"];
 

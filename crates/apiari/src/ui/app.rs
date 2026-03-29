@@ -1,18 +1,20 @@
 //! App state machine for the apiari TUI.
 
-use crate::buzz::coordinator::memory::MemoryStore;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalRecord};
-use apiari_tui::conversation::ConversationEntry;
+use std::{
+    collections::HashMap,
+    io::{BufRead, Seek, SeekFrom},
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+use apiari_tui::{conversation::ConversationEntry, scroll::ScrollState};
 use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::io::{BufRead, Seek, SeekFrom};
-use std::path::Path;
-use std::time::Instant;
 
-use apiari_tui::scroll::ScrollState;
-use std::path::PathBuf;
+use crate::buzz::{
+    coordinator::memory::MemoryStore,
+    signal::{Severity, SignalRecord, store::SignalStore},
+};
 
 /// A tmux operation to be executed asynchronously after apply_worker_update.
 pub(super) enum PendingShellOp {
@@ -27,8 +29,10 @@ pub(super) enum PendingShellOp {
     },
 }
 
-use crate::buzz::conversation::ConversationStore;
-use crate::config::{self, Workspace};
+use crate::{
+    buzz::conversation::ConversationStore,
+    config::{self, Workspace},
+};
 
 /// Maximum number of chat history messages to load from a previous session.
 const CHAT_HISTORY_LIMIT: usize = 20;
@@ -4132,9 +4136,10 @@ fn is_top_level_watcher(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
     use crate::buzz::signal::{Severity, SignalRecord, SignalStatus};
-    use chrono::Utc;
 
     fn make_signal(source: &str, external_id: &str, metadata: Option<&str>) -> SignalRecord {
         SignalRecord {

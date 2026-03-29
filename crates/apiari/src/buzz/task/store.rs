@@ -7,8 +7,7 @@ use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use rusqlite::{Connection, params};
 
-use super::event_store::ActivityEventStore;
-use super::{Task, TaskEvent, TaskStage};
+use super::{Task, TaskEvent, TaskStage, event_store::ActivityEventStore};
 
 /// SQLite task store.
 pub struct TaskStore {
@@ -422,8 +421,9 @@ fn row_to_task_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskEvent> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use uuid::Uuid;
+
+    use super::*;
 
     fn make_task(workspace: &str, title: &str) -> Task {
         let now = Utc::now();
