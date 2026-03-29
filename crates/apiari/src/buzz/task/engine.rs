@@ -919,4 +919,116 @@ mod tests {
         // Rule doesn't fire: (InProgress, swarm_worker_closed, role=reviewer) → no match
         assert!(!result.transitioned);
     }
+
+    // ── branch-first reviewer_worker_id verdict matching ──
+    //
+    // These tests cover the bug where verdict signals couldn't be linked back to
+    // their tasks in the branch-first flow (no PR number). The task has
+    // `reviewer_worker_id` written into its metadata after the reviewer is
+    // dispatched; the verdict signal carries the same id, and
+    // find_task_for_signal must match on it.
+
+    fn make_branch_task(workspace: &str, worker_id: &str, reviewer_id: &str) -> Task {
+        let now = Utc::now();
+        Task {
+            id: Uuid::new_v4().to_string(),
+            workspace: workspace.to_string(),
+            title: "Branch-first task".to_string(),
+            stage: TaskStage::InAiReview,
+            source: Some("swarm".to_string()),
+            source_url: None,
+            worker_id: Some(worker_id.to_string()),
+            pr_url: None,
+            pr_number: None, // no PR yet in branch-first flow
+            repo: None,
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+            metadata: serde_json::json!({"reviewer_worker_id": reviewer_id}),
+        }
+    }
+
+    #[test]
+    fn test_review_verdict_approved_branch_flow_matches_by_reviewer_worker_id() {
+        // Branch-first flow: verdict signal has reviewer_worker_id but no pr_number.
+        // The engine must find the task via reviewer_worker_id written to task metadata.
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_branch_task("acme", "worker-br1", "reviewer-br1");
+        store.create_task(&task).unwrap();
+
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            serde_json::json!({
+                "verdict": "APPROVED",
+                "comments": "",
+                "reviewer_worker_id": "reviewer-br1",
+                "ready_branch": "swarm/feature-x"
+            })
+            .to_string(),
+        );
+
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(
+            result.transitioned,
+            "verdict signal should match task via reviewer_worker_id"
+        );
+        assert_eq!(result.task.unwrap().stage, TaskStage::HumanReview);
+        assert!(!result.notifications.is_empty());
+    }
+
+    #[test]
+    fn test_review_verdict_changes_requested_branch_flow_matches_by_reviewer_worker_id() {
+        // Branch-first flow: CHANGES_REQUESTED verdict should send the task back to InProgress.
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_branch_task("acme", "worker-br2", "reviewer-br2");
+        store.create_task(&task).unwrap();
+
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            serde_json::json!({
+                "verdict": "CHANGES_REQUESTED",
+                "comments": "Please add error handling.",
+                "reviewer_worker_id": "reviewer-br2",
+                "ready_branch": "swarm/feature-y"
+            })
+            .to_string(),
+        );
+
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(
+            result.transitioned,
+            "verdict signal should match task via reviewer_worker_id"
+        );
+        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+        assert_eq!(result.worker_messages.len(), 1);
+        assert_eq!(result.worker_messages[0].0, "worker-br2");
+        assert!(result.worker_messages[0].1.contains("error handling"));
+    }
+
+    #[test]
+    fn test_review_verdict_branch_flow_no_match_without_reviewer_worker_id_in_metadata() {
+        // A verdict signal with reviewer_worker_id that does NOT match any task
+        // should be a no-op (signal is standalone).
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_branch_task("acme", "worker-br3", "reviewer-br3");
+        store.create_task(&task).unwrap();
+
+        let mut signal = make_signal("swarm_review_verdict", None);
+        signal.metadata = Some(
+            serde_json::json!({
+                "verdict": "APPROVED",
+                "reviewer_worker_id": "reviewer-unknown"
+            })
+            .to_string(),
+        );
+
+        let result = process_signal(&store, "acme", &signal).unwrap();
+        assert!(
+            !result.transitioned,
+            "unknown reviewer id should produce no match"
+        );
+        assert!(result.task.is_none());
+    }
 }
