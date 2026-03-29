@@ -214,9 +214,20 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
 
     draw_kanban_strip(frame, app, ws, rows[0]);
 
-    // Bottom area: Task detail / Chat + optional Triage sidebar
+    // Bottom area: Worker output / Task detail / Chat + optional Triage sidebar
     let bottom = rows[1];
-    if ws.viewing_task.is_some() {
+    if ws.viewing_worker_output.is_some() {
+        if ws.triage_sidebar_open {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(bottom);
+            draw_worker_output_panel(frame, ws, cols[0]);
+            draw_triage_sidebar(frame, ws, cols[1]);
+        } else {
+            draw_worker_output_panel(frame, ws, bottom);
+        }
+    } else if ws.viewing_task.is_some() {
         if ws.triage_sidebar_open {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
@@ -3975,6 +3986,110 @@ fn format_tokens(n: u64) -> String {
         format!("{:.1}k", n as f64 / 1_000.0)
     } else {
         n.to_string()
+    }
+}
+
+// ── Worker output panel ──────────────────────────────────
+
+pub fn draw_worker_output_panel(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
+    let out = match ws.viewing_worker_output.as_ref() {
+        Some(o) => o,
+        None => return,
+    };
+
+    let follow_indicator = if out.auto_scroll { " [follow]" } else { "" };
+    let title = format!(
+        " Output: {} {follow_indicator}",
+        truncate_to_width(&out.worker_id, (area.width as usize).saturating_sub(20))
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme::FROST))
+        .style(Style::default().bg(theme::COMB))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme::POLLEN)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 3 {
+        return;
+    }
+
+    // Footer hint
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    let footer_area = Rect {
+        x: inner.x,
+        y: footer_y,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" [Esc]", theme::key_hint()),
+            Span::styled(" Close  ", theme::key_desc()),
+            Span::styled("[j/k]", theme::key_hint()),
+            Span::styled(" Scroll  ", theme::key_desc()),
+            Span::styled("[G]", theme::key_hint()),
+            Span::styled(" Bottom  ", theme::key_desc()),
+            Span::styled("[f]", theme::key_hint()),
+            Span::styled(" Follow", theme::key_desc()),
+        ])),
+        footer_area,
+    );
+
+    // Content area (all rows except footer)
+    let content_h = inner.height.saturating_sub(1);
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: content_h,
+    };
+
+    if out.lines.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                " Waiting for output…",
+                Style::default().fg(theme::SMOKE),
+            ))),
+            content_area,
+        );
+        return;
+    }
+
+    let visible = content_h as usize;
+    let scroll = out.scroll.min(out.lines.len().saturating_sub(1));
+    let start = scroll.saturating_sub(visible.saturating_sub(1));
+    let start = start.min(out.lines.len().saturating_sub(visible));
+
+    for (i, line) in out.lines.iter().skip(start).take(visible).enumerate() {
+        let row = Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        };
+        let (fg, prefix) = match line.kind {
+            app::OutputLineKind::Text => (theme::POLLEN, ""),
+            app::OutputLineKind::Thinking => (theme::SMOKE, "💭 "),
+            app::OutputLineKind::ToolUse => (theme::MINT, ""),
+            app::OutputLineKind::ToolResult => (theme::FROST, "  "),
+            app::OutputLineKind::Separator => (theme::STEEL, ""),
+            app::OutputLineKind::Status => (Color::Rgb(180, 180, 100), ""),
+            app::OutputLineKind::Error => (Color::Rgb(220, 80, 80), "⚠ "),
+        };
+        let text = format!("{prefix}{}", line.text);
+        let truncated = truncate_to_width(&text, inner.width as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(truncated, Style::default().fg(fg)))),
+            row,
+        );
     }
 }
 

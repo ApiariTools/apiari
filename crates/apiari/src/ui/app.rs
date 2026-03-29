@@ -190,6 +190,12 @@ pub(super) enum AppUpdate {
         task_id: String,
         events: Vec<crate::buzz::task::ActivityEvent>,
     },
+    /// A single line streamed from a live worker output subscription.
+    WorkerOutputLine {
+        workspace_name: String,
+        worker_id: String,
+        line: OutputLine,
+    },
 }
 
 // ── Worker info from state.json ───────────────────────────
@@ -283,6 +289,59 @@ pub struct TaskDetailState {
     pub pr_number: Option<i64>,
     pub events: Vec<crate::buzz::task::ActivityEvent>,
     pub scroll: usize,
+}
+
+/// Style of a rendered worker output line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputLineKind {
+    Text,
+    Thinking,
+    ToolUse,
+    ToolResult,
+    Separator,
+    Status,
+    Error,
+}
+
+/// A single rendered line in the worker output panel.
+#[derive(Debug, Clone)]
+pub struct OutputLine {
+    pub kind: OutputLineKind,
+    pub text: String,
+}
+
+/// State for the live worker output panel.
+#[derive(Debug, Clone)]
+pub struct WorkerOutputState {
+    pub worker_id: String,
+    pub lines: Vec<OutputLine>,
+    pub scroll: usize,
+    /// When true, new lines auto-scroll to the bottom.
+    pub auto_scroll: bool,
+}
+
+impl WorkerOutputState {
+    pub fn new(worker_id: String) -> Self {
+        Self {
+            worker_id,
+            lines: Vec::new(),
+            scroll: 0,
+            auto_scroll: true,
+        }
+    }
+
+    /// Maximum number of lines to keep in memory.
+    pub const MAX_LINES: usize = 10_000;
+
+    /// Append a line; enforce the cap and auto-scroll if enabled.
+    pub fn push(&mut self, line: OutputLine) {
+        if self.lines.len() >= Self::MAX_LINES {
+            self.lines.drain(0..Self::MAX_LINES / 10);
+            // Adjust scroll so we don't jump
+            self.scroll = self.scroll.saturating_sub(Self::MAX_LINES / 10);
+        }
+        self.lines.push(line);
+    }
 }
 
 /// Build kanban cards from tasks. Task cards take priority over worker/signal cards
@@ -1015,6 +1074,8 @@ pub struct WorkspaceState {
     pub activity_scroll: usize,
     /// Task detail panel state (Some when viewing a task's timeline).
     pub viewing_task: Option<TaskDetailState>,
+    /// Live worker output panel state (Some when streaming a worker's output).
+    pub viewing_worker_output: Option<WorkerOutputState>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -1084,6 +1145,8 @@ pub struct App {
     pub spinner_tick: usize,
     pub last_worker_refresh: Instant,
     pub last_signal_refresh: Instant,
+    /// Background task streaming a worker's live output (aborted when output panel closes).
+    pub worker_output_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl App {
@@ -1149,6 +1212,7 @@ impl App {
                     activity_selected: 0,
                     activity_scroll: 0,
                     viewing_task: None,
+                    viewing_worker_output: None,
                 }
             })
             .collect();
@@ -1220,6 +1284,7 @@ impl App {
             spinner_tick: 0,
             last_worker_refresh: Instant::now(),
             last_signal_refresh: Instant::now(),
+            worker_output_task: None,
         };
 
         // Inject first onboarding message into chat
@@ -1303,6 +1368,7 @@ impl App {
             activity_selected: 0,
             activity_scroll: 0,
             viewing_task: None,
+            viewing_worker_output: None,
         };
 
         let setup = SetupState {
@@ -1364,6 +1430,7 @@ impl App {
             spinner_tick: 0,
             last_worker_refresh: Instant::now(),
             last_signal_refresh: Instant::now(),
+            worker_output_task: None,
         };
 
         app.rebuild_ws_name_index();
@@ -1444,6 +1511,7 @@ impl App {
             activity_selected: 0,
             activity_scroll: 0,
             viewing_task: None,
+            viewing_worker_output: None,
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1652,6 +1720,7 @@ impl App {
             activity_selected: 0,
             activity_scroll: 0,
             viewing_task: None,
+            viewing_worker_output: None,
         };
 
         if is_add {
@@ -3296,6 +3365,29 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Append a line to the live worker output panel for the given workspace/worker.
+    pub(super) fn apply_worker_output_line(
+        &mut self,
+        workspace_name: &str,
+        worker_id: &str,
+        line: OutputLine,
+    ) {
+        if let Some(ws) = self
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.name == workspace_name)
+            && let Some(ref mut out) = ws.viewing_worker_output
+            && out.worker_id == worker_id
+        {
+            out.push(line);
+            if out.auto_scroll {
+                let total = out.lines.len();
+                out.scroll = total.saturating_sub(1);
+            }
+            self.needs_redraw = true;
+        }
+    }
+
     /// Open the task detail panel for the currently selected kanban card.
     ///
     /// Returns `Some((workspace_name, task_id))` if a task card was selected,
@@ -4821,6 +4913,7 @@ mod tests {
             activity_selected: 0,
             activity_scroll: 0,
             viewing_task: None,
+            viewing_worker_output: None,
         };
         app.workspaces = vec![ws];
         app.setup = None;
@@ -5083,6 +5176,7 @@ mod tests {
             activity_selected: 0,
             activity_scroll: 0,
             viewing_task: None,
+            viewing_worker_output: None,
         }
     }
 
