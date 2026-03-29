@@ -3061,6 +3061,7 @@ mod tests {
             activity_selected: 0,
             activity_scroll: 0,
             viewing_task: None,
+            viewing_worker_output: None,
         };
         let ws_name = ws.name.clone();
         App {
@@ -3110,6 +3111,7 @@ mod tests {
             shell_input_active: false,
             shell_input: String::new(),
             kanban_allocated_height: std::cell::Cell::new(0),
+            worker_output_task: None,
         }
     }
 
