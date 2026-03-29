@@ -2091,6 +2091,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                                         }
                                                                                     });
                                                                                 }
+
+                                                                                // Auto-close the reviewer worker — it has delivered its verdict
+                                                                                let swarm_for_close = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
+                                                                                let reviewer_id_to_close = worker_id.clone();
+                                                                                tokio::spawn(async move {
+                                                                                    if let Err(e) = swarm_for_close.close_worker(&reviewer_id_to_close).await {
+                                                                                        tracing::warn!("failed to auto-close reviewer {reviewer_id_to_close}: {e}");
+                                                                                    } else {
+                                                                                        tracing::info!("auto-closed reviewer worker {reviewer_id_to_close}");
+                                                                                    }
+                                                                                });
                                                                             }
                                                                             Err(e) => {
                                                                                 tracing::warn!("[task-engine] error processing verdict signal: {e}");
