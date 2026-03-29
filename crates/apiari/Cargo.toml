@@ -15,6 +15,7 @@ apiari-claude-sdk.workspace = true
 apiari-codex-sdk.workspace = true
 apiari-gemini-sdk.workspace = true
 apiari-swarm.workspace = true
+a2a-types.workspace = true
 apiari-tui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
