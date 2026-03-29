@@ -2163,6 +2163,56 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                             }
                                             }
 
+                                            // Auto-forward CI failure to the matching swarm worker
+                                            if is_new
+                                                && update.source == "github_ci_failure"
+                                                && let Some(ref meta_str) = update.metadata
+                                                && let Ok(meta) = serde_json::from_str::<serde_json::Value>(meta_str)
+                                                && let Some(repo) = meta.get("repo").and_then(|v| v.as_str())
+                                                && let Some(pr_num_u64) = meta.get("pr_number").and_then(|v| v.as_u64())
+                                                && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
+                                                && let Ok(Some(task)) = task_store.find_task_by_pr(&slot.name, repo, pr_num_u64 as i64)
+                                                && let Some(worker_id) = task.worker_id
+                                            {
+                                                let pr_number = pr_num_u64;
+                                                let job_url = update.url.clone().or_else(|| update.body.clone());
+                                                let error_msg = format!(
+                                                    "CI failed on your PR. {}Please fix the failing checks and push.",
+                                                    job_url.map(|u| format!("Error details: {}. ", u)).unwrap_or_default()
+                                                );
+                                                info!("auto-forwarded CI failure to worker {worker_id} for PR #{pr_number}");
+                                                let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = swarm.send_message(&worker_id, &error_msg).await {
+                                                        tracing::warn!("failed to auto-forward CI failure to worker {worker_id}: {e}");
+                                                    }
+                                                });
+                                            }
+
+                                            // Auto-forward CI pass to the matching swarm worker
+                                            if is_new
+                                                && update.source == "github_ci_pass"
+                                                && let Some(ref meta_str) = update.metadata
+                                                && let Ok(meta) = serde_json::from_str::<serde_json::Value>(meta_str)
+                                                && let Some(repo) = meta.get("repo").and_then(|v| v.as_str())
+                                                && let Some(pr_num_u64) = meta.get("pr_number").and_then(|v| v.as_u64())
+                                                && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
+                                                && let Ok(Some(task)) = task_store.find_task_by_pr(&slot.name, repo, pr_num_u64 as i64)
+                                                && let Some(worker_id) = task.worker_id
+                                            {
+                                                let pr_number = pr_num_u64;
+                                                let pass_msg = format!(
+                                                    "CI is green on your PR #{pr_number}. All checks passed!"
+                                                );
+                                                info!("auto-forwarded CI pass to worker {worker_id} for PR #{pr_number}");
+                                                let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = swarm.send_message(&worker_id, &pass_msg).await {
+                                                        tracing::warn!("failed to auto-forward CI pass to worker {worker_id}: {e}");
+                                                    }
+                                                });
+                                            }
+
                                             // Collect new signals matching a hook for coordinator follow-through
                                             if is_new
                                                 && let Some(hook) = slot.config.coordinator.signal_hooks
@@ -3771,5 +3821,61 @@ fn format_hook_notification(source: &str, events: &[String], template: &str) -> 
         format_system_notification(source, events)
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::buzz::task::{Task, TaskStage, store::TaskStore};
+    use chrono::Utc;
+
+    fn make_task(workspace: &str, worker_id: &str, repo: &str, pr_number: i64) -> Task {
+        Task {
+            id: uuid::Uuid::new_v4().to_string(),
+            workspace: workspace.to_string(),
+            title: format!("Task for PR #{pr_number}"),
+            stage: TaskStage::InProgress,
+            source: None,
+            source_url: None,
+            worker_id: Some(worker_id.to_string()),
+            pr_url: Some(format!("https://github.com/{repo}/pull/{pr_number}")),
+            pr_number: Some(pr_number),
+            repo: Some(repo.to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            resolved_at: None,
+            metadata: serde_json::Value::Object(Default::default()),
+        }
+    }
+
+    #[test]
+    fn test_find_worker_for_ci_signal() {
+        let store = TaskStore::open_memory().unwrap();
+        let ws = "my-workspace";
+
+        // Insert two tasks with different repos/PR numbers
+        let task_a = make_task(ws, "worker-aaa", "org/repo-a", 42);
+        let task_b = make_task(ws, "worker-bbb", "org/repo-b", 7);
+        let task_c = make_task(ws, "worker-ccc", "org/repo-a", 99);
+        store.create_task(&task_a).unwrap();
+        store.create_task(&task_b).unwrap();
+        store.create_task(&task_c).unwrap();
+
+        // Matching by repo + pr_number should return the right worker
+        let found = store.find_task_by_pr(ws, "org/repo-a", 42).unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().worker_id.as_deref(), Some("worker-aaa"));
+
+        let found_b = store.find_task_by_pr(ws, "org/repo-b", 7).unwrap();
+        assert!(found_b.is_some());
+        assert_eq!(found_b.unwrap().worker_id.as_deref(), Some("worker-bbb"));
+
+        let found_c = store.find_task_by_pr(ws, "org/repo-a", 99).unwrap();
+        assert!(found_c.is_some());
+        assert_eq!(found_c.unwrap().worker_id.as_deref(), Some("worker-ccc"));
+
+        // Non-existent PR should return None
+        let not_found = store.find_task_by_pr(ws, "org/repo-a", 999).unwrap();
+        assert!(not_found.is_none());
     }
 }
