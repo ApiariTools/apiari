@@ -726,9 +726,15 @@ async fn run_coordinator_task(
                 // per-session overrides stay isolated.
                 if let DispatchBundle::Claude(ref mut opts) = bundle {
                     opts.resume = None;
+                    // Strip the validate-bash PreToolUse hook from follow-through
+                    // sessions. Hook deny decisions are cached by Claude Code and
+                    // can bleed into the user's interactive session if left in.
+                    // Follow-throughs have limited max_turns and don't need bash
+                    // auditing; the hook stays active on the main interactive
+                    // coordinator session only.
+                    opts.settings = None;
 
                     // In observe mode, strip Bash to enforce read-only.
-                    // Autonomous mode keeps Bash — validate-bash hook audits.
                     if authority == crate::config::WorkspaceAuthority::Observe {
                         if !opts.disallowed_tools.iter().any(|t| t == "Bash") {
                             opts.disallowed_tools.push("Bash".to_string());
