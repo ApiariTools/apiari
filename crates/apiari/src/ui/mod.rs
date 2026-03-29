@@ -2791,6 +2791,7 @@ mod tests {
             activity_events: Vec::new(),
             activity_selected: 0,
             activity_scroll: 0,
+            viewing_task: None,
         };
         let ws_name = ws.name.clone();
         App {
