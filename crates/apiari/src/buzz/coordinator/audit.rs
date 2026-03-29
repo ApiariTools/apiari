@@ -51,7 +51,6 @@ const GIT_MUTATING: &[&str] = &[
     "git checkout -b",
     "git branch -d",
     "git branch -D",
-    "git stash",
     "git cherry-pick",
     "git clone",
     "git init",
@@ -1527,5 +1526,71 @@ if len(data) > 0:
             BashClassification::ReadOnly,
             "git fetch should be allowed"
         );
+    }
+
+    #[test]
+    fn test_git_stash_readonly() {
+        let cmds = [
+            "git stash",
+            "git stash pop",
+            "git stash drop",
+            "git stash list",
+            "git stash show",
+            "git stash apply",
+        ];
+        for cmd in &cmds {
+            let result = classify_bash_command(cmd);
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "expected ReadOnly for: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_git_checkout_file_restore_readonly() {
+        let cmds = [
+            "git checkout Cargo.lock",
+            "git checkout -- src/main.rs",
+            "git checkout -- Cargo.lock",
+            "git checkout src/lib.rs",
+            "git checkout path/to/file.rs",
+        ];
+        for cmd in &cmds {
+            let result = classify_bash_command(cmd);
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "expected ReadOnly for: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_git_checkout_new_branch_still_blocked() {
+        let result = classify_bash_command("git checkout -b new-feature");
+        assert!(
+            result.is_mutating(),
+            "git checkout -b should remain mutating"
+        );
+    }
+
+    #[test]
+    fn test_git_pull_with_args_readonly() {
+        let cmds = [
+            "git pull",
+            "git pull --rebase",
+            "git pull origin main",
+            "git pull origin feature-branch",
+        ];
+        for cmd in &cmds {
+            let result = classify_bash_command(cmd);
+            assert_eq!(
+                result,
+                BashClassification::ReadOnly,
+                "expected ReadOnly for: {cmd}"
+            );
+        }
     }
 }
