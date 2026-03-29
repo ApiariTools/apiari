@@ -3,8 +3,9 @@
 //! Parses each workspace config and checks it deserializes into `WorkspaceConfig`.
 //! Prints a summary line per workspace and exits non-zero if any fail.
 
-use color_eyre::eyre::{Result, WrapErr};
 use std::path::{Component, Path};
+
+use color_eyre::eyre::{Result, WrapErr};
 
 /// Run validation for one or all workspace configs.
 ///
@@ -93,8 +94,9 @@ fn run_with_dir(workspace: Option<&str>, dir: &Path) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
+    use super::*;
 
     #[test]
     fn test_validate_valid_config() {

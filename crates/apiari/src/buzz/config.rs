@@ -2,10 +2,10 @@
 //!
 //! The caller (cli crate) is responsible for loading and providing config.
 
+use std::{collections::HashMap, path::Path};
+
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::Path;
 
 /// Top-level buzz configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -13,15 +13,12 @@ pub mod swarm_client;
 
 use std::path::PathBuf;
 
+use apiari_claude_sdk::{ClaudeClient, Event, SessionOptions, types::ContentBlock};
 use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use apiari_claude_sdk::types::ContentBlock;
-use apiari_claude_sdk::{ClaudeClient, Event, SessionOptions};
-
-use crate::buzz::conversation::SessionToken;
-use crate::buzz::signal::store::SignalStore;
+use crate::buzz::{conversation::SessionToken, signal::store::SignalStore};
 
 /// Unified token usage stats across all providers.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -767,12 +764,13 @@ fn truncate_cmd(cmd: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use apiari_claude_sdk::Event;
-    use apiari_claude_sdk::types::{
-        AssistantMessage, AssistantMessageContent, ContentBlock, ResultMessage,
+    use apiari_claude_sdk::{
+        Event,
+        types::{AssistantMessage, AssistantMessageContent, ContentBlock, ResultMessage},
     };
     use serde_json::Map;
+
+    use super::*;
 
     fn make_coordinator() -> Coordinator {
         Coordinator::new("sonnet", 20)

@@ -7,8 +7,10 @@
 //!
 //! Read-only: no Linear mutation API calls are ever made.
 
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use color_eyre::Result;
@@ -18,9 +20,10 @@ use tracing::{info, warn};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::Watcher;
-use crate::buzz::config::{LinearReviewQueueEntry, LinearWatcherConfig};
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalUpdate};
+use crate::buzz::{
+    config::{LinearReviewQueueEntry, LinearWatcherConfig},
+    signal::{Severity, SignalUpdate, store::SignalStore},
+};
 
 const SOURCE: &str = "linear_review_queue";
 

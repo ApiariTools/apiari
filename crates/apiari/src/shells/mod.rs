@@ -4,8 +4,7 @@
 //! persistent shell windows — created automatically with workers or manually
 //! by the user.
 
-use std::path::Path;
-use std::process::Command;
+use std::{path::Path, process::Command};
 
 /// Information about a single tmux window.
 #[derive(Debug, Clone)]

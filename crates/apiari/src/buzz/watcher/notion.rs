@@ -13,9 +13,10 @@ use color_eyre::Result;
 use tracing::{info, warn};
 
 use super::Watcher;
-use crate::buzz::config::NotionWatcherConfig;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalUpdate};
+use crate::buzz::{
+    config::NotionWatcherConfig,
+    signal::{Severity, SignalUpdate, store::SignalStore},
+};
 
 const NOTION_API_BASE: &str = "https://api.notion.com/v1";
 const NOTION_VERSION: &str = "2022-06-28";

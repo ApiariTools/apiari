@@ -3,8 +3,10 @@
 //! Constructs a system prompt that includes open signals and recent memory,
 //! so the coordinator always knows what's happening.
 
-use crate::buzz::coordinator::memory::{MemoryCategory, MemoryEntry};
-use crate::buzz::signal::SignalRecord;
+use crate::buzz::{
+    coordinator::memory::{MemoryCategory, MemoryEntry},
+    signal::SignalRecord,
+};
 
 /// The default coordinator prompt preamble (identity + role boundaries).
 ///
@@ -221,9 +223,10 @@ pub fn format_signal_summary(signals: &[SignalRecord]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
     use crate::buzz::signal::{Severity, SignalStatus};
-    use chrono::Utc;
 
     fn make_signal(source: &str, title: &str, severity: Severity) -> SignalRecord {
         SignalRecord {

@@ -2,11 +2,14 @@
 //!
 //! Each workspace is a self-contained TOML file at `~/.config/apiari/workspaces/{name}.toml`.
 
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Root directory for all apiari config.
 pub fn config_dir() -> PathBuf {
@@ -1132,8 +1135,10 @@ fn default_swarm_agent() -> String {
 pub fn to_pipeline_rules(
     config: &PipelineConfig,
 ) -> Vec<crate::buzz::pipeline::rule::PipelineRule> {
-    use crate::buzz::pipeline::rule::{PipelineAction, PipelineRule};
-    use crate::buzz::signal::Severity;
+    use crate::buzz::{
+        pipeline::rule::{PipelineAction, PipelineRule},
+        signal::Severity,
+    };
 
     config
         .rules

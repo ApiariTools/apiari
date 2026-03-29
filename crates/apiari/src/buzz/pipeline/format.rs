@@ -63,9 +63,10 @@ pub fn format_batch_notification(signals: &[SignalRecord]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
     use crate::buzz::signal::SignalStatus;
-    use chrono::Utc;
 
     fn make_record(
         source: &str,

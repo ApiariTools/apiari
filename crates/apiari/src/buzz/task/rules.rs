@@ -465,10 +465,11 @@ fn extract_pr_ref(signal: &SignalRecord) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::buzz::signal::{Severity, SignalRecord, SignalStatus};
     use chrono::Utc;
     use uuid::Uuid;
+
+    use super::*;
+    use crate::buzz::signal::{Severity, SignalRecord, SignalStatus};
 
     fn make_task(stage: TaskStage) -> Task {
         use crate::buzz::task::Task;

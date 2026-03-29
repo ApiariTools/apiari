@@ -23,9 +23,10 @@ use async_trait::async_trait;
 use color_eyre::Result;
 use tracing::info;
 
-use crate::buzz::signal::SignalUpdate;
-use crate::buzz::signal::store::SignalStore;
-use crate::config::Schedule;
+use crate::{
+    buzz::signal::{SignalUpdate, store::SignalStore},
+    config::Schedule,
+};
 
 /// A pluggable source that can be polled for new signals.
 #[async_trait]

@@ -3,9 +3,7 @@
 //! Inspects the workspace config and `.apiari/` scaffold, reports issues,
 //! and optionally fixes them with `--fix`.
 
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::Path;
+use std::{fs::OpenOptions, io::Write, path::Path};
 
 use crate::config::{CURRENT_CONFIG_VERSION, WorkspaceConfig};
 

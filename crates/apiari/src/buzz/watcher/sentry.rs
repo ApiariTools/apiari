@@ -3,8 +3,7 @@
 //! Uses cross-poll dedup via seen_issues map to avoid re-emitting
 //! stale issues that reorder in Sentry's date-sorted results.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -16,9 +15,10 @@ use tracing::{info, warn};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 use super::Watcher;
-use crate::buzz::config::SentryWatcherConfig;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalUpdate};
+use crate::buzz::{
+    config::SentryWatcherConfig,
+    signal::{Severity, SignalUpdate, store::SignalStore},
+};
 
 /// Per-issue metadata tracked across polls for dedup decisions.
 #[derive(Debug, Clone, Serialize, Deserialize)]

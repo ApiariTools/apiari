@@ -8,9 +8,10 @@ pub mod shells;
 mod ui;
 mod validate_bash;
 
+use std::fs;
+
 use clap::{CommandFactory, Parser, Subcommand};
 use color_eyre::eyre::Result;
-use std::fs;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 #[derive(Parser)]

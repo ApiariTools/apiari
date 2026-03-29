@@ -61,9 +61,10 @@ impl BatchCollector {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+
     use super::*;
     use crate::buzz::signal::{Severity, SignalStatus};
-    use chrono::Utc;
 
     fn make_record(source: &str, title: &str) -> SignalRecord {
         SignalRecord {

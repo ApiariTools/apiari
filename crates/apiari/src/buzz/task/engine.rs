@@ -7,8 +7,11 @@
 use color_eyre::Result;
 use tracing::info;
 
-use super::rules::{self, Approval, TransitionAction};
-use super::{Task, store::TaskStore};
+use super::{
+    Task,
+    rules::{self, Approval, TransitionAction},
+    store::TaskStore,
+};
 use crate::buzz::signal::SignalRecord;
 
 /// Result of processing a signal through the task engine.
@@ -211,11 +214,14 @@ fn extract_role_from_metadata(signal: &SignalRecord) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::buzz::signal::{Severity, SignalRecord, SignalStatus};
-    use crate::buzz::task::{Task, TaskStage, store::TaskStore};
     use chrono::Utc;
     use uuid::Uuid;
+
+    use super::*;
+    use crate::buzz::{
+        signal::{Severity, SignalRecord, SignalStatus},
+        task::{Task, TaskStage, store::TaskStore},
+    };
 
     fn make_task(workspace: &str, stage: TaskStage, repo: &str, pr_number: i64) -> Task {
         let now = Utc::now();

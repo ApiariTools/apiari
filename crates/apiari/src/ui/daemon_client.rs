@@ -1,12 +1,17 @@
 //! TUI-side daemon client — connects to daemon via Unix socket or TCP.
 
 use std::path::Path;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::net::{TcpStream, UnixStream};
+
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
+    net::{TcpStream, UnixStream},
+};
 use tracing::{debug, info};
 
-use crate::config::DaemonEndpoint;
-use crate::daemon::socket::{DaemonRequest, DaemonResponse};
+use crate::{
+    config::DaemonEndpoint,
+    daemon::socket::{DaemonRequest, DaemonResponse},
+};
 
 /// Transport-agnostic line reader + writer.
 enum Transport {

@@ -5,8 +5,10 @@
 
 use std::path::{Path, PathBuf};
 
-use apiari_swarm::daemon::ipc_client::send_daemon_request;
-use apiari_swarm::daemon::protocol::{DaemonRequest, DaemonResponse, WorkerInfo};
+use apiari_swarm::daemon::{
+    ipc_client::send_daemon_request,
+    protocol::{DaemonRequest, DaemonResponse, WorkerInfo},
+};
 use color_eyre::eyre::{Result, bail};
 
 /// Async client for the swarm daemon.

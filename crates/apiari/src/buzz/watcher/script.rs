@@ -5,14 +5,14 @@ use std::process::Stdio;
 
 use async_trait::async_trait;
 use color_eyre::Result;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tokio::{io::AsyncReadExt, process::Command};
 use tracing::{debug, info, warn};
 
 use super::Watcher;
-use crate::buzz::config::ScriptWatcherConfig;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalUpdate};
+use crate::buzz::{
+    config::ScriptWatcherConfig,
+    signal::{Severity, SignalUpdate, store::SignalStore},
+};
 
 /// Maximum bytes of stdout/stderr to retain per stream per script execution.
 const MAX_OUTPUT_BYTES: usize = 10 * 1024;

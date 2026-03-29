@@ -8,29 +8,35 @@ pub mod render;
 pub mod settings;
 pub mod theme;
 
+use std::{io::stdout, time::Duration};
+
 use app::{App, AppUpdate, Mode, Panel, PendingAction, View, review_signal_target};
 use color_eyre::Result;
-use crossterm::ExecutableCommand;
-use crossterm::event::{Event, EventStream, KeyCode, KeyModifiers};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+use crossterm::{
+    ExecutableCommand,
+    event::{Event, EventStream, KeyCode, KeyModifiers},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures::StreamExt;
 use ratatui::prelude::*;
 use settings::SettingsState;
-use std::io::stdout;
-use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::info;
 
-use crate::buzz::coordinator::skills::{
-    build_skills_prompt, default_coordinator_disallowed_tools, default_coordinator_tools,
+use crate::{
+    buzz::{
+        coordinator::{
+            Coordinator, CoordinatorEvent,
+            skills::{
+                build_skills_prompt, default_coordinator_disallowed_tools,
+                default_coordinator_tools,
+            },
+        },
+        signal::store::SignalStore,
+    },
+    config,
+    git_safety::GitSafetyHooks,
 };
-use crate::buzz::coordinator::{Coordinator, CoordinatorEvent};
-use crate::buzz::signal::store::SignalStore;
-
-use crate::config;
-use crate::git_safety::GitSafetyHooks;
 
 // ── Channel types ────────────────────────────────────────
 
@@ -2615,8 +2621,9 @@ fn build_coordinator(workspace_name: &str) -> Option<Coordinator> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+    use super::*;
 
     /// Build a minimal App for key-handling tests (no file I/O).
     fn test_app() -> App {

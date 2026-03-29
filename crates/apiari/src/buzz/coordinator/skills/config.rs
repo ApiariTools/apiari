@@ -267,8 +267,9 @@ pub fn build_config_summary(ctx: &SkillContext) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     fn full_ctx() -> SkillContext {
         SkillContext {

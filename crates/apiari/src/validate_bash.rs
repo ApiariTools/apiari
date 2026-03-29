@@ -10,9 +10,12 @@
 //! per-command denials (tool remains available) rather than hook errors
 //! (which can deregister the tool for the session).
 
-use crate::buzz::coordinator::audit::{self, BashClassification};
-use crate::config;
 use std::io::Read;
+
+use crate::{
+    buzz::coordinator::audit::{self, BashClassification},
+    config,
+};
 
 /// The hook's verdict: either allow (no stdout) or deny (JSON on stdout).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,8 +171,9 @@ fn extract_command(input: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Mutex;
+
+    use super::*;
 
     /// Tests that mutate HOME must hold this lock to avoid interfering with each other.
     /// Note: this only serializes tests within this module. Tests in other modules that

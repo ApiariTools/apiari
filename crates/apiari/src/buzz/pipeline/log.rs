@@ -1,7 +1,9 @@
 //! Notification log — in-memory dedup tracker.
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 /// Tracks recently sent notifications to prevent duplicates.
 pub struct NotificationLog {

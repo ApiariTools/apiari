@@ -6,21 +6,28 @@
 //!
 //! Replaces the previous approach of polling `.swarm/state.json` on disk.
 
-use apiari_swarm::WorkerPhase;
-use apiari_swarm::client::{
-    DaemonRequest, DaemonResponse, WorkerInfo, global_socket_path, send_daemon_request, socket_path,
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+
+use apiari_swarm::{
+    WorkerPhase,
+    client::{
+        DaemonRequest, DaemonResponse, WorkerInfo, global_socket_path, send_daemon_request,
+        socket_path,
+    },
 };
 use async_trait::async_trait;
 use color_eyre::Result;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
 use super::Watcher;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate};
+use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate, store::SignalStore};
 
 /// Tracked state for a worktree between polls.
 #[derive(Debug, Clone)]
@@ -520,8 +527,10 @@ async fn connect_and_subscribe(
     work_dir: &Path,
     events: &Mutex<Vec<(String, WorkerPhase)>>,
 ) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::UnixStream;
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::UnixStream,
+    };
 
     // Try per-workspace socket first, then global
     let local = socket_path(work_dir);
@@ -565,8 +574,9 @@ async fn connect_and_subscribe(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use apiari_swarm::core::state::{SwarmState, WorkerPhase};
+
+    use super::*;
 
     /// Helper to build a minimal valid WorktreeState JSON object.
     fn wt_json(id: &str, extras: &str) -> String {

@@ -7,41 +7,40 @@ pub mod doctor;
 pub mod morning_brief;
 pub mod socket;
 
+use std::{collections::HashMap, sync::Arc};
+
 use color_eyre::eyre::{Result, WrapErr};
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::git_safety::GitSafetyHooks;
-
-use crate::buzz::channel::telegram::TelegramChannel;
-use crate::buzz::channel::{Channel, ChannelEvent, OutboundMessage};
-use crate::buzz::conversation::ConversationStore;
-use crate::buzz::coordinator::prompt::format_signal_summary;
-use crate::buzz::coordinator::skills::{
-    SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
-    default_coordinator_tools, observe_coordinator_disallowed_tools, observe_coordinator_tools,
-};
-use crate::buzz::coordinator::{Coordinator, CoordinatorEvent, DispatchBundle};
-use crate::buzz::daemon::config as buzz_daemon_config;
-use crate::buzz::pipeline::Pipeline;
-use crate::buzz::signal::Severity;
-use crate::buzz::signal::store::SignalStore;
-use crate::buzz::watcher::WatcherRegistry;
-use crate::buzz::watcher::email::EmailWatcher;
-use crate::buzz::watcher::github::GithubWatcher;
-use crate::buzz::watcher::linear::LinearWatcher;
-use crate::buzz::watcher::notion::NotionWatcher;
-use crate::buzz::watcher::review_queue::ReviewQueueWatcher;
-use crate::buzz::watcher::script::ScriptWatcher;
-use crate::buzz::watcher::sentry::SentryWatcher;
-use crate::buzz::watcher::swarm::SwarmWatcher;
-
-use crate::config::{
-    self, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config,
-    to_pipeline_rules,
+use crate::{
+    buzz::{
+        channel::{Channel, ChannelEvent, OutboundMessage, telegram::TelegramChannel},
+        conversation::ConversationStore,
+        coordinator::{
+            Coordinator, CoordinatorEvent, DispatchBundle,
+            prompt::format_signal_summary,
+            skills::{
+                SkillContext, build_skills_prompt, default_coordinator_disallowed_tools,
+                default_coordinator_tools, observe_coordinator_disallowed_tools,
+                observe_coordinator_tools,
+            },
+        },
+        daemon::config as buzz_daemon_config,
+        pipeline::Pipeline,
+        signal::{Severity, store::SignalStore},
+        watcher::{
+            WatcherRegistry, email::EmailWatcher, github::GithubWatcher, linear::LinearWatcher,
+            notion::NotionWatcher, review_queue::ReviewQueueWatcher, script::ScriptWatcher,
+            sentry::SentryWatcher, swarm::SwarmWatcher,
+        },
+    },
+    config::{
+        self, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config,
+        to_pipeline_rules,
+    },
+    git_safety::GitSafetyHooks,
 };
 
 /// Why the event loop exited.

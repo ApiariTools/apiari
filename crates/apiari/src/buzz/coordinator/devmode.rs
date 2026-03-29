@@ -8,10 +8,11 @@
 //! This path is intentionally **outside** `~/.config/apiari/` (which is an
 //! allowed Bash write target) so the coordinator cannot self-enable dev-mode.
 
+use std::path::{Path, PathBuf};
+
 use chrono::{DateTime, Duration, Utc};
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 
 /// Default dev-mode duration: 30 minutes.
 const DEFAULT_DURATION_MINUTES: i64 = 30;

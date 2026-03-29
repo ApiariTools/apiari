@@ -23,8 +23,10 @@ mod sentry;
 mod signals;
 mod swarm;
 
-use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::{
+    io::BufRead,
+    path::{Path, PathBuf},
+};
 
 use crate::config::{WorkspaceAuthority, WorkspaceCapabilities};
 
@@ -320,8 +322,9 @@ pub fn observe_coordinator_disallowed_tools() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     fn test_ctx() -> SkillContext {
         SkillContext {
