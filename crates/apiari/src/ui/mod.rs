@@ -114,6 +114,11 @@ enum KeyAction {
         workspace: String,
         task_id: String,
     },
+    OpenWorkerOutput {
+        workspace_name: String,
+        worker_id: String,
+        workspace_root: std::path::PathBuf,
+    },
     Redraw,
 }
 
@@ -489,6 +494,41 @@ async fn event_loop(
                             continue;
                         }
 
+                        // Open worker output: initialize state and spawn subscription task
+                        if let KeyAction::OpenWorkerOutput {
+                            ref workspace_name,
+                            ref worker_id,
+                            ref workspace_root,
+                        } = action
+                        {
+                            if let Some(ws) = app
+                                .workspaces
+                                .iter_mut()
+                                .find(|ws| ws.name == *workspace_name)
+                            {
+                                ws.viewing_worker_output = Some(
+                                    app::WorkerOutputState::new(worker_id.clone()),
+                                );
+                            }
+                            // Abort any previous subscription task
+                            if let Some(handle) = app.worker_output_task.take() {
+                                handle.abort();
+                            }
+                            let wid = worker_id.clone();
+                            let ws_name = workspace_name.clone();
+                            let root = workspace_root.clone();
+                            let tx = update_tx.clone();
+                            app.worker_output_task = Some(tokio::spawn(async move {
+                                if let Err(e) =
+                                    worker_output_stream_task(wid, ws_name, root, tx).await
+                                {
+                                    tracing::warn!("worker output stream ended: {e}");
+                                }
+                            }));
+                            app.needs_redraw = true;
+                            continue;
+                        }
+
                         if let Some(true) = handle_action(&mut app, action, user_tx).await {
                             break;
                         }
@@ -687,6 +727,9 @@ async fn event_loop(
                             app.remote_host = remote_host;
                         }
                         app.needs_redraw = true;
+                    }
+                    AppUpdate::WorkerOutputLine { workspace_name, worker_id, line } => {
+                        app.apply_worker_output_line(&workspace_name, &worker_id, line);
                     }
                     AppUpdate::WorkerConversation { workspace_name, worker_id, entries } => {
                         if let Some(ws) = app.workspaces.iter_mut().find(|ws| ws.name == workspace_name)
@@ -914,6 +957,72 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         return handle_dashboard_chat_key(app, key);
     }
 
+    // Worker output panel: intercept all navigation while open
+    if app
+        .current_ws()
+        .is_some_and(|ws| ws.viewing_worker_output.is_some())
+    {
+        match key.code {
+            KeyCode::Esc => {
+                // Abort the subscription task
+                if let Some(handle) = app.worker_output_task.take() {
+                    handle.abort();
+                }
+                if let Some(ws) = app.current_ws_mut() {
+                    ws.viewing_worker_output = None;
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref mut out) = ws.viewing_worker_output
+                {
+                    out.auto_scroll = false;
+                    let max = out.lines.len().saturating_sub(1);
+                    out.scroll = (out.scroll + 1).min(max);
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref mut out) = ws.viewing_worker_output
+                {
+                    out.auto_scroll = false;
+                    out.scroll = out.scroll.saturating_sub(1);
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('G') => {
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref mut out) = ws.viewing_worker_output
+                {
+                    out.auto_scroll = true;
+                    out.scroll = out.lines.len().saturating_sub(1);
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('f') => {
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref mut out) = ws.viewing_worker_output
+                {
+                    out.auto_scroll = !out.auto_scroll;
+                    if out.auto_scroll {
+                        out.scroll = out.lines.len().saturating_sub(1);
+                    }
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            _ => {
+                return KeyAction::Redraw;
+            }
+        }
+    }
+
     // Task detail panel: intercept navigation keys while open
     if app.current_ws().is_some_and(|ws| ws.viewing_task.is_some()) {
         match key.code {
@@ -950,6 +1059,24 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 });
                 if let Some((workspace, task_id)) = info {
                     return KeyAction::LoadTaskTimeline { workspace, task_id };
+                }
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('o') => {
+                // Open live worker output for this task's worker
+                let info = app.current_ws().and_then(|ws| {
+                    ws.viewing_task.as_ref().and_then(|d| {
+                        d.worker_id
+                            .as_ref()
+                            .map(|wid| (ws.name.clone(), wid.clone(), ws.config.root.clone()))
+                    })
+                });
+                if let Some((workspace_name, worker_id, workspace_root)) = info {
+                    return KeyAction::OpenWorkerOutput {
+                        workspace_name,
+                        worker_id,
+                        workspace_root,
+                    };
                 }
                 return KeyAction::Redraw;
             }
@@ -1182,6 +1309,20 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
             }
         }
         KeyCode::Char('o') => {
+            // Workers panel: open live output stream for selected worker
+            if app.focused_panel == Panel::Workers
+                && let Some(ws) = app.current_ws()
+                && let Some(worker) = ws.workers.get(app.worker_selection)
+            {
+                let workspace_name = ws.name.clone();
+                let worker_id = worker.id.clone();
+                let workspace_root = ws.config.root.clone();
+                return KeyAction::OpenWorkerOutput {
+                    workspace_name,
+                    worker_id,
+                    workspace_root,
+                };
+            }
             if let Some(url) = app.selected_url() {
                 return KeyAction::OpenUrl(url);
             }
@@ -2207,6 +2348,7 @@ async fn handle_action(
         | KeyAction::SetupComplete
         | KeyAction::AddWorkspace
         | KeyAction::LoadTaskTimeline { .. }
+        | KeyAction::OpenWorkerOutput { .. }
         | KeyAction::None
         | KeyAction::Redraw => {}
     }
@@ -2738,6 +2880,133 @@ fn build_coordinator(workspace_name: &str) -> Option<Coordinator> {
     }));
 
     Some(coordinator)
+}
+
+// ── Worker output stream ─────────────────────────────────
+
+/// Background task that subscribes to a worker's live output via the swarm daemon
+/// and forwards each event as an `AppUpdate::WorkerOutputLine`.
+async fn worker_output_stream_task(
+    worker_id: String,
+    workspace_name: String,
+    workspace_root: std::path::PathBuf,
+    tx: mpsc::Sender<app::AppUpdate>,
+) -> color_eyre::Result<()> {
+    use apiari_swarm::client::{AgentEventWire, DaemonRequest, global_socket_path, socket_path};
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+        net::UnixStream,
+    };
+
+    let local = socket_path(&workspace_root);
+    let global = global_socket_path();
+    let stream = if local.exists() {
+        UnixStream::connect(&local).await
+    } else {
+        UnixStream::connect(&global).await
+    }
+    .map_err(|e| color_eyre::eyre::eyre!("failed to connect to swarm daemon: {e}"))?;
+
+    let (reader, mut writer) = stream.into_split();
+
+    let req = DaemonRequest::Subscribe {
+        worktree_id: Some(worker_id.clone()),
+        workspace: None,
+    };
+    let mut line = serde_json::to_string(&req)?;
+    line.push('\n');
+    writer.write_all(line.as_bytes()).await?;
+
+    let mut reader = BufReader::new(reader);
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        let n = reader.read_line(&mut buf).await?;
+        if n == 0 {
+            break; // daemon closed the connection
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(buf.trim())
+            && val.get("kind").and_then(|k| k.as_str()) == Some("agent_event")
+            && val
+                .get("worktree_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| id == worker_id)
+            && let Some(event_val) = val.get("event")
+            && let Ok(event) = serde_json::from_value::<AgentEventWire>(event_val.clone())
+        {
+            let output_line = agent_event_to_output_line(event);
+            let _ = tx
+                .send(app::AppUpdate::WorkerOutputLine {
+                    workspace_name: workspace_name.clone(),
+                    worker_id: worker_id.clone(),
+                    line: output_line,
+                })
+                .await;
+        }
+    }
+    Ok(())
+}
+
+/// Convert an `AgentEventWire` to a rendered `OutputLine`.
+fn agent_event_to_output_line(event: apiari_swarm::client::AgentEventWire) -> app::OutputLine {
+    use apiari_swarm::client::AgentEventWire;
+    match event {
+        AgentEventWire::TextDelta { text } => app::OutputLine {
+            kind: app::OutputLineKind::Text,
+            text,
+        },
+        AgentEventWire::ThinkingDelta { text } => app::OutputLine {
+            kind: app::OutputLineKind::Thinking,
+            text,
+        },
+        AgentEventWire::ToolUse { tool, input } => {
+            let truncated = if input.len() > 120 {
+                format!("{}…", &input[..120])
+            } else {
+                input
+            };
+            app::OutputLine {
+                kind: app::OutputLineKind::ToolUse,
+                text: format!("🔧 {tool}: {truncated}"),
+            }
+        }
+        AgentEventWire::ToolResult { output, is_error } => {
+            let truncated = if output.len() > 200 {
+                format!("{}…", &output[..200])
+            } else {
+                output
+            };
+            app::OutputLine {
+                kind: if is_error {
+                    app::OutputLineKind::Error
+                } else {
+                    app::OutputLineKind::ToolResult
+                },
+                text: truncated,
+            }
+        }
+        AgentEventWire::TurnComplete => app::OutputLine {
+            kind: app::OutputLineKind::Separator,
+            text: "─".repeat(40),
+        },
+        AgentEventWire::SessionResult {
+            turns, cost_usd, ..
+        } => {
+            let cost_str = cost_usd.map(|c| format!("  ${:.4}", c)).unwrap_or_default();
+            app::OutputLine {
+                kind: app::OutputLineKind::Status,
+                text: format!("Session complete — {turns} turns{cost_str}"),
+            }
+        }
+        AgentEventWire::SessionWaiting { .. } => app::OutputLine {
+            kind: app::OutputLineKind::Status,
+            text: "⏳ Waiting for input…".to_string(),
+        },
+        AgentEventWire::Error { message } => app::OutputLine {
+            kind: app::OutputLineKind::Error,
+            text: format!("Error: {message}"),
+        },
+    }
 }
 
 #[cfg(test)]
