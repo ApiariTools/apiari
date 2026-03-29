@@ -185,6 +185,11 @@ pub(super) enum AppUpdate {
     },
     Tasks(Vec<(String, Vec<crate::buzz::task::Task>)>),
     ActivityEvents(Vec<(String, Vec<crate::buzz::task::ActivityEvent>)>),
+    TaskTimeline {
+        workspace: String,
+        task_id: String,
+        events: Vec<crate::buzz::task::ActivityEvent>,
+    },
 }
 
 // ── Worker info from state.json ───────────────────────────
@@ -266,6 +271,18 @@ pub struct KanbanCard {
     pub source: String,
     pub url: Option<String>,
     pub entered_stage_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// State for the task detail panel (shown when pressing Enter on a task kanban card).
+#[derive(Debug, Clone)]
+pub struct TaskDetailState {
+    pub task_id: String,
+    pub task_title: String,
+    pub stage: String,
+    pub worker_id: Option<String>,
+    pub pr_number: Option<i64>,
+    pub events: Vec<crate::buzz::task::ActivityEvent>,
+    pub scroll: usize,
 }
 
 /// Build kanban cards from tasks. Task cards take priority over worker/signal cards
@@ -996,6 +1013,8 @@ pub struct WorkspaceState {
     pub activity_selected: usize,
     /// Scroll offset for the activity feed.
     pub activity_scroll: usize,
+    /// Task detail panel state (Some when viewing a task's timeline).
+    pub viewing_task: Option<TaskDetailState>,
 }
 
 // ── App ───────────────────────────────────────────────────
@@ -1129,6 +1148,7 @@ impl App {
                     activity_events: Vec::new(),
                     activity_selected: 0,
                     activity_scroll: 0,
+                    viewing_task: None,
                 }
             })
             .collect();
@@ -1282,6 +1302,7 @@ impl App {
             activity_events: Vec::new(),
             activity_selected: 0,
             activity_scroll: 0,
+            viewing_task: None,
         };
 
         let setup = SetupState {
@@ -1422,6 +1443,7 @@ impl App {
             activity_events: Vec::new(),
             activity_selected: 0,
             activity_scroll: 0,
+            viewing_task: None,
         };
 
         ws_state.chat_history.push(ChatLine::Assistant(
@@ -1629,6 +1651,7 @@ impl App {
             activity_events: Vec::new(),
             activity_selected: 0,
             activity_scroll: 0,
+            viewing_task: None,
         };
 
         if is_add {
@@ -3257,6 +3280,64 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Apply a task timeline update to the detail panel.
+    pub(super) fn apply_task_timeline_update(
+        &mut self,
+        workspace: &str,
+        task_id: &str,
+        events: Vec<crate::buzz::task::ActivityEvent>,
+    ) {
+        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == workspace)
+            && let Some(ref mut detail) = ws.viewing_task
+            && detail.task_id == task_id
+        {
+            detail.events = events;
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Open the task detail panel for the currently selected kanban card.
+    ///
+    /// Returns `Some((workspace_name, task_id))` if a task card was selected,
+    /// so the caller can spawn a background timeline load.
+    pub fn open_task_detail_for_selected(&mut self) -> Option<(String, String)> {
+        let allocated_h = self.kanban_allocated_height.get();
+        let ws = self.current_ws_mut()?;
+        let (stage, idx) = ws.kanban_selected?;
+        let visible = ws_kanban_visible_count(ws, stage, allocated_h);
+        if idx >= visible {
+            return None;
+        }
+        let card = ws
+            .kanban_cards
+            .iter()
+            .filter(|c| c.stage == stage)
+            .nth(idx)?;
+        let task_id = card.id.strip_prefix("task:")?.to_string();
+        let title = card.title.clone();
+
+        // Look up full task for extra metadata
+        let task = ws.tasks.iter().find(|t| t.id == task_id);
+        let worker_id = task.and_then(|t| t.worker_id.clone());
+        let pr_number = task.and_then(|t| t.pr_number);
+        let stage_str = task
+            .map(|t| t.stage.as_str().to_string())
+            .unwrap_or_default();
+        let workspace_name = ws.name.clone();
+
+        ws.viewing_task = Some(TaskDetailState {
+            task_id: task_id.clone(),
+            task_title: title,
+            stage: stage_str,
+            worker_id,
+            pr_number,
+            events: Vec::new(),
+            scroll: 0,
+        });
+        self.needs_redraw = true;
+        Some((workspace_name, task_id))
+    }
+
     /// Apply extras data from background refresh.
     pub(super) fn apply_extras_update(
         &mut self,
@@ -4739,6 +4820,7 @@ mod tests {
             activity_events: Vec::new(),
             activity_selected: 0,
             activity_scroll: 0,
+            viewing_task: None,
         };
         app.workspaces = vec![ws];
         app.setup = None;
@@ -5000,6 +5082,7 @@ mod tests {
             activity_events: Vec::new(),
             activity_selected: 0,
             activity_scroll: 0,
+            viewing_task: None,
         }
     }
 

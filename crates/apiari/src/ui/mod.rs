@@ -110,6 +110,10 @@ enum KeyAction {
     SetupComplete,
     AddWorkspace,
     OpenSettings,
+    LoadTaskTimeline {
+        workspace: String,
+        task_id: String,
+    },
     Redraw,
 }
 
@@ -458,6 +462,33 @@ async fn event_loop(
                             continue;
                         }
 
+                        // Task detail: load timeline in background
+                        if let KeyAction::LoadTaskTimeline {
+                            ref workspace,
+                            ref task_id,
+                        } = action
+                        {
+                            let ws_name = workspace.clone();
+                            let t_id = task_id.clone();
+                            let db = crate::config::db_path();
+                            let tx = update_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Ok(store) =
+                                    crate::buzz::task::ActivityEventStore::open(&db)
+                                    && let Ok(events) =
+                                        store.get_task_timeline(&ws_name, &t_id)
+                                {
+                                    let _ = tx.blocking_send(AppUpdate::TaskTimeline {
+                                        workspace: ws_name,
+                                        task_id: t_id,
+                                        events,
+                                    });
+                                }
+                            });
+                            app.needs_redraw = true;
+                            continue;
+                        }
+
                         if let Some(true) = handle_action(&mut app, action, user_tx).await {
                             break;
                         }
@@ -578,6 +609,31 @@ async fn event_loop(
                     }
                     AppUpdate::ActivityEvents(data) => {
                         app.apply_activity_update(data);
+                        // Auto-refresh task timeline if the detail panel is open
+                        if let Some(ws) = app.current_ws()
+                            && let Some(ref detail) = ws.viewing_task
+                        {
+                            let ws_name = ws.name.clone();
+                            let task_id = detail.task_id.clone();
+                            let db = crate::config::db_path();
+                            let tx = update_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Ok(store) =
+                                    crate::buzz::task::ActivityEventStore::open(&db)
+                                    && let Ok(events) =
+                                        store.get_task_timeline(&ws_name, &task_id)
+                                {
+                                    let _ = tx.blocking_send(AppUpdate::TaskTimeline {
+                                        workspace: ws_name,
+                                        task_id,
+                                        events,
+                                    });
+                                }
+                            });
+                        }
+                    }
+                    AppUpdate::TaskTimeline { workspace, task_id, events } => {
+                        app.apply_task_timeline_update(&workspace, &task_id, events);
                     }
                     AppUpdate::ShellWindows(data) => {
                         for (name, windows) in &data {
@@ -858,6 +914,49 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         return handle_dashboard_chat_key(app, key);
     }
 
+    // Task detail panel: intercept navigation keys while open
+    if app.current_ws().is_some_and(|ws| ws.viewing_task.is_some()) {
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(ws) = app.current_ws_mut() {
+                    ws.viewing_task = None;
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref mut d) = ws.viewing_task
+                {
+                    d.scroll = d.scroll.saturating_add(1);
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(ws) = app.current_ws_mut()
+                    && let Some(ref mut d) = ws.viewing_task
+                {
+                    d.scroll = d.scroll.saturating_sub(1);
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            KeyCode::Char('r') => {
+                let info = app.current_ws().and_then(|ws| {
+                    ws.viewing_task
+                        .as_ref()
+                        .map(|d| (ws.name.clone(), d.task_id.clone()))
+                });
+                if let Some((workspace, task_id)) = info {
+                    return KeyAction::LoadTaskTimeline { workspace, task_id };
+                }
+                return KeyAction::Redraw;
+            }
+            _ => {} // other keys fall through to normal handling
+        }
+    }
+
     // When a panel is zoomed full-screen, Tab cycles to the next panel (stays zoomed)
     if app.zoomed_panel.is_some() {
         match key.code {
@@ -956,6 +1055,27 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 return KeyAction::Redraw;
             }
             KeyCode::Enter => {
+                // For task cards: open the detail panel.
+                // For other cards: inject context into chat (legacy behavior).
+                if let Some((workspace, task_id)) = app.open_task_detail_for_selected() {
+                    return KeyAction::LoadTaskTimeline { workspace, task_id };
+                }
+                let maybe_msg = app.kanban_action_selected();
+                if let Some(msg) = maybe_msg {
+                    let msg_len = msg.len();
+                    if let Some(ws) = app.current_ws_mut() {
+                        ws.input = msg;
+                        ws.cursor_pos = msg_len;
+                        ws.has_unread_response = false;
+                    }
+                    app.focused_panel = Panel::Chat;
+                    app.chat_focused = true;
+                }
+                app.needs_redraw = true;
+                return KeyAction::Redraw;
+            }
+            // 'c' injects context into chat (works for both task and non-task cards)
+            KeyCode::Char('c') => {
                 let maybe_msg = app.kanban_action_selected();
                 if let Some(msg) = maybe_msg {
                     let msg_len = msg.len();
@@ -2086,6 +2206,7 @@ async fn handle_action(
         KeyAction::OpenSettings
         | KeyAction::SetupComplete
         | KeyAction::AddWorkspace
+        | KeyAction::LoadTaskTimeline { .. }
         | KeyAction::None
         | KeyAction::Redraw => {}
     }
@@ -2670,6 +2791,7 @@ mod tests {
             activity_events: Vec::new(),
             activity_selected: 0,
             activity_scroll: 0,
+            viewing_task: None,
         };
         let ws_name = ws.name.clone();
         App {

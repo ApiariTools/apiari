@@ -214,16 +214,28 @@ fn draw_dashboard(frame: &mut Frame, app: &App, area: Rect) {
 
     draw_kanban_strip(frame, app, ws, rows[0]);
 
-    // Bottom area: Chat + optional Triage sidebar
-    if ws.triage_sidebar_open {
+    // Bottom area: Task detail / Chat + optional Triage sidebar
+    let bottom = rows[1];
+    if ws.viewing_task.is_some() {
+        if ws.triage_sidebar_open {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+                .split(bottom);
+            draw_task_detail_panel(frame, ws, cols[0]);
+            draw_triage_sidebar(frame, ws, cols[1]);
+        } else {
+            draw_task_detail_panel(frame, ws, bottom);
+        }
+    } else if ws.triage_sidebar_open {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-            .split(rows[1]);
+            .split(bottom);
         draw_chat_panel(frame, app, ws, cols[0]);
         draw_triage_sidebar(frame, ws, cols[1]);
     } else {
-        draw_chat_panel(frame, app, ws, rows[1]);
+        draw_chat_panel(frame, app, ws, bottom);
     }
 
     // Onboarding: dim kanban area if Home panel not revealed
@@ -997,6 +1009,221 @@ fn draw_activity_view(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
             x: inner.x,
             y: more_y,
             width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" +{more} more"),
+                Style::default()
+                    .fg(theme::STEEL)
+                    .add_modifier(Modifier::DIM),
+            ))),
+            more_area,
+        );
+    }
+}
+
+fn draw_task_detail_panel(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
+    let detail = match ws.viewing_task.as_ref() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let title = format!(
+        " Task: {} ",
+        truncate_to_width(&detail.task_title, (area.width as usize).saturating_sub(12))
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(theme::FROST))
+        .style(Style::default().bg(theme::COMB))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(theme::POLLEN)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height < 4 {
+        return;
+    }
+
+    // ── Metadata line ────────────────────────────────────
+    let meta_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    };
+    let mut meta_spans: Vec<Span> = Vec::new();
+    if let Some(ref wid) = detail.worker_id {
+        let short = if wid.len() > 12 {
+            &wid[wid.len() - 8..]
+        } else {
+            wid.as_str()
+        };
+        meta_spans.push(Span::styled(
+            format!(" Worker: {short}"),
+            Style::default().fg(theme::FROST),
+        ));
+    }
+    if let Some(pr) = detail.pr_number {
+        meta_spans.push(Span::styled(
+            format!("  PR: #{pr}"),
+            Style::default().fg(theme::MINT),
+        ));
+    }
+    if !detail.stage.is_empty() {
+        meta_spans.push(Span::styled(
+            format!("  Stage: {}", detail.stage),
+            Style::default().fg(theme::POLLEN),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(meta_spans)), meta_area);
+
+    // ── Divider ──────────────────────────────────────────
+    let div_area = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(theme::STEEL),
+        ))),
+        div_area,
+    );
+
+    // ── Footer hint line ─────────────────────────────────
+    let footer_y = inner.y + inner.height.saturating_sub(1);
+    let footer_area = Rect {
+        x: inner.x,
+        y: footer_y,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" [Esc]", theme::key_hint()),
+            Span::styled(" Close  ", theme::key_desc()),
+            Span::styled("[r]", theme::key_hint()),
+            Span::styled(" Refresh  ", theme::key_desc()),
+            Span::styled("[j/k]", theme::key_hint()),
+            Span::styled(" Scroll", theme::key_desc()),
+        ])),
+        footer_area,
+    );
+
+    // ── Events list ──────────────────────────────────────
+    let events_y = inner.y + 2;
+    // Reserve 1 row for footer, 2 for meta+divider
+    let events_h = inner.height.saturating_sub(3);
+    let events_area = Rect {
+        x: inner.x,
+        y: events_y,
+        width: inner.width,
+        height: events_h,
+    };
+
+    let events = &detail.events;
+    if events.is_empty() {
+        let msg = " Loading timeline…";
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                msg,
+                Style::default().fg(theme::SMOKE),
+            ))),
+            events_area,
+        );
+        return;
+    }
+
+    // 2 lines per event: summary line + detail/age line
+    const LINES_PER_EVENT: usize = 2;
+    let visible = (events_area.height as usize / LINES_PER_EVENT).min(events.len());
+    let scroll = detail.scroll.min(events.len().saturating_sub(visible));
+
+    let mut y = 0u16;
+    for event in events.iter().skip(scroll).take(visible) {
+        if y + 1 > events_area.height {
+            break;
+        }
+
+        let (type_icon, type_color) = match event.event_type.as_str() {
+            "stage_change" => ("→", theme::MINT),
+            "signal" => ("●", theme::HONEY),
+            "worker" => ("◆", Color::Rgb(100, 180, 220)),
+            "review" => ("★", Color::Rgb(180, 120, 220)),
+            "pr" => ("◆", Color::Rgb(100, 200, 140)),
+            _ => ("·", theme::SMOKE),
+        };
+
+        let local_time = event.created_at.with_timezone(&chrono::Local);
+        let time_str = local_time.format("%H:%M").to_string();
+
+        let age = chrono::Utc::now().signed_duration_since(event.created_at);
+        let age_str = format_age(&age);
+
+        // Line 1: time  icon  summary
+        let line1_area = Rect {
+            x: events_area.x,
+            y: events_area.y + y,
+            width: events_area.width,
+            height: 1,
+        };
+        let summary_max = (events_area.width as usize).saturating_sub(10);
+        let line1 = Line::from(vec![
+            Span::styled(format!(" {time_str} "), Style::default().fg(theme::SMOKE)),
+            Span::styled(format!("{type_icon} "), Style::default().fg(type_color)),
+            Span::styled(
+                truncate_to_width(&event.summary, summary_max),
+                Style::default().fg(theme::FROST),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line1), line1_area);
+
+        // Line 2: detail/source  ·  age
+        if y + 1 < events_area.height {
+            let line2_area = Rect {
+                x: events_area.x,
+                y: events_area.y + y + 1,
+                width: events_area.width,
+                height: 1,
+            };
+            let detail_text = event
+                .detail
+                .as_deref()
+                .or(event.source.as_deref())
+                .unwrap_or("");
+            let age_sfx = format!(" · {age_str}");
+            let detail_max = (events_area.width as usize)
+                .saturating_sub(10 + UnicodeWidthStr::width(age_sfx.as_str()));
+            let line2 = Line::from(vec![
+                Span::raw("        "),
+                Span::styled(
+                    truncate_to_width(detail_text, detail_max),
+                    Style::default().fg(Color::Rgb(140, 135, 125)),
+                ),
+                Span::styled(age_sfx, Style::default().fg(Color::Rgb(80, 77, 70))),
+            ]);
+            frame.render_widget(Paragraph::new(line2), line2_area);
+        }
+
+        y += LINES_PER_EVENT as u16;
+    }
+
+    // "+N more" indicator
+    if events.len() > visible + scroll && visible + scroll < events.len() {
+        let more = events.len() - visible - scroll;
+        let more_area = Rect {
+            x: events_area.x,
+            y: events_area.y + events_area.height.saturating_sub(1),
+            width: events_area.width,
             height: 1,
         };
         frame.render_widget(
