@@ -15,6 +15,7 @@ use std::{
     },
 };
 
+use a2a_types::TaskState;
 use apiari_swarm::{
     WorkerPhase,
     client::{
@@ -23,6 +24,7 @@ use apiari_swarm::{
     },
 };
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use color_eyre::Result;
 use tracing::{info, warn};
 
@@ -42,6 +44,15 @@ struct TrackedWorker {
     running_count: u32,
 }
 
+/// Buffered A2aTaskUpdate event from the subscription task.
+struct A2aEvent {
+    worktree_id: String,
+    task_state: TaskState,
+    /// Raw JSON message (parsed from the wire).
+    message: Option<serde_json::Value>,
+    timestamp: DateTime<Utc>,
+}
+
 /// Watches swarm daemon for worker state changes via socket subscription.
 pub struct SwarmWatcher {
     work_dir: PathBuf,
@@ -50,6 +61,8 @@ pub struct SwarmWatcher {
     initialized: bool,
     /// Buffered StateChanged events from the subscription task.
     events: Arc<Mutex<Vec<(String, WorkerPhase)>>>,
+    /// Buffered A2aTaskUpdate events from the subscription task.
+    a2a_events: Arc<Mutex<Vec<A2aEvent>>>,
     /// Whether the subscription task has been spawned.
     subscription_started: Arc<AtomicBool>,
 }
@@ -61,6 +74,7 @@ impl SwarmWatcher {
             tracked: HashMap::new(),
             initialized: false,
             events: Arc::new(Mutex::new(Vec::new())),
+            a2a_events: Arc::new(Mutex::new(Vec::new())),
             subscription_started: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -93,7 +107,8 @@ impl SwarmWatcher {
         {
             let work_dir = self.work_dir.clone();
             let events = Arc::clone(&self.events);
-            tokio::spawn(subscription_loop(work_dir, events));
+            let a2a_events = Arc::clone(&self.a2a_events);
+            tokio::spawn(subscription_loop(work_dir, events, a2a_events));
         }
     }
 
@@ -168,6 +183,216 @@ impl SwarmWatcher {
             // Update tracked phase (preserve has_pr and role since StateChanged doesn't carry them)
             if let Some(tracked) = self.tracked.get_mut(&id) {
                 tracked.phase = phase;
+            }
+        }
+    }
+
+    /// Drain buffered A2aTaskUpdate events and emit signals from structured data.
+    ///
+    /// Handles `branch_ready`, `pr_opened`, and `review_verdict` data parts, and
+    /// emits richer phase-transition signals. Runs before `drain_events` so that
+    /// phase updates applied here suppress duplicate transitions in `drain_events`.
+    fn drain_a2a_events(&mut self, signals: &mut Vec<SignalUpdate>) {
+        let events: Vec<A2aEvent> = {
+            let mut buf = self.a2a_events.lock().unwrap();
+            std::mem::take(&mut *buf)
+        };
+
+        for event in events {
+            let id = &event.worktree_id;
+
+            // --- Structured data from message parts ---
+            if let Some(msg) = &event.message
+                && let Some(parts) = msg.get("parts").and_then(|p| p.as_array())
+            {
+                for part in parts {
+                    if part.get("type").and_then(|t| t.as_str()) != Some("data") {
+                        continue;
+                    }
+                    let data = match part.get("data") {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let part_type = data.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    match part_type {
+                        "branch_ready" => {
+                            let branch = data.get("branch").and_then(|b| b.as_str()).unwrap_or("");
+                            if !branch.is_empty() {
+                                let had_ready_branch = self
+                                    .tracked
+                                    .get(id)
+                                    .and_then(|p| p.ready_branch.as_deref())
+                                    .is_some();
+                                let has_pr = self.tracked.get(id).is_some_and(|p| p.has_pr);
+                                if !had_ready_branch && !has_pr {
+                                    let metadata = serde_json::json!({
+                                        "worker_id": id,
+                                        "branch_name": branch,
+                                    });
+                                    signals.push(
+                                        SignalUpdate::new(
+                                            "swarm_branch_ready",
+                                            format!("swarm-branch-ready-{id}"),
+                                            format!("Branch ready for review: {branch}"),
+                                            Severity::Info,
+                                        )
+                                        .with_metadata(metadata.to_string()),
+                                    );
+                                }
+                                if let Some(tracked) = self.tracked.get_mut(id) {
+                                    tracked.ready_branch = Some(branch.to_string());
+                                }
+                            }
+                        }
+                        "pr_opened" => {
+                            let pr_url = data.get("pr_url").and_then(|u| u.as_str()).unwrap_or("");
+                            let pr_number = data.get("pr_number").and_then(|n| n.as_u64());
+                            let has_pr = self.tracked.get(id).is_some_and(|p| p.has_pr);
+                            if !has_pr && !pr_url.is_empty() {
+                                let metadata = serde_json::json!({
+                                    "worker_id": id,
+                                    "pr_url": pr_url,
+                                    "pr_number": pr_number,
+                                });
+                                let mut signal = SignalUpdate::new(
+                                    "swarm",
+                                    format!("swarm-pr-{id}"),
+                                    format!("PR opened: {id}"),
+                                    Severity::Info,
+                                )
+                                .with_body(format!("#{} {pr_url}", pr_number.unwrap_or(0)))
+                                .with_metadata(metadata.to_string());
+                                signal = signal.with_url(pr_url);
+                                signals.push(signal);
+                                if let Some(tracked) = self.tracked.get_mut(id) {
+                                    tracked.has_pr = true;
+                                }
+                            }
+                        }
+                        "review_verdict" => {
+                            let approved = data
+                                .get("approved")
+                                .and_then(|a| a.as_bool())
+                                .unwrap_or(false);
+                            let comments = data.get("comments").cloned();
+                            let metadata = serde_json::json!({
+                                "worker_id": id,
+                                "approved": approved,
+                                "comments": comments,
+                            });
+                            let ts = event.timestamp.timestamp();
+                            signals.push(
+                                SignalUpdate::new(
+                                    "swarm_review_verdict",
+                                    format!("swarm-review-verdict-{id}-{ts}"),
+                                    if approved {
+                                        format!("Review approved: {id}")
+                                    } else {
+                                        format!("Review rejected: {id}")
+                                    },
+                                    if approved {
+                                        Severity::Info
+                                    } else {
+                                        Severity::Warning
+                                    },
+                                )
+                                .with_metadata(metadata.to_string()),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // --- Phase transitions from A2a task_state ---
+            let prev_phase = self.tracked.get(id).map(|p| p.phase.clone());
+            let role = self.tracked.get(id).and_then(|p| p.role.clone());
+            let role_str = role.as_deref().unwrap_or("worker");
+
+            match event.task_state {
+                TaskState::Working => {
+                    if prev_phase
+                        .as_ref()
+                        .is_some_and(|p| *p != WorkerPhase::Running)
+                        && role_str != "reviewer"
+                    {
+                        if let Some(tracked) = self.tracked.get_mut(id) {
+                            tracked.running_count += 1;
+                        }
+                        let running_count = self.tracked.get(id).map_or(1, |p| p.running_count);
+                        let metadata = serde_json::json!({
+                            "worker_id": id,
+                            "role": role_str,
+                            "task_state": "Working",
+                        })
+                        .to_string();
+                        signals.push(
+                            SignalUpdate::new(
+                                "swarm_worker_running",
+                                format!("swarm-worker-running-{id}-{running_count}"),
+                                format!("Worker running: {id}"),
+                                Severity::Info,
+                            )
+                            .with_metadata(metadata),
+                        );
+                    }
+                    if let Some(tracked) = self.tracked.get_mut(id) {
+                        tracked.phase = WorkerPhase::Running;
+                    }
+                }
+                TaskState::InputRequired => {
+                    if prev_phase
+                        .as_ref()
+                        .is_some_and(|p| *p != WorkerPhase::Waiting)
+                    {
+                        signals.push(
+                            SignalUpdate::new(
+                                "swarm",
+                                format!("swarm-waiting-{id}"),
+                                format!("Worker waiting: {id}"),
+                                Severity::Warning,
+                            )
+                            .with_body(format!("Agent in {id} is waiting for input")),
+                        );
+                    }
+                    if let Some(tracked) = self.tracked.get_mut(id) {
+                        tracked.phase = WorkerPhase::Waiting;
+                    }
+                }
+                TaskState::Completed => {
+                    if prev_phase.as_ref().is_some_and(|p| !p.is_terminal()) {
+                        signals.push(
+                            SignalUpdate::new(
+                                "swarm",
+                                format!("swarm-completed-{id}"),
+                                format!("Worker completed: {id}"),
+                                Severity::Info,
+                            )
+                            .with_body(format!("Worker {id} has completed")),
+                        );
+                    }
+                    if let Some(tracked) = self.tracked.get_mut(id) {
+                        tracked.phase = WorkerPhase::Completed;
+                    }
+                }
+                TaskState::Failed => {
+                    if prev_phase.as_ref().is_some_and(|p| !p.is_terminal()) {
+                        signals.push(
+                            SignalUpdate::new(
+                                "swarm",
+                                format!("swarm-completed-{id}"),
+                                format!("Worker completed: {id}"),
+                                Severity::Info,
+                            )
+                            .with_body(format!("Worker {id} has completed")),
+                        );
+                    }
+                    if let Some(tracked) = self.tracked.get_mut(id) {
+                        tracked.phase = WorkerPhase::Failed;
+                    }
+                }
+                // Submitted, Canceled, Rejected, AuthRequired, Unknown — no specific handling
+                _ => {}
             }
         }
     }
@@ -451,12 +676,16 @@ impl Watcher for SwarmWatcher {
             info!("swarm: initialized with {} worker(s)", workers.len());
             // Drain and discard any subscription events from before initialization
             self.events.lock().unwrap().clear();
+            self.a2a_events.lock().unwrap().clear();
             return Ok(Vec::new());
         }
 
         let mut signals = Vec::new();
 
-        // Process subscription events first (real-time phase changes)
+        // Process A2a events first — structured data and richer phase transitions
+        self.drain_a2a_events(&mut signals);
+
+        // Process StateChanged events — fallback phase transitions
         self.drain_events(&mut signals);
 
         // Then diff the full worker list (PRs, new/closed workers)
@@ -504,11 +733,15 @@ fn truncate_prompt(prompt: &str) -> &str {
 }
 
 /// Background subscription loop — reconnects with backoff on disconnect.
-async fn subscription_loop(work_dir: PathBuf, events: Arc<Mutex<Vec<(String, WorkerPhase)>>>) {
+async fn subscription_loop(
+    work_dir: PathBuf,
+    events: Arc<Mutex<Vec<(String, WorkerPhase)>>>,
+    a2a_events: Arc<Mutex<Vec<A2aEvent>>>,
+) {
     let mut backoff_secs = 1u64;
 
     loop {
-        match connect_and_subscribe(&work_dir, &events).await {
+        match connect_and_subscribe(&work_dir, &events, &a2a_events).await {
             Ok(()) => {
                 // Clean disconnect — reset backoff
                 backoff_secs = 1;
@@ -523,9 +756,13 @@ async fn subscription_loop(work_dir: PathBuf, events: Arc<Mutex<Vec<(String, Wor
 }
 
 /// Connect to the daemon socket and subscribe to state change events.
+///
+/// Handles both `StateChanged` (existing) and `A2aTaskUpdate` (new) events.
+/// Uses JSON value parsing so it gracefully ignores unknown variants.
 async fn connect_and_subscribe(
     work_dir: &Path,
     events: &Mutex<Vec<(String, WorkerPhase)>>,
+    a2a_events: &Mutex<Vec<A2aEvent>>,
 ) -> Result<()> {
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -553,7 +790,7 @@ async fn connect_and_subscribe(
     line.push('\n');
     writer.write_all(line.as_bytes()).await?;
 
-    // Read events
+    // Read events — parse as Value to handle both known and future variants
     let mut reader = BufReader::new(reader);
     let mut buf = String::new();
     loop {
@@ -562,10 +799,44 @@ async fn connect_and_subscribe(
         if n == 0 {
             break; // EOF — daemon disconnected
         }
-        if let Ok(DaemonResponse::StateChanged { worktree_id, phase }) =
-            serde_json::from_str::<DaemonResponse>(buf.trim())
-        {
-            events.lock().unwrap().push((worktree_id, phase));
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(buf.trim()) {
+            match val.get("kind").and_then(|k| k.as_str()) {
+                Some("state_changed") => {
+                    if let Some(worktree_id) = val
+                        .get("worktree_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        && let Some(phase) = val
+                            .get("phase")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    {
+                        events.lock().unwrap().push((worktree_id, phase));
+                    }
+                }
+                Some("a2a_task_update") => {
+                    if let Some(worktree_id) = val
+                        .get("worktree_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        && let Some(task_state) = val
+                            .get("task_state")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    {
+                        let message = val.get("message").cloned();
+                        let timestamp = val
+                            .get("timestamp")
+                            .and_then(|t| serde_json::from_value(t.clone()).ok())
+                            .unwrap_or_else(Utc::now);
+                        a2a_events.lock().unwrap().push(A2aEvent {
+                            worktree_id,
+                            task_state,
+                            message,
+                            timestamp,
+                        });
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
