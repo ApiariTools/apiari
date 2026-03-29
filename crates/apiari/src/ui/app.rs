@@ -386,12 +386,21 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                 continue;
             } else if waiting {
                 // Waiting worker with a PR → likely needs user attention
+                let ci_sub = ci_status_for_pr(&ws.signals, pr.number as i64)
+                    .map(|ok| {
+                        if ok {
+                            format!("PR #{} · CI ✅", pr.number)
+                        } else {
+                            format!("PR #{} · CI ❌", pr.number)
+                        }
+                    })
+                    .unwrap_or_else(|| format!("PR #{} · merge?", pr.number));
                 cards.push(KanbanCard {
                     id: format!("worker:{}", w.id),
                     stage: KanbanStage::HumanReview,
                     icon: "👷".to_string(),
                     title: short_id(&w.id),
-                    subtitle: format!("PR #{} · merge?", pr.number),
+                    subtitle: ci_sub,
                     source: "worker".to_string(),
                     url: Some(pr.url.clone()),
                     entered_stage_at: created_utc,
@@ -402,7 +411,7 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
                     stage: KanbanStage::InProgress,
                     icon: "👷".to_string(),
                     title: short_id(&w.id),
-                    subtitle: format!("PR #{} · running", pr.number),
+                    subtitle: format!("PR #{} · coding", pr.number),
                     source: "worker".to_string(),
                     url: Some(pr.url.clone()),
                     entered_stage_at: created_utc,
@@ -413,12 +422,19 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
             continue;
         } else {
             // Running, no PR yet
+            let session_status = w.agent_session_status.as_deref();
+            let subtitle = match (phase, session_status) {
+                ("starting", _) => format!("starting · {elapsed}"),
+                ("running", Some("waiting")) => format!("waiting for input · {elapsed}"),
+                ("running", _) => format!("coding · {elapsed}"),
+                _ => format!("running {elapsed}"),
+            };
             cards.push(KanbanCard {
                 id: format!("worker:{}", w.id),
                 stage: KanbanStage::InProgress,
                 icon: "👷".to_string(),
                 title: short_id(&w.id),
-                subtitle: format!("running {elapsed}"),
+                subtitle,
                 source: "worker".to_string(),
                 url: None,
                 entered_stage_at: created_utc,
@@ -427,7 +443,77 @@ pub fn build_kanban_cards(ws: &WorkspaceState) -> Vec<KanbanCard> {
     }
 
     // ── Task cards: merge with priority over matching worker cards ──
-    let task_cards = build_kanban_cards_from_tasks(&ws.tasks);
+    let mut task_cards = build_kanban_cards_from_tasks(&ws.tasks);
+    // Enrich task card subtitles with live worker status
+    for card in &mut task_cards {
+        let task_id = card.id.strip_prefix("task:").unwrap_or("");
+        let Some(task) = ws.tasks.iter().find(|t| t.id == task_id) else {
+            continue;
+        };
+        match card.stage {
+            KanbanStage::InProgress => {
+                if let Some(ref wid) = task.worker_id
+                    && let Some(worker) = ws.workers.iter().find(|w| &w.id == wid)
+                {
+                    let w_phase = worker.phase.as_deref().unwrap_or("");
+                    let w_session = worker.agent_session_status.as_deref();
+                    card.subtitle = if let Some(pr_num) = task.pr_number {
+                        match w_session {
+                            Some("waiting") => format!("PR #{pr_num} · waiting for input"),
+                            _ => format!("PR #{pr_num} · coding"),
+                        }
+                    } else {
+                        match (w_phase, w_session) {
+                            ("starting", _) => "starting".to_string(),
+                            ("running", Some("waiting")) => "waiting for input".to_string(),
+                            ("running", _) => "coding".to_string(),
+                            _ => card.subtitle.clone(),
+                        }
+                    };
+                }
+            }
+            KanbanStage::InReview => {
+                // Find reviewer worker whose PR matches this task's PR
+                let reviewer = task.pr_number.and_then(|pr_num| {
+                    ws.workers.iter().find(|w| {
+                        w.prompt.starts_with("Review PR")
+                            && w.pr.as_ref().map(|pr| pr.number as i64) == Some(pr_num)
+                    })
+                });
+                if let Some(rev) = reviewer {
+                    let rev_elapsed = rev
+                        .created_at
+                        .map(|t| {
+                            let mins = now
+                                .signed_duration_since(t.with_timezone(&chrono::Utc))
+                                .num_minutes();
+                            if mins >= 60 {
+                                format!("{}h{}m", mins / 60, mins % 60)
+                            } else {
+                                format!("{mins}m")
+                            }
+                        })
+                        .unwrap_or_default();
+                    card.subtitle = match rev.agent_session_status.as_deref() {
+                        Some("waiting") => "review complete".to_string(),
+                        _ => format!("reviewing · {rev_elapsed}"),
+                    };
+                }
+                // if no reviewer found, keep existing subtitle ("awaiting review", etc.)
+            }
+            KanbanStage::HumanReview => {
+                if let Some(pr_num) = task.pr_number
+                    && let Some(ci_ok) = ci_status_for_pr(&ws.signals, pr_num)
+                {
+                    card.subtitle = if ci_ok {
+                        format!("PR #{pr_num} · CI ✅")
+                    } else {
+                        format!("PR #{pr_num} · CI ❌")
+                    };
+                }
+            }
+        }
+    }
     if !task_cards.is_empty() {
         // Drop worker cards whose worker_id is covered by a task
         let covered_worker_ids: std::collections::HashSet<&str> = ws
@@ -611,6 +697,26 @@ fn ws_kanban_visible_count(ws: &WorkspaceState, stage: KanbanStage, strip_h: u16
     let available = (h as usize).saturating_sub(3);
     let cards_fit = available / 2;
     cards_fit.min(total)
+}
+
+/// Return CI status for a PR number by scanning signals.
+/// Returns Some(true) for CI pass, Some(false) for CI failure, None if unknown.
+fn ci_status_for_pr(signals: &[SignalRecord], pr_number: i64) -> Option<bool> {
+    for sig in signals.iter().rev() {
+        let meta_pr = sig
+            .metadata
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+            .and_then(|v| v.get("pr_number").and_then(|n| n.as_i64()));
+        if meta_pr == Some(pr_number) {
+            if sig.source == "github_ci_pass" {
+                return Some(true);
+            } else if sig.source == "github_ci_failure" {
+                return Some(false);
+            }
+        }
+    }
+    None
 }
 
 /// Extract PR number from a kanban card subtitle like "PR #42 · merge?".
@@ -4899,7 +5005,7 @@ mod tests {
         let cards = build_kanban_cards(&ws);
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].stage, KanbanStage::InProgress);
-        assert!(cards[0].subtitle.contains("running"));
+        assert!(cards[0].subtitle.contains("coding"));
     }
 
     #[test]
