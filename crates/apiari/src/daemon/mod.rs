@@ -2652,7 +2652,68 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             let _ = channel.send_message(&msg).await;
                                         }
                                     }
-                                    "update" | "reinstall" => {
+                                    "update" => {
+                                        info!("[{}] running /update", slot.name);
+                                        let updating_msg = OutboundMessage {
+                                            chat_id,
+                                            text: "Updating apiari + swarm from crates.io...".to_string(),
+                                            buttons: vec![],
+                                            topic_id,
+                                        };
+                                        let _ = channel.send_message(&updating_msg).await;
+
+                                        let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
+                                            cargo install --force apiari 2>&1 && \
+                                            cargo install --force apiari-swarm 2>&1";
+                                        let output = tokio::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(script)
+                                            .output()
+                                            .await;
+                                        match output {
+                                            Ok(out) => {
+                                                let stdout = String::from_utf8_lossy(&out.stdout);
+                                                let stderr = String::from_utf8_lossy(&out.stderr);
+                                                let status_icon = if out.status.success() { "✅" } else { "❌" };
+                                                let mut text = format!("{status_icon} /update");
+                                                let combined = format!("{stdout}{stderr}");
+                                                let tail: String = combined
+                                                    .lines()
+                                                    .rev()
+                                                    .take(20)
+                                                    .collect::<Vec<_>>()
+                                                    .into_iter()
+                                                    .rev()
+                                                    .collect::<Vec<_>>()
+                                                    .join("\n");
+                                                if !tail.is_empty() {
+                                                    text.push_str(&format!("\n```\n{tail}\n```"));
+                                                }
+                                                if let Some(ref server) = socket_server {
+                                                    server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                                }
+                                                let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+                                                if out.status.success() {
+                                                    info!("[{}] /update succeeded, restarting", slot.name);
+                                                    let _ = channel.send_message(&OutboundMessage {
+                                                        chat_id,
+                                                        text: "Restarting daemon...".to_string(),
+                                                        buttons: vec![],
+                                                        topic_id,
+                                                    }).await;
+                                                    return ExitReason::Restart;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let text = format!("❌ /update failed: {e}");
+                                                if let Some(ref server) = socket_server {
+                                                    server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                                }
+                                                let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+                                            }
+                                        }
+                                    }
+                                    "reinstall" => {
                                         info!("[{}] running /reinstall", slot.name);
                                         let updating_msg = OutboundMessage {
                                             chat_id,
@@ -2723,7 +2784,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/reinstall — sync repos and rebuild apiari from source\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -3470,7 +3531,7 @@ async fn handle_tui_command(
             (true, Some(context))
         }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/reinstall — sync repos and rebuild apiari from source\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");
@@ -3482,7 +3543,57 @@ async fn handle_tui_command(
             reply(responder, socket_server, &slot.name, &text);
             (true, None)
         }
-        "update" | "reinstall" => {
+        "update" => {
+            // Send initial status as a streaming token (Done sent after completion)
+            let _ = responder.send(socket::DaemonResponse::Token {
+                workspace: slot.name.clone(),
+                text: "Updating apiari + swarm from crates.io...\n".to_string(),
+            });
+
+            let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
+                cargo install --force apiari 2>&1 && \
+                cargo install --force apiari-swarm 2>&1";
+            let output = tokio::process::Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .output()
+                .await;
+            let text = match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    let status_icon = if out.status.success() { "✅" } else { "❌" };
+                    let mut t = format!("{status_icon} /update");
+                    let combined = format!("{stdout}{stderr}");
+                    let tail: String = combined
+                        .lines()
+                        .rev()
+                        .take(20)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !tail.is_empty() {
+                        t.push_str(&format!("\n```\n{tail}\n```"));
+                    }
+                    t
+                }
+                Err(e) => format!("❌ /update failed: {e}"),
+            };
+            let _ = responder.send(socket::DaemonResponse::Token {
+                workspace: slot.name.clone(),
+                text: text.clone(),
+            });
+            let _ = responder.send(socket::DaemonResponse::Done {
+                workspace: slot.name.clone(),
+            });
+            if let Some(server) = socket_server {
+                server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
+            }
+            (true, None)
+        }
+        "reinstall" => {
             // Send initial status as a streaming token (Done sent after completion)
             let _ = responder.send(socket::DaemonResponse::Token {
                 workspace: slot.name.clone(),
