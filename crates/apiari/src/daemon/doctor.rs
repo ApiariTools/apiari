@@ -248,6 +248,7 @@ mod tests {
             shells: ShellsConfig::default(),
             schedule: None,
             activity: crate::config::ActivityConfig::default(),
+            update_source_path: None,
         }
     }
 

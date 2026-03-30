@@ -1366,6 +1366,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            update_source_path: None,
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -1394,6 +1395,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            update_source_path: None,
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -1426,6 +1428,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            update_source_path: None,
         };
 
         let buzz = to_buzz_config(&ws);
@@ -1685,6 +1688,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            update_source_path: None,
         }
     }
 
