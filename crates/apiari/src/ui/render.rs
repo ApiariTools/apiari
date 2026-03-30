@@ -2770,10 +2770,7 @@ fn draw_worker_chat(frame: &mut Frame, app: &App, area: Rect, idx: usize) {
             format!("PR #{} ", pr.number),
             Style::default().fg(theme::MINT),
         ));
-        header_spans.push(Span::styled(
-            pr.url.clone(),
-            Style::default().fg(theme::ICE),
-        ));
+        header_spans.push(Span::raw(with_hyperlink(&pr.url, &pr.url)));
     }
     let header_line = Line::from(header_spans);
     let header = Paragraph::new(header_line).style(Style::default().bg(theme::COMB));
@@ -3206,7 +3203,7 @@ fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
         // URL on second line (cmd+clickable in terminals)
         lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled(&pr.url, Style::default().fg(theme::FROST)),
+            Span::raw(with_hyperlink(&pr.url, &pr.url)),
         ]));
         lines.push(Line::from(""));
     }
@@ -3987,6 +3984,12 @@ fn format_tokens(n: u64) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// Wrap text in OSC 8 hyperlink sequences for terminal hyperlink support.
+/// Compatible with modern terminal emulators (iTerm2, WezTerm, Windows Terminal, etc).
+fn with_hyperlink(text: &str, url: &str) -> String {
+    format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
 }
 
 // ── Worker output panel ──────────────────────────────────
