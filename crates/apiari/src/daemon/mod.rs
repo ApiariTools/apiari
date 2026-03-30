@@ -2654,82 +2654,43 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     }
                                     "update" => {
                                         info!("[{}] running /update", slot.name);
-                                        let update_text = if slot.config.update_source_path.is_some() {
-                                            "Syncing git repo and building apiari from source...".to_string()
-                                        } else {
-                                            "Updating apiari + swarm from crates.io...".to_string()
-                                        };
-                                        let updating_msg = OutboundMessage {
+                                        let _ = channel.send_message(&OutboundMessage {
                                             chat_id,
-                                            text: update_text,
+                                            text: "🔄 Running update...".to_string(),
                                             buttons: vec![],
                                             topic_id,
-                                        };
-                                        let _ = channel.send_message(&updating_msg).await;
+                                        }).await;
 
-                                        let script = if let Some(ref source_path) = slot.config.update_source_path {
-                                            let path = source_path.to_string_lossy();
-                                            format!(
-                                                ". \"$HOME/.cargo/env\" 2>/dev/null; \
-                                                 git -C \"{path}\" pull 2>&1 && \
-                                                 cargo install --force --path \"{path}/crates/apiari\" 2>&1"
-                                            )
+                                        let (success, output_text) = run_update_sequence(slot.config.root.as_path()).await;
+                                        let status_icon = if success { "✅" } else { "❌" };
+                                        let tail: String = output_text
+                                            .lines()
+                                            .rev()
+                                            .take(20)
+                                            .collect::<Vec<_>>()
+                                            .into_iter()
+                                            .rev()
+                                            .collect::<Vec<_>>()
+                                            .join("\n");
+                                        let text = if tail.is_empty() {
+                                            format!("{status_icon} /update")
                                         } else {
-                                            ". \"$HOME/.cargo/env\" 2>/dev/null; \
-                                            cargo install --force apiari 2>&1 && \
-                                            cargo install --force apiari-swarm 2>&1"
-                                                .to_string()
+                                            format!("{status_icon} /update\n```\n{tail}\n```")
                                         };
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
 
-                                        let output = tokio::process::Command::new("sh")
-                                            .arg("-c")
-                                            .arg(script)
-                                            .output()
-                                            .await;
-
-                                        match output {
-                                            Ok(out) => {
-                                                let stdout = String::from_utf8_lossy(&out.stdout);
-                                                let stderr = String::from_utf8_lossy(&out.stderr);
-                                                let status_icon = if out.status.success() { "✅" } else { "❌" };
-                                                let mut text = format!("{status_icon} /update");
-                                                let combined = format!("{stdout}{stderr}");
-                                                let tail: String = combined
-                                                    .lines()
-                                                    .rev()
-                                                    .take(20)
-                                                    .collect::<Vec<_>>()
-                                                    .into_iter()
-                                                    .rev()
-                                                    .collect::<Vec<_>>()
-                                                    .join("\n");
-                                                if !tail.is_empty() {
-                                                    text.push_str(&format!("\n```\n{tail}\n```"));
-                                                }
-                                                if let Some(ref server) = socket_server {
-                                                    server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
-                                                }
-                                                let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
-
-                                                if out.status.success() {
-                                                    info!("[{}] /update succeeded, restarting", slot.name);
-                                                    let _ = channel.send_message(&OutboundMessage {
-                                                        chat_id,
-                                                        text: "Restarting daemon...".to_string(),
-                                                        buttons: vec![],
-                                                        topic_id,
-                                                    }).await;
-                                                    return ExitReason::Restart;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                let _ = channel.send_message(&OutboundMessage {
-                                                    chat_id,
-                                                    text: format!("❌ /update failed: {e}"),
-                                                    buttons: vec![],
-                                                    topic_id,
-                                                }).await;
-                                            }
+                                        if success {
+                                            info!("[{}] /update succeeded, restarting", slot.name);
+                                            let _ = channel.send_message(&OutboundMessage {
+                                                chat_id,
+                                                text: "Restarting daemon...".to_string(),
+                                                buttons: vec![],
+                                                topic_id,
+                                            }).await;
+                                            return ExitReason::Restart;
                                         }
                                     }
                                     "brief" => {
@@ -3370,6 +3331,73 @@ fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
 }
 
+async fn run_update_sequence(workspace_root: &std::path::Path) -> (bool, String) {
+    let mut output = String::new();
+    let mut success = true;
+
+    output.push_str("📦 Syncing workspace...\n");
+
+    // Try git checkout Cargo.lock
+    let _ = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("checkout")
+        .arg("Cargo.lock")
+        .output()
+        .await;
+    output.push_str("  ✓ Cleaned Cargo.lock\n");
+
+    // Discover and pull git repos
+    output.push_str("📥 Pulling git repos...\n");
+    if let Ok(entries) = std::fs::read_dir(workspace_root) {
+        let mut repos = vec![];
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && path.join(".git").exists()
+                && let Some(name) = path.file_name()
+            {
+                repos.push((name.to_string_lossy().to_string(), path));
+            }
+        }
+        repos.sort_by(|a, b| a.0.cmp(&b.0));
+        for (name, path) in repos {
+            let _ = tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .arg("pull")
+                .arg("origin")
+                .arg("main")
+                .output()
+                .await;
+            output.push_str(&format!("  ✓ {}\n", name));
+        }
+    }
+
+    // Build from local or crates.io
+    output.push_str("🔨 Building...\n");
+    let script = ". \"$HOME/.cargo/env\" 2>/dev/null; cargo install --path crates/apiari 2>&1 && cargo install --force apiari-swarm 2>&1";
+
+    let result = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .current_dir(workspace_root)
+        .output()
+        .await;
+
+    match result {
+        Ok(out) if out.status.success() => {
+            output.push_str("  ✓ Install succeeded\n");
+        }
+        _ => {
+            output.push_str("  ❌ Install failed\n");
+            success = false;
+        }
+    }
+
+    (success, output)
+}
+
 /// Handle a TUI slash command. Returns `(handled, inject_context)` where
 /// `handled` is `true` if the command was recognized and processed, and
 /// `inject_context` is an optional string to forward into the coordinator
@@ -3536,80 +3564,36 @@ async fn handle_tui_command(
             (true, None)
         }
         "update" => {
-            // Send initial status as a streaming token (Done sent after completion)
-            let update_msg = if slot.config.update_source_path.is_some() {
-                "Syncing git repo and building apiari from source...\n".to_string()
+            let _ = responder.send(socket::DaemonResponse::Token {
+                workspace: slot.name.clone(),
+                text: "🔄 Running update...\n".to_string(),
+            });
+
+            let (success, output_text) = run_update_sequence(slot.config.root.as_path()).await;
+            let status_icon = if success { "✅" } else { "❌" };
+            let tail: String = output_text
+                .lines()
+                .rev()
+                .take(20)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            let text = if tail.is_empty() {
+                format!("{status_icon} /update")
             } else {
-                "Updating apiari + swarm from crates.io...\n".to_string()
+                format!("{status_icon} /update\n```\n{tail}\n```")
             };
             let _ = responder.send(socket::DaemonResponse::Token {
                 workspace: slot.name.clone(),
-                text: update_msg,
+                text: text.clone(),
             });
-
-            let script = if let Some(ref source_path) = slot.config.update_source_path {
-                let path = source_path.to_string_lossy();
-                format!(
-                    ". \"$HOME/.cargo/env\" 2>/dev/null; \
-                     git -C \"{path}\" pull 2>&1 && \
-                     cargo install --force --path \"{path}/crates/apiari\" 2>&1"
-                )
-            } else {
-                ". \"$HOME/.cargo/env\" 2>/dev/null; \
-                cargo install --force apiari 2>&1 && \
-                cargo install --force apiari-swarm 2>&1"
-                    .to_string()
-            };
-
-            let output = tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(script)
-                .output()
-                .await;
-
-            match output {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    let status_icon = if out.status.success() { "✅" } else { "❌" };
-                    let mut text = format!("{status_icon} /update");
-                    let combined = format!("{stdout}{stderr}");
-                    let tail: String = combined
-                        .lines()
-                        .rev()
-                        .take(20)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if !tail.is_empty() {
-                        text.push_str(&format!("\n```\n{tail}\n```"));
-                    }
-                    let _ = responder.send(socket::DaemonResponse::Token {
-                        workspace: slot.name.clone(),
-                        text: text.clone(),
-                    });
-                    let _ = responder.send(socket::DaemonResponse::Done {
-                        workspace: slot.name.clone(),
-                    });
-                    if let Some(server) = socket_server {
-                        server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
-                    }
-                }
-                Err(e) => {
-                    let text = format!("❌ /update failed: {e}");
-                    let _ = responder.send(socket::DaemonResponse::Token {
-                        workspace: slot.name.clone(),
-                        text: text.clone(),
-                    });
-                    let _ = responder.send(socket::DaemonResponse::Done {
-                        workspace: slot.name.clone(),
-                    });
-                    if let Some(server) = socket_server {
-                        server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
-                    }
-                }
+            let _ = responder.send(socket::DaemonResponse::Done {
+                workspace: slot.name.clone(),
+            });
+            if let Some(server) = socket_server {
+                server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
             }
             (true, None)
         }
