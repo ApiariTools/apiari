@@ -88,22 +88,35 @@ pub fn process_signal(
     // Step 4: Apply transition (persists to DB only if stage actually changes)
     // A rule firing counts as "transitioned" even when from == to, because an
     // action (ForwardToWorker, Notify) is still performed.
+    //
+    // Universal backward-transition guard: never regress a task to an earlier stage
+    // via a signal. The DB write is skipped for backward transitions, but actions
+    // (ForwardToWorker, Notify) still fire so workers and users are notified.
     result.transitioned = true;
     result.from_stage = Some(proposed.from.clone());
     if proposed.from != proposed.to {
-        store.transition_task(
-            &task.id,
-            &proposed.from,
-            &proposed.to,
-            Some(proposed.reason.clone()),
-        )?;
-        info!(
-            "[task-engine] transitioned task '{}': {} → {}  (reason: {})",
-            task.title,
-            proposed.from.as_str(),
-            proposed.to.as_str(),
-            proposed.reason,
-        );
+        if proposed.to.stage_order() < proposed.from.stage_order() {
+            tracing::debug!(
+                "[task-engine] skipping backward transition {}→{} for task {} (universal guard)",
+                proposed.from.as_str(),
+                proposed.to.as_str(),
+                task.id,
+            );
+        } else {
+            store.transition_task(
+                &task.id,
+                &proposed.from,
+                &proposed.to,
+                Some(proposed.reason.clone()),
+            )?;
+            info!(
+                "[task-engine] transitioned task '{}': {} → {}  (reason: {})",
+                task.title,
+                proposed.from.as_str(),
+                proposed.to.as_str(),
+                proposed.reason,
+            );
+        }
     } else {
         info!(
             "[task-engine] rule fired for task '{}' (stage={}, reason: {})",
@@ -734,11 +747,13 @@ mod tests {
         );
         let result = process_signal(&store, "acme", &signal).unwrap();
 
-        // 3. Verify task moved to InProgress
+        // 3. Verify task stays in InAiReview (universal backward guard prevents regression).
+        // The rule fires (transitioned=true) and the worker still gets the message,
+        // but the stage does not regress to InProgress.
         assert!(result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+        assert_eq!(result.task.unwrap().stage, TaskStage::InAiReview);
 
-        // 4. Verify worker_messages contains the comments
+        // 4. Verify worker_messages contains the comments (action still fires)
         assert_eq!(result.worker_messages.len(), 1);
         assert_eq!(result.worker_messages[0].0, "worker-1");
         assert!(
@@ -880,19 +895,28 @@ mod tests {
     }
 
     #[test]
-    fn test_swarm_worker_closed_in_progress_non_reviewer_to_triage() {
+    fn test_swarm_worker_closed_in_progress_non_reviewer_stays_in_progress() {
+        // Rule proposes InProgress→Triage but the universal backward guard blocks it.
         let store = TaskStore::open_memory().unwrap();
         create_task_in_stage(&store, "acme", "w-cls-np1", TaskStage::InProgress);
 
         let signal = make_closed_signal("w-cls-np1", "worker");
         let result = process_signal(&store, "acme", &signal).unwrap();
 
-        assert!(result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::Triage);
+        assert!(
+            result.transitioned,
+            "rule should fire (notification still sent)"
+        );
+        assert_eq!(
+            result.task.unwrap().stage,
+            TaskStage::InProgress,
+            "universal guard must block InProgress→Triage regression"
+        );
     }
 
     #[test]
-    fn test_swarm_worker_closed_in_ai_review_reviewer_to_triage() {
+    fn test_swarm_worker_closed_in_ai_review_reviewer_stays_in_ai_review() {
+        // Rule proposes InAiReview→Triage but the universal backward guard blocks it.
         let store = TaskStore::open_memory().unwrap();
 
         // Create a task in InAiReview and set reviewer_worker_id in metadata
@@ -903,8 +927,15 @@ mod tests {
         let signal = make_closed_signal("rev-closed1", "reviewer");
         let result = process_signal(&store, "acme", &signal).unwrap();
 
-        assert!(result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::Triage);
+        assert!(
+            result.transitioned,
+            "rule should fire (notification still sent)"
+        );
+        assert_eq!(
+            result.task.unwrap().stage,
+            TaskStage::InAiReview,
+            "universal guard must block InAiReview→Triage regression"
+        );
     }
 
     #[test]
@@ -981,7 +1012,9 @@ mod tests {
 
     #[test]
     fn test_review_verdict_changes_requested_branch_flow_matches_by_reviewer_worker_id() {
-        // Branch-first flow: CHANGES_REQUESTED verdict should send the task back to InProgress.
+        // Branch-first flow: CHANGES_REQUESTED verdict fires the rule and forwards the message
+        // to the worker. The universal backward guard prevents regression to InProgress,
+        // so the task stays in InAiReview.
         let store = TaskStore::open_memory().unwrap();
         let task = make_branch_task("acme", "worker-br2", "reviewer-br2");
         store.create_task(&task).unwrap();
@@ -1003,7 +1036,8 @@ mod tests {
             result.transitioned,
             "verdict signal should match task via reviewer_worker_id"
         );
-        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+        // Guard prevents InAiReview → InProgress regression; task stays in InAiReview.
+        assert_eq!(result.task.unwrap().stage, TaskStage::InAiReview);
         assert_eq!(result.worker_messages.len(), 1);
         assert_eq!(result.worker_messages[0].0, "worker-br2");
         assert!(result.worker_messages[0].1.contains("error handling"));
@@ -1032,5 +1066,121 @@ mod tests {
             "unknown reviewer id should produce no match"
         );
         assert!(result.task.is_none());
+    }
+
+    // ── Universal backward-transition guard tests ──
+
+    fn make_worker_signal(source: &str, worker_id: &str, role: &str) -> SignalRecord {
+        let mut s = make_signal(source, None);
+        s.metadata = Some(serde_json::json!({ "worker_id": worker_id, "role": role }).to_string());
+        s
+    }
+
+    #[test]
+    fn test_guard_human_review_plus_worker_running_stays_human_review() {
+        // HumanReview + worker_running must NOT regress to InProgress.
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("acme", TaskStage::HumanReview, "org/repo", 600);
+        task.worker_id = Some("w-guard1".to_string());
+        store.create_task(&task).unwrap();
+
+        let signal = make_worker_signal("swarm_worker_running", "w-guard1", "worker");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        // Rule fires (Triage guard in rules allows InProgress target from Triage only),
+        // but HumanReview has stage_order > InProgress so no rule matches here either way.
+        let stage = result
+            .task
+            .map(|t| t.stage)
+            .unwrap_or(TaskStage::HumanReview);
+        assert_eq!(
+            stage,
+            TaskStage::HumanReview,
+            "worker_running must not regress HumanReview"
+        );
+    }
+
+    #[test]
+    fn test_guard_human_review_plus_worker_closed_stays_human_review() {
+        // HumanReview + worker_closed has no matching rule → task unchanged.
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("acme", TaskStage::HumanReview, "org/repo", 601);
+        task.worker_id = Some("w-guard2".to_string());
+        store.create_task(&task).unwrap();
+
+        let signal = make_worker_signal("swarm_worker_closed", "w-guard2", "worker");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(
+            !result.transitioned,
+            "no rule should fire for HumanReview + worker_closed"
+        );
+        assert_eq!(result.task.unwrap().stage, TaskStage::HumanReview);
+    }
+
+    #[test]
+    fn test_guard_in_ai_review_plus_reviewer_closed_stays_in_ai_review() {
+        // InAiReview + reviewer closed: rule proposes InAiReview→Triage,
+        // but the universal guard must prevent that backward transition.
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("acme", TaskStage::InAiReview, "org/repo", 602);
+        task.worker_id = Some("w-guard3".to_string());
+        store.create_task(&task).unwrap();
+        // Attach reviewer_worker_id so the reviewer-closed signal matches this task.
+        store
+            .update_task_metadata(
+                &task.id,
+                &serde_json::json!({"reviewer_worker_id": "rev-guard3"}),
+            )
+            .unwrap();
+
+        let signal = make_worker_signal("swarm_worker_closed", "rev-guard3", "reviewer");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned, "rule should fire");
+        assert_eq!(
+            result.task.unwrap().stage,
+            TaskStage::InAiReview,
+            "universal guard must block InAiReview→Triage regression"
+        );
+    }
+
+    #[test]
+    fn test_guard_in_progress_plus_worker_closed_stays_in_progress() {
+        // InProgress + worker_closed: rule proposes InProgress→Triage,
+        // but the universal guard must prevent that backward transition.
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("acme", TaskStage::InProgress, "org/repo", 603);
+        task.worker_id = Some("w-guard4".to_string());
+        store.create_task(&task).unwrap();
+
+        let signal = make_worker_signal("swarm_worker_closed", "w-guard4", "worker");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned, "rule should fire");
+        assert_eq!(
+            result.task.unwrap().stage,
+            TaskStage::InProgress,
+            "universal guard must block InProgress→Triage regression"
+        );
+    }
+
+    #[test]
+    fn test_guard_triage_plus_worker_running_advances_to_in_progress() {
+        // Triage + worker_running is a forward transition — must be allowed.
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("acme", TaskStage::Triage, "org/repo", 604);
+        task.worker_id = Some("w-guard5".to_string());
+        store.create_task(&task).unwrap();
+
+        let signal = make_worker_signal("swarm_worker_running", "w-guard5", "worker");
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned, "forward transition should be allowed");
+        assert_eq!(
+            result.task.unwrap().stage,
+            TaskStage::InProgress,
+            "Triage + worker_running must advance to InProgress"
+        );
     }
 }
