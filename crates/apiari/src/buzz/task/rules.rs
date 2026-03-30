@@ -380,6 +380,16 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
             },
         }),
 
+        (stage, "github_pr_closed") if !stage.is_terminal() => Some(ProposedTransition {
+            task_id: task.id.clone(),
+            from: task.stage.clone(),
+            to: TaskStage::Dismissed,
+            reason: "PR closed without merge".to_string(),
+            approval: Approval::Auto,
+            action: TransitionAction::Notify {
+                message: "PR closed without merge — task dismissed".to_string(),
+            },
+        }),
         _ => None,
     }
 }
@@ -607,6 +617,30 @@ mod tests {
             let task = make_task(stage);
             let signal = make_signal("github_merged_pr", None);
             assert!(evaluate_signal(&task, &signal).is_none());
+        }
+
+        #[test]
+        fn test_pr_closed_on_active_task_transitions_to_dismissed() {
+            for stage in [
+                TaskStage::Triage,
+                TaskStage::InProgress,
+                TaskStage::InAiReview,
+                TaskStage::HumanReview,
+            ] {
+                let task = make_task(stage.clone());
+                let signal = make_signal("github_pr_closed", None);
+                let result = evaluate_signal(&task, &signal).unwrap();
+                assert_eq!(result.to, TaskStage::Dismissed, "stage={}", stage.as_str());
+            }
+        }
+
+        #[test]
+        fn test_pr_closed_on_terminal_task_no_match() {
+            for stage in [TaskStage::Merged, TaskStage::Dismissed] {
+                let task = make_task(stage);
+                let signal = make_signal("github_pr_closed", None);
+                assert!(evaluate_signal(&task, &signal).is_none());
+            }
         }
     }
 
