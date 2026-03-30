@@ -2652,69 +2652,31 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             let _ = channel.send_message(&msg).await;
                                         }
                                     }
-                                    "update" => {
-                                        info!("[{}] running /update", slot.name);
+                                    "update" | "reinstall" => {
+                                        info!("[{}] running /reinstall", slot.name);
                                         let updating_msg = OutboundMessage {
                                             chat_id,
-                                            text: "Updating apiari + swarm from crates.io...".to_string(),
+                                            text: "Syncing repos and rebuilding apiari...".to_string(),
                                             buttons: vec![],
                                             topic_id,
                                         };
                                         let _ = channel.send_message(&updating_msg).await;
 
-                                        let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
-                                            cargo install --force apiari 2>&1 && \
-                                            cargo install --force apiari-swarm 2>&1";
+                                        let (text, success) = run_reinstall(&slot.config.root).await;
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
 
-                                        let output = tokio::process::Command::new("sh")
-                                            .arg("-c")
-                                            .arg(script)
-                                            .output()
-                                            .await;
-
-                                        match output {
-                                            Ok(out) => {
-                                                let stdout = String::from_utf8_lossy(&out.stdout);
-                                                let stderr = String::from_utf8_lossy(&out.stderr);
-                                                let status_icon = if out.status.success() { "✅" } else { "❌" };
-                                                let mut text = format!("{status_icon} /update");
-                                                let combined = format!("{stdout}{stderr}");
-                                                let tail: String = combined
-                                                    .lines()
-                                                    .rev()
-                                                    .take(20)
-                                                    .collect::<Vec<_>>()
-                                                    .into_iter()
-                                                    .rev()
-                                                    .collect::<Vec<_>>()
-                                                    .join("\n");
-                                                if !tail.is_empty() {
-                                                    text.push_str(&format!("\n```\n{tail}\n```"));
-                                                }
-                                                if let Some(ref server) = socket_server {
-                                                    server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
-                                                }
-                                                let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
-
-                                                if out.status.success() {
-                                                    info!("[{}] /update succeeded, restarting", slot.name);
-                                                    let _ = channel.send_message(&OutboundMessage {
-                                                        chat_id,
-                                                        text: "Restarting daemon...".to_string(),
-                                                        buttons: vec![],
-                                                        topic_id,
-                                                    }).await;
-                                                    return ExitReason::Restart;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                let _ = channel.send_message(&OutboundMessage {
-                                                    chat_id,
-                                                    text: format!("❌ /update failed: {e}"),
-                                                    buttons: vec![],
-                                                    topic_id,
-                                                }).await;
-                                            }
+                                        if success {
+                                            info!("[{}] /reinstall succeeded, restarting", slot.name);
+                                            let _ = channel.send_message(&OutboundMessage {
+                                                chat_id,
+                                                text: "Restarting daemon...".to_string(),
+                                                buttons: vec![],
+                                                topic_id,
+                                            }).await;
+                                            return ExitReason::Restart;
                                         }
                                     }
                                     "brief" => {
@@ -2761,7 +2723,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -3508,7 +3470,7 @@ async fn handle_tui_command(
             (true, Some(context))
         }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");
@@ -3520,66 +3482,23 @@ async fn handle_tui_command(
             reply(responder, socket_server, &slot.name, &text);
             (true, None)
         }
-        "update" => {
+        "update" | "reinstall" => {
             // Send initial status as a streaming token (Done sent after completion)
             let _ = responder.send(socket::DaemonResponse::Token {
                 workspace: slot.name.clone(),
-                text: "Updating apiari + swarm from crates.io...\n".to_string(),
+                text: "Syncing repos and rebuilding apiari...\n".to_string(),
             });
 
-            let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
-                cargo install --force apiari 2>&1 && \
-                cargo install --force apiari-swarm 2>&1";
-
-            let output = tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(script)
-                .output()
-                .await;
-
-            match output {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    let status_icon = if out.status.success() { "✅" } else { "❌" };
-                    let mut text = format!("{status_icon} /update");
-                    let combined = format!("{stdout}{stderr}");
-                    let tail: String = combined
-                        .lines()
-                        .rev()
-                        .take(20)
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev()
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if !tail.is_empty() {
-                        text.push_str(&format!("\n```\n{tail}\n```"));
-                    }
-                    let _ = responder.send(socket::DaemonResponse::Token {
-                        workspace: slot.name.clone(),
-                        text: text.clone(),
-                    });
-                    let _ = responder.send(socket::DaemonResponse::Done {
-                        workspace: slot.name.clone(),
-                    });
-                    if let Some(server) = socket_server {
-                        server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
-                    }
-                }
-                Err(e) => {
-                    let text = format!("❌ /update failed: {e}");
-                    let _ = responder.send(socket::DaemonResponse::Token {
-                        workspace: slot.name.clone(),
-                        text: text.clone(),
-                    });
-                    let _ = responder.send(socket::DaemonResponse::Done {
-                        workspace: slot.name.clone(),
-                    });
-                    if let Some(server) = socket_server {
-                        server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
-                    }
-                }
+            let (text, _success) = run_reinstall(&slot.config.root).await;
+            let _ = responder.send(socket::DaemonResponse::Token {
+                workspace: slot.name.clone(),
+                text: text.clone(),
+            });
+            let _ = responder.send(socket::DaemonResponse::Done {
+                workspace: slot.name.clone(),
+            });
+            if let Some(server) = socket_server {
+                server.broadcast_activity("tui", &slot.name, "assistant_message", &text);
             }
             (true, None)
         }
@@ -3846,6 +3765,149 @@ fn format_hook_notification(source: &str, events: &[String], template: &str) -> 
         format_system_notification(source, events)
     } else {
         result
+    }
+}
+
+/// Run the full reinstall sequence for the `/reinstall` (a.k.a. `/update`) command.
+///
+/// Steps:
+/// 1. For each git repo under `workspace_root` (root itself + direct subdirs):
+///    - If it contains `crates/apiari/`, run `git checkout Cargo.lock` first.
+///    - Run `git pull origin main` (errors are reported but do not abort).
+/// 2. Find the repo containing `crates/apiari/` and run
+///    `cargo install --force --path <repo>/crates/apiari`.
+///
+/// Returns `(report_text, install_success)`.
+async fn run_reinstall(workspace_root: &std::path::Path) -> (String, bool) {
+    let mut report = String::new();
+
+    // Collect git repos: workspace root itself + direct child directories.
+    let mut repo_paths: Vec<std::path::PathBuf> = Vec::new();
+
+    if workspace_root.join(".git").exists() {
+        repo_paths.push(workspace_root.to_path_buf());
+    }
+
+    if let Ok(entries) = std::fs::read_dir(workspace_root) {
+        let mut child_dirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_type().is_ok_and(|ft| ft.is_dir())
+                    && e.path().join(".git").exists()
+                    && !e.file_name().to_string_lossy().starts_with('.')
+            })
+            .map(|e| e.path())
+            .collect();
+        child_dirs.sort();
+        repo_paths.extend(child_dirs);
+    }
+
+    // Identify the apiari source repo (first one that contains crates/apiari/).
+    let apiari_src: Option<std::path::PathBuf> = repo_paths
+        .iter()
+        .find(|p| p.join("crates/apiari").exists())
+        .cloned();
+
+    // Pull all repos, doing git checkout Cargo.lock first in the apiari source repo.
+    for repo in &repo_paths {
+        let dir_name = repo
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| repo.display().to_string());
+
+        if apiari_src.as_deref() == Some(repo.as_path()) {
+            // Discard Cargo.lock changes caused by [patch.crates-io] dev overrides.
+            let co = tokio::process::Command::new("git")
+                .args(["checkout", "Cargo.lock"])
+                .current_dir(repo)
+                .output()
+                .await;
+            match co {
+                Ok(out) if out.status.success() => {
+                    report.push_str(&format!("✅ git checkout Cargo.lock ({dir_name})\n"));
+                }
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    report.push_str(&format!(
+                        "⚠️ git checkout Cargo.lock ({dir_name}): {}\n",
+                        stderr.trim()
+                    ));
+                }
+                Err(e) => {
+                    report.push_str(&format!("⚠️ git checkout Cargo.lock ({dir_name}): {e}\n"));
+                }
+            }
+        }
+
+        let pull = tokio::process::Command::new("git")
+            .args(["pull", "origin", "main"])
+            .current_dir(repo)
+            .output()
+            .await;
+        match pull {
+            Ok(out) => {
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let icon = if out.status.success() { "✅" } else { "❌" };
+                let short = combined.trim().lines().last().unwrap_or("").to_string();
+                report.push_str(&format!("{icon} git pull ({dir_name}): {short}\n"));
+            }
+            Err(e) => {
+                report.push_str(&format!("❌ git pull ({dir_name}): {e}\n"));
+            }
+        }
+    }
+
+    if repo_paths.is_empty() {
+        report.push_str("⚠️ No git repos found under workspace root\n");
+    }
+
+    // Build and install from the apiari source repo.
+    let install_path = apiari_src
+        .map(|p| p.join("crates/apiari"))
+        .unwrap_or_else(|| std::path::PathBuf::from("crates/apiari"));
+
+    report.push_str("\nBuilding and installing...\n");
+
+    let script = format!(
+        ". \"$HOME/.cargo/env\" 2>/dev/null; cargo install --force --path '{}' 2>&1",
+        install_path.display()
+    );
+    let install = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .output()
+        .await;
+
+    match install {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let status_icon = if out.status.success() { "✅" } else { "❌" };
+            let combined = format!("{stdout}{stderr}");
+            let tail: String = combined
+                .lines()
+                .rev()
+                .take(20)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !tail.is_empty() {
+                report.push_str(&format!("{status_icon} cargo install\n```\n{tail}\n```"));
+            } else {
+                report.push_str(&format!("{status_icon} cargo install"));
+            }
+            (report, out.status.success())
+        }
+        Err(e) => {
+            report.push_str(&format!("❌ cargo install failed: {e}"));
+            (report, false)
+        }
     }
 }
 
