@@ -2654,17 +2654,32 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     }
                                     "update" => {
                                         info!("[{}] running /update", slot.name);
+                                        let update_text = if slot.config.update_source_path.is_some() {
+                                            "Syncing git repo and building apiari from source...".to_string()
+                                        } else {
+                                            "Updating apiari + swarm from crates.io...".to_string()
+                                        };
                                         let updating_msg = OutboundMessage {
                                             chat_id,
-                                            text: "Updating apiari + swarm from crates.io...".to_string(),
+                                            text: update_text,
                                             buttons: vec![],
                                             topic_id,
                                         };
                                         let _ = channel.send_message(&updating_msg).await;
 
-                                        let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
+                                        let script = if let Some(ref source_path) = slot.config.update_source_path {
+                                            let path = source_path.to_string_lossy();
+                                            format!(
+                                                ". \"$HOME/.cargo/env\" 2>/dev/null; \
+                                                 git -C \"{path}\" pull 2>&1 && \
+                                                 cargo install --force --path \"{path}/crates/apiari\" 2>&1"
+                                            )
+                                        } else {
+                                            ". \"$HOME/.cargo/env\" 2>/dev/null; \
                                             cargo install --force apiari 2>&1 && \
-                                            cargo install --force apiari-swarm 2>&1";
+                                            cargo install --force apiari-swarm 2>&1"
+                                                .to_string()
+                                        };
 
                                         let output = tokio::process::Command::new("sh")
                                             .arg("-c")
@@ -2761,7 +2776,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io (or build from source if update_source_path is set)\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -3508,7 +3523,7 @@ async fn handle_tui_command(
             (true, Some(context))
         }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/update — install latest apiari + swarm from crates.io (or build from source if update_source_path is set)\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");
@@ -3522,14 +3537,29 @@ async fn handle_tui_command(
         }
         "update" => {
             // Send initial status as a streaming token (Done sent after completion)
+            let update_msg = if slot.config.update_source_path.is_some() {
+                "Syncing git repo and building apiari from source...\n".to_string()
+            } else {
+                "Updating apiari + swarm from crates.io...\n".to_string()
+            };
             let _ = responder.send(socket::DaemonResponse::Token {
                 workspace: slot.name.clone(),
-                text: "Updating apiari + swarm from crates.io...\n".to_string(),
+                text: update_msg,
             });
 
-            let script = ". \"$HOME/.cargo/env\" 2>/dev/null; \
+            let script = if let Some(ref source_path) = slot.config.update_source_path {
+                let path = source_path.to_string_lossy();
+                format!(
+                    ". \"$HOME/.cargo/env\" 2>/dev/null; \
+                     git -C \"{path}\" pull 2>&1 && \
+                     cargo install --force --path \"{path}/crates/apiari\" 2>&1"
+                )
+            } else {
+                ". \"$HOME/.cargo/env\" 2>/dev/null; \
                 cargo install --force apiari 2>&1 && \
-                cargo install --force apiari-swarm 2>&1";
+                cargo install --force apiari-swarm 2>&1"
+                    .to_string()
+            };
 
             let output = tokio::process::Command::new("sh")
                 .arg("-c")

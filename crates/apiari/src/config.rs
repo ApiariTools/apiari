@@ -305,6 +305,12 @@ pub struct WorkspaceConfig {
     /// Activity feed / event retention configuration.
     #[serde(default)]
     pub activity: ActivityConfig,
+
+    /// Local git source path for building apiari from source.
+    /// When set, `/update` runs `git pull` in this directory and installs
+    /// from source instead of crates.io.
+    #[serde(default)]
+    pub update_source_path: Option<PathBuf>,
 }
 
 /// A single daemon TCP endpoint (host + port).
