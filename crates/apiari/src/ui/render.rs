@@ -3142,23 +3142,14 @@ fn draw_review_list(frame: &mut Frame, app: &App, area: Rect) {
 // ── PR list (full-screen) ─────────────────────────────
 
 fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
-    let ws = match app.current_ws() {
-        Some(ws) => ws,
-        None => return,
-    };
-    let prs: Vec<(usize, &app::WorkerInfo)> = ws
-        .workers
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| w.pr.is_some())
-        .collect();
+    let tasks = app.tasks_with_prs();
 
     let mut lines: Vec<Line> = Vec::new();
     let width = area.width as usize;
 
     // Header
     lines.push(Line::from(""));
-    let header = format!(" Pull Requests ({}) ", prs.len());
+    let header = format!(" Pull Requests ({}) ", tasks.len());
     let ruler_len = width.saturating_sub(header.len());
     lines.push(Line::from(vec![
         Span::styled(header, theme::subtitle()),
@@ -3166,8 +3157,8 @@ fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
     ]));
     lines.push(Line::from(""));
 
-    for (list_idx, (_, worker)) in prs.iter().enumerate() {
-        let pr = worker.pr.as_ref().unwrap();
+    for (list_idx, task) in tasks.iter().enumerate() {
+        let pr_url = task.pr_url.as_deref().unwrap_or("");
         let is_sel = list_idx == app.pr_list_selection;
         let line_style = if is_sel {
             theme::selected()
@@ -3180,38 +3171,59 @@ fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
-        let state_style = match pr.state.as_str() {
-            "OPEN" => Style::default().fg(theme::MINT),
-            "MERGED" => theme::status_done(),
-            "CLOSED" => theme::error(),
+        let stage_str = task.stage.as_str();
+        let stage_style = match task.stage {
+            crate::buzz::task::TaskStage::HumanReview => Style::default().fg(theme::MINT),
+            crate::buzz::task::TaskStage::Merged => theme::status_done(),
+            crate::buzz::task::TaskStage::Dismissed => theme::error(),
             _ => theme::muted(),
         };
 
-        let title_max = width.saturating_sub(30).max(10);
-        let title = trunc(&pr.title, title_max);
+        let pr_label = task
+            .pr_number
+            .map(|n| format!("#{n}"))
+            .unwrap_or_else(|| "PR".to_string());
+
+        let repo_str = task
+            .repo
+            .as_deref()
+            .unwrap_or("")
+            .split('/')
+            .next_back()
+            .unwrap_or("");
+
+        let title_max = width.saturating_sub(36).max(10);
+        let title = trunc(&task.title, title_max);
 
         lines.push(
             Line::from(vec![
                 Span::styled(if is_sel { " \u{25b6}" } else { "  " }, line_style),
                 Span::styled(
-                    format!(" #{:<5}", pr.number),
+                    format!(" {:<6}", pr_label),
                     Style::default().fg(theme::MINT),
                 ),
-                Span::styled(format!(" {:>6} ", pr.state), state_style),
+                Span::styled(format!(" {:>13} ", stage_str), stage_style),
                 Span::styled(title, line_style),
-                Span::styled(format!("  ({})", worker.id), theme::muted()),
+                Span::styled(
+                    if repo_str.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  ({repo_str})")
+                    },
+                    theme::muted(),
+                ),
             ])
             .style(bg),
         );
         // URL on second line (cmd+clickable in terminals)
         lines.push(Line::from(vec![
             Span::raw("    "),
-            Span::styled(&pr.url, Style::default().fg(theme::FROST)),
+            Span::styled(pr_url, Style::default().fg(theme::FROST)),
         ]));
         lines.push(Line::from(""));
     }
 
-    if prs.is_empty() {
+    if tasks.is_empty() {
         lines.push(Line::from(vec![
             Span::raw("   "),
             Span::styled("No pull requests", theme::muted()),

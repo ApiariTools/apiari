@@ -2485,6 +2485,18 @@ impl App {
         }
     }
 
+    /// Tasks that have a PR URL set.
+    pub fn tasks_with_prs(&self) -> Vec<&crate::buzz::task::Task> {
+        match self.current_ws() {
+            Some(ws) => ws
+                .tasks
+                .iter()
+                .filter(|t| t.pr_url.as_ref().is_some_and(|u| !u.is_empty()))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     // ── Input editing ─────────────────────────────────────
 
     pub fn insert_char(&mut self, c: char) {
@@ -3665,6 +3677,24 @@ impl App {
 
     /// Get the URL associated with the current selection (for 'o' to open).
     pub fn selected_url(&self) -> Option<String> {
+        // PR list: source URLs from tasks (survives worker closure).
+        if self.view == View::PrList {
+            let tasks = self.tasks_with_prs();
+            return tasks
+                .get(self.pr_list_selection)
+                .and_then(|t| t.pr_url.clone());
+        }
+        // Kanban panel: open the selected card's URL (pr_url preferred over source_url).
+        if self.view == View::Dashboard
+            && self.focused_panel == Panel::Home
+            && let Some(ws) = self.current_ws()
+            && let Some((stage, idx)) = ws.kanban_selected
+        {
+            let card = ws.kanban_cards.iter().filter(|c| c.stage == stage).nth(idx);
+            if let Some(card) = card {
+                return card.url.clone();
+            }
+        }
         if let Some(worker) = self.selected_worker() {
             return worker.pr.as_ref().map(|pr| pr.url.clone());
         }

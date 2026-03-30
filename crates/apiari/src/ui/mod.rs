@@ -2018,7 +2018,7 @@ fn handle_review_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
 // ── PR list keys ─────────────────────────────────────────
 
 fn handle_pr_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
-    let pr_count = app.workers_with_prs().len();
+    let pr_count = app.tasks_with_prs().len();
 
     match key.code {
         KeyCode::Esc => app.back_to_dashboard(),
@@ -2040,13 +2040,7 @@ fn handle_pr_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyActi
             app.pr_list_selection = pr_count.saturating_sub(1);
             app.needs_redraw = true;
         }
-        KeyCode::Enter => {
-            let prs = app.workers_with_prs();
-            if let Some((orig_idx, _)) = prs.get(app.pr_list_selection) {
-                app.enter_worker_detail(*orig_idx);
-            }
-        }
-        KeyCode::Char('o') => {
+        KeyCode::Enter | KeyCode::Char('o') => {
             if let Some(url) = app.selected_url() {
                 return KeyAction::OpenUrl(url);
             }
