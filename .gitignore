@@ -1,1 +1,28 @@
+# Build artifacts
+debug/
+target/
+
+# Cargo
+**/*.rs.bk
 .cargo/config.toml
+
+# Runtime state
+.swarm/
+.task/
+
+# Claude Code
+.claude/worktrees/
+
+# Environment / secrets
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# MSRV
+rust-toolchain
