@@ -854,27 +854,29 @@ mod tests {
     }
 
     #[test]
-    fn test_swarm_worker_running_human_review_to_in_progress() {
+    fn test_swarm_worker_running_human_review_no_regression() {
+        // worker_running must NOT regress a task that is already past InProgress.
         let store = TaskStore::open_memory().unwrap();
         create_task_in_stage(&store, "acme", "w-run2", TaskStage::HumanReview);
 
         let signal = make_running_signal("w-run2");
         let result = process_signal(&store, "acme", &signal).unwrap();
 
-        assert!(result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+        assert!(!result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::HumanReview);
     }
 
     #[test]
-    fn test_swarm_worker_running_in_ai_review_to_in_progress() {
+    fn test_swarm_worker_running_in_ai_review_no_regression() {
+        // worker_running must NOT regress a task that is already past InProgress.
         let store = TaskStore::open_memory().unwrap();
         create_task_in_stage(&store, "acme", "w-run3", TaskStage::InAiReview);
 
         let signal = make_running_signal("w-run3");
         let result = process_signal(&store, "acme", &signal).unwrap();
 
-        assert!(result.transitioned);
-        assert_eq!(result.task.unwrap().stage, TaskStage::InProgress);
+        assert!(!result.transitioned);
+        assert_eq!(result.task.unwrap().stage, TaskStage::InAiReview);
     }
 
     #[test]
