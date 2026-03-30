@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use apiari_tui::conversation;
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols::border,
@@ -19,6 +20,30 @@ use super::{
 };
 
 const SPINNER: &[&str] = &["|", "/", "-", "\\"];
+
+/// Apply OSC 8 terminal hyperlinks to cells in a single-row area.
+///
+/// After a line has been rendered into the buffer normally, this overwrites
+/// each non-space cell symbol with `\x1B]8;;{url}\x07{sym}\x1B]8;;\x07` so
+/// that terminals supporting OSC 8 render the text as a clickable hyperlink.
+/// Cells before `x_skip` (used to skip prefix decorations like bars/icons)
+/// are left untouched.
+fn apply_osc8_hyperlink(buf: &mut Buffer, area: Rect, url: &str, x_skip: u16) {
+    let y = area.y;
+    let x_begin = area.x.saturating_add(x_skip);
+    let x_end = area.x.saturating_add(area.width);
+    for x in x_begin..x_end {
+        if x >= buf.area().x + buf.area().width || y >= buf.area().y + buf.area().height {
+            break;
+        }
+        let sym = buf[(x, y)].symbol().to_string();
+        if sym.chars().all(|c| c == ' ') {
+            continue; // skip whitespace-only cells
+        }
+        let linked = format!("\x1B]8;;{url}\x07{sym}\x1B]8;;\x07");
+        buf[(x, y)].set_symbol(&linked);
+    }
+}
 
 /// Build the display string for the input box with cursor indicator.
 /// Returns the rendered string with `_` at the cursor position.
@@ -827,6 +852,11 @@ fn draw_triage_view(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
             Span::styled(truncate_to_width(&item.title, title_max), title_style),
         ]);
         frame.render_widget(Paragraph::new(line1).style(row_bg), line1_area);
+        // Apply OSC 8 hyperlink to the title text if the item has a URL.
+        // Skip 4 columns: ▌(1) + selector(1) + dot(1) + space(1)
+        if let Some(ref url) = item.url {
+            apply_osc8_hyperlink(frame.buffer_mut(), line1_area, url, 4);
+        }
 
         // Line 2: ▌   source_label · age
         // Reserve width for " · {age}" so the age is never pushed off-screen.
@@ -3235,6 +3265,30 @@ fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((app.content_scroll, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+
+    // Post-render: apply OSC 8 hyperlinks to the URL line of each PR entry.
+    // Layout: 3 header lines (blank + ruler + blank), then per-PR: title(1) + url(1) + blank(1).
+    // URL line virtual index = 3 + pr_idx * 3 + 1 = 4 + pr_idx * 3.
+    // The URL text starts after 4 spaces of indent.
+    let header_lines: u16 = 3;
+    for (list_idx, (_, worker)) in prs.iter().enumerate() {
+        let pr = worker.pr.as_ref().unwrap();
+        let virtual_line = header_lines + list_idx as u16 * 3 + 1;
+        if virtual_line < app.content_scroll {
+            continue;
+        }
+        let row = virtual_line - app.content_scroll;
+        if row >= area.height {
+            break;
+        }
+        let url_area = Rect {
+            x: area.x,
+            y: area.y + row,
+            width: area.width,
+            height: 1,
+        };
+        apply_osc8_hyperlink(frame.buffer_mut(), url_area, &pr.url, 4);
+    }
 }
 
 // ── Status bar ───────────────────────────────────────────
