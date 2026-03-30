@@ -1875,6 +1875,31 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 }
                                             }
 
+                                            // Auto-close the worker that opened the PR — it has delivered its work
+                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
+                                                let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
+                                                if !worker_id.is_empty() {
+                                                    let swarm_for_close = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
+                                                    let wid = worker_id.clone();
+                                                    tokio::spawn(async move {
+                                                        match swarm_for_close.list_workers().await {
+                                                            Ok(workers) => {
+                                                                if let Some(w) = workers.iter().find(|w| w.id == wid)
+                                                                    && should_auto_close_pr_worker(w) {
+                                                                        tracing::info!("auto-closing worker {wid} after PR opened");
+                                                                        if let Err(e) = swarm_for_close.close_worker(&wid).await {
+                                                                            tracing::warn!("failed to auto-close worker {wid} after PR opened: {e}");
+                                                                        }
+                                                                    }
+                                                            }
+                                                            Err(e) => {
+                                                                tracing::warn!("failed to list workers for auto-close after PR: {e}");
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            }
+
                                             // Dispatch reviewer on branch when task enters InAiReview via branch-ready flow
                                             if is_new && update.source == "swarm_branch_ready" && update.external_id.starts_with("swarm-branch-ready-") {
                                                 let worker_id = update.external_id.strip_prefix("swarm-branch-ready-").unwrap_or("").to_string();
@@ -3824,6 +3849,14 @@ fn format_hook_notification(source: &str, events: &[String], template: &str) -> 
     }
 }
 
+/// Returns true if a worker that opened a PR should be auto-closed.
+///
+/// Only headless `claude` workers in `Waiting` phase are eligible.
+/// `claude-tui` workers are interactive and must stay alive.
+fn should_auto_close_pr_worker(worker: &apiari_swarm::daemon::protocol::WorkerInfo) -> bool {
+    worker.phase == apiari_swarm::WorkerPhase::Waiting && worker.agent == "claude"
+}
+
 #[cfg(test)]
 mod tests {
     use crate::buzz::task::{Task, TaskStage, store::TaskStore};
@@ -3877,5 +3910,55 @@ mod tests {
         // Non-existent PR should return None
         let not_found = store.find_task_by_pr(ws, "org/repo-a", 999).unwrap();
         assert!(not_found.is_none());
+    }
+
+    /// Verify the auto-close condition: waiting claude workers close, others don't.
+    #[test]
+    fn test_should_auto_close_pr_worker() {
+        use apiari_swarm::{WorkerPhase, daemon::protocol::WorkerInfo};
+
+        let make = |agent: &str, phase: WorkerPhase| -> WorkerInfo {
+            WorkerInfo {
+                id: "w1".to_string(),
+                branch: "swarm/w1".to_string(),
+                prompt: "test task".to_string(),
+                agent: agent.to_string(),
+                phase,
+                session_id: None,
+                pr_url: None,
+                pr_number: None,
+                pr_title: None,
+                pr_state: None,
+                restart_count: 0,
+                created_at: None,
+                role: None,
+                review_verdict: None,
+                agent_card: None,
+            }
+        };
+
+        // Should close: claude + waiting
+        assert!(super::should_auto_close_pr_worker(&make(
+            "claude",
+            WorkerPhase::Waiting
+        )));
+
+        // Should not close: claude but still running
+        assert!(!super::should_auto_close_pr_worker(&make(
+            "claude",
+            WorkerPhase::Running
+        )));
+
+        // Should not close: claude-tui (interactive, must stay alive)
+        assert!(!super::should_auto_close_pr_worker(&make(
+            "claude-tui",
+            WorkerPhase::Waiting
+        )));
+
+        // Should not close: claude-tui + running
+        assert!(!super::should_auto_close_pr_worker(&make(
+            "claude-tui",
+            WorkerPhase::Running
+        )));
     }
 }
