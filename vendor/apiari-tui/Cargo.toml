@@ -1,0 +1,21 @@
+[package]
+name = "apiari-tui"
+version = "0.2.0"
+edition = "2024"
+description = "Shared TUI design system for Apiari tools — theme, scroll, and common widgets"
+license = "MIT"
+
+[lib]
+name = "apiari_tui"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+pulldown-cmark = "0.12"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
