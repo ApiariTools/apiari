@@ -3283,8 +3283,11 @@ fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
     // URL line virtual index = 3 + pr_idx * 3 + 1 = 4 + pr_idx * 3.
     // The URL text starts after 4 spaces of indent.
     let header_lines: u16 = 3;
-    for (list_idx, (_, worker)) in prs.iter().enumerate() {
-        let pr = worker.pr.as_ref().unwrap();
+    for (list_idx, task) in tasks.iter().enumerate() {
+        let url = task.pr_url.as_deref().unwrap_or("");
+        if url.is_empty() {
+            continue;
+        }
         let virtual_line = header_lines + list_idx as u16 * 3 + 1;
         if virtual_line < app.content_scroll {
             continue;
@@ -3299,7 +3302,7 @@ fn draw_pr_list(frame: &mut Frame, app: &App, area: Rect) {
             width: area.width,
             height: 1,
         };
-        apply_osc8_hyperlink(frame.buffer_mut(), url_area, &pr.url, 4);
+        apply_osc8_hyperlink(frame.buffer_mut(), url_area, url, 4);
     }
 }
 
