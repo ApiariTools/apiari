@@ -305,25 +305,27 @@ pub fn evaluate_signal(task: &Task, signal: &SignalRecord) -> Option<ProposedTra
         }),
 
         // ── Worker running → InProgress ──
-        // A non-reviewer worker transitioned to Running phase. Move the task to InProgress
-        // regardless of which stage it was in (e.g. Triage after worker closed+re-spawned,
-        // HumanReview after human sends rebase message, InAiReview after reviewer returns changes).
-        (
-            TaskStage::Triage | TaskStage::HumanReview | TaskStage::InAiReview,
-            "swarm_worker_running",
-        ) => Some(ProposedTransition {
-            task_id: task.id.clone(),
-            from: task.stage.clone(),
-            to: TaskStage::InProgress,
-            reason: "Worker resumed running".to_string(),
-            approval: Approval::Auto,
-            action: TransitionAction::Notify {
-                message: format!(
-                    "Worker is running — task moved to InProgress (was {})",
-                    task.stage.as_str()
-                ),
-            },
-        }),
+        // A non-reviewer worker transitioned to Running phase. Only move the task to
+        // InProgress if it hasn't already advanced past that stage. If the task is in
+        // InAiReview, HumanReview, or Merged, the worker_running signal must NOT regress
+        // it backwards — that is a bug, not an intentional transition.
+        (stage, "swarm_worker_running")
+            if stage.stage_order() < TaskStage::InProgress.stage_order() =>
+        {
+            Some(ProposedTransition {
+                task_id: task.id.clone(),
+                from: task.stage.clone(),
+                to: TaskStage::InProgress,
+                reason: "Worker resumed running".to_string(),
+                approval: Approval::Auto,
+                action: TransitionAction::Notify {
+                    message: format!(
+                        "Worker is running — task moved to InProgress (was {})",
+                        task.stage.as_str()
+                    ),
+                },
+            })
+        }
 
         // ── Worker closed without completing → Triage ──
         // Non-reviewer worker disappeared while task was InProgress — needs attention.
@@ -939,21 +941,29 @@ mod tests {
     }
 
     #[test]
-    fn test_worker_running_human_review_to_in_progress() {
+    fn test_worker_running_human_review_no_regression() {
+        // Task already in HumanReview — worker_running must NOT regress it to InProgress.
         let task = make_task(TaskStage::HumanReview);
         let signal = make_worker_running_signal("w1");
-        let result = evaluate_signal(&task, &signal).unwrap();
-        assert_eq!(result.from, TaskStage::HumanReview);
-        assert_eq!(result.to, TaskStage::InProgress);
+        assert!(evaluate_signal(&task, &signal).is_none());
     }
 
     #[test]
-    fn test_worker_running_in_ai_review_to_in_progress() {
+    fn test_worker_running_in_ai_review_no_regression() {
+        // Task already in InAiReview — worker_running must NOT regress it to InProgress.
         let task = make_task(TaskStage::InAiReview);
         let signal = make_worker_running_signal("w1");
+        assert!(evaluate_signal(&task, &signal).is_none());
+    }
+
+    #[test]
+    fn test_ci_pass_in_ai_review_to_human_review_forward_allowed() {
+        // Forward transition: InAiReview + ci_pass → HumanReview is unaffected by the fix.
+        let task = make_task(TaskStage::InAiReview);
+        let signal = make_signal("github_ci_pass", None);
         let result = evaluate_signal(&task, &signal).unwrap();
         assert_eq!(result.from, TaskStage::InAiReview);
-        assert_eq!(result.to, TaskStage::InProgress);
+        assert_eq!(result.to, TaskStage::HumanReview);
     }
 
     #[test]

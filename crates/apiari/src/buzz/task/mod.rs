@@ -62,6 +62,19 @@ impl TaskStage {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Merged | Self::Dismissed)
     }
+
+    /// Numeric ordering of stages (higher = further in the lifecycle).
+    /// Used to prevent signal-driven backward transitions.
+    pub fn stage_order(&self) -> u8 {
+        match self {
+            Self::Triage => 0,
+            Self::InProgress => 1,
+            Self::InAiReview => 2,
+            Self::HumanReview => 3,
+            Self::Merged => 4,
+            Self::Dismissed => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
