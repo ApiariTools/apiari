@@ -357,6 +357,24 @@ mod tests {
         assert!(updated.resolved_at.is_some());
     }
 
+    #[test]
+    fn test_closed_pr_transitions_any_active_task_to_dismissed() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_task("acme", TaskStage::HumanReview, "org/repo", 10);
+        store.create_task(&task).unwrap();
+
+        let signal = make_signal(
+            "github_pr_closed",
+            Some("https://github.com/org/repo/pull/10"),
+        );
+        let result = process_signal(&store, "acme", &signal).unwrap();
+
+        assert!(result.transitioned);
+        let updated = result.task.unwrap();
+        assert_eq!(updated.stage, TaskStage::Dismissed);
+        assert!(updated.resolved_at.is_some());
+    }
+
     // ── Swarm worker lifecycle tests ──
 
     /// Helper that mirrors the daemon's swarm-spawned-* task creation logic.

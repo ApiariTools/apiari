@@ -122,6 +122,14 @@ struct GraphqlMergedPr {
     merged_at: String,
 }
 
+struct GraphqlClosedPr {
+    number: u64,
+    title: String,
+    author_login: Option<String>,
+    url: String,
+    closed_at: String,
+}
+
 struct GraphqlIssue {
     number: u64,
     title: String,
@@ -132,6 +140,7 @@ struct GraphqlIssue {
 struct RepoPollGraphqlResult {
     open_prs: Vec<GraphqlPr>,
     merged_prs: Vec<GraphqlMergedPr>,
+    closed_prs: Vec<GraphqlClosedPr>,
     assigned_issues: Vec<GraphqlIssue>,
 }
 
@@ -146,6 +155,10 @@ fn parse_graphql_result(response: &serde_json::Value) -> Option<RepoPollGraphqlR
         .pointer("/mergedPRs/nodes")
         .map(parse_graphql_merged_prs)
         .unwrap_or_default();
+    let closed_prs = repo
+        .pointer("/closedPRs/nodes")
+        .map(parse_graphql_closed_prs)
+        .unwrap_or_default();
     let assigned_issues = repo
         .pointer("/assignedIssues/nodes")
         .map(parse_graphql_issues)
@@ -154,6 +167,7 @@ fn parse_graphql_result(response: &serde_json::Value) -> Option<RepoPollGraphqlR
     Some(RepoPollGraphqlResult {
         open_prs,
         merged_prs,
+        closed_prs,
         assigned_issues,
     })
 }
@@ -319,6 +333,26 @@ fn parse_graphql_merged_prs(nodes: &serde_json::Value) -> Vec<GraphqlMergedPr> {
         .collect()
 }
 
+fn parse_graphql_closed_prs(nodes: &serde_json::Value) -> Vec<GraphqlClosedPr> {
+    let Some(arr) = nodes.as_array() else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|node| {
+            Some(GraphqlClosedPr {
+                number: node.get("number")?.as_u64()?,
+                title: node.get("title")?.as_str()?.to_string(),
+                author_login: node
+                    .pointer("/author/login")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                url: node.get("url")?.as_str()?.to_string(),
+                closed_at: node.get("closedAt")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn parse_graphql_issues(nodes: &serde_json::Value) -> Vec<GraphqlIssue> {
     let Some(arr) = nodes.as_array() else {
         return Vec::new();
@@ -464,6 +498,7 @@ struct RepoPollParams {
     repo: String,
     last_seen_release_id: u64,
     seen_merged_prs: HashSet<u64>,
+    seen_closed_prs: HashSet<u64>,
     ci_pass_prs: HashSet<u64>,
     bot_review_cursor: Option<String>,
     pr_push_prev: HashMap<u64, String>,
@@ -476,6 +511,7 @@ struct RepoPollResult {
     signals: Vec<SignalUpdate>,
     new_release_cursor: Option<u64>,
     updated_merged_prs: Option<HashSet<u64>>,
+    updated_closed_prs: Option<HashSet<u64>>,
     updated_ci_pass: HashSet<u64>,
     updated_bot_review_cursor: Option<String>,
     updated_pr_push_cursors: Option<HashMap<u64, String>>,
@@ -491,6 +527,8 @@ pub struct GithubWatcher {
     release_cursors: HashMap<String, u64>,
     /// Seen merged PR numbers per repo (cursor: github_merged_pr:{repo}).
     merged_pr_cursors: HashMap<String, HashSet<u64>>,
+    /// Seen closed (without merge) PR numbers per repo (cursor: github_pr_closed:{repo}).
+    closed_pr_cursors: HashMap<String, HashSet<u64>>,
     /// PRs with passing CI per repo (cursor: github_ci_pass:{repo}).
     ci_pass_state: HashMap<String, HashSet<u64>>,
     /// Last-seen bot review timestamp per repo (cursor: github_bot_review:{repo}).
@@ -513,6 +551,7 @@ impl GithubWatcher {
             username: None,
             release_cursors: HashMap::new(),
             merged_pr_cursors: HashMap::new(),
+            closed_pr_cursors: HashMap::new(),
             ci_pass_state: HashMap::new(),
             bot_review_cursors: HashMap::new(),
             pr_push_cursors: HashMap::new(),
@@ -536,6 +575,14 @@ impl GithubWatcher {
                 let seen: HashSet<u64> = val.split(',').filter_map(|n| n.parse().ok()).collect();
                 if !seen.is_empty() {
                     self.merged_pr_cursors.insert(repo.clone(), seen);
+                }
+            }
+
+            let clk = format!("github_pr_closed:{repo}");
+            if let Ok(Some(val)) = store.get_cursor(&clk) {
+                let seen: HashSet<u64> = val.split(',').filter_map(|n| n.parse().ok()).collect();
+                if !seen.is_empty() {
+                    self.closed_pr_cursors.insert(repo.clone(), seen);
                 }
             }
 
@@ -806,7 +853,7 @@ impl GithubWatcher {
         };
 
         let query = format!(
-            r#"{{ repository(owner: "{owner}", name: "{name}") {{ openPRs: pullRequests(states: [OPEN], first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url headRefName updatedAt author {{ login }} commits(last: 1) {{ nodes {{ commit {{ oid checkSuites(first: 10) {{ nodes {{ conclusion url checkRuns(first: 10) {{ nodes {{ name conclusion detailsUrl }} }} }} }} }} }} }} reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} mergedPRs: pullRequests(states: [MERGED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url mergedAt author {{ login }} }} }} {issues_fragment} }} }}"#
+            r#"{{ repository(owner: "{owner}", name: "{name}") {{ openPRs: pullRequests(states: [OPEN], first: 20, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url headRefName updatedAt author {{ login }} commits(last: 1) {{ nodes {{ commit {{ oid checkSuites(first: 10) {{ nodes {{ conclusion url checkRuns(first: 10) {{ nodes {{ name conclusion detailsUrl }} }} }} }} }} }} }} reviews(last: 30) {{ nodes {{ databaseId state body submittedAt url author {{ __typename login }} }} }} }} }} mergedPRs: pullRequests(states: [MERGED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url mergedAt author {{ login }} }} }} closedPRs: pullRequests(states: [CLOSED], first: 10, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number title url closedAt author {{ login }} }} }} {issues_fragment} }} }}"#
         );
         let query_arg = format!("query={query}");
 
@@ -952,6 +999,7 @@ impl GithubWatcher {
             repo,
             last_seen_release_id,
             seen_merged_prs,
+            seen_closed_prs,
             mut ci_pass_prs,
             bot_review_cursor,
             pr_push_prev,
@@ -974,6 +1022,7 @@ impl GithubWatcher {
 
         let mut updated_bot_review_cursor = None;
         let mut updated_merged_prs = None;
+        let mut updated_closed_prs = None;
         let mut updated_pr_push_cursors = None;
 
         if let Some(gql) = graphql_result {
@@ -1088,6 +1137,35 @@ impl GithubWatcher {
                 updated_merged_prs = Some(new_seen);
             }
 
+            // --- Closed PR signals (PRs closed without merging) ---
+            let mut new_seen_closed = seen_closed_prs.clone();
+            for pr in &gql.closed_prs {
+                if pr.number == 0 || seen_closed_prs.contains(&pr.number) {
+                    continue;
+                }
+                new_seen_closed.insert(pr.number);
+                if seen_closed_prs.is_empty()
+                    && !is_recent_close(&pr.closed_at, self.config.interval_secs)
+                {
+                    continue;
+                }
+                let key = format!("closed-{repo}-{}", pr.number);
+                let msg = format!("\u{274c} Closed: {} #{}", pr.title, pr.number);
+                let metadata = serde_json::json!({
+                    "repo": repo,
+                    "pr_number": pr.number,
+                });
+                let mut signal = SignalUpdate::new("github_pr_closed", &key, &msg, Severity::Info)
+                    .with_metadata(metadata.to_string());
+                if !pr.url.is_empty() {
+                    signal = signal.with_url(&pr.url);
+                }
+                signals.push(signal);
+            }
+            if new_seen_closed != seen_closed_prs {
+                updated_closed_prs = Some(new_seen_closed);
+            }
+
             // --- PR push detection ---
             let prs: Vec<(u64, String, String, String)> = gql
                 .open_prs
@@ -1165,6 +1243,9 @@ impl GithubWatcher {
                 for pr in &gql.merged_prs {
                     pr_authors.insert(pr.number, pr.author_login.clone());
                 }
+                for pr in &gql.closed_prs {
+                    pr_authors.insert(pr.number, pr.author_login.clone());
+                }
                 signals.retain(|signal| match self.config.filters.get(&signal.source) {
                     None => true,
                     Some(filter) => signal_matches_author_filter(
@@ -1182,6 +1263,7 @@ impl GithubWatcher {
             signals,
             new_release_cursor,
             updated_merged_prs,
+            updated_closed_prs,
             updated_ci_pass: ci_pass_prs,
             updated_bot_review_cursor,
             updated_pr_push_cursors,
@@ -1217,6 +1299,11 @@ impl Watcher for GithubWatcher {
                     .get(repo)
                     .cloned()
                     .unwrap_or_default();
+                let seen_closed = self
+                    .closed_pr_cursors
+                    .get(repo)
+                    .cloned()
+                    .unwrap_or_default();
                 let ci_prs = self.ci_pass_state.get(repo).cloned().unwrap_or_default();
                 let bot_cursor = self.bot_review_cursors.get(repo).cloned();
                 let pr_push = self.pr_push_cursors.get(repo).cloned().unwrap_or_default();
@@ -1225,6 +1312,7 @@ impl Watcher for GithubWatcher {
                     repo: repo.clone(),
                     last_seen_release_id: last_seen,
                     seen_merged_prs: seen_prs,
+                    seen_closed_prs: seen_closed,
                     ci_pass_prs: ci_prs,
                     bot_review_cursor: bot_cursor,
                     pr_push_prev: pr_push,
@@ -1252,6 +1340,16 @@ impl Watcher for GithubWatcher {
                     new_seen = sorted[sorted.len() - 100..].iter().copied().collect();
                 }
                 self.merged_pr_cursors.insert(result.repo.clone(), new_seen);
+            }
+
+            if let Some(mut new_seen) = result.updated_closed_prs {
+                // Keep only the last 100 to prevent unbounded growth
+                if new_seen.len() > 100 {
+                    let mut sorted: Vec<u64> = new_seen.into_iter().collect();
+                    sorted.sort_unstable();
+                    new_seen = sorted[sorted.len() - 100..].iter().copied().collect();
+                }
+                self.closed_pr_cursors.insert(result.repo.clone(), new_seen);
             }
 
             self.ci_pass_state
@@ -1299,6 +1397,17 @@ impl Watcher for GithubWatcher {
                 .join(",");
             if let Err(e) = store.set_cursor(&key, &val) {
                 warn!("failed to persist merged PR cursor for {repo}: {e}");
+            }
+        }
+        for (repo, seen) in &self.closed_pr_cursors {
+            let key = format!("github_pr_closed:{repo}");
+            let val: String = seen
+                .iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            if let Err(e) = store.set_cursor(&key, &val) {
+                warn!("failed to persist closed PR cursor for {repo}: {e}");
             }
         }
         for (repo, state) in &self.ci_pass_state {
@@ -1384,6 +1493,17 @@ fn is_recent_merge(merged_at_str: &str, interval_secs: u64) -> bool {
         .is_some_and(|merged_at| {
             let cutoff = chrono::Utc::now() - chrono::Duration::seconds((interval_secs * 2) as i64);
             merged_at >= cutoff
+        })
+}
+
+/// Check if a closed PR is recent enough to emit a signal on first run.
+fn is_recent_close(closed_at_str: &str, interval_secs: u64) -> bool {
+    chrono::DateTime::parse_from_rfc3339(closed_at_str)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .is_some_and(|closed_at| {
+            let cutoff = chrono::Utc::now() - chrono::Duration::seconds((interval_secs * 2) as i64);
+            closed_at >= cutoff
         })
 }
 
