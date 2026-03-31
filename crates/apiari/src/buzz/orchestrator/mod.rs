@@ -1,5 +1,7 @@
 pub mod action;
 pub mod notify;
+pub mod reconcile;
+pub mod task;
 
 use serde::{Deserialize, Serialize};
 
@@ -12,10 +14,16 @@ use self::{
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct OrchestratorConfig {
+    #[serde(default = "default_reconcile_interval_secs")]
+    pub reconcile_interval_secs: u64,
     #[serde(default)]
     pub notification_tiers: NotificationTierOverrides,
     #[serde(default)]
     pub actions: Vec<CoordinatorActionConfig>,
+}
+
+fn default_reconcile_interval_secs() -> u64 {
+    60
 }
 
 pub struct Orchestrator {

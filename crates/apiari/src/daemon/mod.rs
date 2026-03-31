@@ -28,7 +28,12 @@ use crate::{
             },
         },
         daemon::config as buzz_daemon_config,
-        orchestrator::{Orchestrator, notify::NotificationTier},
+        orchestrator::{
+            Orchestrator,
+            notify::NotificationTier,
+            reconcile,
+            task::{self, TaskEffect},
+        },
         signal::store::SignalStore,
         watcher::{
             WatcherRegistry, email::EmailWatcher, github::GithubWatcher, linear::LinearWatcher,
@@ -76,6 +81,8 @@ struct WorkspaceSlot {
     last_user_input: Option<std::time::Instant>,
     /// When we last sent an idle nudge.
     last_nudge: Option<std::time::Instant>,
+    /// When we last ran orchestrator reconciliation.
+    last_reconcile: Option<std::time::Instant>,
 }
 
 /// Key for routing Telegram messages to workspaces.
@@ -1290,6 +1297,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             coord_last_respawn: None,
             last_user_input: None,
             last_nudge: None,
+            last_reconcile: None,
         });
     }
 
@@ -1396,6 +1404,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
     let mut idle_timer = tokio::time::interval(std::time::Duration::from_secs(60));
     idle_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let mut reconcile_timer = tokio::time::interval(std::time::Duration::from_secs(15));
+    reconcile_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut prune_timer = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
     prune_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1592,592 +1603,30 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 for update in &updates {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, is_new)) => {
-                                            // Process signal through task engine
                                             if is_new
                                                 && let Ok(Some(record)) = slot.store.get_signal(id)
-                                                && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                             {
-                                                match crate::buzz::task::engine::process_signal(
-                                                    &task_store,
+                                                match task::process_signal(
+                                                    slot.store.db_path(),
                                                     &slot.name,
+                                                    &slot.config.root,
                                                     &record,
                                                 ) {
-                                                    Ok(engine_result) => {
-                                                        for (worker_id, message) in engine_result.worker_messages {
-                                                            info!("[task-engine] forwarding to worker {worker_id}: {message}");
-                                                            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
-                                                                slot.config.root.clone(),
+                                                    Ok(task_outcome) => {
+                                                        for effect in task_outcome.effects {
+                                                            execute_task_effect(
+                                                                &slot.name,
+                                                                &slot.config.root,
+                                                                slot.store.db_path(),
+                                                                socket_server.as_ref(),
+                                                                effect,
                                                             );
-                                                            tokio::spawn(async move {
-                                                                if let Err(e) = swarm.send_message(&worker_id, &message).await {
-                                                                    tracing::warn!(
-                                                                        "[task-engine] failed to forward to worker {worker_id}: {e}"
-                                                                    );
-                                                                }
-                                                            });
                                                         }
-                                                        for notification in &engine_result.notifications {
-                                                            if let Some(ref server) = socket_server {
-                                                                server.broadcast_activity(
-                                                                    "task",
-                                                                    &slot.name,
-                                                                    "transition",
-                                                                    notification,
-                                                                );
-                                                            }
-                                                        }
-                                                        // Log activity events for signal match and stage change.
-                                                        if let Some(ref task) = engine_result.task
-                                                            && let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
-                                                                // Log signal event
-                                                                let _ = ae.log_event(
-                                                                    &slot.name,
-                                                                    Some(&task.id),
-                                                                    "signal",
-                                                                    &format!("Signal: {}", record.title),
-                                                                    record.body.as_deref(),
-                                                                    Some(&record.source),
-                                                                    Some(record.id),
-                                                                    None,
-                                                                );
-                                                                // Log stage_change if a transition occurred
-                                                                if engine_result.transitioned
-                                                                    && let Some(ref from) = engine_result.from_stage
-                                                                {
-                                                                    let to = &task.stage;
-                                                                    if from != to {
-                                                                        let meta = serde_json::json!({
-                                                                            "from": from.as_str(),
-                                                                            "to": to.as_str(),
-                                                                            "reason": record.source,
-                                                                        });
-                                                                        let _ = ae.log_event(
-                                                                            &slot.name,
-                                                                            Some(&task.id),
-                                                                            "stage_change",
-                                                                            &format!("{} → {}", from.as_str(), to.as_str()),
-                                                                            None,
-                                                                            Some(&record.source),
-                                                                            Some(record.id),
-                                                                            Some(&meta.to_string()),
-                                                                        );
-                                                                    }
-                                                                }
-                                                            }
                                                     }
                                                     Err(e) => {
                                                         tracing::warn!("[task-engine] error processing signal: {e}");
                                                     }
                                                 }
-                                            }
-
-                                            // Create task for new swarm workers (skip reviewer workers)
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-spawned-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-spawned-").unwrap_or("").to_string();
-                                                let is_reviewer = update.body.as_ref()
-                                                    .and_then(|b| b.lines().nth(1))
-                                                    .map(|l| l.trim_start().starts_with("Review PR"))
-                                                    .unwrap_or(false);
-                                                if !is_reviewer && !worker_id.is_empty()
-                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
-                                                        && let Ok(None) = task_store.find_task_by_worker(&slot.name, &worker_id) {
-                                                            let title = update.body.as_ref()
-                                                                .and_then(|b| b.lines().nth(1))
-                                                                .map(|s| s.trim().to_string())
-                                                                .filter(|s| !s.is_empty())
-                                                                .unwrap_or_else(|| format!("Worker {worker_id}"));
-                                                            let title = if title.len() > 80 { format!("{}…", &title[..79]) } else { title };
-                                                            let now = chrono::Utc::now();
-                                                            let task = crate::buzz::task::Task {
-                                                                id: uuid::Uuid::new_v4().to_string(),
-                                                                workspace: slot.name.clone(),
-                                                                title,
-                                                                stage: crate::buzz::task::TaskStage::InProgress,
-                                                                source: Some("swarm".to_string()),
-                                                                source_url: None,
-                                                                worker_id: Some(worker_id.clone()),
-                                                                pr_url: None,
-                                                                pr_number: None,
-                                                                repo: None,
-                                                                created_at: now,
-                                                                updated_at: now,
-                                                                resolved_at: None,
-                                                                metadata: serde_json::json!({}),
-                                                            };
-                                                            if let Err(e) = task_store.create_task(&task) {
-                                                                tracing::warn!("[task-engine] failed to create task for worker {worker_id}: {e}");
-                                                            } else {
-                                                                info!("[task-engine] created task '{}' for worker {worker_id}", task.title);
-                                                                // Log worker spawn and initial stage to activity feed.
-                                                                if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
-                                                                    let meta = serde_json::json!({
-                                                                        "from": serde_json::Value::Null,
-                                                                        "to": "In Progress",
-                                                                        "worker_id": worker_id,
-                                                                    });
-                                                                    let _ = ae.log_event(
-                                                                        &slot.name,
-                                                                        Some(&task.id),
-                                                                        "stage_change",
-                                                                        &format!("Task created: {}", task.title),
-                                                                        None,
-                                                                        Some("swarm"),
-                                                                        None,
-                                                                        Some(&meta.to_string()),
-                                                                    );
-                                                                    let _ = ae.log_event(
-                                                                        &slot.name,
-                                                                        Some(&task.id),
-                                                                        "worker",
-                                                                        &format!("Worker {} spawned", worker_id),
-                                                                        None,
-                                                                        Some("swarm"),
-                                                                        None,
-                                                                        Some(&serde_json::json!({"worker_id": worker_id}).to_string()),
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                            }
-
-                                            // Update task when worker opens a PR
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty()
-                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
-                                                        && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id) {
-                                                            let pr_url = update.url.clone();
-                                                            let pr_number = pr_url.as_ref()
-                                                                .and_then(|u| crate::buzz::task::rules::extract_github_pr_from_url(u))
-                                                                .map(|(_, num)| num);
-                                                            let repo = pr_url.as_ref()
-                                                                .and_then(|u| crate::buzz::task::rules::extract_github_pr_from_url(u))
-                                                                .map(|(r, _)| r);
-
-                                                            if let Some(ref url) = pr_url
-                                                                && let Some(num) = pr_number
-                                                                    && let Err(e) = task_store.update_task_pr(&task.id, url, num) {
-                                                                        tracing::warn!("[task-engine] failed to update PR on task: {e}");
-                                                                    }
-                                                            if let Some(ref r) = repo
-                                                                && let Err(e) = task_store.update_task_repo(&task.id, r) {
-                                                                    tracing::warn!("[task-engine] failed to update repo on task: {e}");
-                                                                }
-                                                            if task.stage == crate::buzz::task::TaskStage::InProgress {
-                                                                if let Err(e) = task_store.transition_task(
-                                                                    &task.id,
-                                                                    &crate::buzz::task::TaskStage::InProgress,
-                                                                    &crate::buzz::task::TaskStage::InAiReview,
-                                                                    Some("PR opened".to_string()),
-                                                                ) {
-                                                                    tracing::warn!("[task-engine] failed to transition task to InAiReview: {e}");
-                                                                } else {
-                                                                    info!("[task-engine] task '{}' → In AI Review (PR opened)", task.title);
-                                                                    // Log PR opened + stage change to activity feed.
-                                                                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
-                                                                        let pr_label = pr_url.as_deref().unwrap_or("(unknown)");
-                                                                        let meta = serde_json::json!({
-                                                                            "from": "In Progress",
-                                                                            "to": "In AI Review",
-                                                                            "reason": "PR opened",
-                                                                            "pr_url": pr_label,
-                                                                        });
-                                                                        let _ = ae.log_event(
-                                                                            &slot.name,
-                                                                            Some(&task.id),
-                                                                            "pr",
-                                                                            &format!("PR opened: {pr_label}"),
-                                                                            None,
-                                                                            Some("swarm"),
-                                                                            None,
-                                                                            Some(&serde_json::json!({"pr_url": pr_label}).to_string()),
-                                                                        );
-                                                                        let _ = ae.log_event(
-                                                                            &slot.name,
-                                                                            Some(&task.id),
-                                                                            "stage_change",
-                                                                            "In Progress → In AI Review",
-                                                                            None,
-                                                                            Some("swarm"),
-                                                                            None,
-                                                                            Some(&meta.to_string()),
-                                                                        );
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                            }
-
-                                            // Dispatch reviewer worker when task enters InAiReview
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty()
-                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
-                                                        && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
-                                                            && task.stage == crate::buzz::task::TaskStage::InAiReview
-                                                            && task.metadata.get("reviewer_worker_id").is_none()
-                                                            && let (Some(pr_number), Some(repo)) = (task.pr_number, &task.repo)
-                                                {
-                                                    // Use the short repo name (e.g. "apiari" from "ApiariTools/apiari")
-                                                    let short_repo = repo
-                                                        .split('/')
-                                                        .next_back()
-                                                        .unwrap_or(repo.as_str())
-                                                        .to_string();
-                                                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
-                                                        slot.config.root.clone(),
-                                                    );
-                                                    let task_id = task.id.clone();
-                                                    let task_title = task.title.clone();
-                                                    let mut meta = task.metadata.clone();
-                                                    let db_path = slot.store.db_path().to_path_buf();
-                                                    let ws_name_for_review = slot.name.clone();
-                                                    tokio::spawn(async move {
-                                                        match swarm.create_reviewer_worker(&short_repo, pr_number).await {
-                                                            Ok(reviewer_id) if !reviewer_id.is_empty() => {
-                                                                meta["reviewer_worker_id"] = serde_json::Value::String(reviewer_id.clone());
-                                                                if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path) {
-                                                                    if let Err(e) = ts.update_task_metadata(&task_id, &meta) {
-                                                                        tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
-                                                                    } else {
-                                                                        info!("[task-engine] dispatched reviewer {reviewer_id} for task '{task_title}'");
-                                                                        if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&db_path) {
-                                                                            let _ = ae.log_event(
-                                                                                &ws_name_for_review,
-                                                                                Some(&task_id),
-                                                                                "worker",
-                                                                                &format!("Reviewer {} dispatched", reviewer_id),
-                                                                                None,
-                                                                                Some("swarm"),
-                                                                                None,
-                                                                                Some(&serde_json::json!({"reviewer_worker_id": reviewer_id}).to_string()),
-                                                                            );
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            Ok(_) => {
-                                                                tracing::warn!("[task-engine] reviewer dispatch for '{task_title}' returned empty id");
-                                                            }
-                                                            Err(e) => {
-                                                                tracing::warn!("[task-engine] failed to dispatch reviewer for '{task_title}': {e}");
-                                                            }
-                                                        }
-                                                    });
-                                                }
-                                            }
-
-                                            // Auto-close the worker that opened the PR — it has delivered its work
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty() {
-                                                    let swarm_for_close = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                    let wid = worker_id.clone();
-                                                    tokio::spawn(async move {
-                                                        match swarm_for_close.list_workers().await {
-                                                            Ok(workers) => {
-                                                                if let Some(w) = workers.iter().find(|w| w.id == wid)
-                                                                    && should_auto_close_pr_worker(w) {
-                                                                        tracing::info!("auto-closing worker {wid} after PR opened");
-                                                                        if let Err(e) = swarm_for_close.close_worker(&wid).await {
-                                                                            tracing::warn!("failed to auto-close worker {wid} after PR opened: {e}");
-                                                                        }
-                                                                    }
-                                                            }
-                                                            Err(e) => {
-                                                                tracing::warn!("failed to list workers for auto-close after PR: {e}");
-                                                            }
-                                                        }
-                                                    });
-                                                }
-                                            }
-
-                                            // Dispatch reviewer on branch when task enters InAiReview via branch-ready flow
-                                            if is_new && update.source == "swarm_branch_ready" && update.external_id.starts_with("swarm-branch-ready-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-branch-ready-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty()
-                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
-                                                        && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
-                                                            && task.stage == crate::buzz::task::TaskStage::InAiReview
-                                                            && task.metadata.get("reviewer_worker_id").is_none()
-                                                {
-                                                    // Extract branch_name from signal metadata
-                                                    let branch_name = update.metadata.as_ref()
-                                                        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                                                        .and_then(|v| v.get("branch_name").and_then(|b| b.as_str()).map(String::from))
-                                                        .unwrap_or_default();
-
-                                                    if !branch_name.is_empty() {
-                                                        // Store ready_branch in task metadata for later PR-open step
-                                                        let mut meta = task.metadata.clone();
-                                                        meta["ready_branch"] = serde_json::Value::String(branch_name.clone());
-                                                        let db_path = slot.store.db_path().to_path_buf();
-                                                        if let Err(e) = task_store.update_task_metadata(&task.id, &meta) {
-                                                            tracing::warn!("[task-engine] failed to store ready_branch in task metadata: {e}");
-                                                        }
-
-                                                        // Derive a short repo name from the signal metadata repo_path
-                                                        // (e.g. "/home/user/project/apiari" → "apiari")
-                                                        let short_repo = update.metadata.as_ref()
-                                                            .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                                                            .and_then(|v| v.get("repo").and_then(|r| r.as_str()).map(String::from))
-                                                            .unwrap_or_default();
-                                                        let short_repo = short_repo
-                                                            .trim_end_matches('/')
-                                                            .rsplit('/')
-                                                            .next()
-                                                            .unwrap_or(&short_repo)
-                                                            .to_string();
-
-                                                        let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
-                                                            slot.config.root.clone(),
-                                                        );
-                                                        let task_id = task.id.clone();
-                                                        let task_title = task.title.clone();
-                                                        let mut meta2 = meta;
-                                                        let ws_name_branch = slot.name.clone();
-                                                        tokio::spawn(async move {
-                                                            match swarm.create_reviewer_worker_for_branch(&short_repo, &branch_name).await {
-                                                                Ok(reviewer_id) if !reviewer_id.is_empty() => {
-                                                                    meta2["reviewer_worker_id"] = serde_json::Value::String(reviewer_id.clone());
-                                                                    if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path) {
-                                                                        if let Err(e) = ts.update_task_metadata(&task_id, &meta2) {
-                                                                            tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
-                                                                        } else {
-                                                                            info!("[task-engine] dispatched branch reviewer {reviewer_id} for task '{task_title}'");
-                                                                            if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&db_path) {
-                                                                                let _ = ae.log_event(
-                                                                                    &ws_name_branch,
-                                                                                    Some(&task_id),
-                                                                                    "worker",
-                                                                                    &format!("Branch reviewer {} dispatched", reviewer_id),
-                                                                                    None,
-                                                                                    Some("swarm"),
-                                                                                    None,
-                                                                                    Some(&serde_json::json!({"reviewer_worker_id": reviewer_id, "branch": branch_name}).to_string()),
-                                                                                );
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                                Ok(_) => {
-                                                                    tracing::warn!("[task-engine] branch reviewer dispatch for '{task_title}' returned empty id");
-                                                                }
-                                                                Err(e) => {
-                                                                    tracing::warn!("[task-engine] failed to dispatch branch reviewer for '{task_title}': {e}");
-                                                                }
-                                                            }
-                                                        });
-                                                    }
-                                                }
-                                            }
-
-                                            // Process reviewer worker completion — emit verdict signal
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-completed-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-completed-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty()
-                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
-                                                        && let Ok(Some(task)) = task_store.find_task_by_reviewer_worker(&slot.name, &worker_id)
-                                                {
-                                                    // Read verdict from swarm state file while worker is still present
-                                                    let state_path = slot.config.root.join(".swarm").join("state.json");
-                                                    if let Ok(raw) = std::fs::read_to_string(&state_path)
-                                                        && let Ok(state_json) = serde_json::from_str::<serde_json::Value>(&raw)
-                                                    {
-                                                        let worktree = state_json
-                                                            .get("worktrees")
-                                                            .and_then(|wts| wts.as_array())
-                                                            .and_then(|arr| {
-                                                                arr.iter().find(|wt| {
-                                                                    wt.get("id")
-                                                                        .and_then(|id| id.as_str())
-                                                                        == Some(worker_id.as_str())
-                                                                })
-                                                            });
-                                                        let review_verdict_obj = worktree
-                                                            .and_then(|wt| wt.get("review_verdict"));
-                                                        let verdict = review_verdict_obj
-                                                            .and_then(|v| {
-                                                                let approved = v.get("approved").and_then(|a| a.as_bool())?;
-                                                                if approved {
-                                                                    Some("APPROVED".to_string())
-                                                                } else {
-                                                                    Some("CHANGES_REQUESTED".to_string())
-                                                                }
-                                                            });
-                                                        let comments = review_verdict_obj
-                                                            .and_then(|v| v.get("comments"))
-                                                            .and_then(|c| c.as_array())
-                                                            .map(|arr| {
-                                                                arr.iter()
-                                                                    .filter_map(|item| item.as_str())
-                                                                    .collect::<Vec<_>>()
-                                                                    .join("\n")
-                                                            })
-                                                            .unwrap_or_default();
-
-                                                        if let Some(verdict) = verdict {
-                                                            // Build metadata and title for PR flow or branch-first flow
-                                                            let is_branch_flow = task.pr_number.is_none();
-                                                            let (metadata, signal_title) = if let (Some(pr_number), Some(repo)) = (task.pr_number, task.repo.as_deref()) {
-                                                                // Old PR flow
-                                                                (
-                                                                    serde_json::json!({
-                                                                        "verdict": verdict,
-                                                                        "comments": comments,
-                                                                        "repo": repo,
-                                                                        "pr_number": pr_number,
-                                                                        "reviewer_worker_id": worker_id,
-                                                                    }),
-                                                                    format!("Review verdict for PR #{pr_number}: {verdict}"),
-                                                                )
-                                                            } else {
-                                                                // Branch-first flow: no PR yet
-                                                                let ready_branch = task.metadata
-                                                                    .get("ready_branch")
-                                                                    .and_then(|v| v.as_str())
-                                                                    .unwrap_or("unknown");
-                                                                (
-                                                                    serde_json::json!({
-                                                                        "verdict": verdict,
-                                                                        "comments": comments,
-                                                                        "reviewer_worker_id": worker_id,
-                                                                        "ready_branch": ready_branch,
-                                                                    }),
-                                                                    format!("Review verdict for branch {ready_branch}: {verdict}"),
-                                                                )
-                                                            };
-                                                            let verdict_signal = crate::buzz::signal::SignalUpdate::new(
-                                                                "swarm_review_verdict",
-                                                                format!("swarm-review-verdict-{worker_id}"),
-                                                                signal_title,
-                                                                crate::buzz::signal::Severity::Info,
-                                                            )
-                                                            .with_metadata(metadata.to_string());
-
-                                                            match slot.store.upsert_signal(&verdict_signal) {
-                                                                Ok((vid, true)) => {
-                                                                    info!("[task-engine] emitted review verdict '{verdict}' for task '{}'", task.title);
-                                                                    // Log review event to activity feed.
-                                                                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
-                                                                        let review_meta = serde_json::json!({
-                                                                            "verdict": verdict,
-                                                                            "reviewer_worker_id": worker_id,
-                                                                        });
-                                                                        let _ = ae.log_event(
-                                                                            &slot.name,
-                                                                            Some(&task.id),
-                                                                            "review",
-                                                                            &format!("Review verdict: {verdict}"),
-                                                                            if comments.is_empty() { None } else { Some(comments.as_str()) },
-                                                                            Some("swarm"),
-                                                                            Some(vid),
-                                                                            Some(&review_meta.to_string()),
-                                                                        );
-                                                                    }
-                                                                    // Process immediately through task engine
-                                                                    if let Ok(Some(vrecord)) = slot.store.get_signal(vid)
-                                                                        && let Ok(ts2) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
-                                                                    {
-                                                                        match crate::buzz::task::engine::process_signal(&ts2, &slot.name, &vrecord) {
-                                                                            Ok(ve_result) => {
-                                                                                for (wid, msg) in ve_result.worker_messages {
-                                                                                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                                                    tokio::spawn(async move {
-                                                                                        if let Err(e) = swarm.send_message(&wid, &msg).await {
-                                                                                            tracing::warn!("[task-engine] failed to send review feedback to worker {wid}: {e}");
-                                                                                        }
-                                                                                    });
-                                                                                }
-                                                                                for notification in &ve_result.notifications {
-                                                                                    if let Some(ref server) = socket_server {
-                                                                                        server.broadcast_activity("task", &slot.name, "transition", notification);
-                                                                                    }
-                                                                                }
-
-                                                                                // Branch-first flow: after approval, tell the original worker to open a PR
-                                                                                if verdict == "APPROVED"
-                                                                                    && is_branch_flow
-                                                                                    && let Some(ref original_worker_id) = task.worker_id
-                                                                                {
-                                                                                    let task_title = task.title.clone();
-                                                                                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                                                    let wid = original_worker_id.clone();
-                                                                                    tokio::spawn(async move {
-                                                                                        let msg = format!(
-                                                                                            "Your code was approved by the reviewer. Please run: `gh pr create --title '{task_title}' --body 'Approved by AI reviewer'`"
-                                                                                        );
-                                                                                        if let Err(e) = swarm.send_message(&wid, &msg).await {
-                                                                                            tracing::warn!("[task-engine] failed to send PR-open message to worker {wid}: {e}");
-                                                                                        } else {
-                                                                                            info!("[task-engine] told worker {wid} to open PR for task '{task_title}'");
-                                                                                        }
-                                                                                    });
-                                                                                }
-
-                                                                                // Auto-close the reviewer worker — it has delivered its verdict
-                                                                                let swarm_for_close = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                                                let reviewer_id_to_close = worker_id.clone();
-                                                                                tokio::spawn(async move {
-                                                                                    if let Err(e) = swarm_for_close.close_worker(&reviewer_id_to_close).await {
-                                                                                        tracing::warn!("failed to auto-close reviewer {reviewer_id_to_close}: {e}");
-                                                                                    } else {
-                                                                                        tracing::info!("auto-closed reviewer worker {reviewer_id_to_close}");
-                                                                                    }
-                                                                                });
-                                                                            }
-                                                                            Err(e) => {
-                                                                                tracing::warn!("[task-engine] error processing verdict signal: {e}");
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                                Ok((_, false)) => {} // already seen
-                                                                Err(e) => {
-                                                                    tracing::warn!("[task-engine] failed to upsert verdict signal: {e}");
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-
-                                            // Handle worker closed — dismiss task if no PR was merged
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-closed-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-closed-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty()
-                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
-                                                        && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
-                                                            && !task.stage.is_terminal() && task.pr_url.is_none() {
-                                                                let from_stage = task.stage.clone();
-                                                                if let Err(e) = task_store.transition_task(
-                                                                    &task.id,
-                                                                    &task.stage,
-                                                                    &crate::buzz::task::TaskStage::Dismissed,
-                                                                    Some("Worker closed without PR".to_string()),
-                                                                ) {
-                                                                    tracing::warn!("[task-engine] failed to dismiss task for closed worker: {e}");
-                                                                } else {
-                                                                    info!("[task-engine] dismissed task '{}' (worker closed without PR)", task.title);
-                                                                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
-                                                                        let meta = serde_json::json!({
-                                                                            "from": from_stage.as_str(),
-                                                                            "to": "Dismissed",
-                                                                            "reason": "Worker closed without PR",
-                                                                        });
-                                                                        let _ = ae.log_event(
-                                                                            &slot.name,
-                                                                            Some(&task.id),
-                                                                            "stage_change",
-                                                                            &format!("{} → Dismissed", from_stage.as_str()),
-                                                                            None,
-                                                                            Some("swarm"),
-                                                                            None,
-                                                                            Some(&meta.to_string()),
-                                                                        );
-                                                                    }
-                                                                }
-                                                            }
                                             }
 
                                             if is_new
@@ -2290,6 +1739,31 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                 }
 
+            }
+
+            _ = reconcile_timer.tick() => {
+                for slot in &mut slots {
+                    let interval_secs = slot.config.orchestrator.reconcile_interval_secs;
+                    if slot.last_reconcile.is_some_and(|last| {
+                        last.elapsed() < std::time::Duration::from_secs(interval_secs)
+                    }) {
+                        continue;
+                    }
+
+                    match reconcile::reconcile_workspace(slot.store.db_path(), &slot.name).await {
+                        Ok(notes) => {
+                            slot.last_reconcile = Some(std::time::Instant::now());
+                            for note in notes {
+                                if let Some(ref server) = socket_server {
+                                    server.broadcast_activity("task", &slot.name, "transition", &note);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("[{}] orchestrator reconcile failed: {e}", slot.name);
+                        }
+                    }
+                }
             }
 
             // ── TUI socket requests ──
@@ -3587,6 +3061,149 @@ fn describe_signal(signal: &crate::buzz::signal::SignalRecord) -> String {
         )
     } else {
         signal.title.clone()
+    }
+}
+
+fn execute_task_effect(
+    workspace: &str,
+    workspace_root: &std::path::Path,
+    db_path: &std::path::Path,
+    socket_server: Option<&Arc<socket::DaemonSocketServer>>,
+    effect: TaskEffect,
+) {
+    match effect {
+        TaskEffect::SendWorkerMessage { worker_id, message } => {
+            info!("[task-engine] forwarding to worker {worker_id}: {message}");
+            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
+                workspace_root.to_path_buf(),
+            );
+            tokio::spawn(async move {
+                if let Err(e) = swarm.send_message(&worker_id, &message).await {
+                    tracing::warn!("[task-engine] failed to forward to worker {worker_id}: {e}");
+                }
+            });
+        }
+        TaskEffect::Notify(notification) => {
+            if let Some(server) = socket_server {
+                server.broadcast_activity("task", workspace, "transition", &notification);
+            }
+        }
+        TaskEffect::CloseWorker { worker_id } => {
+            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
+                workspace_root.to_path_buf(),
+            );
+            tokio::spawn(async move {
+                match swarm.list_workers().await {
+                    Ok(workers) => {
+                        if let Some(w) = workers.iter().find(|w| w.id == worker_id)
+                            && should_auto_close_pr_worker(w)
+                            && let Err(e) = swarm.close_worker(&worker_id).await
+                        {
+                            tracing::warn!("failed to auto-close worker {worker_id}: {e}");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to list workers for auto-close: {e}");
+                    }
+                }
+            });
+        }
+        TaskEffect::SpawnReviewerForPr {
+            task_id,
+            repo,
+            pr_number,
+            task_title,
+        } => {
+            let db_path = db_path.to_path_buf();
+            let workspace = workspace.to_string();
+            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
+                workspace_root.to_path_buf(),
+            );
+            tokio::spawn(async move {
+                match swarm.create_reviewer_worker(&repo, pr_number).await {
+                    Ok(reviewer_id) if !reviewer_id.is_empty() => {
+                        if let Err(e) = task::record_reviewer_assignment(
+                            &db_path,
+                            &workspace,
+                            &task_id,
+                            &reviewer_id,
+                            &format!("Reviewer {} dispatched", reviewer_id),
+                            serde_json::json!({"reviewer_worker_id": reviewer_id}),
+                        ) {
+                            tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
+                        } else {
+                            info!(
+                                "[task-engine] dispatched reviewer for task '{}'",
+                                task_title
+                            );
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            "[task-engine] reviewer dispatch for '{}' returned empty id",
+                            task_title
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[task-engine] failed to dispatch reviewer for '{}': {e}",
+                            task_title
+                        );
+                    }
+                }
+            });
+        }
+        TaskEffect::SpawnReviewerForBranch {
+            task_id,
+            repo,
+            branch_name,
+            task_title,
+        } => {
+            let db_path = db_path.to_path_buf();
+            let workspace = workspace.to_string();
+            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
+                workspace_root.to_path_buf(),
+            );
+            tokio::spawn(async move {
+                match swarm
+                    .create_reviewer_worker_for_branch(&repo, &branch_name)
+                    .await
+                {
+                    Ok(reviewer_id) if !reviewer_id.is_empty() => {
+                        if let Err(e) = task::record_reviewer_assignment(
+                            &db_path,
+                            &workspace,
+                            &task_id,
+                            &reviewer_id,
+                            &format!("Branch reviewer {} dispatched", reviewer_id),
+                            serde_json::json!({
+                                "reviewer_worker_id": reviewer_id,
+                                "branch": branch_name,
+                            }),
+                        ) {
+                            tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
+                        } else {
+                            info!(
+                                "[task-engine] dispatched branch reviewer for task '{}'",
+                                task_title
+                            );
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            "[task-engine] branch reviewer dispatch for '{}' returned empty id",
+                            task_title
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[task-engine] failed to dispatch branch reviewer for '{}': {e}",
+                            task_title
+                        );
+                    }
+                }
+            });
+        }
     }
 }
 
