@@ -1251,7 +1251,7 @@ impl App {
         let focused_panel = if needs_onboarding {
             Panel::Chat
         } else {
-            Panel::Home
+            Panel::Workers
         };
 
         let chat_focused = needs_onboarding;
@@ -3145,6 +3145,38 @@ impl App {
 
             let current_ids: std::collections::HashSet<i64> =
                 ws.signals.iter().map(|s| s.id).collect();
+            let is_first_load = ws.prev_signal_ids.is_empty() && !ws.signals.is_empty();
+
+            if !is_first_load {
+                let new_signals: Vec<&SignalRecord> = ws
+                    .signals
+                    .iter()
+                    .filter(|s| !ws.prev_signal_ids.contains(&s.id))
+                    .collect();
+
+                if !new_signals.is_empty() {
+                    let count = new_signals.len();
+                    let mut by_source: std::collections::HashMap<&str, usize> =
+                        std::collections::HashMap::new();
+                    for sig in &new_signals {
+                        *by_source.entry(sig.source.as_str()).or_default() += 1;
+                    }
+                    let summary: Vec<String> = by_source
+                        .iter()
+                        .map(|(src, n)| format!("{n} {src}"))
+                        .collect();
+                    let msg = format!(
+                        "! {} new signal{}: {}",
+                        count,
+                        if count > 1 { "s" } else { "" },
+                        summary.join(", ")
+                    );
+                    ws.chat_history.push(ChatLine::System(msg));
+                    ws.has_unread_response = true;
+                    ws.chat_scroll.scroll_to_bottom();
+                }
+            }
+
             ws.prev_signal_ids = current_ids;
             // Rebuild kanban cards from updated state (prune stale dismissed IDs first)
             prune_kanban_dismissed(ws);
@@ -3165,6 +3197,50 @@ impl App {
         for (name, new_workers) in data {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
                 let is_first_load = ws.prev_worker_phases.is_empty() && !new_workers.is_empty();
+                for worker in &new_workers {
+                    let phase = phase_display(worker).to_string();
+                    let prev = ws.prev_worker_phases.get(&worker.id);
+
+                    if !is_first_load {
+                        if let Some(prev_phase) = prev {
+                            if *prev_phase != phase {
+                                let msg = match phase.as_str() {
+                                    "completed" => format!("\u{2713} {} completed", worker.id),
+                                    "waiting" => {
+                                        format!("\u{25cb} {} waiting for input", worker.id)
+                                    }
+                                    "closed" => format!("\u{2500} {} closed", worker.id),
+                                    "running" if prev_phase == "waiting" => {
+                                        format!("\u{25cf} {} resumed", worker.id)
+                                    }
+                                    _ => String::new(),
+                                };
+                                if !msg.is_empty() {
+                                    ws.chat_history.push(ChatLine::System(msg));
+                                    ws.has_unread_response = true;
+                                    ws.chat_scroll.scroll_to_bottom();
+                                }
+                            }
+                        } else {
+                            ws.chat_history
+                                .push(ChatLine::System(format!("\u{25cf} {} spawned", worker.id)));
+                            ws.has_unread_response = true;
+                            ws.chat_scroll.scroll_to_bottom();
+                        }
+
+                        if let Some(ref pr) = worker.pr
+                            && !ws.prev_pr_workers.contains(&worker.id)
+                        {
+                            ws.chat_history.push(ChatLine::System(format!(
+                                "\u{27f3} {} opened PR #{}: {}",
+                                worker.id, pr.number, pr.title
+                            )));
+                            ws.has_unread_response = true;
+                            ws.chat_scroll.scroll_to_bottom();
+                        }
+                    }
+                }
+
                 // Tmux auto-worker-shells: collect create/kill ops for async execution.
                 if ws.config.shells.enabled
                     && ws.config.shells.auto_worker_shells
@@ -3229,6 +3305,37 @@ impl App {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
                 let current_ids: std::collections::HashSet<i64> =
                     new_signals.iter().map(|s| s.id).collect();
+                let is_first_load = ws.prev_signal_ids.is_empty() && !new_signals.is_empty();
+
+                if !is_first_load {
+                    let new_sigs: Vec<&SignalRecord> = new_signals
+                        .iter()
+                        .filter(|s| !ws.prev_signal_ids.contains(&s.id))
+                        .collect();
+
+                    if !new_sigs.is_empty() {
+                        let count = new_sigs.len();
+                        let mut by_source: std::collections::HashMap<&str, usize> =
+                            std::collections::HashMap::new();
+                        for sig in &new_sigs {
+                            *by_source.entry(sig.source.as_str()).or_default() += 1;
+                        }
+                        let summary: Vec<String> = by_source
+                            .iter()
+                            .map(|(src, n)| format!("{n} {src}"))
+                            .collect();
+                        let msg = format!(
+                            "! {} new signal{}: {}",
+                            count,
+                            if count > 1 { "s" } else { "" },
+                            summary.join(", ")
+                        );
+                        ws.chat_history.push(ChatLine::System(msg));
+                        ws.has_unread_response = true;
+                        ws.chat_scroll.scroll_to_bottom();
+                    }
+                }
+
                 ws.prev_signal_ids = current_ids;
                 ws.signals = new_signals;
                 // Rebuild kanban cards from updated state (prune stale dismissed IDs first)
@@ -4363,10 +4470,70 @@ mod tests {
     }
 
     #[test]
-    fn test_app_defaults_to_home_panel_after_onboarding() {
+    fn test_app_defaults_to_workers_panel_after_onboarding() {
         let app = make_app(&["ws1"], false);
-        assert_eq!(app.focused_panel, Panel::Home);
+        assert_eq!(app.focused_panel, Panel::Workers);
         assert!(!app.chat_focused);
+    }
+
+    #[test]
+    fn test_apply_signal_update_emits_system_summary_for_new_signals() {
+        let mut app = make_app(&["ws1"], false);
+        app.apply_signal_update(vec![(
+            "ws1".into(),
+            vec![make_signal("github_ci_failure", "ci-1", None)],
+        )]);
+        assert!(app.workspaces[0].chat_history.is_empty());
+
+        app.apply_signal_update(vec![(
+            "ws1".into(),
+            vec![{
+                let mut signal = make_signal("github_ci_failure", "ci-1", None);
+                signal.id = 1;
+                signal
+            }, {
+                let mut signal = make_signal("linear", "lin-2", None);
+                signal.id = 2;
+                signal
+            }],
+        )]);
+
+        assert!(matches!(
+            app.workspaces[0].chat_history.last(),
+            Some(ChatLine::System(s))
+                if s.contains("1 new signal") && s.contains("linear")
+        ));
+    }
+
+    #[test]
+    fn test_apply_worker_update_emits_spawn_and_pr_notifications() {
+        let mut app = make_app(&["ws1"], false);
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![make_worker("abc-1234", "running", None)],
+        )]);
+        assert!(app.workspaces[0].chat_history.is_empty());
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![
+                make_worker("abc-1234", "running", None),
+                make_worker("def-5678", "running", Some(make_pr(42, "OPEN"))),
+            ],
+        )]);
+
+        assert!(
+            app.workspaces[0]
+                .chat_history
+                .iter()
+                .any(|line| matches!(line, ChatLine::System(s) if s.contains("def-5678 spawned")))
+        );
+        assert!(
+            app.workspaces[0]
+                .chat_history
+                .iter()
+                .any(|line| matches!(line, ChatLine::System(s) if s.contains("opened PR #42")))
+        );
     }
 
     #[test]
