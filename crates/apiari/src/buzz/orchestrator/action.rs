@@ -64,7 +64,10 @@ mod tests {
             action: "Review the PR".into(),
         }];
 
-        let matched = actions_for_signal(&make_signal("swarm", "swarm-pr-worker-1"), &actions);
+        let matched = actions_for_signal(
+            &make_signal("swarm_pr_opened", "swarm-pr-worker-1"),
+            &actions,
+        );
 
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].trigger, "swarm_pr_opened");

@@ -40,19 +40,7 @@ pub fn notification_for_signal(
 }
 
 pub fn classify_signal(signal: &SignalRecord) -> String {
-    match signal.source.as_str() {
-        "swarm" if signal.external_id.starts_with("swarm-spawned-") => {
-            "swarm_worker_spawned".to_string()
-        }
-        "swarm" if signal.external_id.starts_with("swarm-pr-") => "swarm_pr_opened".to_string(),
-        "swarm" if signal.external_id.starts_with("swarm-completed-") => {
-            "swarm_worker_completed".to_string()
-        }
-        "swarm" if signal.external_id.starts_with("swarm-closed-") => {
-            "swarm_worker_closed".to_string()
-        }
-        _ => signal.source.clone(),
-    }
+    signal.source.clone()
 }
 
 fn default_tier(trigger: &str, severity: &Severity) -> NotificationTier {
@@ -134,11 +122,19 @@ mod tests {
     #[test]
     fn classifies_swarm_special_cases() {
         assert_eq!(
-            classify_signal(&make_signal("swarm", "swarm-spawned-123", Severity::Info)),
+            classify_signal(&make_signal(
+                "swarm_worker_spawned",
+                "swarm-spawned-123",
+                Severity::Info,
+            )),
             "swarm_worker_spawned"
         );
         assert_eq!(
-            classify_signal(&make_signal("swarm", "swarm-pr-123", Severity::Info)),
+            classify_signal(&make_signal(
+                "swarm_pr_opened",
+                "swarm-pr-123",
+                Severity::Info,
+            )),
             "swarm_pr_opened"
         );
     }

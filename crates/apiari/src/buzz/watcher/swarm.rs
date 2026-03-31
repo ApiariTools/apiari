@@ -107,7 +107,7 @@ impl SwarmWatcher {
             if prev.is_none() {
                 signals.push(
                     SignalUpdate::new(
-                        "swarm",
+                        "swarm_worker_spawned",
                         format!("swarm-spawned-{}", worker.id),
                         format!("Worker spawned: {}", worker.id),
                         Severity::Info,
@@ -155,7 +155,7 @@ impl SwarmWatcher {
             {
                 signals.push(
                     SignalUpdate::new(
-                        "swarm",
+                        "swarm_worker_waiting",
                         format!("swarm-waiting-{}", worker.id),
                         format!("Worker waiting: {}", worker.id),
                         Severity::Warning,
@@ -167,7 +167,7 @@ impl SwarmWatcher {
             if phase.is_terminal() && prev.as_ref().is_some_and(|p| !p.phase.is_terminal()) {
                 signals.push(
                     SignalUpdate::new(
-                        "swarm",
+                        "swarm_worker_completed",
                         format!("swarm-completed-{}", worker.id),
                         format!("Worker completed: {}", worker.id),
                         Severity::Info,
@@ -207,7 +207,7 @@ impl SwarmWatcher {
                 let url = pr.url.as_deref().unwrap_or_default();
                 let title = pr.title.as_deref().unwrap_or_default();
                 let mut signal = SignalUpdate::new(
-                    "swarm",
+                    "swarm_pr_opened",
                     format!("swarm-pr-{}", worker.id),
                     format!("PR opened: {}", worker.id),
                     Severity::Info,
@@ -258,10 +258,10 @@ impl SwarmWatcher {
 
         for id in &closed_ids {
             for (source, external_id) in [
-                ("swarm", format!("swarm-spawned-{id}")),
-                ("swarm", format!("swarm-waiting-{id}")),
-                ("swarm", format!("swarm-pr-{id}")),
-                ("swarm", format!("swarm-completed-{id}")),
+                ("swarm_worker_spawned", format!("swarm-spawned-{id}")),
+                ("swarm_worker_waiting", format!("swarm-waiting-{id}")),
+                ("swarm_pr_opened", format!("swarm-pr-{id}")),
+                ("swarm_worker_completed", format!("swarm-completed-{id}")),
                 ("swarm_branch_ready", format!("swarm-branch-ready-{id}")),
                 (
                     "swarm_worker_running",
@@ -355,17 +355,28 @@ impl Watcher for SwarmWatcher {
                 )
             })
             .collect();
-        let swarm_ids: Vec<String> = self
+        let spawned_ids: Vec<String> = self
             .tracked
             .keys()
-            .flat_map(|id| {
-                [
-                    format!("swarm-spawned-{id}"),
-                    format!("swarm-waiting-{id}"),
-                    format!("swarm-pr-{id}"),
-                    format!("swarm-completed-{id}"),
-                ]
-            })
+            .map(|id| format!("swarm-spawned-{id}"))
+            .collect();
+        let waiting_ids: Vec<String> = self
+            .tracked
+            .iter()
+            .filter(|(_, worker)| worker.phase == WorkerPhase::Waiting)
+            .map(|(id, _)| format!("swarm-waiting-{id}"))
+            .collect();
+        let pr_ids: Vec<String> = self
+            .tracked
+            .iter()
+            .filter(|(_, worker)| worker.has_pr)
+            .map(|(id, _)| format!("swarm-pr-{id}"))
+            .collect();
+        let completed_ids: Vec<String> = self
+            .tracked
+            .iter()
+            .filter(|(_, worker)| worker.phase.is_terminal())
+            .map(|(id, _)| format!("swarm-completed-{id}"))
             .collect();
         let branch_ids: Vec<String> = self
             .tracked
@@ -379,7 +390,10 @@ impl Watcher for SwarmWatcher {
             .map(|id| format!("swarm-worker-closed-{id}"))
             .collect();
 
-        resolved += store.resolve_missing_signals("swarm", &swarm_ids)?;
+        resolved += store.resolve_missing_signals("swarm_worker_spawned", &spawned_ids)?;
+        resolved += store.resolve_missing_signals("swarm_worker_waiting", &waiting_ids)?;
+        resolved += store.resolve_missing_signals("swarm_pr_opened", &pr_ids)?;
+        resolved += store.resolve_missing_signals("swarm_worker_completed", &completed_ids)?;
         resolved += store.resolve_missing_signals("swarm_branch_ready", &branch_ids)?;
         resolved += store.resolve_missing_signals("swarm_worker_running", &running_ids)?;
         resolved += store.resolve_missing_signals("swarm_worker_closed", &closed_ids)?;

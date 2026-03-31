@@ -153,7 +153,8 @@ fn handle_swarm_spawned(
     workspace: &str,
     signal: &SignalRecord,
 ) -> Result<()> {
-    if signal.source != "swarm" || !signal.external_id.starts_with("swarm-spawned-") {
+    if signal.source != "swarm_worker_spawned" || !signal.external_id.starts_with("swarm-spawned-")
+    {
         return Ok(());
     }
 
@@ -195,7 +196,7 @@ fn handle_swarm_spawned(
         workspace: workspace.to_string(),
         title,
         stage: TaskStage::InProgress,
-        source: Some("swarm".to_string()),
+        source: Some("swarm_worker_spawned".to_string()),
         source_url: None,
         worker_id: Some(worker_id.clone()),
         pr_url: None,
@@ -218,7 +219,7 @@ fn handle_swarm_spawned(
         "stage_change",
         &format!("Task created: {}", task.title),
         None,
-        Some("swarm"),
+        Some("swarm_worker_spawned"),
         None,
         Some(&meta.to_string()),
     )?;
@@ -228,7 +229,7 @@ fn handle_swarm_spawned(
         "worker",
         &format!("Worker {} spawned", worker_id),
         None,
-        Some("swarm"),
+        Some("swarm_worker_spawned"),
         None,
         Some(&serde_json::json!({"worker_id": worker_id}).to_string()),
     )?;
@@ -242,7 +243,7 @@ fn handle_swarm_pr_opened(
     signal: &SignalRecord,
     outcome: &mut TaskOutcome,
 ) -> Result<()> {
-    if signal.source != "swarm" || !signal.external_id.starts_with("swarm-pr-") {
+    if signal.source != "swarm_pr_opened" || !signal.external_id.starts_with("swarm-pr-") {
         return Ok(());
     }
     let worker_id = signal
@@ -280,7 +281,7 @@ fn handle_swarm_pr_opened(
                 "pr",
                 &format!("PR opened: {url}"),
                 None,
-                Some("swarm"),
+                Some("swarm_pr_opened"),
                 None,
                 Some(&serde_json::json!({"pr_url": url}).to_string()),
             )?;
@@ -290,7 +291,7 @@ fn handle_swarm_pr_opened(
                 "stage_change",
                 "In Progress → In AI Review",
                 None,
-                Some("swarm"),
+                Some("swarm_pr_opened"),
                 None,
                 Some(&meta.to_string()),
             )?;
@@ -387,7 +388,9 @@ fn handle_swarm_completed(
     signal: &SignalRecord,
     outcome: &mut TaskOutcome,
 ) -> Result<()> {
-    if signal.source != "swarm" || !signal.external_id.starts_with("swarm-completed-") {
+    if signal.source != "swarm_worker_completed"
+        || !signal.external_id.starts_with("swarm-completed-")
+    {
         return Ok(());
     }
     let worker_id = signal
@@ -454,7 +457,7 @@ fn handle_swarm_completed(
             } else {
                 Some(comments.as_str())
             },
-            Some("swarm"),
+            Some("swarm_worker_completed"),
             Some(signal_id),
             Some(
                 &serde_json::json!({
@@ -488,7 +491,7 @@ fn handle_swarm_closed(
     workspace: &str,
     signal: &SignalRecord,
 ) -> Result<()> {
-    if signal.source != "swarm" || !signal.external_id.starts_with("swarm-closed-") {
+    if signal.source != "swarm_worker_closed" || !signal.external_id.starts_with("swarm-closed-") {
         return Ok(());
     }
     let worker_id = signal
@@ -522,7 +525,7 @@ fn handle_swarm_closed(
         "stage_change",
         &format!("{} → Dismissed", from_stage.as_str()),
         None,
-        Some("swarm"),
+        Some("swarm_worker_closed"),
         None,
         Some(&meta.to_string()),
     )?;
