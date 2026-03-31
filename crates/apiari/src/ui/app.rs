@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use crate::buzz::{
     coordinator::memory::MemoryStore,
+    orchestrator::notify::{NotificationTier, notification_for_signal},
     signal::{Severity, SignalRecord, store::SignalStore},
 };
 
@@ -36,6 +37,7 @@ use crate::{
 
 /// Maximum number of chat history messages to load from a previous session.
 const CHAT_HISTORY_LIMIT: usize = 20;
+const TRIAGE_SIGNAL_MAX_AGE_HOURS: i64 = 24;
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -656,7 +658,7 @@ fn parse_github_label(url: &str) -> Option<String> {
     None
 }
 
-/// Get items for the triage sidebar — tasks in Triage stage + unmatched signals.
+/// Get items for the triage sidebar — tasks in Triage stage + badge-tier signals.
 pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
     let mut items = Vec::new();
 
@@ -687,14 +689,12 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
         }
     }
 
-    // Open signals — only show actionable sources in triage.
+    // Open signals — only show badge-tier items in triage.
     for sig in &ws.signals {
-        // Only allow explicitly actionable signal sources in triage.
-        let actionable = matches!(
-            sig.source.as_str(),
-            "sentry" | "github_review_queue" | "email" | "linear"
-        );
-        if !actionable {
+        if signal_notification_tier(ws, sig) != NotificationTier::Badge {
+            continue;
+        }
+        if should_auto_age_out_badge_signal(sig) {
             continue;
         }
         let source_label = match sig.source.as_str() {
@@ -717,6 +717,12 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
             icon: match sig.source.as_str() {
                 "sentry" => "⚡".to_string(),
                 "github_review_queue" => "🔍".to_string(),
+                "swarm_worker_spawned" => "🐝".to_string(),
+                "swarm_worker_waiting" => "⏸".to_string(),
+                "swarm_worker_running" => "▶".to_string(),
+                "swarm_branch_ready" => "🌿".to_string(),
+                "swarm_worker_completed" => "✓".to_string(),
+                "swarm_worker_closed" => "—".to_string(),
                 "linear" => "📋".to_string(),
                 "email" => "📧".to_string(),
                 "notion" => "📓".to_string(),
@@ -736,6 +742,19 @@ pub fn triage_items(ws: &WorkspaceState) -> Vec<TriageItem> {
     }
 
     items
+}
+
+fn signal_notification_tier(ws: &WorkspaceState, signal: &SignalRecord) -> NotificationTier {
+    notification_for_signal(signal, &ws.config.orchestrator.notification_tiers).tier
+}
+
+fn should_auto_age_out_badge_signal(signal: &SignalRecord) -> bool {
+    if matches!(signal.severity, Severity::Critical | Severity::Error) {
+        return false;
+    }
+
+    Utc::now().signed_duration_since(signal.created_at)
+        > chrono::Duration::hours(TRIAGE_SIGNAL_MAX_AGE_HOURS)
 }
 
 /// Remove stale entries from `kanban_dismissed` so it doesn't grow without
@@ -1232,7 +1251,7 @@ impl App {
         let focused_panel = if needs_onboarding {
             Panel::Chat
         } else {
-            Panel::Workers
+            Panel::Home
         };
 
         let chat_focused = needs_onboarding;
@@ -3124,43 +3143,8 @@ impl App {
                 ws.signals = store.get_open_signals().unwrap_or_default();
             }
 
-            // Detect new signals
             let current_ids: std::collections::HashSet<i64> =
                 ws.signals.iter().map(|s| s.id).collect();
-            let is_first_load = ws.prev_signal_ids.is_empty() && !ws.signals.is_empty();
-
-            if !is_first_load {
-                // Find signals that are new since last refresh
-                let new_signals: Vec<&SignalRecord> = ws
-                    .signals
-                    .iter()
-                    .filter(|s| !ws.prev_signal_ids.contains(&s.id))
-                    .collect();
-
-                if !new_signals.is_empty() {
-                    let count = new_signals.len();
-                    // Group by source for concise notification
-                    let mut by_source: std::collections::HashMap<&str, usize> =
-                        std::collections::HashMap::new();
-                    for sig in &new_signals {
-                        *by_source.entry(sig.source.as_str()).or_default() += 1;
-                    }
-                    let summary: Vec<String> = by_source
-                        .iter()
-                        .map(|(src, n)| format!("{n} {src}"))
-                        .collect();
-                    let msg = format!(
-                        "! {} new signal{}: {}",
-                        count,
-                        if count > 1 { "s" } else { "" },
-                        summary.join(", ")
-                    );
-                    ws.chat_history.push(ChatLine::System(msg));
-                    ws.has_unread_response = true;
-                    ws.chat_scroll.scroll_to_bottom();
-                }
-            }
-
             ws.prev_signal_ids = current_ids;
             // Rebuild kanban cards from updated state (prune stale dismissed IDs first)
             prune_kanban_dismissed(ws);
@@ -3180,55 +3164,7 @@ impl App {
         let mut shell_ops = Vec::new();
         for (name, new_workers) in data {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
-                // Detect state changes and inject chat notifications
                 let is_first_load = ws.prev_worker_phases.is_empty() && !new_workers.is_empty();
-                for worker in &new_workers {
-                    let phase = phase_display(worker).to_string();
-                    let prev = ws.prev_worker_phases.get(&worker.id);
-
-                    // Skip first load — don't spam on startup
-                    if !is_first_load {
-                        if let Some(prev_phase) = prev {
-                            if *prev_phase != phase {
-                                let msg = match phase.as_str() {
-                                    "completed" => format!("\u{2713} {} completed", worker.id),
-                                    "waiting" => {
-                                        format!("\u{25cb} {} waiting for input", worker.id)
-                                    }
-                                    "closed" => format!("\u{2500} {} closed", worker.id),
-                                    "running" if prev_phase == "waiting" => {
-                                        format!("\u{25cf} {} resumed", worker.id)
-                                    }
-                                    _ => String::new(),
-                                };
-                                if !msg.is_empty() {
-                                    ws.chat_history.push(ChatLine::System(msg));
-                                    ws.has_unread_response = true;
-                                    ws.chat_scroll.scroll_to_bottom();
-                                }
-                            }
-                        } else {
-                            // New worker appeared
-                            ws.chat_history
-                                .push(ChatLine::System(format!("\u{25cf} {} spawned", worker.id)));
-                            ws.has_unread_response = true;
-                            ws.chat_scroll.scroll_to_bottom();
-                        }
-
-                        // PR opened
-                        if let Some(ref pr) = worker.pr
-                            && !ws.prev_pr_workers.contains(&worker.id)
-                        {
-                            ws.chat_history.push(ChatLine::System(format!(
-                                "\u{27f3} {} opened PR #{}: {}",
-                                worker.id, pr.number, pr.title
-                            )));
-                            ws.has_unread_response = true;
-                            ws.chat_scroll.scroll_to_bottom();
-                        }
-                    }
-                }
-
                 // Tmux auto-worker-shells: collect create/kill ops for async execution.
                 if ws.config.shells.enabled
                     && ws.config.shells.auto_worker_shells
@@ -3293,37 +3229,6 @@ impl App {
             if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.name == name) {
                 let current_ids: std::collections::HashSet<i64> =
                     new_signals.iter().map(|s| s.id).collect();
-                let is_first_load = ws.prev_signal_ids.is_empty() && !new_signals.is_empty();
-
-                if !is_first_load {
-                    let new_sigs: Vec<&SignalRecord> = new_signals
-                        .iter()
-                        .filter(|s| !ws.prev_signal_ids.contains(&s.id))
-                        .collect();
-
-                    if !new_sigs.is_empty() {
-                        let count = new_sigs.len();
-                        let mut by_source: std::collections::HashMap<&str, usize> =
-                            std::collections::HashMap::new();
-                        for sig in &new_sigs {
-                            *by_source.entry(sig.source.as_str()).or_default() += 1;
-                        }
-                        let summary: Vec<String> = by_source
-                            .iter()
-                            .map(|(src, n)| format!("{n} {src}"))
-                            .collect();
-                        let msg = format!(
-                            "! {} new signal{}: {}",
-                            count,
-                            if count > 1 { "s" } else { "" },
-                            summary.join(", ")
-                        );
-                        ws.chat_history.push(ChatLine::System(msg));
-                        ws.has_unread_response = true;
-                        ws.chat_scroll.scroll_to_bottom();
-                    }
-                }
-
                 ws.prev_signal_ids = current_ids;
                 ws.signals = new_signals;
                 // Rebuild kanban cards from updated state (prune stale dismissed IDs first)
@@ -4458,6 +4363,13 @@ mod tests {
     }
 
     #[test]
+    fn test_app_defaults_to_home_panel_after_onboarding() {
+        let app = make_app(&["ws1"], false);
+        assert_eq!(app.focused_panel, Panel::Home);
+        assert!(!app.chat_focused);
+    }
+
+    #[test]
     fn test_apply_chat_history_populates_empty_workspace() {
         let mut app = make_app(&["ws1"], false);
         assert!(app.workspaces[0].chat_history.is_empty());
@@ -5243,6 +5155,52 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].stage, KanbanStage::HumanReview);
         assert!(cards[0].subtitle.contains("merge?"));
+    }
+
+    #[test]
+    fn test_triage_items_only_include_badge_tier_signals() {
+        let mut ws = empty_ws();
+
+        let mut badge_signal = make_signal("swarm_worker_spawned", "swarm-1", None);
+        badge_signal.id = 1;
+        let mut chat_signal = make_signal("github_ci_failure", "ci-1", None);
+        chat_signal.id = 2;
+        let mut silent_signal = make_signal("github_ci_pass", "ci-2", None);
+        silent_signal.id = 3;
+
+        ws.signals = vec![badge_signal, chat_signal, silent_signal];
+
+        let items = triage_items(&ws);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "signal:1");
+    }
+
+    #[test]
+    fn test_triage_items_respect_notification_tier_overrides() {
+        let mut ws = empty_ws();
+        ws.config
+            .orchestrator
+            .notification_tiers
+            .insert("github_ci_failure".to_string(), NotificationTier::Badge);
+
+        let signal = make_signal("github_ci_failure", "ci-1", None);
+        ws.signals = vec![signal];
+
+        let items = triage_items(&ws);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].subtitle, "github_ci_failure");
+    }
+
+    #[test]
+    fn test_triage_items_auto_age_out_old_badge_signals() {
+        let mut ws = empty_ws();
+        let mut signal = make_signal("swarm_worker_spawned", "swarm-1", None);
+        signal.created_at = Utc::now() - chrono::Duration::hours(TRIAGE_SIGNAL_MAX_AGE_HOURS + 1);
+        ws.signals = vec![signal];
+
+        assert!(triage_items(&ws).is_empty());
     }
 
     #[test]

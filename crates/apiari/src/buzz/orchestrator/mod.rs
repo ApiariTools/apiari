@@ -82,6 +82,7 @@ mod tests {
     #[test]
     fn processes_notification_and_action_together() {
         let mut orchestrator = Orchestrator::new(OrchestratorConfig {
+            reconcile_interval_secs: default_reconcile_interval_secs(),
             notification_tiers: std::collections::HashMap::from([(
                 "github_ci_failure".to_string(),
                 NotificationTier::Chat,

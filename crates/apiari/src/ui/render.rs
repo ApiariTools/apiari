@@ -766,7 +766,7 @@ fn draw_triage_view(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
     let items = app::triage_items(ws);
 
     let count = items.len();
-    let title = format!(" [Triage] ({count}) · Tab=Activity ");
+    let title = format!(" [Badge Triage] ({count}) · Tab=Activity ");
 
     let block = Block::default()
         .borders(Borders::ALL)
