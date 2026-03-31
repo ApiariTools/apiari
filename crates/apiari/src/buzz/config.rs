@@ -7,6 +7,8 @@ use std::{collections::HashMap, path::Path};
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
 
+use crate::buzz::orchestrator::OrchestratorConfig;
+
 /// Top-level buzz configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BuzzConfig {
@@ -21,6 +23,10 @@ pub struct BuzzConfig {
     /// Coordinator configuration.
     #[serde(default)]
     pub coordinator: CoordinatorConfig,
+
+    /// Signal orchestration configuration.
+    #[serde(default)]
+    pub orchestrator: OrchestratorConfig,
 
     /// Morning brief configuration.
     #[serde(default)]
@@ -335,6 +341,7 @@ mod tests {
         assert!(config.watchers.swarm.is_none());
         assert_eq!(config.coordinator.model, "sonnet");
         assert_eq!(config.coordinator.max_turns, 20);
+        assert!(config.orchestrator.actions.is_empty());
     }
 
     #[test]
@@ -365,6 +372,13 @@ state_path = "/tmp/state.json"
 [coordinator]
 model = "opus"
 max_turns = 30
+
+[orchestrator.notification_tiers]
+github_ci_failure = "chat"
+
+[[orchestrator.actions]]
+trigger = "github_ci_failure"
+action = "Forward CI failure"
 "#;
         let config: BuzzConfig = toml::from_str(toml_str).unwrap();
 
@@ -385,6 +399,11 @@ max_turns = 30
 
         assert_eq!(config.coordinator.model, "opus");
         assert_eq!(config.coordinator.max_turns, 30);
+        assert_eq!(
+            config.orchestrator.notification_tiers["github_ci_failure"],
+            crate::buzz::orchestrator::notify::NotificationTier::Chat
+        );
+        assert_eq!(config.orchestrator.actions.len(), 1);
     }
 
     #[test]
@@ -392,12 +411,17 @@ max_turns = 30
         let toml_str = r#"
 [coordinator]
 model = "haiku"
+
+[[coordinator.signal_hooks]]
+source = "swarm"
+prompt = "old hook"
 "#;
         let config: BuzzConfig = toml::from_str(toml_str).unwrap();
         assert!(config.telegram.is_none());
         assert!(config.watchers.github.is_none());
         assert_eq!(config.coordinator.model, "haiku");
         assert_eq!(config.coordinator.max_turns, 20); // default
+        assert!(config.orchestrator.actions.is_empty());
     }
 
     #[test]

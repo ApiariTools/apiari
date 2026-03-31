@@ -238,6 +238,7 @@ mod tests {
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
+            orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,

@@ -256,6 +256,10 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub pipeline: PipelineConfig,
 
+    /// Signal orchestration configuration.
+    #[serde(default)]
+    pub orchestrator: crate::buzz::orchestrator::OrchestratorConfig,
+
     /// Swarm agent configuration.
     #[serde(default)]
     pub swarm: SwarmConfig,
@@ -1050,6 +1054,7 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
             model: ws.coordinator.model.clone(),
             max_turns: ws.coordinator.max_turns,
         },
+        orchestrator: ws.orchestrator.clone(),
         morning_brief: ws.morning_brief.as_ref().map(|mb| {
             crate::buzz::config::MorningBriefConfig {
                 enabled: mb.enabled,
@@ -1129,34 +1134,6 @@ impl Default for SwarmConfig {
 
 fn default_swarm_agent() -> String {
     "claude".to_string()
-}
-
-/// Convert pipeline config rules into buzz pipeline rules.
-pub fn to_pipeline_rules(
-    config: &PipelineConfig,
-) -> Vec<crate::buzz::pipeline::rule::PipelineRule> {
-    use crate::buzz::{
-        pipeline::rule::{PipelineAction, PipelineRule},
-        signal::Severity,
-    };
-
-    config
-        .rules
-        .iter()
-        .map(|r| PipelineRule {
-            name: r.name.clone(),
-            source: r.source.clone(),
-            severity: r.severity.as_deref().map(Severity::from_str_loose),
-            id_prefix: r.id_prefix.clone(),
-            action: match r.action.as_str() {
-                "notify" => PipelineAction::Notify,
-                "batch" => PipelineAction::Batch,
-                "drop" => PipelineAction::Drop,
-                _ => PipelineAction::Batch,
-            },
-            rate_limit_secs: r.rate_limit_secs,
-        })
-        .collect()
 }
 
 /// Build the settings JSON for the coordinator (PreToolUse hook).
@@ -1350,6 +1327,7 @@ max_session_turns = 0
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
+            orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
@@ -1378,6 +1356,7 @@ max_session_turns = 0
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
+            orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
@@ -1410,6 +1389,7 @@ max_session_turns = 0
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
+            orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
@@ -1426,6 +1406,7 @@ max_session_turns = 0
         assert!(buzz.telegram.is_some());
         assert_eq!(buzz.telegram.unwrap().chat_id, 123);
         assert_eq!(buzz.coordinator.model, "sonnet");
+        assert!(buzz.orchestrator.actions.is_empty());
     }
 
     #[test]
@@ -1669,6 +1650,7 @@ max_session_turns = 0
             },
             swarm: SwarmConfig::default(),
             pipeline: PipelineConfig::default(),
+            orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
