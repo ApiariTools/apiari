@@ -3745,42 +3745,39 @@ fn build_setup_toml(setup: &SetupState) -> String {
     doc["root"] = value(setup.workspace_root.display().to_string());
     doc["repos"] = Item::Value(toml_edit::Value::Array(Array::new()));
 
-    // [coordinator] + [[coordinator.signal_hooks]]
+    // [coordinator] + [orchestrator]
     let mut coordinator = Table::new();
     coordinator["model"] = value("sonnet");
     coordinator["max_turns"] = value(20i64);
-
-    let mut signal_hooks = toml_edit::ArrayOfTables::new();
-
-    let mut hook_swarm = Table::new();
-    hook_swarm["source"] = value("swarm");
-    hook_swarm["prompt"] = value("Swarm activity: {events}");
-    hook_swarm["action"] = value(
-        "Assess the situation. If a worker opened a PR, check if Copilot has reviewed it and if so forward any comments to the worker. If a worker is stuck or failed, investigate and either send a fix or dispatch a new worker.",
-    );
-    hook_swarm["ttl_secs"] = value(300i64);
-    signal_hooks.push(hook_swarm);
-
-    let mut hook_ci = Table::new();
-    hook_ci["source"] = value("github");
-    hook_ci["prompt"] = value("CI failed: {events}");
-    hook_ci["action"] = value(
-        "Find the relevant swarm worker for this PR. If a worker exists, send it the CI error details so it can fix them. If no worker exists, dispatch a new one to fix the failure.",
-    );
-    hook_ci["ttl_secs"] = value(300i64);
-    signal_hooks.push(hook_ci);
-
-    let mut hook_review = Table::new();
-    hook_review["source"] = value("github_bot_review");
-    hook_review["prompt"] = value("Bot review received: {events}");
-    hook_review["action"] = value(
-        "Find the swarm worker whose branch matches this PR and forward the review comments directly to it so it can address them.",
-    );
-    hook_review["ttl_secs"] = value(300i64);
-    signal_hooks.push(hook_review);
-
-    coordinator.insert("signal_hooks", Item::ArrayOfTables(signal_hooks));
     doc["coordinator"] = Item::Table(coordinator);
+
+    let mut orchestrator = Table::new();
+    orchestrator["reconcile_interval_secs"] = value(60i64);
+
+    let mut notification_tiers = Table::new();
+    notification_tiers["github_ci_failure"] = value("chat");
+    notification_tiers["swarm_pr_opened"] = value("chat");
+    notification_tiers["swarm_worker_spawned"] = value("badge");
+    orchestrator["notification_tiers"] = Item::Table(notification_tiers);
+
+    let mut actions = toml_edit::ArrayOfTables::new();
+
+    let mut action_ci = Table::new();
+    action_ci["trigger"] = value("github_ci_failure");
+    action_ci["action"] = value(
+        "Find the relevant swarm worker for this PR. If a worker exists, send it the CI error details so it can fix the failure. If no worker exists, dispatch a new one to fix it.",
+    );
+    actions.push(action_ci);
+
+    let mut action_review = Table::new();
+    action_review["trigger"] = value("swarm_pr_opened");
+    action_review["action"] = value(
+        "Assess the situation. If Copilot has reviewed the PR, forward those comments to the relevant worker.",
+    );
+    actions.push(action_review);
+
+    orchestrator["actions"] = Item::ArrayOfTables(actions);
+    doc["orchestrator"] = Item::Table(orchestrator);
 
     // [swarm]
     let mut swarm = Table::new();

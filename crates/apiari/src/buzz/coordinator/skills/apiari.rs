@@ -45,16 +45,16 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          fires with a matching `skills` field.\n\n\
          To create a playbook, add a `.md` file under `.apiari/skills/`. The first line \
          (stripped of `#`) becomes the description in the index.\n\n\
-         ### Signal Hook → Playbook Wiring\n\
-         Connect a playbook to a signal hook with the `skills` field:\n\
+         ### Orchestrator Action → Playbook Wiring\n\
+         Connect a playbook to an orchestrator action with the `skills` field:\n\
          ```toml\n\
-         [[coordinator.signal_hooks]]\n\
-         source = \"github_ci_fail\"\n\
+         [[orchestrator.actions]]\n\
+         trigger = \"github_ci_failure\"\n\
          action = \"Triage the CI failure\"   # one-sentence intent ONLY\n\
          skills = [\"ci-triage\"]              # loads .apiari/skills/ci-triage.md\n\
          ```\n\n\
          The `action` field should be a single sentence describing the intent — \
-         the detailed process belongs in the playbook, not the hook. This keeps hooks \
+         the detailed process belongs in the playbook, not the action config. This keeps actions \
          declarative and playbooks reusable.\n\n\
          ### Scaffolding\n\
          `apiari init` creates the workspace config and scaffolds:\n\

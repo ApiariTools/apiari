@@ -169,27 +169,22 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
          user_id = \"your-notion-user-id\"\n\
          poll_database_ids = [\"db-id-1\"]  # optional\n\
          ```\n\n\
-         **Signal hooks setup:**\n\
-         Signal hooks trigger coordinator follow-through when signals arrive.\n\
-         The optional `action` field is a natural-language instruction telling you what to DO \
-         when this hook fires. If omitted, you just notify (current default behavior).\n\
+         **Orchestrator setup:**\n\
+         Orchestrator actions trigger coordinator follow-through when signals arrive.\n\
+         Notification tiers control whether a signal is silent, badge-only, or sent to chat.\n\
          ```toml\n\
-         [[coordinator.signal_hooks]]\n\
-         source = \"github\"\n\
-         prompt = \"CI failed: {events}\"\n\
+         [orchestrator.notification_tiers]\n\
+         github_ci_failure = \"chat\"\n\
+         swarm_pr_opened = \"chat\"\n\
+         swarm_worker_spawned = \"badge\"\n\
+         \n\
+         [[orchestrator.actions]]\n\
+         trigger = \"github_ci_failure\"\n\
          action = \"Find the relevant swarm worker for this PR and send it the CI error details.\"\n\
-         ttl_secs = 300\n\
          \n\
-         [[coordinator.signal_hooks]]\n\
-         source = \"github_bot_review\"\n\
-         prompt = \"Bot review received: {events}\"\n\
-         action = \"Find the swarm worker whose branch matches this PR and forward the review.\"\n\
-         ttl_secs = 300\n\
-         \n\
-         [[coordinator.signal_hooks]]\n\
-         source = \"github_release\"\n\
-         prompt = \"Release completed: {events}\"\n\
-         ttl_secs = 300\n\
+         [[orchestrator.actions]]\n\
+         trigger = \"swarm_pr_opened\"\n\
+         action = \"Report the PR title and URL and forward any review feedback to the relevant worker.\"\n\
          ```\n",
     );
 
