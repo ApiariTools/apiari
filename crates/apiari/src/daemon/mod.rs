@@ -1090,7 +1090,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 "swarm",
             );
             registry.add_with_interval_and_schedule(
-                Box::new(SwarmWatcher::new(ws.config.root.clone())),
+                Box::new(SwarmWatcher::new(swarm_config.state_path.clone())),
                 swarm_config.interval_secs,
                 swarm_sched,
             );
