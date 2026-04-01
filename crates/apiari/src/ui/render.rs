@@ -852,11 +852,6 @@ fn draw_triage_view(frame: &mut Frame, ws: &app::WorkspaceState, area: Rect) {
             Span::styled(truncate_to_width(&item.title, title_max), title_style),
         ]);
         frame.render_widget(Paragraph::new(line1).style(row_bg), line1_area);
-        // Apply OSC 8 hyperlink to the title text if the item has a URL.
-        // Skip 4 columns: ▌(1) + selector(1) + dot(1) + space(1)
-        if let Some(ref url) = item.url {
-            apply_osc8_hyperlink(frame.buffer_mut(), line1_area, url, 4);
-        }
 
         // Line 2: ▌   source_label · age
         // Reserve width for " · {age}" so the age is never pushed off-screen.
