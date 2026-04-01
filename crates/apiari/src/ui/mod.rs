@@ -1226,10 +1226,11 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
     }
 
     match key.code {
-        KeyCode::Tab => {
-            // When the triage sidebar is open, Tab toggles between Triage and Activity views.
-            // Otherwise it advances the focused panel.
-            if app.current_ws().is_some_and(|ws| ws.triage_sidebar_open) {
+        KeyCode::Tab => app.next_panel(),
+        KeyCode::BackTab => {
+            if matches!(app.focused_panel, Panel::Signals | Panel::Reviews)
+                && app.current_ws().is_some_and(|ws| ws.triage_sidebar_open)
+            {
                 if let Some(ws) = app.current_ws_mut() {
                     ws.sidebar_view = match ws.sidebar_view {
                         app::SidebarView::Triage => app::SidebarView::Activity,
@@ -1238,10 +1239,9 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                     app.needs_redraw = true;
                 }
             } else {
-                app.next_panel();
+                app.prev_panel();
             }
         }
-        KeyCode::BackTab => app.prev_panel(),
         KeyCode::Char('j') | KeyCode::Down => app.select_next_in_panel(),
         KeyCode::Char('k') | KeyCode::Up => app.select_prev_in_panel(),
         KeyCode::Enter => app.drill_in(),
@@ -3495,6 +3495,30 @@ mod tests {
         app.focused_panel = Panel::Workers;
         app.next_panel();
         assert_eq!(app.focused_panel, Panel::Shells);
+    }
+
+    #[test]
+    fn test_tab_cycles_through_home_when_triage_sidebar_open() {
+        let mut app = test_app();
+        app.workspaces[0].triage_sidebar_open = true;
+        app.focused_panel = Panel::Chat;
+
+        let mut visited = Vec::new();
+        for _ in 0..5 {
+            handle_dashboard_key(&mut app, key(KeyCode::Tab));
+            visited.push(app.focused_panel);
+        }
+
+        assert_eq!(
+            visited,
+            vec![
+                Panel::Home,
+                Panel::Workers,
+                Panel::Signals,
+                Panel::Feed,
+                Panel::Chat,
+            ]
+        );
     }
 
     #[test]
