@@ -3,10 +3,10 @@
 //! Replaces the three overlapping systems:
 //! - `buzz/pipeline/` (notification pipeline)
 //! - `coordinator.signal_hooks` (coordinator follow-throughs)
-//! - `buzz/task/engine` (task state transitions)
+//! - `buzz/task/engine` + `buzz/task/rules` (task state transitions)
 //!
 //! Every signal flows through `Orchestrator::process_signal()`, which:
-//! 1. Updates task state (delegating to the existing task engine)
+//! 1. Updates task state directly (no separate engine/rules)
 //! 2. Routes notifications to the correct tier (Silent/Badge/Chat)
 //! 3. Fires any matching orchestrator actions (coordinator follow-throughs)
 
@@ -16,9 +16,10 @@ pub mod workflow;
 
 use std::collections::HashMap;
 
+use chrono::Utc;
 use color_eyre::Result;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{debug, info};
 
 use self::{
     notify::{NotificationRouter, NotificationTier},
@@ -26,7 +27,7 @@ use self::{
 };
 use crate::buzz::{
     signal::SignalRecord,
-    task::{self, engine::EngineResult, store::TaskStore},
+    task::{Task, TaskStage, store::TaskStore},
 };
 
 /// Configuration for an orchestrator action — triggers coordinator follow-through.
@@ -103,6 +104,21 @@ fn default_actions() -> Vec<OrchestratorAction> {
     ]
 }
 
+/// Result of processing a signal through the task engine portion of the orchestrator.
+#[derive(Debug)]
+pub struct EngineResult {
+    /// The task that was affected (if any).
+    pub task: Option<Task>,
+    /// Messages to forward to the task's worker (if any).
+    pub worker_messages: Vec<(String, String)>, // (worker_id, message)
+    /// Notification messages for the user.
+    pub notifications: Vec<String>,
+    /// Whether a stage transition occurred.
+    pub transitioned: bool,
+    /// Stage the task was in BEFORE the transition (None if no stage change, or no task matched).
+    pub from_stage: Option<TaskStage>,
+}
+
 /// Result of processing a signal through the orchestrator.
 #[derive(Debug)]
 pub struct OrchestratorResult {
@@ -149,7 +165,7 @@ impl Orchestrator {
     /// Process a signal through the entire orchestration pipeline.
     ///
     /// This is the single entry point. It:
-    /// 1. Runs the signal through the task engine (state transitions)
+    /// 1. Updates task state directly (matching, transitions, creation)
     /// 2. Routes the signal to the correct notification tier
     /// 3. Matches orchestrator actions for coordinator follow-throughs
     /// 4. Evaluates workflow rules (branch_ready → review/PR)
@@ -159,8 +175,8 @@ impl Orchestrator {
         workspace: &str,
         signal: &SignalRecord,
     ) -> Result<OrchestratorResult> {
-        // 1. Task engine: match signal to task, evaluate rules, apply transitions
-        let engine_result = task::engine::process_signal(store, workspace, signal)?;
+        // 1. Task transitions — direct logic, no separate engine/rules
+        let engine_result = self.process_task_signal(store, workspace, signal)?;
 
         // 2. Notification routing
         let routing = self
@@ -189,6 +205,236 @@ impl Orchestrator {
             matched_actions,
             workflow_actions,
         })
+    }
+
+    /// Process task transitions directly — replaces the old engine + rules modules.
+    ///
+    /// Handles task matching, creation, and monotonic stage transitions.
+    fn process_task_signal(
+        &self,
+        store: &TaskStore,
+        workspace: &str,
+        signal: &SignalRecord,
+    ) -> Result<EngineResult> {
+        let mut result = EngineResult {
+            task: None,
+            worker_messages: Vec::new(),
+            notifications: Vec::new(),
+            transitioned: false,
+            from_stage: None,
+        };
+
+        // Determine the effective signal kind from source + external_id
+        let kind = signal_kind(signal);
+
+        // For worker_spawned with no existing task, create one
+        if kind == SignalKind::WorkerSpawned {
+            let worker_id = extract_worker_id_from_external_id(&signal.external_id)
+                .or_else(|| extract_metadata_str(signal, "worker_id"));
+            if let Some(ref wid) = worker_id
+                && store.find_task_by_worker(workspace, wid)?.is_none()
+            {
+                let is_reviewer = signal
+                    .body
+                    .as_ref()
+                    .and_then(|b| b.lines().nth(1))
+                    .map(|l| l.trim_start().starts_with("Review PR"))
+                    .unwrap_or(false);
+                if !is_reviewer {
+                    let title = signal
+                        .body
+                        .as_ref()
+                        .and_then(|b| b.lines().nth(1))
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| format!("Worker {wid}"));
+                    let title = if title.len() > 80 {
+                        format!("{}…", &title[..79])
+                    } else {
+                        title
+                    };
+                    let now = Utc::now();
+                    let task = Task {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        workspace: workspace.to_string(),
+                        title,
+                        stage: TaskStage::InProgress,
+                        source: Some("swarm".to_string()),
+                        source_url: None,
+                        worker_id: Some(wid.clone()),
+                        pr_url: None,
+                        pr_number: None,
+                        repo: None,
+                        created_at: now,
+                        updated_at: now,
+                        resolved_at: None,
+                        metadata: serde_json::json!({}),
+                    };
+                    store.create_task(&task)?;
+                    info!(
+                        "[orchestrator] created task '{}' for worker {wid}",
+                        task.title
+                    );
+                    result.transitioned = true;
+                    result.from_stage = None; // new task, no previous stage
+                    result.task = Some(task);
+                    return Ok(result);
+                }
+            }
+        }
+
+        // Find matching task
+        let task = find_task_for_signal(store, workspace, signal)?;
+        let task = match task {
+            Some(t) => t,
+            None => return Ok(result),
+        };
+
+        info!(
+            "[orchestrator] matched signal '{}' (source={}) to task '{}' (stage={})",
+            signal.title,
+            signal.source,
+            task.title,
+            task.stage.as_str()
+        );
+
+        // Determine target stage and any side-effect messages based on signal kind
+        let transition = match kind {
+            SignalKind::WorkerSpawned | SignalKind::WorkerRunning => {
+                // Only advance to InProgress if task hasn't already moved past it
+                if task.stage.stage_order() < TaskStage::InProgress.stage_order() {
+                    Some(TransitionIntent {
+                        to: TaskStage::InProgress,
+                        reason: "Worker running".to_string(),
+                        notification: Some(format!(
+                            "Worker is running — task moved to InProgress (was {})",
+                            task.stage.as_str()
+                        )),
+                        forward_to_worker: None,
+                    })
+                } else {
+                    None // no-op
+                }
+            }
+            SignalKind::BranchReady => {
+                // Transition to InAiReview; workflow engine handles dispatch
+                if task.stage.stage_order() < TaskStage::InAiReview.stage_order() {
+                    Some(TransitionIntent {
+                        to: TaskStage::InAiReview,
+                        reason: "Branch ready for review".to_string(),
+                        notification: Some("Branch ready — dispatching review/PR".to_string()),
+                        forward_to_worker: None,
+                    })
+                } else {
+                    None
+                }
+            }
+            SignalKind::PrOpened => {
+                // Update PR info on the task
+                if let Some(ref meta_str) = signal.metadata
+                    && let Ok(meta) = serde_json::from_str::<serde_json::Value>(meta_str)
+                {
+                    let pr_url = meta
+                        .get("pr_url")
+                        .and_then(|v| v.as_str())
+                        .or(signal.url.as_deref());
+                    let pr_number = meta.get("pr_number").and_then(|v| v.as_i64());
+                    let repo = meta.get("repo").and_then(|v| v.as_str());
+
+                    if let Some(url) = pr_url
+                        && let Some(num) = pr_number
+                    {
+                        let _ = store.update_task_pr(&task.id, url, num);
+                    }
+                    if let Some(r) = repo {
+                        let _ = store.update_task_repo(&task.id, r);
+                    }
+                }
+                // Transition to HumanReview
+                Some(TransitionIntent {
+                    to: TaskStage::HumanReview,
+                    reason: "PR opened".to_string(),
+                    notification: Some("PR opened — ready for human review".to_string()),
+                    forward_to_worker: None,
+                })
+            }
+            SignalKind::MergedPr => {
+                if !task.stage.is_terminal() {
+                    Some(TransitionIntent {
+                        to: TaskStage::Merged,
+                        reason: "PR merged".to_string(),
+                        notification: Some("PR merged — task complete".to_string()),
+                        forward_to_worker: None,
+                    })
+                } else {
+                    None
+                }
+            }
+            SignalKind::PrClosed => {
+                if !task.stage.is_terminal() {
+                    Some(TransitionIntent {
+                        to: TaskStage::Dismissed,
+                        reason: "PR closed without merge".to_string(),
+                        notification: Some(
+                            "PR closed without merging — task dismissed".to_string(),
+                        ),
+                        forward_to_worker: None,
+                    })
+                } else {
+                    None
+                }
+            }
+            // Informational signals — no stage change
+            SignalKind::CiPass
+            | SignalKind::CiFailure
+            | SignalKind::BotReview
+            | SignalKind::WorkerWaiting
+            | SignalKind::ReviewVerdict
+            | SignalKind::WorkerClosed
+            | SignalKind::Other => None,
+        };
+
+        // Apply transition with monotonic guard
+        if let Some(intent) = transition {
+            let from = task.stage.clone();
+            result.from_stage = Some(from.clone());
+
+            // Terminal transitions (Merged/Dismissed) always apply.
+            // Non-terminal transitions must be forward-only (monotonic).
+            let should_apply =
+                intent.to.is_terminal() || intent.to.stage_order() > from.stage_order();
+
+            if should_apply && from != intent.to {
+                store.transition_task(&task.id, &from, &intent.to, Some(intent.reason.clone()))?;
+                result.transitioned = true;
+                info!(
+                    "[orchestrator] transitioned task '{}': {} → {} (reason: {})",
+                    task.title,
+                    from.as_str(),
+                    intent.to.as_str(),
+                    intent.reason,
+                );
+            } else if !should_apply {
+                debug!(
+                    "[orchestrator] skipping backward transition {}→{} for task '{}' (monotonic guard)",
+                    from.as_str(),
+                    intent.to.as_str(),
+                    task.title,
+                );
+            }
+
+            // Collect side effects
+            if let Some(msg) = intent.notification {
+                result.notifications.push(msg);
+            }
+            if let Some((wid, msg)) = intent.forward_to_worker {
+                result.worker_messages.push((wid, msg));
+            }
+        }
+
+        // Reload task after any changes
+        result.task = store.get_task(&task.id)?;
+        Ok(result)
     }
 
     /// Find all orchestrator actions matching this signal.
@@ -300,6 +546,186 @@ impl Orchestrator {
     }
 }
 
+// ── Signal classification ──────────────────────────────────────────────
+
+/// Classified signal kind for transition dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SignalKind {
+    WorkerSpawned,
+    WorkerRunning,
+    WorkerWaiting,
+    WorkerClosed,
+    BranchReady,
+    PrOpened,
+    ReviewVerdict,
+    CiPass,
+    CiFailure,
+    BotReview,
+    MergedPr,
+    PrClosed,
+    Other,
+}
+
+/// Classify a signal into a `SignalKind` based on source and external_id.
+fn signal_kind(signal: &SignalRecord) -> SignalKind {
+    match signal.source.as_str() {
+        "swarm_worker_running" => SignalKind::WorkerRunning,
+        "swarm_branch_ready" => SignalKind::BranchReady,
+        "swarm_review_verdict" => SignalKind::ReviewVerdict,
+        "github_ci_pass" => SignalKind::CiPass,
+        "github_ci_failure" => SignalKind::CiFailure,
+        "github_bot_review" => SignalKind::BotReview,
+        "github_merged_pr" => SignalKind::MergedPr,
+        "github_pr_closed" => SignalKind::PrClosed,
+        "swarm" => {
+            // Disambiguate generic "swarm" signals by external_id prefix
+            if signal.external_id.starts_with("swarm-spawned-") {
+                SignalKind::WorkerSpawned
+            } else if signal.external_id.starts_with("swarm-pr-") {
+                SignalKind::PrOpened
+            } else if signal.external_id.starts_with("swarm-waiting-") {
+                SignalKind::WorkerWaiting
+            } else if signal.external_id.starts_with("swarm-completed-") {
+                SignalKind::WorkerClosed
+            } else {
+                SignalKind::Other
+            }
+        }
+        _ => SignalKind::Other,
+    }
+}
+
+/// A desired stage transition with associated side effects.
+struct TransitionIntent {
+    to: TaskStage,
+    reason: String,
+    notification: Option<String>,
+    forward_to_worker: Option<(String, String)>,
+}
+
+// ── Task matching helpers ──────────────────────────────────────────────
+
+/// Find a task that matches this signal.
+/// Tries PR matching first, then worker_id matching for swarm lifecycle signals.
+fn find_task_for_signal(
+    store: &TaskStore,
+    workspace: &str,
+    signal: &SignalRecord,
+) -> Result<Option<Task>> {
+    // Try matching by PR
+    if let Some((repo, pr_number)) = match_signal_to_task_pr(signal)
+        && let Some(task) = store.find_task_by_pr(workspace, &repo, pr_number)?
+    {
+        return Ok(Some(task));
+    }
+
+    // For swarm_branch_ready signals, match by worker_id in metadata
+    if signal.source == "swarm_branch_ready"
+        && let Some(ref meta) = signal.metadata
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(meta)
+        && let Some(worker_id) = v.get("worker_id").and_then(|w| w.as_str())
+        && let Some(task) = store.find_task_by_worker(workspace, worker_id)?
+    {
+        return Ok(Some(task));
+    }
+
+    // For swarm_review_verdict signals in the branch-first flow (no PR), match by reviewer_worker_id
+    if signal.source == "swarm_review_verdict"
+        && let Some(ref meta) = signal.metadata
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(meta)
+        && let Some(reviewer_id) = v.get("reviewer_worker_id").and_then(|w| w.as_str())
+        && let Some(task) = store.find_task_by_reviewer_worker(workspace, reviewer_id)?
+    {
+        return Ok(Some(task));
+    }
+
+    // For swarm worker lifecycle signals, match by worker_id from metadata
+    if matches!(signal.source.as_str(), "swarm_worker_running" | "swarm")
+        && let Some(worker_id) = extract_metadata_str(signal, "worker_id")
+            .or_else(|| extract_worker_id_from_external_id(&signal.external_id))
+    {
+        let role = extract_metadata_str(signal, "role");
+
+        if role.as_deref() == Some("reviewer") {
+            if let Some(task) = store.find_task_by_reviewer_worker(workspace, &worker_id)? {
+                return Ok(Some(task));
+            }
+        } else if let Some(task) = store.find_task_by_worker(workspace, &worker_id)? {
+            return Ok(Some(task));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Extract a string field from signal metadata JSON.
+fn extract_metadata_str(signal: &SignalRecord, key: &str) -> Option<String> {
+    signal
+        .metadata
+        .as_ref()
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+        .and_then(|v| v.get(key).and_then(|s| s.as_str()).map(String::from))
+}
+
+/// Extract worker_id from external_id patterns like "swarm-spawned-{id}" or "swarm-pr-{id}".
+fn extract_worker_id_from_external_id(external_id: &str) -> Option<String> {
+    for prefix in &[
+        "swarm-spawned-",
+        "swarm-pr-",
+        "swarm-waiting-",
+        "swarm-completed-",
+    ] {
+        if let Some(id) = external_id.strip_prefix(prefix) {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+/// Try to match a signal to an existing task by PR number + repo.
+/// Extracts PR info from signal metadata, title, or URL.
+pub fn match_signal_to_task_pr(signal: &SignalRecord) -> Option<(String, i64)> {
+    // Try metadata first (structured)
+    if let Some(ref meta) = signal.metadata
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(meta)
+    {
+        let repo = v.get("repo").and_then(|r| r.as_str()).map(String::from);
+        let pr_num = v
+            .get("pr_number")
+            .and_then(|n| n.as_i64())
+            .or_else(|| v.get("number").and_then(|n| n.as_i64()));
+        if let (Some(repo), Some(num)) = (repo, pr_num) {
+            return Some((repo, num));
+        }
+    }
+
+    // Try URL pattern: https://github.com/{owner}/{repo}/pull/{number}
+    if let Some(ref url) = signal.url
+        && let Some(caps) = extract_github_pr_from_url(url)
+    {
+        return Some(caps);
+    }
+
+    None
+}
+
+/// Extract (repo, pr_number) from a GitHub PR URL.
+pub fn extract_github_pr_from_url(url: &str) -> Option<(String, i64)> {
+    // Pattern: https://github.com/{owner}/{repo}/pull/{number}
+    let parts: Vec<&str> = url.split('/').collect();
+    for (i, part) in parts.iter().enumerate() {
+        if (*part == "pull" || *part == "pulls") && i >= 2 && i + 1 < parts.len() {
+            let owner = parts[i - 2];
+            let repo_name = parts[i - 1];
+            let num_str = parts[i + 1].split('#').next()?.split('?').next()?;
+            if let Ok(num) = num_str.parse::<i64>() {
+                return Some((format!("{owner}/{repo_name}"), num));
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -377,8 +803,8 @@ mod tests {
         let orchestrator = Orchestrator::new(&config);
         let store = TaskStore::open_memory().unwrap();
 
-        // "swarm_worker_spawned" should match the "swarm" action (prefix match)
-        let signal = make_signal("swarm_worker_spawned", "Worker spawned");
+        // "swarm_worker_running" should match the "swarm" action (prefix match)
+        let signal = make_signal("swarm_worker_running", "Worker running");
         let result = orchestrator
             .process_signal(&store, "test", &signal)
             .unwrap();
@@ -402,25 +828,93 @@ mod tests {
     }
 
     #[test]
-    fn test_process_signal_fires_task_engine() {
+    fn test_merged_pr_transitions_to_merged() {
         let config = OrchestratorConfig::default();
         let orchestrator = Orchestrator::new(&config);
         let store = TaskStore::open_memory().unwrap();
 
-        let task = make_task("test", TaskStage::InAiReview);
+        let task = make_task("test", TaskStage::HumanReview);
         store.create_task(&task).unwrap();
 
-        let mut signal = make_signal("github_ci_pass", "CI passed on PR #42");
+        let mut signal = make_signal("github_merged_pr", "PR merged");
         signal.url = Some("https://github.com/org/repo/pull/42".to_string());
+        signal.metadata =
+            Some(serde_json::json!({"repo": "org/repo", "pr_number": 42}).to_string());
 
         let result = orchestrator
             .process_signal(&store, "test", &signal)
             .unwrap();
 
-        // Task engine should have transitioned the task
         assert!(result.engine_result.transitioned);
-        let updated_task = result.engine_result.task.unwrap();
-        assert_eq!(updated_task.stage, TaskStage::HumanReview);
+        let updated = result.engine_result.task.unwrap();
+        assert_eq!(updated.stage, TaskStage::Merged);
+    }
+
+    #[test]
+    fn test_monotonic_no_backward_transition() {
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        // Task is already in HumanReview
+        let task = make_task("test", TaskStage::HumanReview);
+        store.create_task(&task).unwrap();
+
+        // A late swarm_worker_running signal arrives — should NOT regress to InProgress
+        let mut signal = make_signal("swarm_worker_running", "Worker running");
+        signal.metadata = Some(serde_json::json!({"worker_id": "worker-1"}).to_string());
+
+        let result = orchestrator
+            .process_signal(&store, "test", &signal)
+            .unwrap();
+
+        // Task should still be HumanReview
+        let updated = result.engine_result.task.unwrap();
+        assert_eq!(updated.stage, TaskStage::HumanReview);
+        assert!(!result.engine_result.transitioned);
+    }
+
+    #[test]
+    fn test_task_creation_from_worker_spawned() {
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        let mut signal = make_signal("swarm", "Worker spawned: abc-123");
+        signal.external_id = "swarm-spawned-abc-123".to_string();
+        signal.body = Some("agent: claude\nFix the login bug".to_string());
+
+        let result = orchestrator
+            .process_signal(&store, "test", &signal)
+            .unwrap();
+
+        assert!(result.engine_result.transitioned);
+        let task = result.engine_result.task.unwrap();
+        assert_eq!(task.stage, TaskStage::InProgress);
+        assert_eq!(task.worker_id.as_deref(), Some("abc-123"));
+        assert_eq!(task.title, "Fix the login bug");
+    }
+
+    #[test]
+    fn test_stale_task_detection() {
+        use chrono::Duration;
+
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("test", TaskStage::InProgress);
+        task.pr_url = None;
+        task.pr_number = None;
+        task.repo = None;
+        task.updated_at = Utc::now() - Duration::hours(25);
+        store.create_task(&task).unwrap();
+
+        let reconciler = reconcile::Reconciler::new(60);
+        let checks = reconciler.check_tasks(&store, "test").unwrap();
+
+        // Should flag as needing attention (worker check + stale)
+        let has_stale = checks
+            .iter()
+            .any(|c| matches!(c, reconcile::ReconcileCheck::Stale { .. }));
+        assert!(has_stale, "task stuck >24h should be flagged as stale");
     }
 
     #[test]
@@ -551,5 +1045,47 @@ action = "Report the PR"
         assert_eq!(config.workflow.max_review_cycles, 3);
         assert!(config.notification_tiers.is_empty());
         assert_eq!(config.actions.len(), 3); // default actions
+    }
+
+    #[test]
+    fn test_pr_closed_transitions_to_dismissed() {
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        let task = make_task("test", TaskStage::HumanReview);
+        store.create_task(&task).unwrap();
+
+        let mut signal = make_signal("github_pr_closed", "PR closed");
+        signal.metadata =
+            Some(serde_json::json!({"repo": "org/repo", "pr_number": 42}).to_string());
+
+        let result = orchestrator
+            .process_signal(&store, "test", &signal)
+            .unwrap();
+
+        assert!(result.engine_result.transitioned);
+        let updated = result.engine_result.task.unwrap();
+        assert_eq!(updated.stage, TaskStage::Dismissed);
+    }
+
+    #[test]
+    fn test_signal_kind_classification() {
+        let mut s = make_signal("swarm", "Worker spawned");
+        s.external_id = "swarm-spawned-abc".to_string();
+        assert_eq!(signal_kind(&s), SignalKind::WorkerSpawned);
+
+        let mut s = make_signal("swarm", "PR opened");
+        s.external_id = "swarm-pr-abc".to_string();
+        assert_eq!(signal_kind(&s), SignalKind::PrOpened);
+
+        let s = make_signal("swarm_branch_ready", "Branch ready");
+        assert_eq!(signal_kind(&s), SignalKind::BranchReady);
+
+        let s = make_signal("github_merged_pr", "Merged");
+        assert_eq!(signal_kind(&s), SignalKind::MergedPr);
+
+        let s = make_signal("github_ci_failure", "CI failed");
+        assert_eq!(signal_kind(&s), SignalKind::CiFailure);
     }
 }

@@ -3,10 +3,14 @@
 //! Prevents tasks from getting permanently stuck by verifying actual
 //! GitHub PR state and worker state at regular intervals.
 
-use std::time::{Duration, Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
-use color_eyre::Result;
-use tracing::{debug, info};
+use chrono::Utc;
+use color_eyre::eyre::{Result, WrapErr};
+use tracing::{debug, info, warn};
 
 use crate::buzz::task::{TaskStage, store::TaskStore};
 
@@ -32,6 +36,8 @@ pub enum ReconcileActionKind {
     PrClosed { pr_url: String },
     /// Worker closed without PR — task needs attention.
     WorkerGone { worker_id: String },
+    /// Task has been in the same stage for >24h — needs attention.
+    Stale { stage: TaskStage, hours_stuck: i64 },
 }
 
 impl Reconciler {
@@ -55,10 +61,9 @@ impl Reconciler {
         self.last_run = Some(Instant::now());
     }
 
-    /// Check active tasks and produce reconciliation actions.
+    /// Check active tasks and produce reconciliation checks.
     ///
-    /// The caller is responsible for executing the actions (checking PR state
-    /// via `gh pr view`, etc.) since that requires async I/O.
+    /// The caller is responsible for executing async checks (PR state via `gh pr view`).
     pub fn check_tasks(&self, store: &TaskStore, workspace: &str) -> Result<Vec<ReconcileCheck>> {
         let tasks = store.get_active_tasks(workspace)?;
         let mut checks = Vec::new();
@@ -92,6 +97,18 @@ impl Reconciler {
                     current_stage: task.stage.clone(),
                 });
             }
+
+            // Stale detection: task stuck in same stage for >24h
+            let age = Utc::now() - task.updated_at;
+            if age > chrono::Duration::hours(24) && !task.stage.is_terminal() {
+                let hours = age.num_hours();
+                checks.push(ReconcileCheck::Stale {
+                    task_id: task.id.clone(),
+                    task_title: task.title.clone(),
+                    stage: task.stage.clone(),
+                    hours_stuck: hours,
+                });
+            }
         }
 
         Ok(checks)
@@ -121,6 +138,15 @@ impl Reconciler {
                 );
                 store.update_task_stage(&action.task_id, &TaskStage::Triage)?;
             }
+            ReconcileActionKind::Stale { stage, hours_stuck } => {
+                info!(
+                    "[reconcile] task '{}' stuck in {} for {}h — flagging for attention",
+                    action.task_title,
+                    stage.as_str(),
+                    hours_stuck,
+                );
+                // Stale tasks get a Badge notification but no stage change
+            }
         }
         Ok(())
     }
@@ -143,6 +169,149 @@ pub enum ReconcileCheck {
         worker_id: String,
         current_stage: TaskStage,
     },
+    /// Task has been stuck in the same stage for >24h.
+    Stale {
+        task_id: String,
+        task_title: String,
+        stage: TaskStage,
+        hours_stuck: i64,
+    },
+}
+
+/// PR state as reported by `gh pr view`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrState {
+    Open,
+    Merged,
+    Closed,
+    Unknown,
+}
+
+/// Check the actual state of a PR via `gh pr view`.
+///
+/// Returns the PR state. This is async because it shells out to `gh`.
+pub async fn check_pr_state(pr_url: &str) -> Result<PrState> {
+    let output = tokio::process::Command::new("gh")
+        .args(["pr", "view", pr_url, "--json", "state,mergedAt"])
+        .output()
+        .await
+        .wrap_err("failed to run gh pr view")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!("[reconcile] gh pr view failed for {}: {}", pr_url, stderr);
+        return Ok(PrState::Unknown);
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).wrap_err("failed to parse gh pr view output")?;
+
+    let state = json.get("state").and_then(|s| s.as_str()).unwrap_or("");
+    let merged_at = json.get("mergedAt").and_then(|s| s.as_str()).unwrap_or("");
+
+    if !merged_at.is_empty() {
+        Ok(PrState::Merged)
+    } else if state == "CLOSED" {
+        Ok(PrState::Closed)
+    } else if state == "OPEN" {
+        Ok(PrState::Open)
+    } else {
+        Ok(PrState::Unknown)
+    }
+}
+
+/// Run a full reconciliation pass for a workspace.
+///
+/// This is the async entry point called by the daemon's background task.
+/// It checks active tasks, verifies PR state, and applies transitions.
+pub async fn run_reconciliation(db_path: &Path, workspace: &str) -> Result<Vec<ReconcileAction>> {
+    let store = TaskStore::open(db_path)?;
+    let reconciler = Reconciler::new(0); // interval not relevant here
+    let checks = reconciler.check_tasks(&store, workspace)?;
+
+    if checks.is_empty() {
+        debug!("[reconcile] no active tasks to reconcile for workspace {workspace}");
+        return Ok(Vec::new());
+    }
+
+    info!(
+        "[reconcile] running {} checks for workspace {workspace}",
+        checks.len()
+    );
+
+    let mut actions = Vec::new();
+
+    for check in checks {
+        match check {
+            ReconcileCheck::VerifyPr {
+                task_id,
+                task_title,
+                pr_url,
+                ..
+            } => match check_pr_state(&pr_url).await? {
+                PrState::Merged => {
+                    let action = ReconcileAction {
+                        task_id,
+                        task_title,
+                        action: ReconcileActionKind::PrMerged {
+                            pr_url: pr_url.clone(),
+                        },
+                    };
+                    Reconciler::apply_action(&store, &action)?;
+                    actions.push(action);
+                }
+                PrState::Closed => {
+                    let action = ReconcileAction {
+                        task_id,
+                        task_title,
+                        action: ReconcileActionKind::PrClosed {
+                            pr_url: pr_url.clone(),
+                        },
+                    };
+                    Reconciler::apply_action(&store, &action)?;
+                    actions.push(action);
+                }
+                PrState::Open | PrState::Unknown => {
+                    // No change needed
+                }
+            },
+            ReconcileCheck::VerifyWorker {
+                task_id,
+                task_title,
+                worker_id,
+                ..
+            } => {
+                // Check if worker still exists by looking at swarm state file
+                // For now, just log — full worker liveness check requires swarm state access
+                debug!(
+                    "[reconcile] worker {} for task '{}' — would check liveness",
+                    worker_id, task_title
+                );
+                // Future: read .swarm/state.json and check if worker is still listed
+                let _ = (task_id, worker_id); // suppress unused warnings
+            }
+            ReconcileCheck::Stale {
+                task_id,
+                task_title,
+                stage,
+                hours_stuck,
+            } => {
+                let action = ReconcileAction {
+                    task_id,
+                    task_title,
+                    action: ReconcileActionKind::Stale { stage, hours_stuck },
+                };
+                // Don't apply stage change for stale — just report
+                info!(
+                    "[reconcile] {}",
+                    format!("task '{}' stuck for {}h", action.task_title, hours_stuck)
+                );
+                actions.push(action);
+            }
+        }
+    }
+
+    Ok(actions)
 }
 
 #[cfg(test)]
@@ -194,9 +363,10 @@ mod tests {
 
         let reconciler = Reconciler::new(60);
         let checks = reconciler.check_tasks(&store, "test").unwrap();
-        assert_eq!(checks.len(), 1);
         assert!(
-            matches!(&checks[0], ReconcileCheck::VerifyPr { task_id, .. } if task_id == "task-1")
+            checks.iter().any(
+                |c| matches!(c, ReconcileCheck::VerifyPr { task_id, .. } if task_id == "task-1")
+            )
         );
     }
 
@@ -224,10 +394,9 @@ mod tests {
 
         let reconciler = Reconciler::new(60);
         let checks = reconciler.check_tasks(&store, "test").unwrap();
-        assert_eq!(checks.len(), 1);
-        assert!(
-            matches!(&checks[0], ReconcileCheck::VerifyWorker { task_id, .. } if task_id == "task-2")
-        );
+        assert!(checks.iter().any(
+            |c| matches!(c, ReconcileCheck::VerifyWorker { task_id, .. } if task_id == "task-2")
+        ));
     }
 
     #[test]
@@ -266,11 +435,46 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_pr_closed() {
+        let store = TaskStore::open_memory().unwrap();
+        let now = chrono::Utc::now();
+        let task = crate::buzz::task::Task {
+            id: "task-4".to_string(),
+            workspace: "test".to_string(),
+            title: "Closed task".to_string(),
+            stage: TaskStage::HumanReview,
+            source: None,
+            source_url: None,
+            worker_id: None,
+            pr_url: Some("https://github.com/org/repo/pull/50".to_string()),
+            pr_number: Some(50),
+            repo: Some("org/repo".to_string()),
+            created_at: now,
+            updated_at: now,
+            resolved_at: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+        };
+        store.create_task(&task).unwrap();
+
+        let action = ReconcileAction {
+            task_id: "task-4".to_string(),
+            task_title: "Closed task".to_string(),
+            action: ReconcileActionKind::PrClosed {
+                pr_url: "https://github.com/org/repo/pull/50".to_string(),
+            },
+        };
+        Reconciler::apply_action(&store, &action).unwrap();
+
+        let updated = store.get_task("task-4").unwrap().unwrap();
+        assert_eq!(updated.stage, TaskStage::Dismissed);
+    }
+
+    #[test]
     fn test_terminal_tasks_not_checked() {
         let store = TaskStore::open_memory().unwrap();
         let now = chrono::Utc::now();
 
-        // Merged task with PR — should NOT produce a check
+        // Merged task with PR — should NOT produce a VerifyPr check
         let task = crate::buzz::task::Task {
             id: "task-done".to_string(),
             workspace: "test".to_string(),
@@ -292,5 +496,36 @@ mod tests {
         let reconciler = Reconciler::new(60);
         let checks = reconciler.check_tasks(&store, "test").unwrap();
         assert!(checks.is_empty());
+    }
+
+    #[test]
+    fn test_stale_task_detection() {
+        let store = TaskStore::open_memory().unwrap();
+        let now = chrono::Utc::now();
+
+        let task = crate::buzz::task::Task {
+            id: "task-stale".to_string(),
+            workspace: "test".to_string(),
+            title: "Stuck task".to_string(),
+            stage: TaskStage::InProgress,
+            source: None,
+            source_url: None,
+            worker_id: Some("worker-1".to_string()),
+            pr_url: None,
+            pr_number: None,
+            repo: None,
+            created_at: now - chrono::Duration::hours(30),
+            updated_at: now - chrono::Duration::hours(25),
+            resolved_at: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+        };
+        store.create_task(&task).unwrap();
+
+        let reconciler = Reconciler::new(60);
+        let checks = reconciler.check_tasks(&store, "test").unwrap();
+        let stale = checks.iter().any(|c| {
+            matches!(c, ReconcileCheck::Stale { task_id, hours_stuck, .. } if task_id == "task-stale" && *hours_stuck >= 24)
+        });
+        assert!(stale, "should detect stale task stuck >24h");
     }
 }
