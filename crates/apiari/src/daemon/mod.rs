@@ -28,7 +28,7 @@ use crate::{
             },
         },
         daemon::config as buzz_daemon_config,
-        pipeline::Pipeline,
+        orchestrator::Orchestrator,
         signal::{Severity, store::SignalStore},
         watcher::{
             WatcherRegistry, email::EmailWatcher, github::GithubWatcher, linear::LinearWatcher,
@@ -36,10 +36,7 @@ use crate::{
             sentry::SentryWatcher, swarm::SwarmWatcher,
         },
     },
-    config::{
-        self, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config,
-        to_pipeline_rules,
-    },
+    config::{self, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config},
     git_safety::GitSafetyHooks,
 };
 
@@ -67,7 +64,7 @@ struct WorkspaceSlot {
     coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
     coord_handle: Option<tokio::task::JoinHandle<()>>,
     store: SignalStore,
-    pipeline: Pipeline,
+    orchestrator: Orchestrator,
     morning_brief: Option<morning_brief::MorningBriefScheduler>,
     /// DB path for reopening SignalStore on coordinator respawn.
     db_path: std::path::PathBuf,
@@ -1234,8 +1231,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             route_map.insert(key, slots.len());
         }
 
-        let pipeline_rules = to_pipeline_rules(&ws.config.pipeline);
-        let pipeline = Pipeline::new(pipeline_rules, ws.config.pipeline.batch_window_secs);
+        let orchestrator = Orchestrator::new(&ws.config.orchestrator);
 
         // Restore session from DB if available
         restore_coordinator_session(&mut coordinator, &store, &ws.name);
@@ -1286,7 +1282,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             coord_tx,
             coord_handle: Some(coord_handle),
             store,
-            pipeline,
+            orchestrator,
             morning_brief: morning_brief_scheduler,
             db_path: db.clone(),
             max_session_turns,
@@ -1549,8 +1545,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         continue;
                     }
 
-                    // signal source → (descriptions, hook config)
-                    let mut hook_events: HashMap<String, (Vec<String>, config::SignalHookConfig)> = HashMap::new();
+                    // Collect orchestrator results for follow-through actions
+                    let mut orchestrator_matched_actions: Vec<crate::buzz::orchestrator::MatchedAction> = Vec::new();
                     let mut ci_pass_batch: Vec<(String, String)> = Vec::new(); // (pr_ref, title)
 
                     // NOTE: Watchers are polled sequentially within each slot because
@@ -1600,17 +1596,21 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 for update in &updates {
                                     match slot.store.upsert_signal(update) {
                                         Ok((id, is_new)) => {
-                                            // Process signal through task engine
+                                            // Process signal through orchestrator (task engine + notification routing + action matching)
                                             if is_new
                                                 && let Ok(Some(record)) = slot.store.get_signal(id)
                                                 && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                             {
-                                                match crate::buzz::task::engine::process_signal(
+                                                match slot.orchestrator.process_signal(
                                                     &task_store,
                                                     &slot.name,
                                                     &record,
                                                 ) {
-                                                    Ok(engine_result) => {
+                                                    Ok(orch_result) => {
+                                                        // Collect matched actions for follow-through dispatch
+                                                        orchestrator_matched_actions.extend(orch_result.matched_actions);
+
+                                                        let engine_result = orch_result.engine_result;
                                                         for (worker_id, message) in engine_result.worker_messages {
                                                             info!("[task-engine] forwarding to worker {worker_id}: {message}");
                                                             let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
@@ -2083,12 +2083,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                             Some(&review_meta.to_string()),
                                                                         );
                                                                     }
-                                                                    // Process immediately through task engine
+                                                                    // Process immediately through orchestrator
                                                                     if let Ok(Some(vrecord)) = slot.store.get_signal(vid)
                                                                         && let Ok(ts2) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                                                     {
-                                                                        match crate::buzz::task::engine::process_signal(&ts2, &slot.name, &vrecord) {
-                                                                            Ok(ve_result) => {
+                                                                        match slot.orchestrator.process_signal(&ts2, &slot.name, &vrecord) {
+                                                                            Ok(verdict_orch_result) => {
+                                                                                let ve_result = verdict_orch_result.engine_result;
                                                                                 for (wid, msg) in ve_result.worker_messages {
                                                                                     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
                                                                                     tokio::spawn(async move {
@@ -2238,52 +2239,44 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                 });
                                             }
 
-                                            // Collect new signals matching a hook for coordinator follow-through
-                                            if is_new
-                                                && let Some(hook) = slot.config.coordinator.signal_hooks
-                                                    .iter()
-                                                    .find(|h| update.source == h.source || update.source.starts_with(&format!("{}_", h.source)))
-                                                && let Ok(Some(record)) = slot.store.get_signal(id)
-                                            {
-                                                let desc = if let Some(ref url) = record.url {
-                                                    format!("{} ({})", record.title, url)
-                                                } else if let Some(ref body) = record.body {
-                                                    format!("{} — {}", record.title, body.lines().next().unwrap_or(""))
-                                                } else {
-                                                    record.title.clone()
-                                                };
-                                                let entry = hook_events
-                                                    .entry(hook.source.clone())
-                                                    .or_insert_with(|| (Vec::new(), hook.clone()));
-                                                entry.0.push(desc);
-                                            }
-
-                                            // Determine notification text:
-                                            // - github_merged_pr: DB-only, no Telegram
-                                            // - github_ci_pass: collected for batched message
-                                            // - github_release: immediate real-time
-                                            // - Other new signals go through pipeline rules
+                                            // Determine notification via orchestrator tier routing
+                                            // (orchestrator already matched actions above)
                                             let notification = if is_new {
                                                 slot.store.get_signal(id).ok().flatten().and_then(|record| {
                                                     let severity = record.severity.clone();
-                                                    match update.source.as_str() {
-                                                        "github_merged_pr" => None,
-                                                        "github_release" => {
-                                                            slot.pipeline.process_force_notify(&record).map(|t| (t, severity))
-                                                        }
-                                                        "github_ci_pass" => {
-                                                            // Extract PR # from external_id (ci-pass-{repo}-{pr}-{run})
-                                                            let pr_ref = record
-                                                                .external_id
-                                                                .rsplit('-')
-                                                                .nth(1)
-                                                                .map(|n| format!("#{n}"))
-                                                                .unwrap_or_default();
-                                                            ci_pass_batch
-                                                                .push((pr_ref, record.title.clone()));
+                                                    let tier = slot.orchestrator.process_signal(
+                                                        &crate::buzz::task::store::TaskStore::open(slot.store.db_path()).ok()?,
+                                                        &slot.name,
+                                                        &record,
+                                                    ).ok()?.notification_tier;
+                                                    use crate::buzz::orchestrator::notify::NotificationTier;
+                                                    match tier {
+                                                        NotificationTier::Silent => {
+                                                            // CI pass: still batch for TUI display
+                                                            if update.source == "github_ci_pass" {
+                                                                let pr_ref = record
+                                                                    .external_id
+                                                                    .rsplit('-')
+                                                                    .nth(1)
+                                                                    .map(|n| format!("#{n}"))
+                                                                    .unwrap_or_default();
+                                                                ci_pass_batch
+                                                                    .push((pr_ref, record.title.clone()));
+                                                            }
                                                             None
                                                         }
-                                                        _ => slot.pipeline.process(&record).map(|t| (t, severity)),
+                                                        NotificationTier::Badge => {
+                                                            // Badge: broadcast to TUI but not Telegram
+                                                            let text = format!("[{}] {}", record.source, record.title);
+                                                            if let Some(ref server) = socket_server {
+                                                                server.broadcast_activity("signal", &slot.name, "badge", &text);
+                                                            }
+                                                            None // Don't return as (text, severity) — not for Telegram
+                                                        }
+                                                        NotificationTier::Chat => {
+                                                            let text = format!("[{}] {}", record.source, record.title);
+                                                            Some((text, severity))
+                                                        }
                                                     }
                                                 })
                                             } else {
@@ -2367,31 +2360,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         }
                     }
 
-                    // Flush any pending batched notifications (TUI-preferred, Telegram fallback)
-                    if let Some(text) = slot.pipeline.flush_batches() {
-                        let receivers = socket_server
-                            .as_ref()
-                            .map(|server| server.broadcast_activity("signal", &slot.name, "batch_notification", &text))
-                            .unwrap_or(0);
-                        if receivers == 0
-                            && let Some(tg) = &slot.config.telegram
-                            && let Some(channel) = telegram_channels.get(&tg.bot_token)
-                        {
-                            let msg = OutboundMessage {
-                                chat_id: tg.chat_id,
-                                text,
-                                buttons: vec![],
-                                topic_id: tg.topic_id,
-                            };
-                            if let Err(e) = channel.send_message(&msg).await {
-                                error!("[{}] failed to send batch notification: {e}", slot.name);
-                            }
-                        }
-                    }
-
-                    // Periodically evict old notification log entries
-                    slot.pipeline.evict_old_log_entries();
-
                     // Broadcast watcher poll heartbeat to TUI clients so remote
                     // clients can update their "last updated" display even without
                     // direct SQLite access.
@@ -2410,54 +2378,54 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         );
                     }
 
-                    // Coordinator follow-through for signal hook events (non-blocking)
+                    // Coordinator follow-through for orchestrator matched actions (non-blocking)
 
                     // Check workspace schedule before firing any follow-throughs.
                     let follow_through_active = slot.config.schedule.as_ref()
                         .map(crate::buzz::schedule::is_within_active_hours)
                         .unwrap_or(true);
-                    if !follow_through_active && !hook_events.is_empty() {
-                        let dropped: usize = hook_events.values().map(|(sigs, _)| sigs.len()).sum();
+                    if !follow_through_active && !orchestrator_matched_actions.is_empty() {
                         info!(
-                            "[{}] skipping signal follow-through: outside active hours ({} signal(s) across {} source(s) dropped)",
+                            "[{}] skipping signal follow-through: outside active hours ({} action(s) dropped)",
                             slot.name,
-                            dropped,
-                            hook_events.len()
+                            orchestrator_matched_actions.len()
                         );
                     }
 
-                    for (source, (signals, hook)) in hook_events {
+                    // Group matched actions by trigger (same behavior as old hook_events)
+                    let mut grouped_actions: HashMap<String, Vec<crate::buzz::orchestrator::MatchedAction>> = HashMap::new();
+                    for action in orchestrator_matched_actions {
+                        grouped_actions.entry(action.trigger.clone()).or_default().push(action);
+                    }
+
+                    for (source, actions) in grouped_actions {
                         if !follow_through_active {
                             continue;
                         }
+                        let first = &actions[0];
+                        let signals: Vec<String> = actions.iter().map(|a| a.signal_description.clone()).collect();
                         info!(
-                            "[follow-through] dispatching: workspace={} source={source} signal_count={} has_action={} ttl_secs={}",
+                            "[follow-through] dispatching: workspace={} source={source} signal_count={} ttl_secs={}",
                             slot.name,
                             signals.len(),
-                            hook.action.is_some(),
-                            hook.ttl_secs,
+                            first.ttl_secs,
                         );
                         let telegram_info = slot.config.telegram.as_ref().and_then(|tg| {
                             telegram_channels.get(&tg.bot_token).map(|ch| {
                                 (ch.clone(), tg.chat_id, tg.topic_id)
                             })
                         });
-                        let prompt_override = if hook.prompt.is_empty() {
-                            None
-                        } else {
-                            Some(hook.prompt.clone())
-                        };
                         let _ = slot.coord_tx.send(CoordinatorJob::SignalFollowThrough {
                             signals,
                             source,
-                            prompt_override,
-                            action: hook.action.clone(),
+                            prompt_override: None,
+                            action: Some(first.action.clone()),
                             queued_at: std::time::Instant::now(),
-                            ttl_secs: hook.ttl_secs,
+                            ttl_secs: first.ttl_secs,
                             telegram: telegram_info,
                             socket_server: socket_server.clone(),
                             slot_name: slot.name.clone(),
-                            skill_names: hook.skills.clone(),
+                            skill_names: first.skills.clone(),
                             workspace_root: slot.config.root.clone(),
                         });
                     }

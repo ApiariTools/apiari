@@ -237,7 +237,7 @@ mod tests {
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
-            pipeline: PipelineConfig::default(),
+            orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
