@@ -252,9 +252,9 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub watchers: WatchersConfig,
 
-    /// Notification pipeline configuration.
+    /// Orchestrator configuration (replaces pipeline + signal_hooks).
     #[serde(default)]
-    pub pipeline: PipelineConfig,
+    pub orchestrator: crate::buzz::orchestrator::OrchestratorConfig,
 
     /// Swarm agent configuration.
     #[serde(default)]
@@ -1075,41 +1075,6 @@ pub struct CommandConfig {
     pub restart: bool,
 }
 
-/// Notification pipeline configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PipelineConfig {
-    /// Batch flush window in seconds (default: 60).
-    #[serde(default = "default_batch_window")]
-    pub batch_window_secs: u64,
-    /// Pipeline rules. Empty = use defaults.
-    #[serde(default)]
-    pub rules: Vec<PipelineRuleConfig>,
-}
-
-impl Default for PipelineConfig {
-    fn default() -> Self {
-        Self {
-            batch_window_secs: default_batch_window(),
-            rules: vec![],
-        }
-    }
-}
-
-/// A single pipeline rule in config TOML.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PipelineRuleConfig {
-    pub name: String,
-    #[serde(default)]
-    pub source: Option<String>,
-    #[serde(default)]
-    pub severity: Option<String>,
-    #[serde(default)]
-    pub id_prefix: Option<String>,
-    pub action: String,
-    #[serde(default)]
-    pub rate_limit_secs: u64,
-}
-
 /// Swarm agent configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmConfig {
@@ -1129,34 +1094,6 @@ impl Default for SwarmConfig {
 
 fn default_swarm_agent() -> String {
     "claude".to_string()
-}
-
-/// Convert pipeline config rules into buzz pipeline rules.
-pub fn to_pipeline_rules(
-    config: &PipelineConfig,
-) -> Vec<crate::buzz::pipeline::rule::PipelineRule> {
-    use crate::buzz::{
-        pipeline::rule::{PipelineAction, PipelineRule},
-        signal::Severity,
-    };
-
-    config
-        .rules
-        .iter()
-        .map(|r| PipelineRule {
-            name: r.name.clone(),
-            source: r.source.clone(),
-            severity: r.severity.as_deref().map(Severity::from_str_loose),
-            id_prefix: r.id_prefix.clone(),
-            action: match r.action.as_str() {
-                "notify" => PipelineAction::Notify,
-                "batch" => PipelineAction::Batch,
-                "drop" => PipelineAction::Drop,
-                _ => PipelineAction::Batch,
-            },
-            rate_limit_secs: r.rate_limit_secs,
-        })
-        .collect()
 }
 
 /// Build the settings JSON for the coordinator (PreToolUse hook).
@@ -1180,10 +1117,6 @@ pub fn coordinator_settings_json() -> Option<String> {
     });
 
     Some(settings.to_string())
-}
-
-fn default_batch_window() -> u64 {
-    60
 }
 
 fn default_coordinator_name() -> String {
@@ -1349,7 +1282,7 @@ max_session_turns = 0
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
-            pipeline: PipelineConfig::default(),
+            orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
@@ -1377,7 +1310,7 @@ max_session_turns = 0
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
-            pipeline: PipelineConfig::default(),
+            orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
@@ -1409,7 +1342,7 @@ max_session_turns = 0
             coordinator: CoordinatorConfig::default(),
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
-            pipeline: PipelineConfig::default(),
+            orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
@@ -1668,7 +1601,7 @@ max_session_turns = 0
                 ..Default::default()
             },
             swarm: SwarmConfig::default(),
-            pipeline: PipelineConfig::default(),
+            orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
             daemon_tcp_port: None,
