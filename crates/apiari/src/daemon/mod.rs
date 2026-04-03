@@ -1410,6 +1410,45 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         }
     }
 
+    // Spawn background reconciliation tasks for each workspace
+    let reconcile_cancel = cancel_rx.clone();
+    for slot in &slots {
+        let db_for_reconcile = slot.db_path.clone();
+        let ws_name = slot.name.clone();
+        let ws_name_log = ws_name.clone();
+        let interval_secs = slot.config.orchestrator.reconcile_interval_secs;
+        let mut cancel_watch = reconcile_cancel.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Skip the first immediate tick
+            interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = cancel_watch.changed() => break,
+                    _ = interval.tick() => {
+                        match crate::buzz::orchestrator::reconcile::run_reconciliation(
+                            &db_for_reconcile, &ws_name,
+                        ).await {
+                            Ok(actions) => {
+                                if !actions.is_empty() {
+                                    info!(
+                                        "[{ws_name}] reconciliation applied {} action(s)",
+                                        actions.len()
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!("[{ws_name}] reconciliation error: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        info!("[{ws_name_log}] reconciliation task started (interval: {interval_secs}s)");
+    }
+
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
@@ -1756,10 +1795,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                         && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id) {
                                                             let pr_url = update.url.clone();
                                                             let pr_number = pr_url.as_ref()
-                                                                .and_then(|u| crate::buzz::task::rules::extract_github_pr_from_url(u))
+                                                                .and_then(|u| crate::buzz::orchestrator::extract_github_pr_from_url(u))
                                                                 .map(|(_, num)| num);
                                                             let repo = pr_url.as_ref()
-                                                                .and_then(|u| crate::buzz::task::rules::extract_github_pr_from_url(u))
+                                                                .and_then(|u| crate::buzz::orchestrator::extract_github_pr_from_url(u))
                                                                 .map(|(r, _)| r);
 
                                                             if let Some(ref url) = pr_url
