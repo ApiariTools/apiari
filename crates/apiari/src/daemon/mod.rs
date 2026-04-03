@@ -1649,6 +1649,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                         // Collect matched actions for follow-through dispatch
                                                         orchestrator_matched_actions.extend(orch_result.matched_actions);
 
+                                                        // Execute workflow actions (system PR creation, reviewer dispatch, etc.)
+                                                        for wf_action in &orch_result.workflow_actions {
+                                                            execute_workflow_action(
+                                                                wf_action,
+                                                                &slot.config.root,
+                                                                slot.store.db_path(),
+                                                                &slot.name,
+                                                            );
+                                                        }
+
                                                         let engine_result = orch_result.engine_result;
                                                         for (worker_id, message) in engine_result.worker_messages {
                                                             info!("[task-engine] forwarding to worker {worker_id}: {message}");
@@ -1719,7 +1729,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Create task for new swarm workers (skip reviewer workers)
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-spawned-") {
+                                            if is_new && (update.source == "swarm_worker_spawned" || (update.source == "swarm" && update.external_id.starts_with("swarm-spawned-"))) {
                                                 let worker_id = update.external_id.strip_prefix("swarm-spawned-").unwrap_or("").to_string();
                                                 let is_reviewer = update.body.as_ref()
                                                     .and_then(|b| b.lines().nth(1))
@@ -1788,7 +1798,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Update task when worker opens a PR
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
+                                            if is_new && (update.source == "swarm_pr_opened" || (update.source == "swarm" && update.external_id.starts_with("swarm-pr-"))) {
                                                 let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
                                                 if !worker_id.is_empty()
                                                     && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
@@ -1856,7 +1866,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Dispatch reviewer worker when task enters InAiReview
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
+                                            if is_new && (update.source == "swarm_pr_opened" || (update.source == "swarm" && update.external_id.starts_with("swarm-pr-"))) {
                                                 let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
                                                 if !worker_id.is_empty()
                                                     && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
@@ -1915,7 +1925,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Auto-close the worker that opened the PR — it has delivered its work
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-pr-") {
+                                            if is_new && (update.source == "swarm_pr_opened" || (update.source == "swarm" && update.external_id.starts_with("swarm-pr-"))) {
                                                 let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
                                                 if !worker_id.is_empty() {
                                                     let swarm_for_close = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
@@ -2020,8 +2030,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Process reviewer worker completion — emit verdict signal
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-completed-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-completed-").unwrap_or("").to_string();
+                                            if is_new && (update.source == "swarm_worker_closed" || (update.source == "swarm" && update.external_id.starts_with("swarm-completed-"))) {
+                                                let worker_id = update.external_id.strip_prefix("swarm-completed-")
+                                                    .or_else(|| update.external_id.strip_prefix("swarm-worker-closed-"))
+                                                    .unwrap_or("").to_string();
                                                 if !worker_id.is_empty()
                                                     && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                                         && let Ok(Some(task)) = task_store.find_task_by_reviewer_worker(&slot.name, &worker_id)
@@ -2143,24 +2155,60 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                                     }
                                                                                 }
 
-                                                                                // Branch-first flow: after approval, tell the original worker to open a PR
-                                                                                if verdict == "APPROVED"
-                                                                                    && is_branch_flow
-                                                                                    && let Some(ref original_worker_id) = task.worker_id
-                                                                                {
-                                                                                    let task_title = task.title.clone();
-                                                                                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                                                    let wid = original_worker_id.clone();
-                                                                                    tokio::spawn(async move {
-                                                                                        let msg = format!(
-                                                                                            "Your code was approved by the reviewer. Please run: `gh pr create --title '{task_title}' --body 'Approved by AI reviewer'`"
-                                                                                        );
-                                                                                        if let Err(e) = swarm.send_message(&wid, &msg).await {
-                                                                                            tracing::warn!("[task-engine] failed to send PR-open message to worker {wid}: {e}");
-                                                                                        } else {
-                                                                                            info!("[task-engine] told worker {wid} to open PR for task '{task_title}'");
-                                                                                        }
-                                                                                    });
+                                                                                // Branch-first flow: after approval, system creates the PR
+                                                                                if verdict == "APPROVED" && is_branch_flow {
+                                                                                    let ready_branch = task.metadata
+                                                                                        .get("ready_branch")
+                                                                                        .and_then(|v| v.as_str())
+                                                                                        .unwrap_or("")
+                                                                                        .to_string();
+                                                                                    if !ready_branch.is_empty() {
+                                                                                        let task_id = task.id.clone();
+                                                                                        let task_title = task.title.clone();
+                                                                                        let work_dir = slot.config.root.clone();
+                                                                                        let db_path = slot.store.db_path().to_path_buf();
+                                                                                        let ws_name_pr = slot.name.clone();
+                                                                                        tokio::spawn(async move {
+                                                                                            match crate::buzz::orchestrator::workflow::create_system_pr(
+                                                                                                &work_dir, &ready_branch, &task_title, "Approved by AI reviewer",
+                                                                                            ).await {
+                                                                                                Ok(pr_result) => {
+                                                                                                    info!("[workflow] system PR created for task '{}': {}", task_title, pr_result.pr_url);
+                                                                                                    if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path) {
+                                                                                                        if let Some(num) = pr_result.pr_number {
+                                                                                                            let _ = ts.update_task_pr(&task_id, &pr_result.pr_url, num);
+                                                                                                        }
+                                                                                                        let _ = ts.transition_task(
+                                                                                                            &task_id,
+                                                                                                            &crate::buzz::task::TaskStage::InAiReview,
+                                                                                                            &crate::buzz::task::TaskStage::HumanReview,
+                                                                                                            Some("System PR created after review approval".to_string()),
+                                                                                                        );
+                                                                                                    }
+                                                                                                    // Emit swarm_pr_opened signal
+                                                                                                    if let Ok(ss) = crate::buzz::signal::store::SignalStore::open(&db_path, &ws_name_pr) {
+                                                                                                        let pr_signal = crate::buzz::signal::SignalUpdate::new(
+                                                                                                            "swarm_pr_opened",
+                                                                                                            format!("swarm-system-pr-{task_id}"),
+                                                                                                            format!("System PR created: {}", pr_result.pr_url),
+                                                                                                            crate::buzz::signal::Severity::Info,
+                                                                                                        )
+                                                                                                        .with_url(&pr_result.pr_url)
+                                                                                                        .with_metadata(serde_json::json!({
+                                                                                                            "pr_url": pr_result.pr_url,
+                                                                                                            "pr_number": pr_result.pr_number,
+                                                                                                            "task_id": task_id,
+                                                                                                            "system_created": true,
+                                                                                                        }).to_string());
+                                                                                                        let _ = ss.upsert_signal(&pr_signal);
+                                                                                                    }
+                                                                                                }
+                                                                                                Err(e) => {
+                                                                                                    tracing::warn!("[workflow] system PR creation failed for task '{}': {e}", task_title);
+                                                                                                }
+                                                                                            }
+                                                                                        });
+                                                                                    }
                                                                                 }
 
                                                                                 // Auto-close the reviewer worker — it has delivered its verdict
@@ -2191,8 +2239,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                             }
 
                                             // Handle worker closed — dismiss task if no PR was merged
-                                            if is_new && update.source == "swarm" && update.external_id.starts_with("swarm-closed-") {
-                                                let worker_id = update.external_id.strip_prefix("swarm-closed-").unwrap_or("").to_string();
+                                            if is_new && (update.source == "swarm_worker_closed" || (update.source == "swarm" && update.external_id.starts_with("swarm-closed-"))) {
+                                                let worker_id = update.external_id.strip_prefix("swarm-closed-")
+                                                    .or_else(|| update.external_id.strip_prefix("swarm-worker-closed-"))
+                                                    .unwrap_or("").to_string();
                                                 if !worker_id.is_empty()
                                                     && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                                         && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
@@ -3924,6 +3974,162 @@ async fn run_reinstall(workspace_root: &std::path::Path) -> (String, bool) {
 /// `claude-tui` workers are interactive and must stay alive.
 fn should_auto_close_pr_worker(worker: &apiari_swarm::daemon::protocol::WorkerInfo) -> bool {
     worker.phase == apiari_swarm::WorkerPhase::Waiting && worker.agent == "claude"
+}
+
+/// Execute a workflow action produced by the orchestrator.
+///
+/// Spawns async tasks for PR creation, reviewer dispatch, and rework dispatch.
+/// This is the execution layer for the orchestrator's workflow engine.
+fn execute_workflow_action(
+    action: &crate::buzz::orchestrator::workflow::WorkflowAction,
+    work_dir: &std::path::Path,
+    db_path: &std::path::Path,
+    _workspace_name: &str,
+) {
+    use crate::buzz::orchestrator::workflow::WorkflowAction;
+
+    match action {
+        WorkflowAction::CreatePr {
+            task_id,
+            branch_name,
+        }
+        | WorkflowAction::ForceCreatePr {
+            task_id,
+            branch_name,
+            ..
+        } => {
+            let task_id = task_id.clone();
+            let branch_name = branch_name.clone();
+            let work_dir = work_dir.to_path_buf();
+            let db_path = db_path.to_path_buf();
+
+            // Look up task title for the PR
+            let title = crate::buzz::task::store::TaskStore::open(&db_path)
+                .ok()
+                .and_then(|ts| ts.get_task(&task_id).ok().flatten())
+                .map(|t| t.title.clone())
+                .unwrap_or_else(|| format!("PR for {branch_name}"));
+
+            let is_forced = matches!(action, WorkflowAction::ForceCreatePr { .. });
+            let body = if is_forced {
+                "Created by apiari orchestrator (max review cycles exceeded)".to_string()
+            } else {
+                "Created by apiari orchestrator".to_string()
+            };
+
+            tokio::spawn(async move {
+                match crate::buzz::orchestrator::workflow::create_system_pr(
+                    &work_dir,
+                    &branch_name,
+                    &title,
+                    &body,
+                )
+                .await
+                {
+                    Ok(pr_result) => {
+                        tracing::info!(
+                            "[workflow] system PR created for task {task_id}: {}",
+                            pr_result.pr_url
+                        );
+                        if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path) {
+                            if let Some(num) = pr_result.pr_number {
+                                let _ = ts.update_task_pr(&task_id, &pr_result.pr_url, num);
+                            }
+                            let _ = ts.transition_task(
+                                &task_id,
+                                &crate::buzz::task::TaskStage::InAiReview,
+                                &crate::buzz::task::TaskStage::HumanReview,
+                                Some("System PR created".to_string()),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[workflow] system PR creation failed for task {task_id}: {e}"
+                        );
+                    }
+                }
+            });
+        }
+        WorkflowAction::DispatchReviewer {
+            task_id,
+            branch_name,
+            worker_id: _,
+        } => {
+            let task_id = task_id.clone();
+            let branch_name = branch_name.clone();
+            let work_dir = work_dir.to_path_buf();
+            let db_path = db_path.to_path_buf();
+
+            // Derive short repo name from branch or work_dir
+            let short_repo = work_dir
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or("repo")
+                .to_string();
+
+            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(work_dir.clone());
+            tokio::spawn(async move {
+                match swarm
+                    .create_reviewer_worker_for_branch(&short_repo, &branch_name)
+                    .await
+                {
+                    Ok(reviewer_id) if !reviewer_id.is_empty() => {
+                        tracing::info!(
+                            "[workflow] dispatched reviewer {reviewer_id} for task {task_id}"
+                        );
+                        if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path)
+                            && let Ok(Some(task)) = ts.get_task(&task_id)
+                        {
+                            let mut meta = task.metadata.clone();
+                            meta["reviewer_worker_id"] =
+                                serde_json::Value::String(reviewer_id.clone());
+                            meta["ready_branch"] = serde_json::Value::String(branch_name.clone());
+                            let _ = ts.update_task_metadata(&task_id, &meta);
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            "[workflow] reviewer dispatch for task {task_id} returned empty id"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[workflow] failed to dispatch reviewer for task {task_id}: {e}"
+                        );
+                    }
+                }
+            });
+        }
+        WorkflowAction::DispatchRework { task_id, feedback } => {
+            let task_id = task_id.clone();
+            let feedback = feedback.clone();
+            let db_path = db_path.to_path_buf();
+            let work_dir = work_dir.to_path_buf();
+
+            tokio::spawn(async move {
+                // Find the original worker and send feedback
+                if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path)
+                    && let Ok(Some(task)) = ts.get_task(&task_id)
+                    && let Some(ref worker_id) = task.worker_id
+                {
+                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(work_dir);
+                    let msg = format!(
+                        "Review requested changes. Please address the feedback and push again:\n\n{feedback}"
+                    );
+                    if let Err(e) = swarm.send_message(worker_id, &msg).await {
+                        tracing::warn!(
+                            "[workflow] failed to send rework feedback to worker {worker_id}: {e}"
+                        );
+                    } else {
+                        tracing::info!(
+                            "[workflow] sent rework feedback to worker {worker_id} for task {task_id}"
+                        );
+                    }
+                }
+            });
+        }
+    }
 }
 
 #[cfg(test)]

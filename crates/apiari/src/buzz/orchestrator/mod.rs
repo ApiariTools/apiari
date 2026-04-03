@@ -569,16 +569,22 @@ enum SignalKind {
 /// Classify a signal into a `SignalKind` based on source and external_id.
 fn signal_kind(signal: &SignalRecord) -> SignalKind {
     match signal.source.as_str() {
+        // New proper signal sources (Phase 3)
+        "swarm_worker_spawned" => SignalKind::WorkerSpawned,
         "swarm_worker_running" => SignalKind::WorkerRunning,
+        "swarm_worker_waiting" => SignalKind::WorkerWaiting,
+        "swarm_worker_closed" => SignalKind::WorkerClosed,
+        "swarm_pr_opened" => SignalKind::PrOpened,
         "swarm_branch_ready" => SignalKind::BranchReady,
         "swarm_review_verdict" => SignalKind::ReviewVerdict,
+        // GitHub signals
         "github_ci_pass" => SignalKind::CiPass,
         "github_ci_failure" => SignalKind::CiFailure,
         "github_bot_review" => SignalKind::BotReview,
         "github_merged_pr" => SignalKind::MergedPr,
         "github_pr_closed" => SignalKind::PrClosed,
+        // Backward compat: old "swarm" source with external_id disambiguation
         "swarm" => {
-            // Disambiguate generic "swarm" signals by external_id prefix
             if signal.external_id.starts_with("swarm-spawned-") {
                 SignalKind::WorkerSpawned
             } else if signal.external_id.starts_with("swarm-pr-") {
@@ -1071,6 +1077,29 @@ action = "Report the PR"
 
     #[test]
     fn test_signal_kind_classification() {
+        // New proper signal sources (Phase 3)
+        let s = make_signal("swarm_worker_spawned", "Worker spawned");
+        assert_eq!(signal_kind(&s), SignalKind::WorkerSpawned);
+
+        let s = make_signal("swarm_pr_opened", "PR opened");
+        assert_eq!(signal_kind(&s), SignalKind::PrOpened);
+
+        let s = make_signal("swarm_worker_running", "Worker running");
+        assert_eq!(signal_kind(&s), SignalKind::WorkerRunning);
+
+        let s = make_signal("swarm_worker_waiting", "Worker waiting");
+        assert_eq!(signal_kind(&s), SignalKind::WorkerWaiting);
+
+        let s = make_signal("swarm_worker_closed", "Worker closed");
+        assert_eq!(signal_kind(&s), SignalKind::WorkerClosed);
+
+        let s = make_signal("swarm_branch_ready", "Branch ready");
+        assert_eq!(signal_kind(&s), SignalKind::BranchReady);
+
+        let s = make_signal("swarm_review_verdict", "Review verdict");
+        assert_eq!(signal_kind(&s), SignalKind::ReviewVerdict);
+
+        // Backward compat: old "swarm" source with external_id disambiguation
         let mut s = make_signal("swarm", "Worker spawned");
         s.external_id = "swarm-spawned-abc".to_string();
         assert_eq!(signal_kind(&s), SignalKind::WorkerSpawned);
@@ -1079,9 +1108,7 @@ action = "Report the PR"
         s.external_id = "swarm-pr-abc".to_string();
         assert_eq!(signal_kind(&s), SignalKind::PrOpened);
 
-        let s = make_signal("swarm_branch_ready", "Branch ready");
-        assert_eq!(signal_kind(&s), SignalKind::BranchReady);
-
+        // GitHub signals
         let s = make_signal("github_merged_pr", "Merged");
         assert_eq!(signal_kind(&s), SignalKind::MergedPr);
 

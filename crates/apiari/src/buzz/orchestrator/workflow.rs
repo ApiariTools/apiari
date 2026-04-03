@@ -4,7 +4,11 @@
 //! The `branch_ready_action` config controls whether AI review is injected
 //! before PR creation or skipped entirely.
 
+use std::path::Path;
+
+use color_eyre::eyre::bail;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 /// What happens when a worker pushes a branch (BRANCH_READY signal).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +134,63 @@ impl WorkflowEngine {
     pub fn config(&self) -> &WorkflowConfig {
         &self.config
     }
+}
+
+/// Result of a system PR creation.
+#[derive(Debug, Clone)]
+pub struct PrCreationResult {
+    /// The URL of the created PR.
+    pub pr_url: String,
+    /// The PR number extracted from the URL.
+    pub pr_number: Option<i64>,
+}
+
+/// Create a PR via `gh pr create` as a system action.
+///
+/// The system (not the agent) creates PRs — this makes the workflow
+/// agent-agnostic (works with Claude, Codex, or any sandboxed agent).
+pub async fn create_system_pr(
+    work_dir: &Path,
+    branch_name: &str,
+    title: &str,
+    body: &str,
+) -> color_eyre::Result<PrCreationResult> {
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "pr",
+            "create",
+            "--head",
+            branch_name,
+            "--base",
+            "main",
+            "--title",
+            title,
+            "--body",
+            body,
+        ])
+        .current_dir(work_dir)
+        .output()
+        .await
+        .map_err(|e| color_eyre::eyre::eyre!("failed to run gh pr create: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("gh pr create failed: {stderr}");
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    info!("[workflow] system PR created: {stdout}");
+
+    // Extract PR number from URL (e.g. https://github.com/owner/repo/pull/123)
+    let pr_number = stdout
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse::<i64>().ok());
+
+    Ok(PrCreationResult {
+        pr_url: stdout,
+        pr_number,
+    })
 }
 
 #[cfg(test)]
