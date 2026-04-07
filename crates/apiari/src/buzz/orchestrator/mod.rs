@@ -10,6 +10,7 @@
 //! 2. Routes notifications to the correct tier (Silent/Badge/Chat)
 //! 3. Fires any matching orchestrator actions (coordinator follow-throughs)
 
+pub mod graph;
 pub mod notify;
 pub mod reconcile;
 pub mod workflow;
