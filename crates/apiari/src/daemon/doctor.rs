@@ -235,6 +235,7 @@ mod tests {
             capabilities: WorkspaceCapabilities::default(),
             telegram: None,
             coordinator: CoordinatorConfig::default(),
+            bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             orchestrator: Default::default(),

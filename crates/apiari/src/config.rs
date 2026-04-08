@@ -244,9 +244,15 @@ pub struct WorkspaceConfig {
     #[serde(default)]
     pub telegram: Option<TelegramConfig>,
 
-    /// Coordinator configuration.
+    /// Coordinator configuration (single-bee shorthand).
+    /// Ignored when `[[bees]]` is present.
     #[serde(default)]
     pub coordinator: CoordinatorConfig,
+
+    /// Multiple specialized Bees (coordinators) for this workspace.
+    /// When present, overrides `[coordinator]`.
+    #[serde(default)]
+    pub bees: Option<Vec<BeeConfig>>,
 
     /// Watcher configurations.
     #[serde(default)]
@@ -401,6 +407,58 @@ impl Default for CoordinatorConfig {
             max_session_turns: default_max_session_turns(),
             signal_hooks: default_signal_hooks(),
         }
+    }
+}
+
+/// Configuration for a single Bee (coordinator) in a multi-bee workspace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BeeConfig {
+    /// Display name for this Bee (e.g. "CodeBee", "CustomerBee").
+    pub name: String,
+    /// LLM provider: "claude", "codex", or "gemini".
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+    /// Custom prompt preamble for this Bee's specialty.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default = "default_max_session_turns")]
+    pub max_session_turns: u32,
+    /// Signal sources that trigger this Bee's follow-through.
+    #[serde(default)]
+    pub signal_hooks: Vec<SignalHookConfig>,
+    /// Telegram topic ID for this Bee (each Bee gets its own thread).
+    #[serde(default)]
+    pub topic_id: Option<i64>,
+}
+
+impl WorkspaceConfig {
+    /// Get the resolved list of Bees for this workspace.
+    ///
+    /// If `[[bees]]` is configured, returns those. Otherwise, converts the
+    /// single `[coordinator]` into a one-element vec for backward compatibility.
+    #[allow(dead_code)] // Used in Phase 2 (multi-bee daemon spawning)
+    pub fn resolved_bees(&self) -> Vec<BeeConfig> {
+        if let Some(ref bees) = self.bees
+            && !bees.is_empty()
+        {
+            return bees.clone();
+        }
+        // Convert single coordinator config to a BeeConfig
+        let c = &self.coordinator;
+        vec![BeeConfig {
+            name: c.name.clone(),
+            provider: c.provider.clone(),
+            model: c.model.clone(),
+            max_turns: c.max_turns,
+            prompt: c.prompt.clone(),
+            max_session_turns: c.max_session_turns,
+            signal_hooks: c.signal_hooks.clone(),
+            topic_id: self.telegram.as_ref().and_then(|tg| tg.topic_id),
+        }]
     }
 }
 
@@ -1280,6 +1338,7 @@ max_session_turns = 0
             capabilities: WorkspaceCapabilities::default(),
             telegram: None,
             coordinator: CoordinatorConfig::default(),
+            bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             orchestrator: Default::default(),
@@ -1308,6 +1367,7 @@ max_session_turns = 0
             capabilities: WorkspaceCapabilities::default(),
             telegram: None,
             coordinator: CoordinatorConfig::default(),
+            bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             orchestrator: Default::default(),
@@ -1340,6 +1400,7 @@ max_session_turns = 0
                 allowed_user_ids: vec![],
             }),
             coordinator: CoordinatorConfig::default(),
+            bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
             orchestrator: Default::default(),
@@ -1590,6 +1651,7 @@ max_session_turns = 0
             capabilities: WorkspaceCapabilities::default(),
             telegram: None,
             coordinator: CoordinatorConfig::default(),
+            bees: None,
             watchers: WatchersConfig {
                 github: Some(GithubWatcherConfig {
                     repos: gh_repos,
@@ -1852,6 +1914,85 @@ model = "gemini-2.0-flash"
 "#;
         let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.coordinator.provider, "gemini");
+    }
+
+    // -- resolved_bees tests --
+
+    #[test]
+    fn test_resolved_bees_single_coordinator() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+name = "Bee"
+model = "sonnet"
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        let bees = config.resolved_bees();
+        assert_eq!(bees.len(), 1);
+        assert_eq!(bees[0].name, "Bee");
+        assert_eq!(bees[0].model, "sonnet");
+        assert_eq!(bees[0].provider, "claude");
+    }
+
+    #[test]
+    fn test_resolved_bees_multi_bee() {
+        let toml_str = r#"
+root = "/tmp/test"
+
+[[bees]]
+name = "CodeBee"
+provider = "claude"
+model = "sonnet"
+
+[[bees]]
+name = "CustomerBee"
+provider = "gemini"
+model = "gemini-2.0-flash"
+topic_id = 456
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        let bees = config.resolved_bees();
+        assert_eq!(bees.len(), 2);
+        assert_eq!(bees[0].name, "CodeBee");
+        assert_eq!(bees[0].provider, "claude");
+        assert_eq!(bees[1].name, "CustomerBee");
+        assert_eq!(bees[1].provider, "gemini");
+        assert_eq!(bees[1].topic_id, Some(456));
+    }
+
+    #[test]
+    fn test_resolved_bees_overrides_coordinator() {
+        let toml_str = r#"
+root = "/tmp/test"
+[coordinator]
+name = "Ignored"
+model = "opus"
+
+[[bees]]
+name = "OnlyBee"
+model = "sonnet"
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        let bees = config.resolved_bees();
+        assert_eq!(bees.len(), 1);
+        assert_eq!(bees[0].name, "OnlyBee");
+        assert_eq!(bees[0].model, "sonnet");
+    }
+
+    #[test]
+    fn test_resolved_bees_inherits_telegram_topic() {
+        let toml_str = r#"
+root = "/tmp/test"
+[telegram]
+bot_token = "test"
+chat_id = 123
+topic_id = 789
+[coordinator]
+name = "Bee"
+"#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        let bees = config.resolved_bees();
+        assert_eq!(bees[0].topic_id, Some(789));
     }
 
     // -- MergePrsPolicy parsing tests --
