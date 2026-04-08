@@ -4,6 +4,8 @@
 //! shares Telegram connections by bot_token, and routes messages by (chat_id, topic_id).
 
 pub mod doctor;
+#[allow(dead_code)]
+pub mod http;
 pub mod morning_brief;
 pub mod socket;
 
@@ -36,7 +38,9 @@ use crate::{
             sentry::SentryWatcher, swarm::SwarmWatcher,
         },
     },
-    config::{self, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config},
+    config::{
+        self, BeeConfig, Workspace, WorkspaceConfig, db_path, log_path, pid_path, to_buzz_config,
+    },
     git_safety::GitSafetyHooks,
 };
 
@@ -56,26 +60,31 @@ const IDLE_NUDGE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs
 /// Minimum time between consecutive nudges (30 minutes).
 const IDLE_NUDGE_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
+struct BeeSlot {
+    name: String,
+    coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
+    coord_handle: Option<tokio::task::JoinHandle<()>>,
+    max_session_turns: u32,
+    coord_respawn_count: u32,
+    coord_last_respawn: Option<std::time::Instant>,
+    last_user_input: Option<std::time::Instant>,
+    last_nudge: Option<std::time::Instant>,
+}
+
 /// A workspace slot in the daemon — holds per-workspace state.
 struct WorkspaceSlot {
     name: String,
     config: WorkspaceConfig,
     registry: WatcherRegistry,
-    coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
-    coord_handle: Option<tokio::task::JoinHandle<()>>,
+    bees: Vec<BeeSlot>,
+    bee_map: HashMap<String, usize>,
     store: SignalStore,
     orchestrator: Orchestrator,
     morning_brief: Option<morning_brief::MorningBriefScheduler>,
     /// DB path for reopening SignalStore on coordinator respawn.
     db_path: std::path::PathBuf,
-    max_session_turns: u32,
-    /// Respawn backoff: number of consecutive respawns and when the last one happened.
-    coord_respawn_count: u32,
-    coord_last_respawn: Option<std::time::Instant>,
-    /// When the user last sent a message (TUI or Telegram).
-    last_user_input: Option<std::time::Instant>,
-    /// When we last sent an idle nudge.
-    last_nudge: Option<std::time::Instant>,
+    /// Broadcast sender for web UI WebSocket updates.
+    web_updates_tx: Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
 }
 
 /// Key for routing Telegram messages to workspaces.
@@ -96,6 +105,7 @@ enum CoordinatorJob {
         channel: TelegramChannel,
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         slot_name: String,
+        bee_name: String,
     },
     /// Handle a TUI chat message with streaming tokens.
     TuiChat {
@@ -103,6 +113,7 @@ enum CoordinatorJob {
         responder: mpsc::UnboundedSender<socket::DaemonResponse>,
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
         ws_name: String,
+        bee_name: String,
     },
     /// Reset the coordinator session.
     ResetSession,
@@ -158,6 +169,16 @@ fn get_channel<'a>(
         .and_then(|tg| channels.get(&tg.bot_token))
 }
 
+fn conversation_scope(ws_name: &str, bee_name: &str) -> String {
+    format!("{ws_name}/{bee_name}")
+}
+
+fn bee_matches_signal_source(bee: &BeeConfig, source: &str) -> bool {
+    bee.signal_hooks
+        .iter()
+        .any(|hook| source == hook.source || source.starts_with(&format!("{}_", hook.source)))
+}
+
 /// Per-workspace coordinator task — processes jobs serially to preserve session ordering.
 async fn run_coordinator_task(
     mut coordinator: Coordinator,
@@ -178,6 +199,7 @@ async fn run_coordinator_task(
                 channel,
                 socket_server,
                 slot_name,
+                bee_name,
             } => {
                 channel.send_reaction(chat_id, message_id, "👀").await;
 
@@ -246,7 +268,8 @@ async fn run_coordinator_task(
 
                 // Persist messages to DB (scoped to drop before await)
                 {
-                    let conv = ConversationStore::new(store.conn(), store.workspace());
+                    let conv_scope = conversation_scope(&slot_name, &bee_name);
+                    let conv = ConversationStore::new(store.conn(), &conv_scope);
                     if let Err(e) = conv.save_message("user", &text, Some("telegram"), None, None) {
                         warn!("[{slot_name}] failed to save user message: {e}");
                     }
@@ -351,6 +374,7 @@ async fn run_coordinator_task(
                 responder,
                 socket_server,
                 ws_name,
+                bee_name,
             } => {
                 let bundle = match coordinator.prepare_dispatch(&store) {
                     Ok(b) => b,
@@ -419,7 +443,8 @@ async fn run_coordinator_task(
 
                 // Persist messages to DB (scoped to drop before any further borrows)
                 {
-                    let conv = ConversationStore::new(store.conn(), store.workspace());
+                    let conv_scope = conversation_scope(&ws_name, &bee_name);
+                    let conv = ConversationStore::new(store.conn(), &conv_scope);
                     if let Err(e) = conv.save_message("user", &text, Some("tui"), None, None) {
                         warn!("[{ws_name}] failed to save user message: {e}");
                     }
@@ -969,8 +994,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
     // Build workspace slots
     let mut slots: Vec<WorkspaceSlot> = Vec::new();
-    // Route (chat_id, topic_id) → workspace index
-    let mut route_map: HashMap<RouteKey, usize> = HashMap::new();
+    // Route (chat_id, topic_id) → (workspace index, bee index)
+    let mut route_map: HashMap<RouteKey, (usize, usize)> = HashMap::new();
     // Workspace name → slot index
     let mut name_map: HashMap<String, usize> = HashMap::new();
 
@@ -1220,36 +1245,83 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             );
         }
 
-        let mut coordinator = build_coordinator(&ws.name, &ws.config);
+        let bees = ws.config.resolved_bees();
+        let mut bee_slots = Vec::with_capacity(bees.len());
+        let mut bee_map = HashMap::with_capacity(bees.len());
+        let slot_idx = slots.len();
 
-        // Build route key
         if let Some(tg) = &ws.config.telegram {
-            let key = RouteKey {
-                chat_id: tg.chat_id,
-                topic_id: tg.topic_id,
-            };
-            route_map.insert(key, slots.len());
+            route_map.insert(
+                RouteKey {
+                    chat_id: tg.chat_id,
+                    topic_id: tg.topic_id,
+                },
+                (slot_idx, 0),
+            );
         }
 
-        let orchestrator = Orchestrator::new(&ws.config.orchestrator);
+        for (bee_idx, bee) in bees.iter().enumerate() {
+            let mut coordinator = build_bee_coordinator(&ws.name, bee, &ws.config);
 
-        // Restore session from DB if available
-        restore_coordinator_session(&mut coordinator, &store, &ws.name);
+            if let Some(tg) = &ws.config.telegram
+                && let Some(topic_id) = bee.topic_id
+            {
+                route_map.insert(
+                    RouteKey {
+                        chat_id: tg.chat_id,
+                        topic_id: Some(topic_id),
+                    },
+                    (slot_idx, bee_idx),
+                );
+            }
 
-        // Spawn dedicated coordinator task for this workspace
-        let coord_store = match SignalStore::open(&db, &ws.name) {
-            Ok(s) => s,
-            Err(e) => return ExitReason::Error(e),
-        };
-        let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
-        let max_session_turns = ws.config.coordinator.max_session_turns;
-        let coord_handle = tokio::spawn(run_coordinator_task(
-            coordinator,
-            coord_store,
-            coord_rx,
-            max_session_turns,
-            ws.config.authority,
-        ));
+            restore_coordinator_session(&mut coordinator, &store, &ws.name, &bee.name);
+
+            let coord_store = match SignalStore::open(&db, &ws.name) {
+                Ok(s) => s,
+                Err(e) => return ExitReason::Error(e),
+            };
+            let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
+            let coord_handle = tokio::spawn(run_coordinator_task(
+                coordinator,
+                coord_store,
+                coord_rx,
+                bee.max_session_turns,
+                ws.config.authority,
+            ));
+
+            bee_map.insert(bee.name.clone(), bee_idx);
+            bee_slots.push(BeeSlot {
+                name: bee.name.clone(),
+                coord_tx,
+                coord_handle: Some(coord_handle),
+                max_session_turns: bee.max_session_turns,
+                coord_respawn_count: 0,
+                coord_last_respawn: None,
+                last_user_input: None,
+                last_nudge: None,
+            });
+        }
+
+        // Load workflow graph from workspace, falling back to builtin
+        let workflow_yaml_path = ws.config.root.join(".apiari/workflow.yaml");
+        let workflow_graph =
+            crate::buzz::orchestrator::graph::builtin::load_workflow(Some(&workflow_yaml_path))
+                .unwrap_or_else(|e| {
+                    warn!(
+                        "[{}] failed to load workflow.yaml: {e}, using builtin",
+                        ws.name
+                    );
+                    crate::buzz::orchestrator::graph::builtin::builtin_workflow()
+                });
+        info!(
+            "[{}] workflow graph '{}' loaded ({} nodes, {} edges)",
+            ws.name,
+            workflow_graph.name,
+            workflow_graph.nodes.len(),
+            workflow_graph.edges.len(),
+        );
+        let orchestrator = Orchestrator::with_graph(&ws.config.orchestrator, workflow_graph);
 
         // Morning brief scheduler
         let morning_brief_scheduler = ws
@@ -1279,17 +1351,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             name: ws.name.clone(),
             config: ws.config.clone(),
             registry,
-            coord_tx,
-            coord_handle: Some(coord_handle),
+            bees: bee_slots,
+            bee_map,
             store,
             orchestrator,
             morning_brief: morning_brief_scheduler,
             db_path: db.clone(),
-            max_session_turns,
-            coord_respawn_count: 0,
-            coord_last_respawn: None,
-            last_user_input: None,
-            last_nudge: None,
+            web_updates_tx: None,
         });
     }
 
@@ -1332,6 +1400,36 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             (None, None)
         }
     };
+
+    // Start web UI HTTP server (port 7422) for the first workspace.
+    // The web UI shows the workflow graph and live task state.
+    let mut web_signal_rx: Option<mpsc::UnboundedReceiver<http::InjectSignal>> = None;
+    if let Some(first_slot) = slots.first() {
+        let graph = first_slot.orchestrator.workflow_graph().clone();
+        let yaml_path = first_slot.config.root.join(".apiari/workflow.yaml");
+        match http::start_http_server(
+            graph,
+            Some(yaml_path),
+            first_slot.db_path.clone(),
+            first_slot.name.clone(),
+            7422,
+        )
+        .await
+        {
+            Ok((updates_tx, signal_rx)) => {
+                // Store the broadcast sender on the slot so signal processing can push updates
+                // (we'll set it on the mutable slot below)
+                if let Some(slot) = slots.first_mut() {
+                    slot.web_updates_tx = Some(updates_tx);
+                }
+                web_signal_rx = Some(signal_rx);
+                info!("[daemon] web UI server started on http://127.0.0.1:7422");
+            }
+            Err(e) => {
+                warn!("[daemon] failed to start web UI server: {e}");
+            }
+        }
+    }
 
     // Deduplicate Telegram connections by bot_token
     let (tx, mut rx) = mpsc::channel::<ChannelEvent>(64);
@@ -1467,6 +1565,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             }
         };
 
+        // Helper: recv from web signal injection, else pend forever
+        let web_recv = async {
+            match web_signal_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutting down");
@@ -1475,84 +1581,137 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 return ExitReason::Shutdown;
             }
 
+            // ── Web UI signal injection ──
+            Some(sig) = web_recv => {
+                if let Some(slot) = slots.first_mut() {
+                    let now = chrono::Utc::now();
+                    let signal = crate::buzz::signal::SignalRecord {
+                        id: now.timestamp_millis(),
+                        source: sig.source.clone(),
+                        external_id: format!("web-{}", now.timestamp_millis()),
+                        title: sig.title.clone(),
+                        body: None,
+                        severity: crate::buzz::signal::Severity::Info,
+                        status: crate::buzz::signal::SignalStatus::Open,
+                        url: None,
+                        created_at: now,
+                        updated_at: now,
+                        resolved_at: None,
+                        metadata: sig.metadata.map(|m| m.to_string()),
+                        snoozed_until: None,
+                    };
+                    if let Ok(task_store) = crate::buzz::task::store::TaskStore::open(&slot.db_path) {
+                        match slot.orchestrator.process_signal(&task_store, &slot.name, &signal) {
+                            Ok(result) => {
+                                info!(
+                                    "[web] processed injected signal '{}': transitioned={}",
+                                    sig.source, result.engine_result.transitioned,
+                                );
+                                // Broadcast to web UI clients
+                                if let Some(ref tx) = slot.web_updates_tx {
+                                    if let Some(task) = &result.engine_result.task {
+                                        let _ = tx.send(http::WsUpdate::TaskUpdated {
+                                            task: http::task_to_view(task),
+                                        });
+                                    }
+                                    let _ = tx.send(http::WsUpdate::SignalProcessed {
+                                        source: sig.source,
+                                        title: sig.title,
+                                    });
+                                }
+                            }
+                            Err(e) => warn!("[web] failed to process signal: {e}"),
+                        }
+                    }
+                }
+            }
+
             _ = poll_timer.tick() => {
                 // ── Coordinator health check (before watchers so hook dispatches don't get dropped) ──
                 for slot in &mut slots {
-                    // Handle is None when awaiting backoff after a previous death
-                    let needs_respawn = match &slot.coord_handle {
-                        Some(h) => h.is_finished(),
-                        None => true,
-                    };
-                    if !needs_respawn {
-                        continue;
-                    }
-
-                    // Await the finished handle to extract panic info (only if present)
-                    if let Some(old_handle) = slot.coord_handle.take() {
-                        match old_handle.await {
-                            Ok(()) => {
-                                warn!("[{}] coordinator task exited unexpectedly", slot.name);
-                            }
-                            Err(e) if e.is_panic() => {
-                                let payload = e.into_panic();
-                                let msg = payload
-                                    .downcast_ref::<&str>()
-                                    .map(|s| s.to_string())
-                                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                                    .unwrap_or_else(|| "(non-string panic)".to_string());
-                                error!("[{}] coordinator task panicked: {msg}", slot.name);
-                            }
-                            Err(e) => {
-                                error!("[{}] coordinator task cancelled: {e}", slot.name);
-                            }
-                        }
-                    }
-
-                    // Backoff: if respawned recently, require exponential cooldown (15s, 30s, 60s, 120s, …)
-                    // Reset counter after 5 minutes of stability.
-                    if let Some(last) = slot.coord_last_respawn
-                        && last.elapsed() > std::time::Duration::from_secs(300)
-                    {
-                        slot.coord_respawn_count = 0;
-                    }
-                    let backoff_secs = 15u64.saturating_mul(1u64 << slot.coord_respawn_count.min(4));
-                    if let Some(last) = slot.coord_last_respawn
-                        && last.elapsed() < std::time::Duration::from_secs(backoff_secs)
-                    {
-                        warn!(
-                            "[{}] coordinator respawn backoff ({backoff_secs}s) — skipping this tick",
-                            slot.name
-                        );
-                        continue;
-                    }
-
-                    let mut coordinator = build_coordinator(&slot.name, &slot.config);
-
-                    let coord_store = match SignalStore::open(&slot.db_path, &slot.name) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("[{}] failed to reopen SignalStore for respawn: {e}", slot.name);
+                    let resolved_bees = slot.config.resolved_bees();
+                    for bee in &mut slot.bees {
+                        let needs_respawn = match &bee.coord_handle {
+                            Some(h) => h.is_finished(),
+                            None => true,
+                        };
+                        if !needs_respawn {
                             continue;
                         }
-                    };
 
-                    restore_coordinator_session(&mut coordinator, &coord_store, &slot.name);
+                        if let Some(old_handle) = bee.coord_handle.take() {
+                            match old_handle.await {
+                                Ok(()) => {
+                                    warn!("[{}/{}] coordinator task exited unexpectedly", slot.name, bee.name);
+                                }
+                                Err(e) if e.is_panic() => {
+                                    let payload = e.into_panic();
+                                    let msg = payload
+                                        .downcast_ref::<&str>()
+                                        .map(|s| s.to_string())
+                                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                                        .unwrap_or_else(|| "(non-string panic)".to_string());
+                                    error!("[{}/{}] coordinator task panicked: {msg}", slot.name, bee.name);
+                                }
+                                Err(e) => {
+                                    error!("[{}/{}] coordinator task cancelled: {e}", slot.name, bee.name);
+                                }
+                            }
+                        }
 
-                    let (new_tx, new_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
-                    slot.coord_tx = new_tx;
-                    slot.coord_handle = Some(tokio::spawn(run_coordinator_task(
-                        coordinator,
-                        coord_store,
-                        new_rx,
-                        slot.max_session_turns,
-                        slot.config.authority,
-                    )));
-                    slot.coord_respawn_count += 1;
-                    slot.coord_last_respawn = Some(std::time::Instant::now());
-                    info!(
-                        "[{}] coordinator task respawned (attempt {})",
-                        slot.name, slot.coord_respawn_count
-                    );
+                        if let Some(last) = bee.coord_last_respawn
+                            && last.elapsed() > std::time::Duration::from_secs(300)
+                        {
+                            bee.coord_respawn_count = 0;
+                        }
+                        let backoff_secs =
+                            15u64.saturating_mul(1u64 << bee.coord_respawn_count.min(4));
+                        if let Some(last) = bee.coord_last_respawn
+                            && last.elapsed() < std::time::Duration::from_secs(backoff_secs)
+                        {
+                            warn!(
+                                "[{}/{}] coordinator respawn backoff ({backoff_secs}s) — skipping this tick",
+                                slot.name, bee.name
+                            );
+                            continue;
+                        }
+
+                        let Some(bee_config) = resolved_bees.iter().find(|cfg| cfg.name == bee.name) else {
+                            error!("[{}/{}] missing bee config during respawn", slot.name, bee.name);
+                            continue;
+                        };
+                        let mut coordinator =
+                            build_bee_coordinator(&slot.name, bee_config, &slot.config);
+
+                        let coord_store = match SignalStore::open(&slot.db_path, &slot.name) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                error!(
+                                    "[{}/{}] failed to reopen SignalStore for respawn: {e}",
+                                    slot.name, bee.name
+                                );
+                                continue;
+                            }
+                        };
+
+                        restore_coordinator_session(&mut coordinator, &coord_store, &slot.name, &bee.name);
+
+                        let (new_tx, new_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
+                        bee.coord_tx = new_tx;
+                        bee.coord_handle = Some(tokio::spawn(run_coordinator_task(
+                            coordinator,
+                            coord_store,
+                            new_rx,
+                            bee.max_session_turns,
+                            slot.config.authority,
+                        )));
+                        bee.coord_respawn_count += 1;
+                        bee.coord_last_respawn = Some(std::time::Instant::now());
+                        info!(
+                            "[{}/{}] coordinator task respawned (attempt {})",
+                            slot.name, bee.name, bee.coord_respawn_count
+                        );
+                    }
                 }
 
                 for slot in &mut slots {
@@ -1565,7 +1724,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             && let Some(channel) = telegram_channels.get(&tg.bot_token)
                         {
                             let params = morning_brief::BriefParams {
-                                model: slot.config.coordinator.model.clone(),
+                                model: slot.config.resolved_bees()[0].model.clone(),
                                 signals: slot.store.get_open_signals().unwrap_or_default(),
                                 swarm_state_path: slot.config.watchers.swarm.as_ref()
                                     .map(|s| s.state_path.clone()),
@@ -1682,6 +1841,18 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                     notification,
                                                                 );
                                                             }
+                                                        }
+                                                        // Broadcast to web UI clients
+                                                        if let Some(ref web_tx) = slot.web_updates_tx {
+                                                            if let Some(ref task) = engine_result.task {
+                                                                let _ = web_tx.send(http::WsUpdate::TaskUpdated {
+                                                                    task: http::task_to_view(task),
+                                                                });
+                                                            }
+                                                            let _ = web_tx.send(http::WsUpdate::SignalProcessed {
+                                                                source: record.source.clone(),
+                                                                title: record.title.clone(),
+                                                            });
                                                         }
                                                         // Log activity events for signal match and stage change.
                                                         if let Some(ref task) = engine_result.task
@@ -2504,7 +2675,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 (ch.clone(), tg.chat_id, tg.topic_id)
                             })
                         });
-                        let _ = slot.coord_tx.send(CoordinatorJob::SignalFollowThrough {
+                        let resolved_bees = slot.config.resolved_bees();
+                        let bee_idx = resolved_bees
+                            .iter()
+                            .position(|bee| bee_matches_signal_source(bee, &source))
+                            .unwrap_or(0);
+                        let _ = slot.bees[bee_idx].coord_tx.send(CoordinatorJob::SignalFollowThrough {
                             signals,
                             source,
                             prompt_override: None,
@@ -2526,7 +2702,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             // ── TUI socket requests ──
             Some(client_req) = tui_recv => {
                 match client_req.request {
-                    socket::DaemonRequest::Chat { ref workspace, ref text } => {
+                    socket::DaemonRequest::Chat { ref workspace, ref text, ref bee } => {
                         let ws_name = workspace.clone();
                         let user_text = text.clone();
 
@@ -2534,8 +2710,22 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             let slot = &mut slots[idx];
                             info!("[{}] TUI chat: {user_text}", slot.name);
 
-                            slot.last_user_input = Some(std::time::Instant::now());
-                            slot.last_nudge = None;
+                            let bee_idx = match bee {
+                                Some(bee_name) => match slot.bee_map.get(bee_name).copied() {
+                                    Some(idx) => idx,
+                                    None => {
+                                        let _ = client_req.responder.send(socket::DaemonResponse::Error {
+                                            workspace: ws_name.clone(),
+                                            text: format!("bee '{bee_name}' not found in workspace '{ws_name}'"),
+                                        });
+                                        continue;
+                                    }
+                                },
+                                None => 0,
+                            };
+
+                            slot.bees[bee_idx].last_user_input = Some(std::time::Instant::now());
+                            slot.bees[bee_idx].last_nudge = None;
 
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("tui", &ws_name, "user_message", &user_text);
@@ -2563,7 +2753,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let job = CoordinatorJob::InjectContext {
                                             text: context,
                                         };
-                                        if slot.coord_tx.send(job).is_err() {
+                                        if slot.bees[0].coord_tx.send(job).is_err() {
                                             warn!("[{ws_name}] failed to inject command context: coordinator task shut down");
                                         }
                                     }
@@ -2578,8 +2768,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 responder: client_req.responder.clone(),
                                 socket_server: socket_server.clone(),
                                 ws_name,
+                                bee_name: slot.bees[bee_idx].name.clone(),
                             };
-                            if slot.coord_tx.send(job).is_err() {
+                            if slot.bees[bee_idx].coord_tx.send(job).is_err() {
                                 let _ = client_req.responder.send(socket::DaemonResponse::Error {
                                     workspace: ws_name_for_err,
                                     text: "coordinator task shut down".to_string(),
@@ -2599,15 +2790,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 match event {
                     ChannelEvent::Message { chat_id, user_name, text, topic_id, message_id, .. } => {
                         let key = RouteKey { chat_id, topic_id };
-                        let slot_idx = route_map.get(&key).copied()
+                        let route = route_map.get(&key).copied()
                             .or_else(|| route_map.get(&RouteKey { chat_id, topic_id: None }).copied());
 
-                        if let Some(idx) = slot_idx {
-                            let slot = &mut slots[idx];
+                        if let Some((slot_idx, bee_idx)) = route {
+                            let slot = &mut slots[slot_idx];
                             info!("[{}] message from {user_name}: {text}", slot.name);
 
-                            slot.last_user_input = Some(std::time::Instant::now());
-                            slot.last_nudge = None;
+                            slot.bees[bee_idx].last_user_input = Some(std::time::Instant::now());
+                            slot.bees[bee_idx].last_nudge = None;
 
                             if let Some(ref server) = socket_server {
                                 server.broadcast_activity("telegram", &slot.name, "user_message", &text);
@@ -2622,8 +2813,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     channel: channel.clone(),
                                     socket_server: socket_server.clone(),
                                     slot_name: slot.name.clone(),
+                                    bee_name: slot.bees[bee_idx].name.clone(),
                                 };
-                                if let Err(e) = slot.coord_tx.send(job) {
+                                if let Err(e) = slot.bees[bee_idx].coord_tx.send(job) {
                                     error!("[{}] coordinator job send failed: {e}", slot.name);
                                 }
                             }
@@ -2634,15 +2826,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
                     ChannelEvent::Command { chat_id, command, args, topic_id, .. } => {
                         let key = RouteKey { chat_id, topic_id };
-                        let slot_idx = route_map.get(&key).copied()
+                        let route = route_map.get(&key).copied()
                             .or_else(|| route_map.get(&RouteKey { chat_id, topic_id: None }).copied());
 
-                        if let Some(idx) = slot_idx {
-                            let slot = &mut slots[idx];
+                        if let Some((slot_idx, bee_idx)) = route {
+                            let slot = &mut slots[slot_idx];
                             info!("[{}] command: /{command}", slot.name);
 
-                            slot.last_user_input = Some(std::time::Instant::now());
-                            slot.last_nudge = None;
+                            slot.bees[bee_idx].last_user_input = Some(std::time::Instant::now());
+                            slot.bees[bee_idx].last_nudge = None;
 
                             // Broadcast command to TUI
                             if let Some(ref server) = socket_server {
@@ -2665,7 +2857,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&msg).await;
                                     }
                                     "reset" => {
-                                        let _ = slot.coord_tx.send(CoordinatorJob::ResetSession);
+                                        let _ = slot.bees[bee_idx].coord_tx.send(CoordinatorJob::ResetSession);
                                         if let Some(ref server) = socket_server {
                                             server.broadcast_activity("telegram", &slot.name, "assistant_message", "Session reset.");
                                         }
@@ -2678,7 +2870,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         let _ = channel.send_message(&msg).await;
                                     }
                                     "clear" => {
-                                        if slot.coord_tx.send(CoordinatorJob::Clear {
+                                        if slot.bees[bee_idx].coord_tx.send(CoordinatorJob::Clear {
                                             telegram: Some((channel.clone(), chat_id, topic_id)),
                                             tui_responder: None,
                                             socket_server: socket_server.clone(),
@@ -2694,7 +2886,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         }
                                     }
                                     "compact" => {
-                                        if slot.coord_tx.send(CoordinatorJob::Compact {
+                                        if slot.bees[bee_idx].coord_tx.send(CoordinatorJob::Compact {
                                             telegram: Some((channel.clone(), chat_id, topic_id)),
                                             tui_responder: None,
                                             socket_server: socket_server.clone(),
@@ -2740,7 +2932,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                         channel.send_typing(chat_id, topic_id).await;
 
                                         let params = morning_brief::BriefParams {
-                                            model: slot.config.coordinator.model.clone(),
+                                            model: slot.config.resolved_bees()[0].model.clone(),
                                             signals: slot.store.get_open_signals().unwrap_or_default(),
                                             swarm_state_path: slot.config.watchers.swarm.as_ref()
                                                 .map(|s| s.state_path.clone()),
@@ -2880,63 +3072,61 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 }
 
                 for slot in &mut slots {
-                    let last_input = match slot.last_user_input {
-                        Some(t) => t,
-                        None => continue, // user hasn't chatted yet
-                    };
-
-                    if last_input.elapsed() < IDLE_NUDGE_THRESHOLD {
-                        continue; // user is still active
-                    }
-
-                    if let Some(last) = slot.last_nudge
-                        && last.elapsed() < IDLE_NUDGE_COOLDOWN
-                    {
-                        continue; // already nudged recently
-                    }
-
-                    // Mark nudge attempt now to avoid repeated expensive checks
-                    // even when there's nothing to report.
-                    slot.last_nudge = Some(std::time::Instant::now());
-
-                    // Offload the nudge check to a spawned task so it doesn't
-                    // block the main event loop.
-                    let ws_name = slot.name.clone();
-                    let swarm_state_path = slot
-                        .config
-                        .watchers
-                        .swarm
-                        .as_ref()
-                        .map(|s| s.state_path.clone());
-                    let repos = slot.config.repos.clone();
-                    let server = socket_server.clone();
-
-                    tokio::spawn(async move {
-                        let nudge = tokio::time::timeout(
-                            std::time::Duration::from_secs(30),
-                            build_idle_nudge_detached(&swarm_state_path, &repos),
-                        )
-                        .await;
-
-                        let text = match nudge {
-                            Ok(Some(t)) => t,
-                            Ok(None) => return,
-                            Err(_) => {
-                                warn!("[{ws_name}] idle nudge check timed out");
-                                return;
-                            }
+                    for bee in &mut slot.bees {
+                        let last_input = match bee.last_user_input {
+                            Some(t) => t,
+                            None => continue,
                         };
 
-                        info!("[{ws_name}] sending idle nudge");
-                        if let Some(ref server) = server {
-                            server.broadcast_activity(
-                                "system",
-                                &ws_name,
-                                "assistant_message",
-                                &text,
-                            );
+                        if last_input.elapsed() < IDLE_NUDGE_THRESHOLD {
+                            continue;
                         }
-                    });
+
+                        if let Some(last) = bee.last_nudge
+                            && last.elapsed() < IDLE_NUDGE_COOLDOWN
+                        {
+                            continue;
+                        }
+
+                        bee.last_nudge = Some(std::time::Instant::now());
+
+                        let ws_name = slot.name.clone();
+                        let swarm_state_path = slot
+                            .config
+                            .watchers
+                            .swarm
+                            .as_ref()
+                            .map(|s| s.state_path.clone());
+                        let repos = slot.config.repos.clone();
+                        let server = socket_server.clone();
+
+                        tokio::spawn(async move {
+                            let nudge = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                build_idle_nudge_detached(&swarm_state_path, &repos),
+                            )
+                            .await;
+
+                            let text = match nudge {
+                                Ok(Some(t)) => t,
+                                Ok(None) => return,
+                                Err(_) => {
+                                    warn!("[{ws_name}] idle nudge check timed out");
+                                    return;
+                                }
+                            };
+
+                            info!("[{ws_name}] sending idle nudge");
+                            if let Some(ref server) = server {
+                                server.broadcast_activity(
+                                    "system",
+                                    &ws_name,
+                                    "assistant_message",
+                                    &text,
+                                );
+                            }
+                        });
+                    }
                 }
             }
             _ = prune_timer.tick() => {
@@ -3290,36 +3480,42 @@ fn ensure_apiari_scaffold(workspace_root: &std::path::Path, ws_name: &str) {
     }
 }
 
-/// Build a fresh Coordinator for a workspace (used at startup and on respawn).
-fn build_coordinator(ws_name: &str, config: &WorkspaceConfig) -> Coordinator {
-    ensure_apiari_scaffold(&config.root, ws_name);
+/// Build a fresh Coordinator for a bee (used at startup and on respawn).
+fn build_bee_coordinator(
+    ws_name: &str,
+    bee: &BeeConfig,
+    ws_config: &WorkspaceConfig,
+) -> Coordinator {
+    ensure_apiari_scaffold(&ws_config.root, ws_name);
 
-    let provider = &config.coordinator.provider;
+    let provider = &bee.provider;
     if !matches!(provider.as_str(), "claude" | "codex" | "gemini") {
         warn!("[{ws_name}] unknown coordinator provider \"{provider}\" — falling back to claude");
     }
 
-    let mut coordinator = Coordinator::new(&config.coordinator.model, config.coordinator.max_turns);
-    coordinator.set_provider(config.coordinator.provider.clone());
-    coordinator.set_name(config.coordinator.name.clone());
-    let skill_ctx = build_skill_context(ws_name, config);
+    let mut coordinator = Coordinator::new(&bee.model, bee.max_turns);
+    coordinator.set_provider(bee.provider.clone());
+    coordinator.set_name(bee.name.clone());
+    let skill_ctx = build_skill_context(ws_name, ws_config);
     coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
-    if let Some(ref preamble) = skill_ctx.prompt_preamble {
+    if let Some(ref prompt) = bee.prompt {
+        coordinator.set_prompt_preamble(prompt.clone());
+    } else if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
     }
-    let (allowed, disallowed) = tools_for_authority(config.authority);
+    let (allowed, disallowed) = tools_for_authority(ws_config.authority);
     info!(
         "[{ws_name}] coordinator authority={:?} allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}",
-        config.authority
+        ws_config.authority
     );
     coordinator.set_tools(allowed);
     coordinator.set_disallowed_tools(disallowed);
-    coordinator.set_working_dir(config.root.clone());
+    coordinator.set_working_dir(ws_config.root.clone());
     if let Some(settings) = config::coordinator_settings_json() {
         coordinator.set_settings(settings);
     }
     coordinator.set_safety_hooks(Box::new(GitSafetyHooks {
-        workspace_root: config.root.clone(),
+        workspace_root: ws_config.root.clone(),
     }));
     coordinator
 }
@@ -3339,25 +3535,31 @@ fn tools_for_authority(authority: crate::config::WorkspaceAuthority) -> (Vec<Str
 }
 
 /// Try to restore the last coordinator session from the database.
-fn restore_coordinator_session(coordinator: &mut Coordinator, store: &SignalStore, ws_name: &str) {
-    let conv = ConversationStore::new(store.conn(), ws_name);
+fn restore_coordinator_session(
+    coordinator: &mut Coordinator,
+    store: &SignalStore,
+    ws_name: &str,
+    bee_name: &str,
+) {
+    let scope = conversation_scope(ws_name, bee_name);
+    let conv = ConversationStore::new(store.conn(), &scope);
     match conv.last_session() {
         Ok(Some(token)) if token.provider == coordinator.provider() => {
-            info!("[{ws_name}] restoring session from DB");
+            info!("[{ws_name}/{bee_name}] restoring session from DB");
             coordinator.restore_session(token);
         }
         Ok(Some(token)) => {
             info!(
-                "[{ws_name}] skipping session restore: provider mismatch (db={}, current={})",
+                "[{ws_name}/{bee_name}] skipping session restore: provider mismatch (db={}, current={})",
                 token.provider,
                 coordinator.provider()
             );
         }
         Ok(None) => {
-            info!("[{ws_name}] no previous session to restore");
+            info!("[{ws_name}/{bee_name}] no previous session to restore");
         }
         Err(e) => {
-            warn!("[{ws_name}] failed to query last session: {e}");
+            warn!("[{ws_name}/{bee_name}] failed to query last session: {e}");
         }
     }
 }
@@ -3412,12 +3614,12 @@ async fn handle_tui_command(
             (true, None)
         }
         "reset" => {
-            let _ = slot.coord_tx.send(CoordinatorJob::ResetSession);
+            let _ = slot.bees[0].coord_tx.send(CoordinatorJob::ResetSession);
             reply(responder, socket_server, &slot.name, "Session reset.");
             (true, None)
         }
         "clear" => {
-            if slot
+            if slot.bees[0]
                 .coord_tx
                 .send(CoordinatorJob::Clear {
                     telegram: None,
@@ -3437,7 +3639,7 @@ async fn handle_tui_command(
             (true, None)
         }
         "compact" => {
-            if slot
+            if slot.bees[0]
                 .coord_tx
                 .send(CoordinatorJob::Compact {
                     telegram: None,
@@ -3465,7 +3667,7 @@ async fn handle_tui_command(
             if let Some(channel) = channel {
                 if let Some(tg) = &slot.config.telegram {
                     let params = morning_brief::BriefParams {
-                        model: slot.config.coordinator.model.clone(),
+                        model: slot.config.resolved_bees()[0].model.clone(),
                         signals: slot.store.get_open_signals().unwrap_or_default(),
                         swarm_state_path: slot
                             .config

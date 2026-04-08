@@ -25,7 +25,12 @@ use tracing::{error, info, warn};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonRequest {
-    Chat { workspace: String, text: String },
+    Chat {
+        workspace: String,
+        text: String,
+        #[serde(default)]
+        bee: Option<String>,
+    },
 }
 
 /// Daemon → TUI response.
@@ -323,14 +328,37 @@ mod tests {
         let req = DaemonRequest::Chat {
             workspace: "apiari".into(),
             text: "hello".into(),
+            bee: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"type\":\"chat\""));
         let parsed: DaemonRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            DaemonRequest::Chat { workspace, text } => {
+            DaemonRequest::Chat {
+                workspace,
+                text,
+                bee,
+            } => {
                 assert_eq!(workspace, "apiari");
                 assert_eq!(text, "hello");
+                assert_eq!(bee, None);
+            }
+        }
+    }
+
+    #[test]
+    fn test_daemon_request_serde_with_bee() {
+        let json = r#"{"type":"chat","workspace":"apiari","text":"hello","bee":"ops"}"#;
+        let parsed: DaemonRequest = serde_json::from_str(json).unwrap();
+        match parsed {
+            DaemonRequest::Chat {
+                workspace,
+                text,
+                bee,
+            } => {
+                assert_eq!(workspace, "apiari");
+                assert_eq!(text, "hello");
+                assert_eq!(bee.as_deref(), Some("ops"));
             }
         }
     }
@@ -393,6 +421,7 @@ mod tests {
         let req = DaemonRequest::Chat {
             workspace: "test".into(),
             text: "hello".into(),
+            bee: None,
         };
         let mut json = serde_json::to_string(&req).unwrap();
         json.push('\n');
@@ -403,9 +432,14 @@ mod tests {
         // Read it from the request channel
         let client_req = req_rx.recv().await.unwrap();
         match &client_req.request {
-            DaemonRequest::Chat { workspace, text } => {
+            DaemonRequest::Chat {
+                workspace,
+                text,
+                bee,
+            } => {
                 assert_eq!(workspace, "test");
                 assert_eq!(text, "hello");
+                assert!(bee.is_none());
             }
         }
 

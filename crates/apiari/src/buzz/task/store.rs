@@ -281,6 +281,19 @@ impl TaskStore {
         Ok(tasks.pop())
     }
 
+    /// Delete all tasks (and their events) for a workspace.
+    pub fn clear_tasks(&self, workspace: &str) -> Result<usize> {
+        // Delete events for tasks in this workspace
+        self.conn.execute(
+            "DELETE FROM task_events WHERE task_id IN (SELECT id FROM tasks WHERE workspace = ?1)",
+            params![workspace],
+        )?;
+        let count = self
+            .conn
+            .execute("DELETE FROM tasks WHERE workspace = ?1", params![workspace])?;
+        Ok(count)
+    }
+
     /// Update the task's metadata JSON blob.
     pub fn update_task_metadata(&self, id: &str, metadata: &serde_json::Value) -> Result<()> {
         let now = Utc::now().to_rfc3339();

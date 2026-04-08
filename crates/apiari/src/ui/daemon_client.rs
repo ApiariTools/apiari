@@ -95,6 +95,7 @@ impl DaemonClient {
         let req = DaemonRequest::Chat {
             workspace: workspace.to_string(),
             text: text.to_string(),
+            bee: None,
         };
         let json = serde_json::to_string(&req).map_err(std::io::Error::other)?;
         match &mut self.transport {

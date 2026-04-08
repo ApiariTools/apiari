@@ -10,6 +10,7 @@
 //! 2. Routes notifications to the correct tier (Silent/Badge/Chat)
 //! 3. Fires any matching orchestrator actions (coordinator follow-throughs)
 
+pub mod graph;
 pub mod notify;
 pub mod reconcile;
 pub mod workflow;
@@ -22,6 +23,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use self::{
+    graph::{
+        WorkflowGraph,
+        walker::{GraphCursor, GraphWalker},
+    },
     notify::{NotificationRouter, NotificationTier},
     workflow::{WorkflowAction, WorkflowConfig, WorkflowEngine},
 };
@@ -150,6 +155,8 @@ pub struct Orchestrator {
     router: NotificationRouter,
     workflow: WorkflowEngine,
     actions: Vec<OrchestratorAction>,
+    /// The workflow graph (loaded from YAML or built-in default).
+    workflow_graph: WorkflowGraph,
 }
 
 impl Orchestrator {
@@ -159,7 +166,23 @@ impl Orchestrator {
             router: NotificationRouter::new(config.notification_tiers.clone()),
             workflow: WorkflowEngine::new(config.workflow.clone()),
             actions: config.actions.clone(),
+            workflow_graph: graph::builtin::builtin_workflow(),
         }
+    }
+
+    /// Create an orchestrator with a custom workflow graph.
+    pub fn with_graph(config: &OrchestratorConfig, graph: WorkflowGraph) -> Self {
+        Self {
+            router: NotificationRouter::new(config.notification_tiers.clone()),
+            workflow: WorkflowEngine::new(config.workflow.clone()),
+            actions: config.actions.clone(),
+            workflow_graph: graph,
+        }
+    }
+
+    /// Get a reference to the workflow graph.
+    pub fn workflow_graph(&self) -> &WorkflowGraph {
+        &self.workflow_graph
     }
 
     /// Process a signal through the entire orchestration pipeline.
@@ -186,16 +209,22 @@ impl Orchestrator {
         // 3. Match orchestrator actions (coordinator follow-throughs)
         let matched_actions = self.match_actions(signal);
 
-        // 4. Workflow evaluation
+        // 4. Workflow evaluation (legacy hardcoded path)
         let workflow_actions = self.evaluate_workflow(signal, &engine_result);
 
+        // 5. Graph evaluation — walk the workflow graph and advance the cursor.
+        // Graph-produced actions are collected separately for now; they will
+        // replace the legacy workflow_actions once the graph is fully proven.
+        let graph_actions = self.evaluate_graph(store, signal, &engine_result);
+
         info!(
-            "[orchestrator] signal '{}' (source={}) → tier={:?}, actions={}, workflow_actions={}",
+            "[orchestrator] signal '{}' (source={}) → tier={:?}, actions={}, workflow_actions={}, graph_actions={}",
             signal.title,
             signal.source,
             routing.tier,
             matched_actions.len(),
             workflow_actions.len(),
+            graph_actions.len(),
         );
 
         Ok(OrchestratorResult {
@@ -540,6 +569,40 @@ impl Orchestrator {
         actions
     }
 
+    /// Walk the workflow graph for a task, advancing the cursor and returning actions.
+    ///
+    /// This is the graph-based replacement for `evaluate_workflow()`. It loads the
+    /// cursor from task metadata, steps through the graph, saves the cursor back,
+    /// and returns any workflow actions the graph produced.
+    fn evaluate_graph(
+        &self,
+        store: &TaskStore,
+        signal: &SignalRecord,
+        engine_result: &EngineResult,
+    ) -> Vec<WorkflowAction> {
+        let task = match engine_result.task.as_ref() {
+            Some(t) => t,
+            None => return vec![],
+        };
+
+        let mut cursor = GraphCursor::from_task(task, &self.workflow_graph);
+        let walker = GraphWalker::new(&self.workflow_graph);
+        let outputs = walker.step(&mut cursor, signal, task);
+
+        if outputs.is_empty() {
+            return vec![];
+        }
+
+        // Save cursor back to task metadata
+        let cursor_json = cursor.to_json();
+        let mut metadata = task.metadata.clone();
+        metadata["graph_cursor"] = cursor_json;
+        let _ = store.update_task_metadata(&task.id, &metadata);
+
+        // Collect workflow actions from graph outputs
+        outputs.into_iter().filter_map(|o| o.action).collect()
+    }
+
     /// Get a reference to the workflow engine.
     pub fn workflow(&self) -> &WorkflowEngine {
         &self.workflow
@@ -646,9 +709,15 @@ fn find_task_for_signal(
     }
 
     // For swarm worker lifecycle signals, match by worker_id from metadata
-    if matches!(signal.source.as_str(), "swarm_worker_running" | "swarm")
-        && let Some(worker_id) = extract_metadata_str(signal, "worker_id")
-            .or_else(|| extract_worker_id_from_external_id(&signal.external_id))
+    if matches!(
+        signal.source.as_str(),
+        "swarm_worker_running"
+            | "swarm_worker_waiting"
+            | "swarm_worker_closed"
+            | "swarm"
+            | "swarm_pr_opened"
+    ) && let Some(worker_id) = extract_metadata_str(signal, "worker_id")
+        .or_else(|| extract_worker_id_from_external_id(&signal.external_id))
     {
         let role = extract_metadata_str(signal, "role");
 
@@ -1073,6 +1142,295 @@ action = "Report the PR"
         assert!(result.engine_result.transitioned);
         let updated = result.engine_result.task.unwrap();
         assert_eq!(updated.stage, TaskStage::Dismissed);
+    }
+
+    // ── Graph integration tests ─────────────────────────────────────────
+
+    fn make_signal_with_meta(source: &str, title: &str, meta: serde_json::Value) -> SignalRecord {
+        let mut sig = make_signal(source, title);
+        sig.metadata = Some(meta.to_string());
+        sig
+    }
+
+    fn make_signal_with_ext(source: &str, title: &str, ext_id: &str) -> SignalRecord {
+        let mut sig = make_signal(source, title);
+        sig.external_id = ext_id.to_string();
+        sig
+    }
+
+    /// Helper: get the graph cursor from a task's metadata.
+    fn get_cursor(task: &Task) -> Option<graph::walker::GraphCursor> {
+        task.metadata
+            .get("graph_cursor")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    }
+
+    #[test]
+    fn test_graph_full_workflow_spawned_to_merged() {
+        // Tests the full signal chain: spawned → waiting → verdict(approved) → pr_opened → merged
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        // 1. Worker spawned → creates task, cursor at "coding"
+        let sig = make_signal_with_ext(
+            "swarm_worker_spawned",
+            "Worker spawned: w1",
+            "swarm-spawned-w1",
+        );
+        let result = orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let task_id = result.engine_result.task.unwrap().id;
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(task.stage, TaskStage::InProgress);
+        let cursor = get_cursor(&task).expect("cursor should exist after spawn");
+        assert_eq!(cursor.current_node, "coding");
+        assert_eq!(cursor.history.len(), 2); // triage→write_code→coding
+
+        // 2. Worker waiting → cursor should advance to "await_verdict" (coding→ai_review→await_verdict)
+        let sig = make_signal_with_meta(
+            "swarm_worker_waiting",
+            "Worker waiting: w1",
+            serde_json::json!({"worker_id": "w1"}),
+        );
+        orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        let cursor = get_cursor(&task).expect("cursor should exist after waiting");
+        assert_eq!(
+            cursor.current_node, "await_verdict",
+            "cursor should advance from coding through ai_review to await_verdict"
+        );
+
+        // 3. Review verdict: APPROVED → cursor should advance to "human_review"
+        //    Need reviewer_worker_id stored on task for signal matching
+        let mut meta = task.metadata.clone();
+        meta["reviewer_worker_id"] = serde_json::json!("reviewer-1");
+        store.update_task_metadata(&task_id, &meta).unwrap();
+
+        let sig = make_signal_with_meta(
+            "swarm_review_verdict",
+            "Review: APPROVED",
+            serde_json::json!({
+                "verdict": "APPROVED",
+                "branch_name": "feat/foo",
+                "reviewer_worker_id": "reviewer-1",
+            }),
+        );
+        orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        let cursor = get_cursor(&task).expect("cursor should exist after verdict");
+        assert_eq!(
+            cursor.current_node, "human_review",
+            "cursor should advance through create_pr to human_review"
+        );
+
+        // 4. PR merged → cursor at "merged"
+        let _ = store.update_task_pr(&task_id, "https://github.com/org/repo/pull/42", 42);
+        let _ = store.update_task_repo(&task_id, "org/repo");
+        let sig = make_signal_with_meta(
+            "github_merged_pr",
+            "PR merged",
+            serde_json::json!({"repo": "org/repo", "pr_number": 42}),
+        );
+        orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(task.stage, TaskStage::Merged);
+        let cursor = get_cursor(&task).expect("cursor should exist after merge");
+        assert_eq!(cursor.current_node, "merged");
+    }
+
+    #[test]
+    fn test_graph_worker_waiting_advances_from_coding() {
+        // The key signal routing test: swarm_worker_waiting must find the task and advance the graph
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        // Create task via worker_spawned
+        let sig = make_signal_with_ext(
+            "swarm_worker_spawned",
+            "Worker spawned: w1",
+            "swarm-spawned-w1",
+        );
+        let result = orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let task_id = result.engine_result.task.unwrap().id;
+        // Re-fetch from DB to get cursor saved by evaluate_graph
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(get_cursor(&task).unwrap().current_node, "coding");
+
+        // swarm_worker_waiting with metadata worker_id
+        let sig = make_signal_with_meta(
+            "swarm_worker_waiting",
+            "Worker waiting: w1",
+            serde_json::json!({"worker_id": "w1"}),
+        );
+        let result = orchestrator.process_signal(&store, "test", &sig).unwrap();
+        assert!(
+            result.engine_result.task.is_some(),
+            "task should be found for swarm_worker_waiting"
+        );
+        // Re-fetch from DB to get updated cursor
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        let cursor = get_cursor(&task).expect("cursor should exist");
+        assert_eq!(
+            cursor.current_node, "await_verdict",
+            "worker_waiting should advance coding→ai_review→await_verdict"
+        );
+    }
+
+    #[test]
+    fn test_graph_worker_waiting_via_external_id() {
+        // Same test but using external_id pattern instead of metadata
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        let sig = make_signal_with_ext(
+            "swarm_worker_spawned",
+            "Worker spawned: w1",
+            "swarm-spawned-w1",
+        );
+        let task_id = orchestrator
+            .process_signal(&store, "test", &sig)
+            .unwrap()
+            .engine_result
+            .task
+            .unwrap()
+            .id;
+
+        // swarm_worker_waiting WITHOUT metadata, but with external_id pattern
+        let sig = make_signal_with_ext(
+            "swarm_worker_waiting",
+            "Worker waiting: w1",
+            "swarm-waiting-w1",
+        );
+        let result = orchestrator.process_signal(&store, "test", &sig).unwrap();
+        assert!(
+            result.engine_result.task.is_some(),
+            "task should be found via external_id"
+        );
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        let cursor = get_cursor(&task).expect("cursor should exist");
+        assert_eq!(cursor.current_node, "await_verdict");
+    }
+
+    #[test]
+    fn test_graph_rework_loop_increments_counter() {
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        // Create task and advance to await_verdict
+        let sig = make_signal_with_ext(
+            "swarm_worker_spawned",
+            "Worker spawned: w1",
+            "swarm-spawned-w1",
+        );
+        let task_id = orchestrator
+            .process_signal(&store, "test", &sig)
+            .unwrap()
+            .engine_result
+            .task
+            .unwrap()
+            .id;
+
+        let sig = make_signal_with_meta(
+            "swarm_worker_waiting",
+            "Worker waiting: w1",
+            serde_json::json!({"worker_id": "w1"}),
+        );
+        orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(get_cursor(&task).unwrap().current_node, "await_verdict");
+
+        // Store reviewer_worker_id on task for matching (preserve cursor)
+        let mut meta = task.metadata.clone();
+        meta["reviewer_worker_id"] = serde_json::json!("reviewer-1");
+        store.update_task_metadata(&task_id, &meta).unwrap();
+
+        // Changes requested → should loop back to write_code→coding
+        let sig = make_signal_with_meta(
+            "swarm_review_verdict",
+            "CHANGES_REQUESTED",
+            serde_json::json!({
+                "verdict": "CHANGES_REQUESTED",
+                "comments": "Fix the tests",
+                "reviewer_worker_id": "reviewer-1",
+            }),
+        );
+        orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        let cursor = get_cursor(&task).unwrap();
+        assert_eq!(
+            cursor.current_node, "coding",
+            "CHANGES_REQUESTED should loop back to coding"
+        );
+        assert_eq!(
+            cursor.counters.get("review_cycles").copied(),
+            Some(1),
+            "review_cycles counter should be 1"
+        );
+    }
+
+    #[test]
+    fn test_graph_unmatched_signal_doesnt_advance() {
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        // Create task at "coding"
+        let sig = make_signal_with_ext(
+            "swarm_worker_spawned",
+            "Worker spawned: w1",
+            "swarm-spawned-w1",
+        );
+        orchestrator.process_signal(&store, "test", &sig).unwrap();
+
+        // Random signal that doesn't match any edge from "coding"
+        let sig = make_signal_with_meta(
+            "github_ci_pass",
+            "CI passed",
+            serde_json::json!({"worker_id": "w1"}),
+        );
+        let result = orchestrator.process_signal(&store, "test", &sig).unwrap();
+        // github_ci_pass won't match the task (not in worker lifecycle matching)
+        // so graph won't run — task stays at coding
+        let tasks = store.get_all_tasks("test").unwrap();
+        assert_eq!(tasks.len(), 1);
+        let cursor = get_cursor(&tasks[0]).unwrap();
+        assert_eq!(cursor.current_node, "coding");
+    }
+
+    #[test]
+    fn test_graph_pr_closed_reaches_dismissed() {
+        let config = OrchestratorConfig::default();
+        let orchestrator = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+
+        // Create a task already at human_review with PR info
+        let mut task = make_task("test", TaskStage::HumanReview);
+        // Set graph cursor to human_review
+        let cursor = graph::walker::GraphCursor {
+            current_node: "human_review".to_string(),
+            counters: Default::default(),
+            artifacts: Default::default(),
+            history: vec![],
+        };
+        task.metadata["graph_cursor"] = serde_json::to_value(&cursor).unwrap();
+        store.create_task(&task).unwrap();
+        let task_id = task.id.clone();
+
+        let sig = make_signal_with_meta(
+            "github_pr_closed",
+            "PR closed",
+            serde_json::json!({"repo": "org/repo", "pr_number": 42}),
+        );
+        let result = orchestrator.process_signal(&store, "test", &sig).unwrap();
+        assert!(result.engine_result.transitioned);
+        // Re-fetch from DB
+        let task = store.get_task(&task_id).unwrap().unwrap();
+        assert_eq!(task.stage, TaskStage::Dismissed);
+        let cursor = get_cursor(&task).unwrap();
+        assert_eq!(cursor.current_node, "dismissed");
     }
 
     #[test]

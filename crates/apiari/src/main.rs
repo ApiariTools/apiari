@@ -87,6 +87,13 @@ enum Command {
         command: ConfigCommand,
     },
 
+    /// Launch the web UI dev server (HTTP API on localhost)
+    Web {
+        /// Port for the HTTP server (default: 7422)
+        #[arg(long, default_value = "7422")]
+        port: u16,
+    },
+
     /// PreToolUse hook: validate Bash commands (used internally by coordinator)
     #[command(hide = true)]
     ValidateBash,
@@ -226,6 +233,9 @@ async fn main() -> Result<()> {
                 }
             }
         },
+        Some(Command::Web { port }) => {
+            daemon::http::run_dev_server(port).await?;
+        }
         Some(Command::ValidateBash) => {
             std::process::exit(validate_bash::run());
         }
