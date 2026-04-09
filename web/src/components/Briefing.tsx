@@ -389,53 +389,6 @@ export default function Briefing({
             </div>
           ))}
 
-          {/* Quiet section */}
-          {quiet.length > 0 && (
-            <>
-              <div style={{
-                fontSize: 11,
-                fontWeight: 600,
-                color: '#94a3b8',
-                textTransform: 'uppercase',
-                letterSpacing: '0.05em',
-                margin: '20px 0 8px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-              }}>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-                <span>quiet</span>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-              </div>
-
-              {quiet.map((item) => (
-                <div
-                  key={item.id}
-                  style={{
-                    padding: '8px 0',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    cursor: 'pointer',
-                  }}
-                  onClick={() => onDrillIntoTask(item.id)}
-                >
-                  <span style={{ fontSize: 12, color: '#94a3b8', width: 50, flexShrink: 0, textAlign: 'right' }}>
-                    {timeAgo(item.timestamp)}
-                  </span>
-                  <span style={{ fontSize: 13, color: '#64748b' }}>
-                    {item.title}
-                  </span>
-                  {item.body && (
-                    <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                      {item.body}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </>
-          )}
-
           {/* Signals */}
           {signals.length > 0 && (
             <>
@@ -493,6 +446,33 @@ export default function Briefing({
                   </div>
                 );
               })}
+            </>
+          )}
+
+          {/* Quiet section */}
+          {quiet.length > 0 && (
+            <>
+              <div style={{
+                fontSize: 11, fontWeight: 600, color: '#94a3b8',
+                textTransform: 'uppercase', letterSpacing: '0.05em',
+                margin: '20px 0 8px',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+                <span>quiet</span>
+                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+              </div>
+              {quiet.map((item) => (
+                <div key={item.id} style={{
+                  padding: '8px 0', display: 'flex', alignItems: 'center',
+                  gap: 10, cursor: 'pointer',
+                }} onClick={() => onDrillIntoTask(item.id)}>
+                  <span style={{ fontSize: 12, color: '#94a3b8', width: 50, flexShrink: 0, textAlign: 'right' }}>
+                    {timeAgo(item.timestamp)}
+                  </span>
+                  <span style={{ fontSize: 13, color: '#64748b' }}>{item.title}</span>
+                </div>
+              ))}
             </>
           )}
 
