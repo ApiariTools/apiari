@@ -210,7 +210,7 @@ export default function App() {
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
       {/* ── Top nav ── */}
-      <div style={{
+      <div className="nav-bar" style={{
         height: 44, borderBottom: '1px solid #e2e8f0', background: '#fff',
         display: 'flex', alignItems: 'center', padding: '0 16px', gap: 2, flexShrink: 0,
       }}>
@@ -220,10 +220,10 @@ export default function App() {
         <NavTab active={view === 'briefing'} onClick={() => setView('briefing')}>
           Briefing
         </NavTab>
-        <NavTab active={view === 'workflow'} onClick={() => setView('workflow')}>
+        <NavTab active={view === 'workflow'} onClick={() => setView('workflow')} className="nav-tab-workflow">
           Workflow
         </NavTab>
-        <NavTab active={view === 'bees'} onClick={() => setView('bees')}>
+        <NavTab active={view === 'bees'} onClick={() => setView('bees')} className="nav-tab-bees">
           Bees
         </NavTab>
 
@@ -326,11 +326,11 @@ export default function App() {
   );
 }
 
-function NavTab({ active, onClick, children }: {
-  active: boolean; onClick: () => void; children: React.ReactNode;
+function NavTab({ active, onClick, children, className }: {
+  active: boolean; onClick: () => void; children: React.ReactNode; className?: string;
 }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} className={className} style={{
       padding: '8px 14px', borderRadius: 6, border: 'none',
       background: active ? '#f1f5f9' : 'transparent',
       color: active ? '#0f172a' : '#64748b',

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { BeeConfigView, TaskView } from '../types';
+import './Briefing.css';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -209,17 +210,9 @@ export default function Briefing({
   }
 
   return (
-    <div style={{ display: 'flex', height: '100%', width: '100%', flex: 1 }}>
+    <div className="briefing-root">
       {/* ── The Hive (left sidebar) ── */}
-      <div style={{
-        width: 220,
-        background: '#fff',
-        borderRight: '1px solid #e2e8f0',
-        display: 'flex',
-        flexDirection: 'column',
-        flexShrink: 0,
-        overflow: 'auto',
-      }}>
+      <div className="briefing-hive">
         <div style={{
           padding: '14px 16px 8px',
           fontSize: 11,
@@ -306,15 +299,9 @@ export default function Briefing({
       </div>
 
       {/* ── Main feed ── */}
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        minWidth: 0,
-      }}>
+      <div className="briefing-feed">
         {/* Feed area */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <div className="briefing-feed-inner" style={{ flex: 1, overflow: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
          <div style={{ width: '100%', maxWidth: 720 }}>
 
           {/* Decision count */}
@@ -546,7 +533,7 @@ export default function Briefing({
         </div>
 
         {/* ── Input bar ── */}
-        <div style={{
+        <div className="briefing-input-bar" style={{
           borderTop: '1px solid #e2e8f0',
           padding: '12px 20px',
           background: '#fff',

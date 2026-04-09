@@ -1,0 +1,76 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}
+
+/* React Flow light theme tweaks */
+.react-flow__background {
+  background: #f8fafc !important;
+}
+
+.react-flow__controls-button {
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  fill: #64748b !important;
+  border-radius: 6px !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #f1f5f9 !important;
+}
+
+/* Animated edge pulse for traversed edges */
+@keyframes flow {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+
+.react-flow__edge.animated path {
+  stroke-dasharray: 6 4 !important;
+  animation: flow 0.6s linear infinite;
+}
+
+/* ── Mobile responsive ──────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  /* Hide workflow/bees tabs on mobile — briefing only */
+  .nav-tab-workflow,
+  .nav-tab-bees {
+    display: none;
+  }
+
+  /* Compact the top bar */
+  .nav-bar {
+    padding: 0 10px !important;
+    height: 40px !important;
+  }
+
+  /* Feed padding tighter */
+  .briefing-feed-inner {
+    padding: 12px 12px !important;
+  }
+
+  /* Input bar tighter */
+  .briefing-input-bar {
+    padding: 8px 12px !important;
+  }
+}
+
+/* Active node pulse */
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.25), 0 4px 12px rgba(245, 158, 11, 0.15); }
+  50% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0.1), 0 4px 12px rgba(245, 158, 11, 0.2); }
+  100% { box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.25), 0 4px 12px rgba(245, 158, 11, 0.15); }
+}

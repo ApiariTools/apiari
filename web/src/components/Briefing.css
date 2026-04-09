@@ -1,0 +1,36 @@
+/* ── Mobile responsive ────────────────────────────────────────────── */
+
+.briefing-root {
+  display: flex;
+  height: 100%;
+  width: 100%;
+  flex: 1;
+}
+
+.briefing-hive {
+  width: 220px;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: auto;
+}
+
+.briefing-feed {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .briefing-hive {
+    display: none;
+  }
+
+  .briefing-feed {
+    width: 100%;
+  }
+}
