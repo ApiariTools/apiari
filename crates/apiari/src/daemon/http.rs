@@ -405,7 +405,29 @@ fn view_to_graph(view: &GraphView) -> color_eyre::Result<WorkflowGraph> {
 // ── Route handlers ─────────────────────────────────────────────────────
 
 /// GET /api/graph — return the workflow graph definition.
-async fn get_graph(State(state): State<HttpState>) -> Json<GraphView> {
+/// Supports `?workspace=mgm` to load a different workspace's graph from disk.
+async fn get_graph(
+    State(state): State<HttpState>,
+    axum::extract::Query(q): axum::extract::Query<WorkspaceQuery>,
+) -> Json<GraphView> {
+    // If a different workspace is requested, load its graph from disk
+    if let Some(ref ws_name) = q.workspace
+        && ws_name.as_str() != state.workspace.as_str()
+    {
+        if let Ok(workspaces) = crate::config::discover_workspaces()
+            && let Some(ws) = workspaces.iter().find(|w| &w.name == ws_name)
+        {
+            let yaml_path = ws.config.root.join(".apiari/workflow.yaml");
+            if let Ok(g) =
+                crate::buzz::orchestrator::graph::builtin::load_workflow(Some(&yaml_path))
+            {
+                return Json(graph_to_view(&g));
+            }
+        }
+        // Fall back to builtin if workspace not found or no custom workflow
+        let builtin = crate::buzz::orchestrator::graph::builtin::builtin_workflow();
+        return Json(graph_to_view(&builtin));
+    }
     let graph = state.graph.read().await;
     Json(graph_to_view(&graph))
 }

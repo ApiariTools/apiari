@@ -38,12 +38,11 @@ export default function App() {
       });
   }, []);
 
-  // Reload bees when workspace changes
+  // Reload bees + graph when workspace changes
   function switchWorkspace(ws: string) {
     setWorkspace(ws);
-    fetchBees(ws).then((b) => {
-      setBees(b.bees);
-    });
+    fetchBees(ws).then((b) => setBees(b.bees));
+    fetchGraph(ws).then((g) => setGraph(g));
   }
 
   // WebSocket for live updates

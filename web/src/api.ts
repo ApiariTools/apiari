@@ -2,8 +2,9 @@ import type { BeeConfigView, BeesConfigResponse, GraphView, TaskView, WsMessage 
 
 const API_BASE = '/api';
 
-export async function fetchGraph(): Promise<GraphView> {
-  const res = await fetch(`${API_BASE}/graph`);
+export async function fetchGraph(workspace?: string): Promise<GraphView> {
+  const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const res = await fetch(`${API_BASE}/graph${qs}`);
   return res.json();
 }
 
