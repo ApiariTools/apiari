@@ -143,7 +143,7 @@ export default function Briefing({
   const [input, setInput] = useState('');
   const [targetBee, setTargetBee] = useState('');
   const [targetWorkspace, setTargetWorkspace] = useState(workspaces[0] ?? '');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const hive = buildHive(workspaces, beesByWorkspace, tasks);
   const feed = buildFeed(tasks);
@@ -430,30 +430,51 @@ export default function Briefing({
           padding: '12px 20px',
           background: '#fff',
           display: 'flex',
+          flexDirection: 'column',
           gap: 8,
-          alignItems: 'center',
         }}>
-          <select
-            value={`${targetWorkspace}/${targetBee}`}
-            onChange={(e) => handleBeeSelect(e.target.value)}
-            style={{
-              fontSize: 12,
-              padding: '8px 10px',
-              border: '1px solid #e2e8f0',
-              borderRadius: 8,
-              background: '#f8fafc',
-              color: '#334155',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            {allBees.map((b) => (
-              <option key={`${b.workspace}/${b.name}`} value={`${b.workspace}/${b.name}`}>
-                @{b.name}
-              </option>
-            ))}
-          </select>
-          <input
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <select
+              value={`${targetWorkspace}/${targetBee}`}
+              onChange={(e) => handleBeeSelect(e.target.value)}
+              style={{
+                fontSize: 12,
+                padding: '6px 10px',
+                border: '1px solid #e2e8f0',
+                borderRadius: 8,
+                background: '#f8fafc',
+                color: '#334155',
+                cursor: 'pointer',
+              }}
+            >
+              {allBees.map((b) => (
+                <option key={`${b.workspace}/${b.name}`} value={`${b.workspace}/${b.name}`}>
+                  @{b.name} ({b.workspace})
+                </option>
+              ))}
+            </select>
+            <span style={{ fontSize: 11, color: '#94a3b8' }}>
+              Enter to send, Shift+Enter for new line
+            </span>
+            <div style={{ flex: 1 }} />
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              style={{
+                padding: '6px 18px',
+                borderRadius: 8,
+                border: 'none',
+                background: input.trim() ? '#f59e0b' : '#e2e8f0',
+                color: input.trim() ? '#fff' : '#94a3b8',
+                cursor: input.trim() ? 'pointer' : 'default',
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              Send
+            </button>
+          </div>
+          <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -464,32 +485,20 @@ export default function Briefing({
               }
             }}
             placeholder={targetBee ? `Message @${targetBee}...` : 'Select a Bee...'}
+            rows={Math.min(6, Math.max(2, input.split('\n').length))}
             style={{
-              flex: 1,
-              padding: '8px 14px',
+              width: '100%',
+              padding: '10px 14px',
               border: '1px solid #e2e8f0',
               borderRadius: 8,
               fontSize: 14,
               outline: 'none',
+              resize: 'none',
+              fontFamily: 'inherit',
+              lineHeight: 1.5,
+              boxSizing: 'border-box',
             }}
           />
-          <button
-            onClick={handleSend}
-            disabled={!input.trim()}
-            style={{
-              padding: '8px 18px',
-              borderRadius: 8,
-              border: 'none',
-              background: input.trim() ? '#f59e0b' : '#e2e8f0',
-              color: input.trim() ? '#fff' : '#94a3b8',
-              cursor: input.trim() ? 'pointer' : 'default',
-              fontSize: 13,
-              fontWeight: 600,
-              flexShrink: 0,
-            }}
-          >
-            Send
-          </button>
         </div>
       </div>
 
