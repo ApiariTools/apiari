@@ -1,31 +1,49 @@
-* {
+/* ── Reset + iOS fixes ──────────────────────────────────────────── */
+
+*, *::before, *::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  /* Kill 300ms tap delay on ALL elements */
+  touch-action: manipulation;
 }
 
 html, body {
-  margin: 0;
-  background: #f8fafc;
-  overflow: hidden;
   height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: #f8fafc;
+  /* Prevent iOS text size adjustment */
+  -webkit-text-size-adjust: 100%;
 }
+
+/* Safari requires 16px inputs to avoid auto-zoom */
+input, textarea, select {
+  font-size: 16px;
+}
+
+/* Enable :active on iOS */
+body {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── App shell ─────────────────────────────────────────────────── */
 
 #root {
-  width: 100%;
-  height: 100dvh;
   display: flex;
   flex-direction: column;
+  /* dvh respects mobile browser chrome; vh is fallback */
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
-
-/* ── Safe area wrapper ─────────────────────────────────────────── */
 
 .app-shell {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  /* Push content away from notch/home indicator */
+  /* Safe area: push content away from notch + home indicator */
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
   padding-left: env(safe-area-inset-left, 0px);

@@ -216,13 +216,10 @@ export default function Briefing({
       <div className="briefing-mobile-header">
         <button
           onClick={() => setHiveOpen(!hiveOpen)}
-          onTouchEnd={(e) => { e.preventDefault(); setHiveOpen(!hiveOpen); }}
           style={{
             padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0',
             background: hiveOpen ? '#f1f5f9' : '#fff', cursor: 'pointer',
             fontSize: 14, fontWeight: 500, minHeight: 44,
-            WebkitTapHighlightColor: 'transparent',
-            touchAction: 'manipulation',
           }}
         >
           🐝 Hive {hiveOpen ? '▲' : '▼'}
