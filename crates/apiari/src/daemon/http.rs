@@ -750,6 +750,203 @@ async fn save_bees(
     Ok(Json(serde_json::json!({ "ok": true, "count": body.len() })))
 }
 
+// ── Briefing endpoint ─────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct BriefingItem {
+    id: String,
+    priority: String,
+    icon: String,
+    title: String,
+    body: Option<String>,
+    workspace: String,
+    source: String,
+    url: Option<String>,
+    actions: Vec<BriefingAction>,
+    timestamp: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BriefingAction {
+    label: String,
+    style: String,
+}
+
+/// GET /api/briefing — aggregated, prioritized briefing items across all workspaces.
+async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>> {
+    let mut items = Vec::new();
+    let workspaces = crate::config::discover_workspaces().unwrap_or_default();
+
+    for ws in &workspaces {
+        let store = match crate::buzz::signal::store::SignalStore::open(&state.db_path, &ws.name) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let signals = store.get_open_signals().unwrap_or_default();
+
+        let mut by_source: std::collections::HashMap<
+            &str,
+            Vec<&crate::buzz::signal::SignalRecord>,
+        > = std::collections::HashMap::new();
+        for sig in &signals {
+            by_source.entry(sig.source.as_str()).or_default().push(sig);
+        }
+
+        // Workers waiting → action
+        for sig in by_source.get("swarm_worker_waiting").unwrap_or(&vec![]) {
+            items.push(BriefingItem {
+                id: format!("wait-{}", sig.id),
+                priority: "action".into(),
+                icon: "⏸".into(),
+                title: sig.title.clone(),
+                body: Some("Worker waiting for input or review".into()),
+                workspace: ws.name.clone(),
+                source: "swarm".into(),
+                url: sig.url.clone(),
+                actions: vec![
+                    BriefingAction {
+                        label: "View".into(),
+                        style: "primary".into(),
+                    },
+                    BriefingAction {
+                        label: "Snooze".into(),
+                        style: "default".into(),
+                    },
+                ],
+                timestamp: sig.created_at.to_rfc3339(),
+            });
+        }
+
+        // PRs with CI pass → check if bot reviewed too → action
+        for sig in by_source.get("github_ci_pass").unwrap_or(&vec![]) {
+            let has_review = by_source.get("github_bot_review").is_some_and(|reviews| {
+                reviews
+                    .iter()
+                    .any(|r| sig.url.is_some() && sig.url == r.url)
+            });
+            if has_review {
+                items.push(BriefingItem {
+                    id: format!("pr-ready-{}", sig.id),
+                    priority: "action".into(),
+                    icon: "✅".into(),
+                    title: format!("PR ready: {}", sig.title),
+                    body: Some("CI green + Copilot reviewed".into()),
+                    workspace: ws.name.clone(),
+                    source: "github".into(),
+                    url: sig.url.clone(),
+                    actions: vec![
+                        BriefingAction {
+                            label: "Review".into(),
+                            style: "primary".into(),
+                        },
+                        BriefingAction {
+                            label: "Dismiss".into(),
+                            style: "danger".into(),
+                        },
+                    ],
+                    timestamp: sig.created_at.to_rfc3339(),
+                });
+            }
+        }
+
+        // Sentry: group if 3+, otherwise individual notices
+        let sentry = by_source.get("sentry").cloned().unwrap_or_default();
+        if sentry.len() >= 3 {
+            let newest = sentry.iter().max_by_key(|s| s.created_at).unwrap();
+            items.push(BriefingItem {
+                id: format!("sentry-{}", ws.name),
+                priority: "action".into(),
+                icon: "⚡".into(),
+                title: format!("{} Sentry errors", sentry.len()),
+                body: Some(format!(
+                    "Latest: {}",
+                    &newest.title[..newest.title.len().min(80)]
+                )),
+                workspace: ws.name.clone(),
+                source: "sentry".into(),
+                url: newest.url.clone(),
+                actions: vec![
+                    BriefingAction {
+                        label: "Investigate".into(),
+                        style: "primary".into(),
+                    },
+                    BriefingAction {
+                        label: "Dismiss".into(),
+                        style: "danger".into(),
+                    },
+                ],
+                timestamp: newest.created_at.to_rfc3339(),
+            });
+        } else {
+            for sig in &sentry {
+                items.push(BriefingItem {
+                    id: format!("sentry-{}", sig.id),
+                    priority: "notice".into(),
+                    icon: "⚡".into(),
+                    title: sig.title.clone(),
+                    body: None,
+                    workspace: ws.name.clone(),
+                    source: "sentry".into(),
+                    url: sig.url.clone(),
+                    actions: vec![],
+                    timestamp: sig.created_at.to_rfc3339(),
+                });
+            }
+        }
+
+        // Merged PRs → quiet
+        for sig in by_source
+            .get("github_merged_pr")
+            .unwrap_or(&vec![])
+            .iter()
+            .take(5)
+        {
+            items.push(BriefingItem {
+                id: format!("merged-{}", sig.id),
+                priority: "quiet".into(),
+                icon: "🔀".into(),
+                title: format!("Merged: {}", sig.title),
+                body: None,
+                workspace: ws.name.clone(),
+                source: "github".into(),
+                url: sig.url.clone(),
+                actions: vec![],
+                timestamp: sig.created_at.to_rfc3339(),
+            });
+        }
+
+        // Active workers → quiet
+        for sig in by_source.get("swarm_worker_spawned").unwrap_or(&vec![]) {
+            items.push(BriefingItem {
+                id: format!("worker-{}", sig.id),
+                priority: "quiet".into(),
+                icon: "🐝".into(),
+                title: sig.title.clone(),
+                body: None,
+                workspace: ws.name.clone(),
+                source: "swarm".into(),
+                url: None,
+                actions: vec![],
+                timestamp: sig.created_at.to_rfc3339(),
+            });
+        }
+    }
+
+    // Sort: action > notice > quiet, then newest first
+    items.sort_by(|a, b| {
+        let tier = |p: &str| match p {
+            "action" => 0,
+            "notice" => 1,
+            _ => 2,
+        };
+        tier(&a.priority)
+            .cmp(&tier(&b.priority))
+            .then(b.timestamp.cmp(&a.timestamp))
+    });
+
+    Json(items)
+}
+
 // ── Signals endpoint ──────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -961,6 +1158,7 @@ pub async fn start_http_server(
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/chat", post(chat_handler))
+        .route("/api/briefing", get(get_briefing))
         .route("/api/signals", get(get_signals))
         .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))

@@ -5,7 +5,7 @@ import TaskPanel from './components/TaskPanel';
 import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchSignals, fetchConversations, clearTasks, sendChat, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchBriefing, fetchSignals, fetchConversations, clearTasks, sendChat, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
 type View = 'briefing' | 'workflow' | 'bees';
@@ -22,6 +22,18 @@ export default function App() {
   const [workspace, setWorkspace] = useState('');
   const [workspaces, setWorkspaces] = useState<string[]>([]);
   const [beesByWorkspace, setBeesByWorkspace] = useState<Record<string, BeeConfigView[]>>({});
+  const [briefingItems, setBriefingItems] = useState<Array<{
+    id: string;
+    priority: string;
+    icon: string;
+    title: string;
+    body: string | null;
+    workspace: string;
+    source: string;
+    url: string | null;
+    actions: Array<{ label: string; style: string }>;
+    timestamp: string;
+  }>>([]);
   const [signals, setSignals] = useState<Array<{
     id: number;
     workspace: string;
@@ -98,6 +110,9 @@ export default function App() {
         }
         allSignals.sort((a, b) => b.created_at.localeCompare(a.created_at));
         setSignals(allSignals.slice(0, 100));
+
+        // Load briefing items
+        fetchBriefing().then(setBriefingItems).catch(() => {});
       })
       .catch(() => {
         setError('Failed to connect to daemon API.');
@@ -252,6 +267,7 @@ export default function App() {
             beesByWorkspace={beesByWorkspace}
             tasks={tasks}
             signals={signals}
+            briefingItems={briefingItems}
             chatMessages={chatMessages}
             connected={connected}
             onSendMessage={handleSendMessage}

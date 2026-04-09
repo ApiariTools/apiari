@@ -49,11 +49,25 @@ interface SignalItem {
   created_at: string;
 }
 
+interface BriefingItemData {
+  id: string;
+  priority: string;
+  icon: string;
+  title: string;
+  body: string | null;
+  workspace: string;
+  source: string;
+  url: string | null;
+  actions: Array<{ label: string; style: string }>;
+  timestamp: string;
+}
+
 interface BriefingProps {
   workspaces: string[];
   beesByWorkspace: Record<string, BeeConfigView[]>;
   tasks: TaskView[];
   signals: SignalItem[];
+  briefingItems: BriefingItemData[];
   chatMessages: ChatMessage[];
   connected: boolean;
   onSendMessage: (bee: string, workspace: string, text: string) => void;
@@ -158,7 +172,8 @@ export default function Briefing({
   workspaces,
   beesByWorkspace,
   tasks,
-  signals,
+  signals: _signals,
+  briefingItems,
   chatMessages,
   connected,
   onSendMessage,
@@ -359,183 +374,118 @@ export default function Briefing({
 
         {/* ── Briefing tab ── */}
         {tab === 'briefing' && (
-        <div className="briefing-feed-inner" style={{ flex: 1, overflow: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-         <div style={{ width: '100%', maxWidth: 720 }}>
-
-          {/* Decision count */}
-          {decisions.length > 0 && (
-            <div style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: '#dc2626',
-              marginBottom: 12,
-            }}>
-              {decisions.length} decision{decisions.length !== 1 ? 's' : ''} needed
-            </div>
-          )}
-
-          {/* Decision cards */}
-          {decisions.map((item) => (
-            <div
-              key={item.id}
-              style={{
-                padding: '14px 18px',
-                borderRadius: 10,
-                border: '1.5px solid',
-                borderColor: item.priority === 'red' ? '#fca5a5' : '#fde68a',
-                background: item.priority === 'red' ? '#fef2f2' : '#fffbeb',
-                marginBottom: 10,
-                cursor: 'pointer',
-              }}
-              onClick={() => onDrillIntoTask(item.id)}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: item.priority === 'red' ? '#dc2626' : '#d97706',
-                  textTransform: 'uppercase',
-                }}>
-                  {item.bee}
-                </span>
-                <span style={{ fontSize: 11, color: '#94a3b8' }}>{timeAgo(item.timestamp)}</span>
-              </div>
-              <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a', marginBottom: 4 }}>
-                {item.title}
-              </div>
-              {item.body && (
-                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
-                  {item.body}
-                </div>
-              )}
-              {item.actions && (
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {item.actions.map((action) => (
-                    <button
-                      key={action.label}
-                      onClick={(e) => { e.stopPropagation(); action.onClick(); }}
-                      style={{
-                        padding: '5px 14px',
-                        borderRadius: 6,
-                        border: '1px solid',
-                        borderColor: action.style === 'primary' ? '#3b82f6' : action.style === 'danger' ? '#fca5a5' : '#e2e8f0',
-                        background: action.style === 'primary' ? '#3b82f6' : '#fff',
-                        color: action.style === 'primary' ? '#fff' : action.style === 'danger' ? '#dc2626' : '#334155',
-                        cursor: 'pointer',
-                        fontSize: 12,
-                        fontWeight: 500,
-                      }}
-                    >
-                      {action.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-
-          {/* Signals */}
-          {signals.length > 0 && (
-            <>
-              <div style={{
-                fontSize: 11, fontWeight: 600, color: '#94a3b8',
-                textTransform: 'uppercase', letterSpacing: '0.05em',
-                margin: '20px 0 8px',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-                <span>signals ({signals.length})</span>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-              </div>
-              {signals.slice(0, 20).map((sig) => {
-                const isCritical = sig.severity === 'Critical' || sig.severity === 'Error';
-                const icon = sig.source.includes('sentry') ? '⚡'
-                  : sig.source.includes('github') ? '🔀'
-                  : sig.source.includes('swarm') ? '🐝'
-                  : '📡';
-                return (
-                  <div key={sig.id} style={{
-                    padding: '8px 12px',
-                    marginBottom: 4,
-                    borderRadius: 8,
-                    border: `1px solid ${isCritical ? '#fca5a5' : '#e2e8f0'}`,
-                    background: isCritical ? '#fef2f2' : '#fff',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    cursor: sig.url ? 'pointer' : 'default',
-                  }}
-                  onClick={() => sig.url && window.open(sig.url, '_blank')}
-                  >
-                    <span style={{ fontSize: 14, flexShrink: 0 }}>{icon}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{
-                        fontSize: 13, color: '#334155',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {sig.title}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#94a3b8' }}>
-                        {sig.source} · {sig.workspace} · {timeAgo(new Date(sig.created_at))}
-                      </div>
+        <div className="briefing-feed-inner" style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
+          <div style={{ maxWidth: 720, margin: '0 auto' }}>
+            {(() => {
+              const actionItems = briefingItems.filter(i => i.priority === 'action');
+              const noticeItems = briefingItems.filter(i => i.priority === 'notice');
+              const quietItems = briefingItems.filter(i => i.priority === 'quiet');
+              return (
+                <>
+                  {/* Action items */}
+                  {actionItems.length > 0 && (
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#dc2626', marginBottom: 12 }}>
+                      {actionItems.length} item{actionItems.length !== 1 ? 's' : ''} need{actionItems.length === 1 ? 's' : ''} attention
                     </div>
-                    {isCritical && (
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, color: '#dc2626',
-                        background: '#fee2e2', padding: '2px 6px', borderRadius: 4,
-                        flexShrink: 0,
+                  )}
+                  {actionItems.map(item => (
+                    <div key={item.id} style={{
+                      padding: '14px 18px', borderRadius: 10, marginBottom: 10,
+                      border: '1.5px solid #fca5a5', background: '#fef2f2',
+                      cursor: item.url ? 'pointer' : 'default',
+                    }} onClick={() => item.url && window.open(item.url, '_blank')}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 16 }}>{item.icon}</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>{item.workspace}</span>
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>{timeAgo(new Date(item.timestamp))}</span>
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a', marginBottom: 4 }}>{item.title}</div>
+                      {item.body && <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>{item.body}</div>}
+                      {item.actions.length > 0 && (
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          {item.actions.map(action => (
+                            <button key={action.label} onClick={(e) => {
+                              e.stopPropagation();
+                              if (item.url) window.open(item.url, '_blank');
+                            }} style={{
+                              padding: '6px 14px', borderRadius: 6, border: '1px solid',
+                              borderColor: action.style === 'primary' ? '#3b82f6' : action.style === 'danger' ? '#fca5a5' : '#e2e8f0',
+                              background: action.style === 'primary' ? '#3b82f6' : '#fff',
+                              color: action.style === 'primary' ? '#fff' : action.style === 'danger' ? '#dc2626' : '#334155',
+                              cursor: 'pointer', fontSize: 13, fontWeight: 500, minHeight: 36,
+                            }}>{action.label}</button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* Notices */}
+                  {noticeItems.length > 0 && (
+                    <>
+                      <div style={{
+                        fontSize: 11, fontWeight: 600, color: '#94a3b8',
+                        textTransform: 'uppercase', letterSpacing: '0.05em',
+                        margin: '20px 0 8px', display: 'flex', alignItems: 'center', gap: 8,
                       }}>
-                        {sig.severity.toUpperCase()}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </>
-          )}
+                        <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+                        <span>notices</span>
+                        <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+                      </div>
+                      {noticeItems.map(item => (
+                        <div key={item.id} style={{
+                          padding: '8px 12px', marginBottom: 4, borderRadius: 8,
+                          border: '1px solid #fde68a', background: '#fffbeb',
+                          display: 'flex', alignItems: 'center', gap: 8,
+                          cursor: item.url ? 'pointer' : 'default',
+                        }} onClick={() => item.url && window.open(item.url, '_blank')}>
+                          <span style={{ fontSize: 14 }}>{item.icon}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, color: '#334155', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</div>
+                            <div style={{ fontSize: 11, color: '#94a3b8' }}>{item.workspace} · {timeAgo(new Date(item.timestamp))}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
 
-          {/* Quiet section */}
-          {quiet.length > 0 && (
-            <>
-              <div style={{
-                fontSize: 11, fontWeight: 600, color: '#94a3b8',
-                textTransform: 'uppercase', letterSpacing: '0.05em',
-                margin: '20px 0 8px',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-                <span>quiet</span>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-              </div>
-              {quiet.map((item) => (
-                <div key={item.id} style={{
-                  padding: '8px 0', display: 'flex', alignItems: 'center',
-                  gap: 10, cursor: 'pointer',
-                }} onClick={() => onDrillIntoTask(item.id)}>
-                  <span style={{ fontSize: 12, color: '#94a3b8', width: 50, flexShrink: 0, textAlign: 'right' }}>
-                    {timeAgo(item.timestamp)}
-                  </span>
-                  <span style={{ fontSize: 13, color: '#64748b' }}>{item.title}</span>
-                </div>
-              ))}
-            </>
-          )}
+                  {/* Quiet */}
+                  {quietItems.length > 0 && (
+                    <>
+                      <div style={{
+                        fontSize: 11, fontWeight: 600, color: '#94a3b8',
+                        textTransform: 'uppercase', letterSpacing: '0.05em',
+                        margin: '20px 0 8px', display: 'flex', alignItems: 'center', gap: 8,
+                      }}>
+                        <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+                        <span>quiet</span>
+                        <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+                      </div>
+                      {quietItems.map(item => (
+                        <div key={item.id} style={{
+                          padding: '6px 0', display: 'flex', alignItems: 'center', gap: 8,
+                          cursor: item.url ? 'pointer' : 'default',
+                        }} onClick={() => item.url && window.open(item.url, '_blank')}>
+                          <span style={{ fontSize: 12 }}>{item.icon}</span>
+                          <span style={{ fontSize: 13, color: '#64748b', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+                          <span style={{ fontSize: 11, color: '#94a3b8', flexShrink: 0 }}>{item.workspace}</span>
+                        </div>
+                      ))}
+                    </>
+                  )}
 
+                  {/* Empty */}
+                  {briefingItems.length === 0 && (
+                    <div style={{ textAlign: 'center', color: '#94a3b8', padding: '60px 20px' }}>
+                      <div style={{ fontSize: 36, marginBottom: 12 }}>🐝</div>
+                      <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>All clear</div>
+                      <div style={{ fontSize: 13 }}>No decisions needed. Your Bees are humming along.</div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
-
-          {/* Empty state */}
-          {feed.length === 0 && signals.length === 0 && (
-            <div style={{
-              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              textAlign: 'center', color: '#94a3b8', padding: '60px 20px',
-            }}>
-              <div>
-                <div style={{ fontSize: 36, marginBottom: 12 }}>🐝</div>
-                <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>All clear</div>
-                <div style={{ fontSize: 13 }}>No decisions needed. Your Bees are humming along.</div>
-              </div>
-            </div>
-          )}
         </div>
         )}
 
