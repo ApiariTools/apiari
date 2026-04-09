@@ -45,24 +45,20 @@ body {
 /* ── Mobile responsive ──────────────────────────────────────────── */
 
 @media (max-width: 640px) {
-  /* Hide workflow/bees tabs on mobile — briefing only */
-  .nav-tab-workflow,
-  .nav-tab-bees {
-    display: none;
-  }
-
-  /* Compact the top bar */
   .nav-bar {
     padding: 0 10px !important;
     height: 40px !important;
   }
 
-  /* Feed padding tighter */
+  .nav-tab-workflow,
+  .nav-tab-bees {
+    display: none;
+  }
+
   .briefing-feed-inner {
     padding: 12px 12px !important;
   }
 
-  /* Input bar tighter */
   .briefing-input-bar {
     padding: 8px 12px !important;
   }

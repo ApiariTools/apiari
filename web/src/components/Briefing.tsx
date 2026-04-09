@@ -167,6 +167,7 @@ export default function Briefing({
   const [input, setInput] = useState('');
   const [targetBee, setTargetBee] = useState('');
   const [targetWorkspace, setTargetWorkspace] = useState(workspaces[0] ?? '');
+  const [hiveOpen, setHiveOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
@@ -211,8 +212,40 @@ export default function Briefing({
 
   return (
     <div className="briefing-root">
-      {/* ── The Hive (left sidebar) ── */}
-      <div className="briefing-hive">
+      {/* ── Mobile header ── */}
+      <div className="briefing-mobile-header">
+        <button
+          onClick={() => setHiveOpen(!hiveOpen)}
+          style={{
+            padding: '4px 10px', borderRadius: 6, border: '1px solid #e2e8f0',
+            background: hiveOpen ? '#f1f5f9' : '#fff', cursor: 'pointer',
+            fontSize: 13, fontWeight: 500,
+          }}
+        >
+          🐝 Hive {hiveOpen ? '▲' : '▼'}
+        </button>
+        <select
+          value={`${targetWorkspace}/${targetBee}`}
+          onChange={(e) => handleBeeSelect(e.target.value)}
+          style={{
+            fontSize: 12, padding: '4px 8px', border: '1px solid #e2e8f0',
+            borderRadius: 6, background: '#f8fafc', flex: 1,
+          }}
+        >
+          {allBees.map((b) => (
+            <option key={`${b.workspace}/${b.name}`} value={`${b.workspace}/${b.name}`}>
+              @{b.name} ({b.workspace})
+            </option>
+          ))}
+        </select>
+        <span style={{
+          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+          background: connected ? '#22c55e' : '#ef4444',
+        }} />
+      </div>
+
+      {/* ── The Hive (left sidebar / mobile drawer) ── */}
+      <div className={`briefing-hive ${hiveOpen ? 'hive-open' : ''}`}>
         <div style={{
           padding: '14px 16px 8px',
           fontSize: 11,
