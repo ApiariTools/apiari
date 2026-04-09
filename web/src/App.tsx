@@ -243,7 +243,7 @@ export default function App() {
 
         <div style={{ flex: 1 }} />
 
-        {workspaces.length > 1 && (
+        {workspaces.length > 1 && view !== 'briefing' && (
           <select value={workspace} onChange={(e) => switchWorkspace(e.target.value)} style={{
             fontSize: 12, padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
             background: '#f8fafc', color: '#0f172a', marginRight: 8, cursor: 'pointer',

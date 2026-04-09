@@ -278,14 +278,28 @@ export default function Briefing({
         {workspaces.map((ws) => {
           const bees = hive.filter((h) => h.workspace === ws);
           if (bees.length === 0) return null;
+          const isSelected = ws === targetWorkspace;
           return (
             <div key={ws} style={{ padding: '4px 0' }}>
-              <div style={{
-                padding: '4px 16px',
-                fontSize: 12,
-                fontWeight: 700,
-                color: '#334155',
-              }}>
+              <div
+                onClick={() => setTargetWorkspace(ws)}
+                style={{
+                  padding: '6px 16px',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: isSelected ? '#0f172a' : '#64748b',
+                  background: isSelected ? '#f1f5f9' : 'transparent',
+                  borderRadius: 4,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <span style={{
+                  width: 4, height: 16, borderRadius: 2, flexShrink: 0,
+                  background: isSelected ? '#f59e0b' : 'transparent',
+                }} />
                 {ws}
               </div>
               {bees.map((entry) => (
@@ -377,9 +391,10 @@ export default function Briefing({
         <div className="briefing-feed-inner" style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
           <div style={{ maxWidth: 720, margin: '0 auto' }}>
             {(() => {
-              const actionItems = briefingItems.filter(i => i.priority === 'action');
-              const noticeItems = briefingItems.filter(i => i.priority === 'notice');
-              const quietItems = briefingItems.filter(i => i.priority === 'quiet');
+              const filtered = briefingItems.filter(i => i.workspace === targetWorkspace);
+              const actionItems = filtered.filter(i => i.priority === 'action');
+              const noticeItems = filtered.filter(i => i.priority === 'notice');
+              const quietItems = filtered.filter(i => i.priority === 'quiet');
               return (
                 <>
                   {/* Action items */}
@@ -475,7 +490,7 @@ export default function Briefing({
                   )}
 
                   {/* Empty */}
-                  {briefingItems.length === 0 && (
+                  {filtered.length === 0 && (
                     <div style={{ textAlign: 'center', color: '#94a3b8', padding: '60px 20px' }}>
                       <div style={{ fontSize: 36, marginBottom: 12 }}>🐝</div>
                       <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>All clear</div>
