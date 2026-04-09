@@ -5,7 +5,7 @@ import TaskPanel from './components/TaskPanel';
 import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, clearTasks, sendChat, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchConversations, clearTasks, sendChat, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
 type View = 'briefing' | 'workflow' | 'bees';
@@ -56,6 +56,28 @@ export default function App() {
         }
         setBeesByWorkspace(allBees);
         if (!workspace && ws.length > 0) setWorkspace(ws[0]);
+
+        // Load conversation history for all workspaces
+        const allMessages: typeof chatMessages = [];
+        for (const w of ws) {
+          try {
+            const convs = await fetchConversations(w);
+            for (const c of convs) {
+              if (c.role === 'user' || c.role === 'assistant') {
+                allMessages.push({
+                  id: `hist-${c.created_at}-${allMessages.length}`,
+                  bee: c.bee,
+                  workspace: c.workspace,
+                  role: c.role as 'user' | 'assistant',
+                  text: c.content,
+                  timestamp: new Date(c.created_at),
+                });
+              }
+            }
+          } catch { /* ignore */ }
+        }
+        allMessages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        setChatMessages(allMessages);
       })
       .catch(() => {
         setError('Failed to connect to daemon API.');

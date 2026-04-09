@@ -740,6 +740,83 @@ async fn save_bees(
     Ok(Json(serde_json::json!({ "ok": true, "count": body.len() })))
 }
 
+// ── Conversation history ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct ConversationMessage {
+    role: String,
+    content: String,
+    source: Option<String>,
+    bee: String,
+    workspace: String,
+    created_at: String,
+}
+
+/// GET /api/conversations?workspace=apiari&limit=50 — load recent chat history.
+async fn get_conversations(
+    State(state): State<HttpState>,
+    axum::extract::Query(q): axum::extract::Query<WorkspaceQuery>,
+) -> Json<Vec<ConversationMessage>> {
+    let workspace = q.workspace.as_deref().unwrap_or(state.workspace.as_str());
+
+    let db_path = &*state.db_path;
+    let store = match crate::buzz::signal::store::SignalStore::open(db_path, workspace) {
+        Ok(s) => s,
+        Err(_) => return Json(vec![]),
+    };
+
+    // Load conversations for all bees in this workspace
+    // Keys are either "workspace" (legacy) or "workspace/BeeName"
+    let mut messages = Vec::new();
+
+    // Try legacy key first
+    let conv = crate::buzz::conversation::ConversationStore::new(store.conn(), workspace);
+    if let Ok(rows) = conv.load_history(50) {
+        for row in rows {
+            messages.push(ConversationMessage {
+                role: row.role,
+                content: row.content,
+                source: row.source,
+                bee: "Bee".to_string(),
+                workspace: workspace.to_string(),
+                created_at: row.created_at,
+            });
+        }
+    }
+
+    // Try per-bee keys
+    if let Ok(workspaces) = crate::config::discover_workspaces()
+        && let Some(ws) = workspaces.iter().find(|w| w.name == workspace)
+    {
+        for bee in ws.config.resolved_bees() {
+            let key = format!("{workspace}/{}", bee.name);
+            let conv = crate::buzz::conversation::ConversationStore::new(store.conn(), &key);
+            if let Ok(rows) = conv.load_history(50) {
+                for row in rows {
+                    messages.push(ConversationMessage {
+                        role: row.role,
+                        content: row.content,
+                        source: row.source,
+                        bee: bee.name.clone(),
+                        workspace: workspace.to_string(),
+                        created_at: row.created_at,
+                    });
+                }
+            }
+        }
+    }
+
+    // Sort by timestamp
+    messages.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+    // Keep last 50
+    if messages.len() > 50 {
+        messages = messages.split_off(messages.len() - 50);
+    }
+
+    Json(messages)
+}
+
 // ── Chat handler ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -829,6 +906,7 @@ pub async fn start_http_server(
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/chat", post(chat_handler))
+        .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))
         .route("/api/ws", get(ws_handler))
         .layer(CorsLayer::permissive())
