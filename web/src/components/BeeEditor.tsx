@@ -77,7 +77,7 @@ export default function BeeEditor({ bees, workspace, onBeesChange }: BeeEditorPr
 
   async function handleSave() {
     setSaveStatus('Saving...');
-    const result = await saveBees(bees);
+    const result = await saveBees(bees, workspace);
     if (result.ok) {
       setSaveStatus('Saved \u2713');
       setTimeout(() => setSaveStatus(null), 2000);

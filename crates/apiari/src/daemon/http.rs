@@ -560,11 +560,31 @@ async fn handle_ws(mut socket: WebSocket, state: HttpState) {
     info!("[http] WebSocket client disconnected");
 }
 
+// ── Query params ──────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceQuery {
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
 // ── Bee config handlers ────────────────────────────────────────────────
 
-/// GET /api/bees — returns the resolved bee config for this workspace.
-async fn get_bees(State(state): State<HttpState>) -> Json<BeesConfigResponse> {
-    let workspace = state.workspace.as_str();
+/// GET /api/workspaces — list all configured workspaces.
+async fn list_workspaces() -> Json<Vec<String>> {
+    let names = crate::config::discover_workspaces()
+        .map(|ws| ws.into_iter().map(|w| w.name).collect())
+        .unwrap_or_default();
+    Json(names)
+}
+
+/// GET /api/bees — returns the resolved bee config for a workspace.
+/// Supports `?workspace=mgm` query param (defaults to daemon's primary workspace).
+async fn get_bees(
+    State(state): State<HttpState>,
+    axum::extract::Query(q): axum::extract::Query<WorkspaceQuery>,
+) -> Json<BeesConfigResponse> {
+    let workspace = q.workspace.as_deref().unwrap_or(state.workspace.as_str());
     let bees = match crate::config::discover_workspaces() {
         Ok(workspaces) => {
             if let Some(ws) = workspaces.iter().find(|w| w.name == workspace) {
@@ -603,12 +623,14 @@ async fn get_bees(State(state): State<HttpState>) -> Json<BeesConfigResponse> {
     })
 }
 
-/// PUT /api/bees — save the bee config array to the workspace TOML.
+/// PUT /api/bees — save the bee config array to a workspace TOML.
+/// Supports `?workspace=mgm` query param.
 async fn save_bees(
     State(state): State<HttpState>,
+    axum::extract::Query(q): axum::extract::Query<WorkspaceQuery>,
     Json(body): Json<Vec<BeeConfigView>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let workspace = state.workspace.as_str();
+    let workspace = q.workspace.as_deref().unwrap_or(state.workspace.as_str());
     let config_path = crate::config::workspaces_dir().join(format!("{workspace}.toml"));
 
     // Read existing TOML
@@ -706,6 +728,7 @@ pub async fn start_http_server(
         .route("/api/graph/yaml", get(get_yaml))
         .route("/api/tasks", get(get_tasks).delete(clear_tasks))
         .route("/api/signal", post(inject_signal))
+        .route("/api/workspaces", get(list_workspaces))
         .route("/api/bees", get(get_bees).put(save_bees))
         .route("/api/ws", get(ws_handler))
         .layer(CorsLayer::permissive())

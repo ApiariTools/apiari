@@ -4,7 +4,7 @@ import TaskPanel from './components/TaskPanel';
 import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, clearTasks, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, clearTasks, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
 type View = 'workflow' | 'bees';
@@ -20,21 +20,31 @@ export default function App() {
   const [view, setView] = useState<View>('workflow');
   const [bees, setBees] = useState<BeeConfigView[]>([]);
   const [workspace, setWorkspace] = useState('');
+  const [workspaces, setWorkspaces] = useState<string[]>([]);
 
-  // Initial fetch
+  // Load workspace list + initial data
   useEffect(() => {
-    Promise.all([fetchGraph(), fetchTasks(), fetchBees()])
-      .then(([g, t, b]) => {
+    Promise.all([fetchGraph(), fetchTasks(), fetchBees(), fetchWorkspaces()])
+      .then(([g, t, b, ws]) => {
         setGraph(g);
         setTasks(t);
         setBees(b.bees);
         setWorkspace(b.workspace);
+        setWorkspaces(ws);
         setError(null);
       })
       .catch(() => {
         setError(`Failed to connect to daemon API. Is "cargo run -p apiari -- web" running?`);
       });
   }, []);
+
+  // Reload bees when workspace changes
+  function switchWorkspace(ws: string) {
+    setWorkspace(ws);
+    fetchBees(ws).then((b) => {
+      setBees(b.bees);
+    });
+  }
 
   // WebSocket for live updates
   useEffect(() => {
@@ -165,6 +175,26 @@ export default function App() {
           Bees ({bees.length})
         </NavTab>
         <div style={{ flex: 1 }} />
+        {workspaces.length > 1 && (
+          <select
+            value={workspace}
+            onChange={(e) => switchWorkspace(e.target.value)}
+            style={{
+              fontSize: 12,
+              padding: '4px 8px',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              background: '#f8fafc',
+              color: '#0f172a',
+              marginRight: 8,
+              cursor: 'pointer',
+            }}
+          >
+            {workspaces.map((ws) => (
+              <option key={ws} value={ws}>{ws}</option>
+            ))}
+          </select>
+        )}
         <span style={{
           width: 8,
           height: 8,
@@ -172,9 +202,11 @@ export default function App() {
           background: connected ? '#22c55e' : '#ef4444',
           boxShadow: connected ? '0 0 6px rgba(34, 197, 94, 0.4)' : 'none',
         }} />
-        <span style={{ fontSize: 12, color: '#94a3b8', marginLeft: 6 }}>
-          {workspace || 'connecting...'}
-        </span>
+        {workspaces.length <= 1 && (
+          <span style={{ fontSize: 12, color: '#94a3b8', marginLeft: 6 }}>
+            {workspace || 'connecting...'}
+          </span>
+        )}
       </div>
 
       {/* Main content */}

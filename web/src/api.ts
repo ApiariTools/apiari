@@ -41,13 +41,20 @@ export async function injectSignal(
   });
 }
 
-export async function fetchBees(): Promise<BeesConfigResponse> {
-  const res = await fetch(`${API_BASE}/bees`);
+export async function fetchWorkspaces(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/workspaces`);
   return res.json();
 }
 
-export async function saveBees(bees: BeeConfigView[]): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${API_BASE}/bees`, {
+export async function fetchBees(workspace?: string): Promise<BeesConfigResponse> {
+  const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const res = await fetch(`${API_BASE}/bees${qs}`);
+  return res.json();
+}
+
+export async function saveBees(bees: BeeConfigView[], workspace?: string): Promise<{ ok: boolean; error?: string }> {
+  const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const res = await fetch(`${API_BASE}/bees${qs}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bees),
