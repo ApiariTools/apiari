@@ -284,6 +284,7 @@ export default function Briefing({
                   onClick={() => {
                     setTargetWorkspace(entry.workspace);
                     setTargetBee(entry.bee);
+                    setHiveOpen(false);
                     inputRef.current?.focus();
                   }}
                 >
@@ -572,30 +573,14 @@ export default function Briefing({
           background: '#fff',
           display: 'flex',
           flexDirection: 'column',
-          gap: 8,
+          gap: 6,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <select
-              value={`${targetWorkspace}/${targetBee}`}
-              onChange={(e) => handleBeeSelect(e.target.value)}
-              style={{
-                fontSize: 12,
-                padding: '6px 10px',
-                border: '1px solid #e2e8f0',
-                borderRadius: 8,
-                background: '#f8fafc',
-                color: '#334155',
-                cursor: 'pointer',
-              }}
-            >
-              {allBees.map((b) => (
-                <option key={`${b.workspace}/${b.name}`} value={`${b.workspace}/${b.name}`}>
-                  @{b.name} ({b.workspace})
-                </option>
-              ))}
-            </select>
+            <span style={{ fontSize: 12, color: '#d97706', fontWeight: 600 }}>
+              @{targetBee}
+            </span>
             <span style={{ fontSize: 11, color: '#94a3b8' }}>
-              Enter to send, Shift+Enter for new line
+              {targetWorkspace}
             </span>
             <div style={{ flex: 1 }} />
             <button
@@ -608,8 +593,9 @@ export default function Briefing({
                 background: input.trim() ? '#f59e0b' : '#e2e8f0',
                 color: input.trim() ? '#fff' : '#94a3b8',
                 cursor: input.trim() ? 'pointer' : 'default',
-                fontSize: 13,
+                fontSize: 16,
                 fontWeight: 600,
+                minHeight: 36,
               }}
             >
               Send
