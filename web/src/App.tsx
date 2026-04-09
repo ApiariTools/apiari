@@ -204,9 +204,8 @@ export default function App() {
   }
 
   return (
-    <div style={{
-      height: '100vh', display: 'flex', flexDirection: 'column',
-      background: '#f8fafc', color: '#1e293b',
+    <div className="app-shell" style={{
+      color: '#1e293b',
       fontFamily: 'system-ui, -apple-system, sans-serif',
     }}>
       {/* ── Top nav ── */}

@@ -52,7 +52,6 @@
     display: flex;
     align-items: center;
     padding: 8px 12px;
-    padding-top: calc(8px + env(safe-area-inset-top, 0px));
     gap: 8px;
     border-bottom: 1px solid #e2e8f0;
     background: #fff;
