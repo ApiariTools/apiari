@@ -168,13 +168,16 @@ export default function Briefing({
   const [targetBee, setTargetBee] = useState('');
   const [targetWorkspace, setTargetWorkspace] = useState(workspaces[0] ?? '');
   const [hiveOpen, setHiveOpen] = useState(false);
+  const [tab, setTab] = useState<'briefing' | 'chat'>('briefing');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom when messages change
+  // Auto-scroll chat to bottom when messages change
   useEffect(() => {
-    feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages.length]);
+    if (tab === 'chat') {
+      feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages.length, tab]);
 
   const hive = buildHive(workspaces, beesByWorkspace, tasks);
   const feed = buildFeed(tasks);
@@ -331,9 +334,31 @@ export default function Briefing({
         </div>
       </div>
 
-      {/* ── Main feed ── */}
+      {/* ── Main area ── */}
       <div className="briefing-feed">
-        {/* Feed area */}
+        {/* ── Bottom tab bar ── */}
+        <div style={{
+          display: 'flex', borderBottom: '1px solid #e2e8f0', background: '#fff',
+          flexShrink: 0,
+        }}>
+          <button onClick={() => setTab('briefing')} style={{
+            flex: 1, padding: '10px 0', border: 'none', cursor: 'pointer',
+            fontSize: 14, fontWeight: tab === 'briefing' ? 600 : 400,
+            color: tab === 'briefing' ? '#0f172a' : '#94a3b8',
+            background: 'transparent',
+            borderBottom: tab === 'briefing' ? '2px solid #f59e0b' : '2px solid transparent',
+          }}>Briefing</button>
+          <button onClick={() => setTab('chat')} style={{
+            flex: 1, padding: '10px 0', border: 'none', cursor: 'pointer',
+            fontSize: 14, fontWeight: tab === 'chat' ? 600 : 400,
+            color: tab === 'chat' ? '#0f172a' : '#94a3b8',
+            background: 'transparent',
+            borderBottom: tab === 'chat' ? '2px solid #f59e0b' : '2px solid transparent',
+          }}>Chat</button>
+        </div>
+
+        {/* ── Briefing tab ── */}
+        {tab === 'briefing' && (
         <div className="briefing-feed-inner" style={{ flex: 1, overflow: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
          <div style={{ width: '100%', maxWidth: 720 }}>
 
@@ -496,24 +521,41 @@ export default function Briefing({
             </>
           )}
 
-          {/* Chat messages */}
-          {chatMessages.length > 0 && (
-            <>
-              <div style={{
-                fontSize: 11, fontWeight: 600, color: '#94a3b8',
-                textTransform: 'uppercase', letterSpacing: '0.05em',
-                margin: '20px 0 8px',
-                display: 'flex', alignItems: 'center', gap: 8,
-              }}>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
-                <span>chat</span>
-                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+          </div>
+
+          {/* Empty state */}
+          {feed.length === 0 && signals.length === 0 && (
+            <div style={{
+              flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              textAlign: 'center', color: '#94a3b8', padding: '60px 20px',
+            }}>
+              <div>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>🐝</div>
+                <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>All clear</div>
+                <div style={{ fontSize: 13 }}>No decisions needed. Your Bees are humming along.</div>
               </div>
+            </div>
+          )}
+        </div>
+        )}
+
+        {/* ── Chat tab ── */}
+        {tab === 'chat' && (
+        <>
+          <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
+            <div style={{ maxWidth: 720 }}>
+              {chatMessages.length === 0 && (
+                <div style={{
+                  textAlign: 'center', color: '#94a3b8', padding: '60px 20px',
+                }}>
+                  <div style={{ fontSize: 14 }}>
+                    Send a message to @{targetBee || 'a Bee'} to get started.
+                  </div>
+                </div>
+              )}
               {chatMessages.map((msg) => (
                 <div key={msg.id} style={{
-                  padding: '10px 14px',
-                  marginBottom: 6,
-                  borderRadius: 10,
+                  padding: '10px 14px', marginBottom: 6, borderRadius: 10,
                   background: msg.role === 'user' ? '#f8fafc' : '#fff',
                   border: `1px solid ${msg.role === 'user' ? '#e2e8f0' : '#fde68a'}`,
                 }}>
@@ -529,103 +571,51 @@ export default function Briefing({
                     </span>
                   </div>
                   <div style={{
-                    fontSize: 14, color: '#1e293b', lineHeight: 1.5,
-                    whiteSpace: 'pre-wrap',
+                    fontSize: 14, color: '#1e293b', lineHeight: 1.5, whiteSpace: 'pre-wrap',
                   }}>
                     {msg.text}
                   </div>
                 </div>
               ))}
-            </>
-          )}
-          <div ref={feedEndRef} />
+              <div ref={feedEndRef} />
+            </div>
           </div>
 
-          {/* Empty state — centered in full available space */}
-          {feed.length === 0 && chatMessages.length === 0 && (
-            <div style={{
-              flex: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              textAlign: 'center',
-              color: '#94a3b8',
-              padding: '60px 20px',
-            }}>
-              <div>
-                <div style={{ fontSize: 36, marginBottom: 12 }}>🐝</div>
-                <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
-                  All clear
-                </div>
-                <div style={{ fontSize: 13 }}>
-                  No decisions needed. Your Bees are humming along.
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ── Input bar ── */}
-        <div className="briefing-input-bar" style={{
-          borderTop: '1px solid #e2e8f0',
-          padding: '12px 20px',
-          background: '#fff',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 6,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: '#d97706', fontWeight: 600 }}>
-              @{targetBee}
-            </span>
-            <span style={{ fontSize: 11, color: '#94a3b8' }}>
-              {targetWorkspace}
-            </span>
-            <div style={{ flex: 1 }} />
-            <button
-              onClick={handleSend}
-              disabled={!input.trim()}
-              style={{
-                padding: '6px 18px',
-                borderRadius: 8,
-                border: 'none',
+          {/* Input bar */}
+          <div className="briefing-input-bar" style={{
+            borderTop: '1px solid #e2e8f0', padding: '12px 20px',
+            background: '#fff', display: 'flex', flexDirection: 'column', gap: 6,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 12, color: '#d97706', fontWeight: 600 }}>@{targetBee}</span>
+              <span style={{ fontSize: 11, color: '#94a3b8' }}>{targetWorkspace}</span>
+              <div style={{ flex: 1 }} />
+              <button onClick={handleSend} disabled={!input.trim()} style={{
+                padding: '6px 18px', borderRadius: 8, border: 'none',
                 background: input.trim() ? '#f59e0b' : '#e2e8f0',
                 color: input.trim() ? '#fff' : '#94a3b8',
                 cursor: input.trim() ? 'pointer' : 'default',
-                fontSize: 16,
-                fontWeight: 600,
-                minHeight: 36,
+                fontSize: 16, fontWeight: 600, minHeight: 36,
+              }}>Send</button>
+            </div>
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
               }}
-            >
-              Send
-            </button>
+              placeholder={targetBee ? `Message @${targetBee}...` : 'Select a Bee...'}
+              rows={Math.min(6, Math.max(2, input.split('\n').length))}
+              style={{
+                width: '100%', padding: '10px 14px', border: '1px solid #e2e8f0',
+                borderRadius: 8, fontSize: 16, outline: 'none', resize: 'none',
+                fontFamily: 'inherit', lineHeight: 1.5, boxSizing: 'border-box',
+              }}
+            />
           </div>
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder={targetBee ? `Message @${targetBee}...` : 'Select a Bee...'}
-            rows={Math.min(6, Math.max(2, input.split('\n').length))}
-            style={{
-              width: '100%',
-              padding: '10px 14px',
-              border: '1px solid #e2e8f0',
-              borderRadius: 8,
-              fontSize: 14,
-              outline: 'none',
-              resize: 'none',
-              fontFamily: 'inherit',
-              lineHeight: 1.5,
-              boxSizing: 'border-box',
-            }}
-          />
-        </div>
+        </>
+        )}
       </div>
 
     </div>
