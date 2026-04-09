@@ -29,10 +29,20 @@ interface HiveEntry {
   isActive: boolean;
 }
 
+interface ChatMessage {
+  id: string;
+  bee: string;
+  workspace: string;
+  role: 'user' | 'assistant';
+  text: string;
+  timestamp: Date;
+}
+
 interface BriefingProps {
   workspaces: string[];
   beesByWorkspace: Record<string, BeeConfigView[]>;
   tasks: TaskView[];
+  chatMessages: ChatMessage[];
   connected: boolean;
   onSendMessage: (bee: string, workspace: string, text: string) => void;
   onDrillIntoTask: (taskId: string) => void;
@@ -136,6 +146,7 @@ export default function Briefing({
   workspaces,
   beesByWorkspace,
   tasks,
+  chatMessages,
   connected,
   onSendMessage,
   onDrillIntoTask,
@@ -407,10 +418,52 @@ export default function Briefing({
             </>
           )}
 
+          {/* Chat messages */}
+          {chatMessages.length > 0 && (
+            <>
+              <div style={{
+                fontSize: 11, fontWeight: 600, color: '#94a3b8',
+                textTransform: 'uppercase', letterSpacing: '0.05em',
+                margin: '20px 0 8px',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+                <span>chat</span>
+                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+              </div>
+              {chatMessages.map((msg) => (
+                <div key={msg.id} style={{
+                  padding: '10px 14px',
+                  marginBottom: 6,
+                  borderRadius: 10,
+                  background: msg.role === 'user' ? '#f8fafc' : '#fff',
+                  border: `1px solid ${msg.role === 'user' ? '#e2e8f0' : '#fde68a'}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600,
+                      color: msg.role === 'user' ? '#64748b' : '#d97706',
+                    }}>
+                      {msg.role === 'user' ? 'You' : `@${msg.bee}`}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                      {msg.workspace} · {timeAgo(msg.timestamp)}
+                    </span>
+                  </div>
+                  <div style={{
+                    fontSize: 14, color: '#1e293b', lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap',
+                  }}>
+                    {msg.text}
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
           </div>
 
           {/* Empty state — centered in full available space */}
-          {feed.length === 0 && (
+          {feed.length === 0 && chatMessages.length === 0 && (
             <div style={{
               flex: 1,
               display: 'flex',

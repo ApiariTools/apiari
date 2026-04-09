@@ -5,7 +5,7 @@ import TaskPanel from './components/TaskPanel';
 import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, clearTasks, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, clearTasks, sendChat, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
 type View = 'briefing' | 'workflow' | 'bees';
@@ -22,6 +22,14 @@ export default function App() {
   const [workspace, setWorkspace] = useState('');
   const [workspaces, setWorkspaces] = useState<string[]>([]);
   const [beesByWorkspace, setBeesByWorkspace] = useState<Record<string, BeeConfigView[]>>({});
+  const [chatMessages, setChatMessages] = useState<Array<{
+    id: string;
+    bee: string;
+    workspace: string;
+    role: 'user' | 'assistant';
+    text: string;
+    timestamp: Date;
+  }>>([]);
 
   // Flat list of bees for the current workspace (for config editor)
   const currentBees = beesByWorkspace[workspace] ?? [];
@@ -90,9 +98,25 @@ export default function App() {
     fetchGraph(ws).then((g) => setGraph(g));
   }
 
-  function handleSendMessage(bee: string, ws: string, text: string) {
-    // TODO: wire to daemon chat API
-    console.log(`[@${bee} in ${ws}]: ${text}`);
+  async function handleSendMessage(bee: string, ws: string, text: string) {
+    const id = `chat-${Date.now()}`;
+    // Show user message immediately
+    setChatMessages((prev) => [...prev, {
+      id, bee, workspace: ws, role: 'user', text, timestamp: new Date(),
+    }]);
+    // Send to daemon and get response
+    try {
+      const resp = await sendChat(ws, text, bee);
+      setChatMessages((prev) => [...prev, {
+        id: `${id}-resp`, bee, workspace: ws, role: 'assistant',
+        text: resp.text || '(no response)', timestamp: new Date(),
+      }]);
+    } catch {
+      setChatMessages((prev) => [...prev, {
+        id: `${id}-err`, bee, workspace: ws, role: 'assistant',
+        text: 'Failed to reach Bee', timestamp: new Date(),
+      }]);
+    }
   }
 
   function handleDrillIntoTask(taskId: string) {
@@ -179,6 +203,7 @@ export default function App() {
             workspaces={workspaces}
             beesByWorkspace={beesByWorkspace}
             tasks={tasks}
+            chatMessages={chatMessages}
             connected={connected}
             onSendMessage={handleSendMessage}
             onDrillIntoTask={handleDrillIntoTask}

@@ -1404,6 +1404,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
     // Start web UI HTTP server (port 7422) for the first workspace.
     // The web UI shows the workflow graph and live task state.
     let mut web_signal_rx: Option<mpsc::UnboundedReceiver<http::InjectSignal>> = None;
+    let mut web_chat_rx: Option<mpsc::UnboundedReceiver<http::WebChatRequest>> = None;
     if let Some(first_slot) = slots.first() {
         let graph = first_slot.orchestrator.workflow_graph().clone();
         let yaml_path = first_slot.config.root.join(".apiari/workflow.yaml");
@@ -1416,13 +1417,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         )
         .await
         {
-            Ok((updates_tx, signal_rx)) => {
+            Ok((updates_tx, signal_rx, chat_rx)) => {
                 // Store the broadcast sender on the slot so signal processing can push updates
                 // (we'll set it on the mutable slot below)
                 if let Some(slot) = slots.first_mut() {
                     slot.web_updates_tx = Some(updates_tx);
                 }
                 web_signal_rx = Some(signal_rx);
+                web_chat_rx = Some(chat_rx);
                 info!("[daemon] web UI server started on http://127.0.0.1:7422");
             }
             Err(e) => {
@@ -1573,6 +1575,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             }
         };
 
+        // Helper: recv from web chat, else pend forever
+        let web_chat_recv = async {
+            match web_chat_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutting down");
@@ -1623,6 +1633,67 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             Err(e) => warn!("[web] failed to process signal: {e}"),
                         }
                     }
+                }
+            }
+
+            // ── Web UI chat ──
+            Some(chat_req) = web_chat_recv => {
+                let ws_name = &chat_req.workspace;
+                if let Some(&slot_idx) = name_map.get(ws_name) {
+                    let slot = &slots[slot_idx];
+                    // Find the target bee
+                    let bee_idx = chat_req.bee.as_deref()
+                        .and_then(|name| slot.bee_map.get(name).copied())
+                        .unwrap_or(0);
+                    if let Some(bee) = slot.bees.get(bee_idx) {
+                        // Create a socket responder that bridges to the web chat response channel
+                        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<socket::DaemonResponse>();
+                        let response_tx = chat_req.response_tx.clone();
+
+                        // Forward daemon responses to web chat events
+                        tokio::spawn(async move {
+                            while let Some(resp) = resp_rx.recv().await {
+                                match resp {
+                                    socket::DaemonResponse::Token { text, .. } => {
+                                        let _ = response_tx.send(http::WebChatEvent::Token { text });
+                                    }
+                                    socket::DaemonResponse::Done { .. } => {
+                                        let _ = response_tx.send(http::WebChatEvent::Done);
+                                        break;
+                                    }
+                                    socket::DaemonResponse::Error { text, .. } => {
+                                        let _ = response_tx.send(http::WebChatEvent::Error { text });
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        });
+
+                        let bee_name = slot.bees.get(bee_idx)
+                            .map(|b| b.name.clone())
+                            .unwrap_or_default();
+                        let job = CoordinatorJob::TuiChat {
+                            text: chat_req.text,
+                            responder: resp_tx,
+                            socket_server: socket_server.clone(),
+                            ws_name: ws_name.clone(),
+                            bee_name,
+                        };
+                        if bee.coord_tx.send(job).is_err() {
+                            let _ = chat_req.response_tx.send(http::WebChatEvent::Error {
+                                text: "coordinator not running".to_string(),
+                            });
+                        }
+                    } else {
+                        let _ = chat_req.response_tx.send(http::WebChatEvent::Error {
+                            text: "bee not found".to_string(),
+                        });
+                    }
+                } else {
+                    let _ = chat_req.response_tx.send(http::WebChatEvent::Error {
+                        text: format!("workspace '{ws_name}' not found"),
+                    });
                 }
             }
 

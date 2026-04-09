@@ -67,6 +67,19 @@ export async function saveBees(bees: BeeConfigView[], workspace?: string): Promi
   return { ok: true };
 }
 
+export async function sendChat(
+  workspace: string,
+  text: string,
+  bee?: string,
+): Promise<{ type: string; text: string }> {
+  const res = await fetch(`${API_BASE}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace, text, bee }),
+  });
+  return res.json();
+}
+
 export function connectWs(onMessage: (msg: WsMessage) => void): WebSocket {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${window.location.host}${API_BASE}/ws`);

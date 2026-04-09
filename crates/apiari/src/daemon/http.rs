@@ -42,6 +42,8 @@ pub struct HttpState {
     updates_tx: broadcast::Sender<WsUpdate>,
     /// Channel for injecting test signals (dev mode).
     signal_tx: mpsc::UnboundedSender<InjectSignal>,
+    /// Channel for chat messages from web UI to daemon coordinator.
+    chat_tx: mpsc::UnboundedSender<WebChatRequest>,
 }
 
 /// A WebSocket update message sent to all connected clients.
@@ -68,6 +70,24 @@ pub struct InjectSignal {
     pub title: String,
     #[serde(default)]
     pub metadata: Option<serde_json::Value>,
+}
+
+/// A chat message from the web UI to a Bee.
+#[derive(Debug)]
+pub struct WebChatRequest {
+    pub workspace: String,
+    pub bee: Option<String>,
+    pub text: String,
+    pub response_tx: mpsc::UnboundedSender<WebChatEvent>,
+}
+
+/// Streaming chat response events.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WebChatEvent {
+    Token { text: String },
+    Done,
+    Error { text: String },
 }
 
 // ── API view types ─────────────────────────────────────────────────────
@@ -720,9 +740,63 @@ async fn save_bees(
     Ok(Json(serde_json::json!({ "ok": true, "count": body.len() })))
 }
 
+// ── Chat handler ──────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ChatBody {
+    workspace: String,
+    #[serde(default)]
+    bee: Option<String>,
+    text: String,
+}
+
+/// POST /api/chat — send a message to a Bee, stream the response as SSE.
+async fn chat_handler(
+    State(state): State<HttpState>,
+    Json(body): Json<ChatBody>,
+) -> impl IntoResponse {
+    let (response_tx, mut response_rx) = mpsc::unbounded_channel::<WebChatEvent>();
+
+    let req = WebChatRequest {
+        workspace: body.workspace,
+        bee: body.bee,
+        text: body.text,
+        response_tx,
+    };
+
+    if state.chat_tx.send(req).is_err() {
+        return axum::response::Json(serde_json::json!({
+            "type": "error",
+            "text": "daemon chat channel closed"
+        }))
+        .into_response();
+    }
+
+    // Collect the full response (for simplicity — SSE streaming comes later)
+    let mut full_response = String::new();
+    let mut had_error = false;
+    while let Some(event) = response_rx.recv().await {
+        match event {
+            WebChatEvent::Token { text } => full_response.push_str(&text),
+            WebChatEvent::Done => break,
+            WebChatEvent::Error { text } => {
+                full_response = text;
+                had_error = true;
+                break;
+            }
+        }
+    }
+
+    axum::response::Json(serde_json::json!({
+        "type": if had_error { "error" } else { "response" },
+        "text": full_response,
+    }))
+    .into_response()
+}
+
 // ── Server setup ───────────────────────────────────────────────────────
 
-/// Start the HTTP server. Returns the signal injection receiver for the daemon to consume.
+/// Start the HTTP server. Returns channels for the daemon to consume.
 pub async fn start_http_server(
     graph: WorkflowGraph,
     yaml_path: Option<std::path::PathBuf>,
@@ -732,9 +806,11 @@ pub async fn start_http_server(
 ) -> color_eyre::Result<(
     broadcast::Sender<WsUpdate>,
     mpsc::UnboundedReceiver<InjectSignal>,
+    mpsc::UnboundedReceiver<WebChatRequest>,
 )> {
     let (updates_tx, _) = broadcast::channel(256);
     let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    let (chat_tx, chat_rx) = mpsc::unbounded_channel();
 
     let state = HttpState {
         graph: Arc::new(RwLock::new(graph)),
@@ -743,6 +819,7 @@ pub async fn start_http_server(
         workspace: Arc::new(workspace),
         updates_tx: updates_tx.clone(),
         signal_tx,
+        chat_tx,
     };
 
     let app = Router::new()
@@ -751,6 +828,7 @@ pub async fn start_http_server(
         .route("/api/tasks", get(get_tasks).delete(clear_tasks))
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
+        .route("/api/chat", post(chat_handler))
         .route("/api/bees", get(get_bees).put(save_bees))
         .route("/api/ws", get(ws_handler))
         .layer(CorsLayer::permissive())
@@ -765,7 +843,7 @@ pub async fn start_http_server(
         }
     });
 
-    Ok((updates_tx, signal_rx))
+    Ok((updates_tx, signal_rx, chat_rx))
 }
 
 /// Run a standalone dev server — no daemon needed.
@@ -811,7 +889,7 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
     eprintln!("Press Ctrl+C to stop.");
     eprintln!();
 
-    let (updates_tx, mut signal_rx) = start_http_server(
+    let (updates_tx, mut signal_rx, _chat_rx) = start_http_server(
         graph,
         Some(yaml_path),
         db_path.clone(),
