@@ -245,7 +245,7 @@ export default function App() {
       </div>
 
       {/* ── Content ── */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'auto', minHeight: 0 }}>
         {view === 'briefing' && (
           <Briefing
             workspaces={workspaces}
