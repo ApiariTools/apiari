@@ -51,11 +51,23 @@ export interface TaskView {
   cursor: CursorView | null;
 }
 
+export interface SignalView {
+  id: number;
+  workspace: string;
+  source: string;
+  title: string;
+  severity: string;
+  status?: string;
+  url?: string;
+  created_at: string;
+}
+
 export type WsMessage =
   | { type: 'snapshot'; tasks: TaskView[]; graph: GraphView }
   | { type: 'task_updated'; task: TaskView }
   | { type: 'signal_processed'; source: string; title: string }
-  | { type: 'graph_updated'; graph: GraphView };
+  | { type: 'graph_updated'; graph: GraphView }
+  | { type: 'signal'; id: number; workspace: string; source: string; title: string; severity: string; url?: string; created_at: string };
 
 export const NODE_TYPES = ['entry', 'action', 'wait', 'terminal'] as const;
 export type NodeType = typeof NODE_TYPES[number];

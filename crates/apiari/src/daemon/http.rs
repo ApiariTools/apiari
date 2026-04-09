@@ -61,6 +61,16 @@ pub enum WsUpdate {
     SignalProcessed { source: String, title: String },
     /// The graph was edited and saved.
     GraphUpdated { graph: GraphView },
+    /// A new signal arrived (for the Briefing feed).
+    Signal {
+        id: i64,
+        workspace: String,
+        source: String,
+        title: String,
+        severity: String,
+        url: Option<String>,
+        created_at: String,
+    },
 }
 
 /// A test signal to inject (dev mode).
@@ -740,6 +750,51 @@ async fn save_bees(
     Ok(Json(serde_json::json!({ "ok": true, "count": body.len() })))
 }
 
+// ── Signals endpoint ──────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct SignalView {
+    id: i64,
+    workspace: String,
+    source: String,
+    title: String,
+    severity: String,
+    status: String,
+    url: Option<String>,
+    created_at: String,
+}
+
+/// GET /api/signals?workspace=mgm&limit=50 — recent signals for the Briefing feed.
+async fn get_signals(
+    State(state): State<HttpState>,
+    axum::extract::Query(q): axum::extract::Query<WorkspaceQuery>,
+) -> Json<Vec<SignalView>> {
+    let workspace = q.workspace.as_deref().unwrap_or(state.workspace.as_str());
+
+    let store = match crate::buzz::signal::store::SignalStore::open(&state.db_path, workspace) {
+        Ok(s) => s,
+        Err(_) => return Json(vec![]),
+    };
+
+    let signals = store.get_open_signals().unwrap_or_default();
+    let views: Vec<SignalView> = signals
+        .iter()
+        .take(50)
+        .map(|s| SignalView {
+            id: s.id,
+            workspace: workspace.to_string(),
+            source: s.source.clone(),
+            title: s.title.clone(),
+            severity: format!("{:?}", s.severity),
+            status: format!("{:?}", s.status),
+            url: s.url.clone(),
+            created_at: s.created_at.to_rfc3339(),
+        })
+        .collect();
+
+    Json(views)
+}
+
 // ── Conversation history ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -906,6 +961,7 @@ pub async fn start_http_server(
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/chat", post(chat_handler))
+        .route("/api/signals", get(get_signals))
         .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))
         .route("/api/ws", get(ws_handler))

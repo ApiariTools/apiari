@@ -1924,6 +1924,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                                                 source: record.source.clone(),
                                                                 title: record.title.clone(),
                                                             });
+                                                            let _ = web_tx.send(http::WsUpdate::Signal {
+                                                                id: record.id,
+                                                                workspace: slot.name.clone(),
+                                                                source: record.source.clone(),
+                                                                title: record.title.clone(),
+                                                                severity: format!("{:?}", record.severity),
+                                                                url: record.url.clone(),
+                                                                created_at: record.created_at.to_rfc3339(),
+                                                            });
                                                         }
                                                         // Log activity events for signal match and stage change.
                                                         if let Some(ref task) = engine_result.task

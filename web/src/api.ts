@@ -67,6 +67,21 @@ export async function saveBees(bees: BeeConfigView[], workspace?: string): Promi
   return { ok: true };
 }
 
+export async function fetchSignals(workspace?: string): Promise<Array<{
+  id: number;
+  workspace: string;
+  source: string;
+  title: string;
+  severity: string;
+  status: string;
+  url: string | null;
+  created_at: string;
+}>> {
+  const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const res = await fetch(`${API_BASE}/signals${qs}`);
+  return res.json();
+}
+
 export async function fetchConversations(workspace?: string): Promise<Array<{
   role: string;
   content: string;

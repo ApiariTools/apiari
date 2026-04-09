@@ -5,7 +5,7 @@ import TaskPanel from './components/TaskPanel';
 import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchConversations, clearTasks, sendChat, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchSignals, fetchConversations, clearTasks, sendChat, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
 type View = 'briefing' | 'workflow' | 'bees';
@@ -22,6 +22,15 @@ export default function App() {
   const [workspace, setWorkspace] = useState('');
   const [workspaces, setWorkspaces] = useState<string[]>([]);
   const [beesByWorkspace, setBeesByWorkspace] = useState<Record<string, BeeConfigView[]>>({});
+  const [signals, setSignals] = useState<Array<{
+    id: number;
+    workspace: string;
+    source: string;
+    title: string;
+    severity: string;
+    url?: string | null;
+    created_at: string;
+  }>>([]);
   const [chatMessages, setChatMessages] = useState<Array<{
     id: string;
     bee: string;
@@ -78,6 +87,17 @@ export default function App() {
         }
         allMessages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
         setChatMessages(allMessages);
+
+        // Load signals for all workspaces
+        const allSignals: typeof signals = [];
+        for (const w of ws) {
+          try {
+            const sigs = await fetchSignals(w);
+            allSignals.push(...sigs);
+          } catch { /* ignore */ }
+        }
+        allSignals.sort((a, b) => b.created_at.localeCompare(a.created_at));
+        setSignals(allSignals.slice(0, 100));
       })
       .catch(() => {
         setError('Failed to connect to daemon API.');
@@ -109,6 +129,13 @@ export default function App() {
           break;
         case 'graph_updated':
           setGraph(msg.graph);
+          break;
+        case 'signal':
+          setSignals((prev) => {
+            // Deduplicate by id
+            if (prev.some((s) => s.id === msg.id)) return prev;
+            return [msg, ...prev].slice(0, 100);
+          });
           break;
       }
     });
@@ -225,6 +252,7 @@ export default function App() {
             workspaces={workspaces}
             beesByWorkspace={beesByWorkspace}
             tasks={tasks}
+            signals={signals}
             chatMessages={chatMessages}
             connected={connected}
             onSendMessage={handleSendMessage}

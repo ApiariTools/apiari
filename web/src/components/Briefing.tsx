@@ -38,10 +38,21 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+interface SignalItem {
+  id: number;
+  workspace: string;
+  source: string;
+  title: string;
+  severity: string;
+  url?: string | null;
+  created_at: string;
+}
+
 interface BriefingProps {
   workspaces: string[];
   beesByWorkspace: Record<string, BeeConfigView[]>;
   tasks: TaskView[];
+  signals: SignalItem[];
   chatMessages: ChatMessage[];
   connected: boolean;
   onSendMessage: (bee: string, workspace: string, text: string) => void;
@@ -146,6 +157,7 @@ export default function Briefing({
   workspaces,
   beesByWorkspace,
   tasks,
+  signals,
   chatMessages,
   connected,
   onSendMessage,
@@ -421,6 +433,66 @@ export default function Briefing({
                   )}
                 </div>
               ))}
+            </>
+          )}
+
+          {/* Signals */}
+          {signals.length > 0 && (
+            <>
+              <div style={{
+                fontSize: 11, fontWeight: 600, color: '#94a3b8',
+                textTransform: 'uppercase', letterSpacing: '0.05em',
+                margin: '20px 0 8px',
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+                <span>signals ({signals.length})</span>
+                <span style={{ flex: 1, height: 1, background: '#e2e8f0' }} />
+              </div>
+              {signals.slice(0, 20).map((sig) => {
+                const isCritical = sig.severity === 'Critical' || sig.severity === 'Error';
+                const icon = sig.source.includes('sentry') ? '⚡'
+                  : sig.source.includes('github') ? '🔀'
+                  : sig.source.includes('swarm') ? '🐝'
+                  : '📡';
+                return (
+                  <div key={sig.id} style={{
+                    padding: '8px 12px',
+                    marginBottom: 4,
+                    borderRadius: 8,
+                    border: `1px solid ${isCritical ? '#fca5a5' : '#e2e8f0'}`,
+                    background: isCritical ? '#fef2f2' : '#fff',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    cursor: sig.url ? 'pointer' : 'default',
+                  }}
+                  onClick={() => sig.url && window.open(sig.url, '_blank')}
+                  >
+                    <span style={{ fontSize: 14, flexShrink: 0 }}>{icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 13, color: '#334155',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {sig.title}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                        {sig.source} · {sig.workspace} · {timeAgo(new Date(sig.created_at))}
+                      </div>
+                    </div>
+                    {isCritical && (
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, color: '#dc2626',
+                        background: '#fee2e2', padding: '2px 6px', borderRadius: 4,
+                        flexShrink: 0,
+                      }}>
+                        {sig.severity.toUpperCase()}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </>
           )}
 
