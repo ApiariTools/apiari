@@ -282,10 +282,10 @@ export default function Briefing({
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        maxWidth: 680,
+        minWidth: 0,
       }}>
         {/* Feed area */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', maxWidth: 720 }}>
 
           {/* Decision count */}
           {decisions.length > 0 && (
@@ -493,8 +493,6 @@ export default function Briefing({
         </div>
       </div>
 
-      {/* Spacer for centering on wide screens */}
-      <div style={{ flex: 1 }} />
     </div>
   );
 }
