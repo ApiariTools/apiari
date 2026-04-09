@@ -155,6 +155,12 @@ export default function Briefing({
   const [targetBee, setTargetBee] = useState('');
   const [targetWorkspace, setTargetWorkspace] = useState(workspaces[0] ?? '');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const feedEndRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages.length]);
 
   const hive = buildHive(workspaces, beesByWorkspace, tasks);
   const feed = buildFeed(tasks);
@@ -460,6 +466,7 @@ export default function Briefing({
               ))}
             </>
           )}
+          <div ref={feedEndRef} />
           </div>
 
           {/* Empty state — centered in full available space */}
