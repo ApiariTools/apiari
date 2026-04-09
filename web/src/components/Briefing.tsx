@@ -180,7 +180,7 @@ export default function Briefing({
   }
 
   return (
-    <div style={{ display: 'flex', height: '100%' }}>
+    <div style={{ display: 'flex', height: '100%', width: '100%', flex: 1 }}>
       {/* ── The Hive (left sidebar) ── */}
       <div style={{
         width: 220,
