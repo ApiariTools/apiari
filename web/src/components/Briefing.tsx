@@ -285,7 +285,6 @@ export default function Briefing({
                     setTargetWorkspace(entry.workspace);
                     setTargetBee(entry.bee);
                     setHiveOpen(false);
-                    inputRef.current?.focus();
                   }}
                 >
                   <span style={{
