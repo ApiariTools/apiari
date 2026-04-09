@@ -1723,12 +1723,12 @@ fn draw_chat_panel(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, area:
             .collect();
 
         let mut all_lines: Vec<Line> = Vec::new();
-        conversation::render_conversation(
-            &mut all_lines,
-            &entries,
-            None,
-            Some(&ws.config.coordinator.name),
-        );
+        let bee_label = ws
+            .bee_names
+            .get(ws.active_bee)
+            .map(|s| s.as_str())
+            .unwrap_or(&ws.config.coordinator.name);
+        conversation::render_conversation(&mut all_lines, &entries, None, Some(bee_label));
 
         if ws.streaming {
             let spin = SPINNER[app.spinner_tick % SPINNER.len()];
@@ -3402,6 +3402,18 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 } else if !on_reviews_panel {
                     h.push(Span::styled("c", theme::key_hint()));
                     h.push(Span::styled(":chat  ", theme::key_desc()));
+                }
+                // Show bee selector if multi-bee workspace
+                if let Some(ws) = app.current_ws()
+                    && ws.bee_names.len() > 1
+                {
+                    let bee_name = ws
+                        .bee_names
+                        .get(ws.active_bee)
+                        .map(|s| s.as_str())
+                        .unwrap_or("?");
+                    h.push(Span::styled("B", theme::key_hint()));
+                    h.push(Span::styled(format!(":{bee_name}  "), theme::key_desc()));
                 }
                 h.push(Span::styled("z", theme::key_hint()));
                 h.push(Span::styled(":zoom  ", theme::key_desc()));

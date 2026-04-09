@@ -1026,6 +1026,10 @@ pub struct WorkspaceState {
     pub has_unread_response: bool,
     /// Coordinator turn count (exchanges completed in current session).
     pub coordinator_turns: u32,
+    /// Available bee names for this workspace (from resolved_bees).
+    pub bee_names: Vec<String>,
+    /// Index of the currently active bee (into bee_names).
+    pub active_bee: usize,
     /// Token usage from the last coordinator turn.
     pub usage_input_tokens: u64,
     pub usage_output_tokens: u64,
@@ -1170,6 +1174,12 @@ impl App {
                 } else {
                     None
                 };
+                let bee_names: Vec<String> = ws
+                    .config
+                    .resolved_bees()
+                    .into_iter()
+                    .map(|b| b.name)
+                    .collect();
                 WorkspaceState {
                     name: ws.name,
                     config: ws.config,
@@ -1183,6 +1193,8 @@ impl App {
                     coordinator_preview: None,
                     has_unread_response: false,
                     coordinator_turns: 0,
+                    bee_names,
+                    active_bee: 0,
                     usage_input_tokens: 0,
                     usage_output_tokens: 0,
                     usage_cache_read_tokens: 0,
@@ -1339,6 +1351,8 @@ impl App {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            bee_names: Vec::new(),
+            active_bee: 0,
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             usage_cache_read_tokens: 0,
@@ -1482,6 +1496,8 @@ impl App {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            bee_names: Vec::new(),
+            active_bee: 0,
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             usage_cache_read_tokens: 0,
@@ -1691,6 +1707,8 @@ impl App {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            bee_names: Vec::new(),
+            active_bee: 0,
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             usage_cache_read_tokens: 0,
@@ -2873,6 +2891,27 @@ impl App {
             ws.usage_context_window = context_window;
             self.needs_redraw = true;
         }
+    }
+
+    /// Cycle to the next bee in the current workspace.
+    pub fn cycle_bee(&mut self) {
+        if let Some(ws) = self.current_ws_mut()
+            && ws.bee_names.len() > 1
+        {
+            ws.active_bee = (ws.active_bee + 1) % ws.bee_names.len();
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Get the active bee name for the current workspace (None if single-bee).
+    pub fn active_bee_name(&self) -> Option<&str> {
+        self.current_ws().and_then(|ws| {
+            if ws.bee_names.len() > 1 {
+                ws.bee_names.get(ws.active_bee).map(|s| s.as_str())
+            } else {
+                None
+            }
+        })
     }
 
     /// Push an activity event from the daemon (Telegram or TUI-sourced).
@@ -4914,6 +4953,8 @@ mod tests {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            bee_names: Vec::new(),
+            active_bee: 0,
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             usage_cache_read_tokens: 0,
@@ -5177,6 +5218,8 @@ mod tests {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            bee_names: Vec::new(),
+            active_bee: 0,
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             usage_cache_read_tokens: 0,

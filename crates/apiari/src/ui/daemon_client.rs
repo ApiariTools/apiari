@@ -90,12 +90,17 @@ impl DaemonClient {
         Err(last_err)
     }
 
-    /// Send a chat message to the daemon.
-    pub async fn send_chat(&mut self, workspace: &str, text: &str) -> std::io::Result<()> {
+    /// Send a chat message to the daemon, optionally targeting a specific bee.
+    pub async fn send_chat(
+        &mut self,
+        workspace: &str,
+        text: &str,
+        bee: Option<&str>,
+    ) -> std::io::Result<()> {
         let req = DaemonRequest::Chat {
             workspace: workspace.to_string(),
             text: text.to_string(),
-            bee: None,
+            bee: bee.map(|s| s.to_string()),
         };
         let json = serde_json::to_string(&req).map_err(std::io::Error::other)?;
         match &mut self.transport {

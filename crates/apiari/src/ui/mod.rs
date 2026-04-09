@@ -45,6 +45,7 @@ enum UserMessage {
     Chat {
         workspace_name: String,
         text: String,
+        bee: Option<String>,
     },
 }
 
@@ -1303,6 +1304,7 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         }
         KeyCode::Char('p') => app.enter_pr_list(),
         KeyCode::Char('S') => app.enter_signal_list(),
+        KeyCode::Char('B') => app.cycle_bee(),
         KeyCode::Char('r') => {
             if app.has_review_queue() {
                 app.enter_review_list();
@@ -2156,12 +2158,14 @@ async fn handle_action(
         KeyAction::Quit => return Some(true),
         KeyAction::SendChat(text) => {
             let ws_name = app.current_ws().map(|ws| ws.name.clone());
+            let bee = app.active_bee_name().map(|s| s.to_string());
             if let Some(name) = ws_name {
                 app.push_user_message(text.clone());
                 let _ = user_tx
                     .send(UserMessage::Chat {
                         workspace_name: name,
                         text,
+                        bee,
                     })
                     .await;
             }
@@ -2578,8 +2582,8 @@ async fn daemon_client_task(
         tokio::select! {
             Some(msg) = user_rx.recv() => {
                 match msg {
-                    UserMessage::Chat { workspace_name, text } => {
-                        if let Err(e) = client.send_chat(&workspace_name, &text).await {
+                    UserMessage::Chat { workspace_name, text, bee } => {
+                        if let Err(e) = client.send_chat(&workspace_name, &text, bee.as_deref()).await {
                             let _ = coord_tx
                                 .send(CoordResponse::Error {
                                     workspace: workspace_name,
@@ -2665,8 +2669,8 @@ async fn daemon_client_task_tcp(
         tokio::select! {
             Some(msg) = user_rx.recv() => {
                 match msg {
-                    UserMessage::Chat { workspace_name, text } => {
-                        if let Err(e) = client.send_chat(&workspace_name, &text).await {
+                    UserMessage::Chat { workspace_name, text, bee } => {
+                        if let Err(e) = client.send_chat(&workspace_name, &text, bee.as_deref()).await {
                             let _ = coord_tx
                                 .send(CoordResponse::Error {
                                     workspace: workspace_name,
@@ -2736,6 +2740,7 @@ async fn coordinator_task(
             UserMessage::Chat {
                 workspace_name,
                 text,
+                bee: _,
             } => {
                 // Lazy-init coordinator for this workspace
                 if !coordinators.contains_key(&workspace_name) {
@@ -3026,6 +3031,8 @@ mod tests {
             coordinator_preview: None,
             has_unread_response: false,
             coordinator_turns: 0,
+            bee_names: Vec::new(),
+            active_bee: 0,
             usage_input_tokens: 0,
             usage_output_tokens: 0,
             usage_cache_read_tokens: 0,
