@@ -285,7 +285,8 @@ export default function Briefing({
         minWidth: 0,
       }}>
         {/* Feed area */}
-        <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', maxWidth: 720 }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+         <div style={{ width: '100%', maxWidth: 720 }}>
 
           {/* Decision count */}
           {decisions.length > 0 && (
@@ -406,19 +407,27 @@ export default function Briefing({
             </>
           )}
 
-          {/* Empty state */}
+          </div>
+
+          {/* Empty state — centered in full available space */}
           {feed.length === 0 && (
             <div style={{
+              flex: 1,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
               textAlign: 'center',
               color: '#94a3b8',
               padding: '60px 20px',
             }}>
-              <div style={{ fontSize: 36, marginBottom: 12 }}>🐝</div>
-              <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
-                All clear
-              </div>
-              <div style={{ fontSize: 13 }}>
-                No decisions needed. Your Bees are humming along.
+              <div>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>🐝</div>
+                <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
+                  All clear
+                </div>
+                <div style={{ fontSize: 13 }}>
+                  No decisions needed. Your Bees are humming along.
+                </div>
               </div>
             </div>
           )}
