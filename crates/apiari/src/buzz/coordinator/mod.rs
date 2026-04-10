@@ -4,6 +4,7 @@
 //! a system prompt that includes open signals and accumulated memory. It
 //! handles user messages and can proactively notify about signal changes.
 
+pub mod actions;
 pub mod audit;
 pub mod devmode;
 pub mod memory;

@@ -155,6 +155,8 @@ enum CoordinatorJob {
         skill_names: Vec<String>,
         /// Workspace root for loading playbook files.
         workspace_root: std::path::PathBuf,
+        /// Name of the Bee that owns this coordinator.
+        bee_name: String,
     },
 }
 
@@ -659,6 +661,7 @@ async fn run_coordinator_task(
                 slot_name,
                 skill_names,
                 workspace_root,
+                bee_name,
             } => {
                 let has_session = coordinator.has_session();
                 info!(
@@ -858,6 +861,22 @@ async fn run_coordinator_task(
                                 "signal follow-through exhausted max_turns ({max_turns}) for source={source}"
                             );
                         }
+
+                        // Parse and execute action markers from the Bee's response.
+                        let bee_actions =
+                            crate::buzz::coordinator::actions::parse_actions(&response);
+                        if !bee_actions.is_empty() {
+                            info!(
+                                "[{slot_name}] executing {} action marker(s) from {bee_name}",
+                                bee_actions.len()
+                            );
+                            execute_bee_actions(
+                                &bee_actions,
+                                &store,
+                                &slot_name,
+                                &bee_name,
+                            );
+                        }
                     }
                     Err(e) => {
                         warn!(
@@ -874,6 +893,94 @@ async fn run_coordinator_task(
                 }
 
                 coordinator.set_max_turns(saved_turns);
+            }
+        }
+    }
+}
+
+/// Execute parsed Bee action markers against the signal/task stores.
+fn execute_bee_actions(
+    actions: &[crate::buzz::coordinator::actions::BeeAction],
+    store: &crate::buzz::signal::store::SignalStore,
+    slot_name: &str,
+    bee_name: &str,
+) {
+    use crate::buzz::coordinator::actions::BeeAction;
+    use crate::buzz::signal::{Severity, SignalUpdate};
+
+    for action in actions {
+        match action {
+            BeeAction::Dismiss { signal_id } => match store.resolve_signal(*signal_id) {
+                Ok(()) => info!("[{slot_name}] action: dismissed signal {signal_id}"),
+                Err(e) => warn!("[{slot_name}] action: failed to dismiss signal {signal_id}: {e}"),
+            },
+            BeeAction::Escalate { message } => {
+                let external_id = format!(
+                    "escalation-{}-{}",
+                    bee_name,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                let update =
+                    SignalUpdate::new("escalation", &external_id, message, Severity::Critical);
+                match store.upsert_signal(&update) {
+                    Ok((id, _)) => {
+                        info!("[{slot_name}] action: escalated signal id={id}: {message}")
+                    }
+                    Err(e) => warn!("[{slot_name}] action: failed to escalate: {e}"),
+                }
+            }
+            BeeAction::Fix { description } => {
+                let source = format!("bee/{bee_name}");
+                let external_id =
+                    format!("fix-{}-{}", bee_name, chrono::Utc::now().timestamp_millis());
+                let update = SignalUpdate::new(&source, &external_id, description, Severity::Error);
+                match store.upsert_signal(&update) {
+                    Ok((id, _)) => info!(
+                        "[{slot_name}] action: fix signal id={id} source={source}: {description}"
+                    ),
+                    Err(e) => warn!("[{slot_name}] action: failed to create fix signal: {e}"),
+                }
+            }
+            BeeAction::Snooze { signal_id, hours } => {
+                let until = chrono::Utc::now() + chrono::Duration::hours(*hours as i64);
+                match store.snooze_signal(*signal_id, until) {
+                    Ok(()) => {
+                        info!("[{slot_name}] action: snoozed signal {signal_id} for {hours}h")
+                    }
+                    Err(e) => {
+                        warn!("[{slot_name}] action: failed to snooze signal {signal_id}: {e}")
+                    }
+                }
+            }
+            BeeAction::Task { title } => {
+                // Open a TaskStore on the same DB and create a task in Triage stage.
+                let task = crate::buzz::task::Task {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    workspace: store.workspace().to_string(),
+                    title: title.clone(),
+                    stage: crate::buzz::task::TaskStage::Triage,
+                    source: Some(format!("bee/{bee_name}")),
+                    source_url: None,
+                    worker_id: None,
+                    pr_url: None,
+                    pr_number: None,
+                    repo: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                    resolved_at: None,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                };
+                match crate::buzz::task::store::TaskStore::open(store.db_path()) {
+                    Ok(task_store) => match task_store.create_task(&task) {
+                        Ok(()) => info!("[{slot_name}] action: created task \"{title}\""),
+                        Err(e) => warn!("[{slot_name}] action: failed to create task: {e}"),
+                    },
+                    Err(e) => warn!("[{slot_name}] action: failed to open task store: {e}"),
+                }
+            }
+            BeeAction::Research { topic } => {
+                // Research is handled by the web UI / ResearchBee — just log it.
+                info!("[{slot_name}] action: research requested (handled elsewhere): {topic}");
             }
         }
     }
@@ -2765,6 +2872,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             .iter()
                             .position(|bee| bee_matches_signal_source(bee, &source))
                             .unwrap_or(0);
+                        let matched_bee_name = resolved_bees.get(bee_idx)
+                            .map(|b| b.name.clone())
+                            .unwrap_or_else(|| "coordinator".to_string());
                         let _ = slot.bees[bee_idx].coord_tx.send(CoordinatorJob::SignalFollowThrough {
                             signals,
                             source,
@@ -2777,6 +2887,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             slot_name: slot.name.clone(),
                             skill_names: first.skills.clone(),
                             workspace_root: slot.config.root.clone(),
+                            bee_name: matched_bee_name,
                         });
                     }
 
