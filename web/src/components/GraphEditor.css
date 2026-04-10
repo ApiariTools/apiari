@@ -1,0 +1,385 @@
+/* ── Editor panel ────────────────────────────────────────────────────── */
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.editor-header {
+  padding: 14px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  background: #fff;
+  z-index: 1;
+}
+
+.editor-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.save-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: #2563eb;
+  color: #fff;
+}
+
+.save-btn:hover { background: #1d4ed8; }
+.save-btn:disabled { opacity: 0.5; cursor: default; }
+.save-btn.saved { background: #16a34a; }
+.save-btn.error { background: #dc2626; }
+
+.editor-error {
+  padding: 8px 16px;
+  background: #fef2f2;
+  color: #dc2626;
+  font-size: 12px;
+  border-bottom: 1px solid #fecaca;
+}
+
+/* ── Sections ────────────────────────────────────────────────────────── */
+
+.editor-section {
+  padding: 14px 16px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.editor-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.editor-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ── Inputs ──────────────────────────────────────────────────────────── */
+
+.editor-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1e293b;
+  background: #f8fafc;
+  outline: none;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+}
+
+.editor-input:focus {
+  border-color: #93c5fd;
+  background: #fff;
+}
+
+.editor-input::placeholder {
+  color: #94a3b8;
+}
+
+.editor-select {
+  padding: 7px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1e293b;
+  background: #f8fafc;
+  outline: none;
+  cursor: pointer;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* ── Fields ──────────────────────────────────────────────────────────── */
+
+.editor-field {
+  margin-bottom: 10px;
+}
+
+.field-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+/* ── Node list ───────────────────────────────────────────────────────── */
+
+.node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.node-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.node-list-item:hover { background: #f1f5f9; }
+.node-list-item.selected { background: #eff6ff; }
+
+.node-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.node-dot-entry { background: #22c55e; }
+.node-dot-action { background: #3b82f6; }
+.node-dot-wait { background: #f59e0b; }
+.node-dot-terminal { background: #a78bfa; }
+
+.node-list-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #334155;
+}
+
+.node-list-id {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-left: auto;
+  font-family: monospace;
+}
+
+/* ── Add node form ───────────────────────────────────────────────────── */
+
+.add-node-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 10px;
+}
+
+.add-node-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.editor-add-btn {
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.editor-add-btn:hover { background: #f1f5f9; }
+
+.editor-btn-primary {
+  padding: 5px 14px;
+  border-radius: 5px;
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.editor-btn-secondary {
+  padding: 5px 14px;
+  border-radius: 5px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ── Config sections (action, wait_for) ──────────────────────────────── */
+
+.config-section {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.config-section-title {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+
+.editor-textarea {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1e293b;
+  background: #fff;
+  outline: none;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+  font-family: system-ui, -apple-system, sans-serif;
+  resize: vertical;
+  line-height: 1.4;
+}
+
+.editor-textarea:focus {
+  border-color: #93c5fd;
+}
+
+.editor-textarea::placeholder {
+  color: #94a3b8;
+}
+
+/* ── Radio group (notify tier) ───────────────────────────────────────── */
+
+.radio-group {
+  display: flex;
+  gap: 2px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.radio-option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.radio-option input {
+  display: none;
+}
+
+.radio-option span {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+  transition: all 0.15s ease;
+}
+
+.radio-option input:checked + span {
+  background: #fff;
+  color: #1e293b;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+/* ── Edge editing ────────────────────────────────────────────────────── */
+
+.edge-section {
+  margin-top: 12px;
+}
+
+.edge-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.edge-arrow {
+  color: #94a3b8;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.edge-target {
+  flex: 1;
+}
+
+.edge-delete {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.edge-delete:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #dc2626;
+}
+
+.incoming-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.incoming-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+/* ── Delete node ─────────────────────────────────────────────────────── */
+
+.delete-node-btn {
+  margin-top: 16px;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid #fecaca;
+  background: #fff;
+  color: #dc2626;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  transition: all 0.2s ease;
+}
+
+.delete-node-btn:hover {
+  background: #fef2f2;
+}

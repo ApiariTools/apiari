@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { BeeConfigView, TaskView } from '../types';
 import { dismissBriefingItem, snoozeBriefingItem, fetchCanvas } from '../api';
 import './Briefing.css';
@@ -332,7 +333,7 @@ export default function Briefing({
                       🎨 @{c.bee}
                     </div>
                     <div className="canvas-markdown" style={{ fontSize: 14, lineHeight: 1.7, color: '#1e293b' }}>
-                      <Markdown>{c.content}</Markdown>
+                      <Markdown remarkPlugins={[remarkGfm]}>{c.content}</Markdown>
                     </div>
                   </div>
                 ))}
@@ -409,7 +410,7 @@ export default function Briefing({
                     <span style={{ fontSize: 10, color: '#94a3b8' }}>{timeAgo(msg.timestamp)}</span>
                   </div>
                   <div className="canvas-markdown" style={{ fontSize: 13, color: '#1e293b', lineHeight: 1.5 }}>
-                    <Markdown>{msg.text}</Markdown>
+                    <Markdown remarkPlugins={[remarkGfm]}>{msg.text}</Markdown>
                   </div>
                 </div>
               ))}
