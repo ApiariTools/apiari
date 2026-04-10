@@ -1208,15 +1208,30 @@ async fn workflow_run_handler(
                 break;
             }
 
-            // Follow first unconditional edge, or first edge by priority
+            // Follow edges — when a lane is specified, prefer edges leading
+            // to nodes with matching role (so we branch into the right lane
+            // from the entry node instead of following the default path).
             let mut outgoing: Vec<&crate::buzz::orchestrator::graph::Edge> = graph.edges.iter()
                 .filter(|e| e.from == current)
                 .collect();
             outgoing.sort_by_key(|e| e.priority);
-            // Prefer unconditional edges
-            let next = outgoing.iter()
-                .find(|e| e.condition.is_none())
-                .or(outgoing.first());
+
+            let next = if let Some(ref lane) = body.lane {
+                // Try to find an edge leading to a node whose action.role matches the lane
+                outgoing.iter().find(|e| {
+                    graph.nodes.get(&e.to).is_some_and(|n| {
+                        n.action.as_ref().is_some_and(|a| {
+                            a.role.as_deref() == Some(lane.as_str())
+                        })
+                    })
+                }).or_else(|| {
+                    // Fallback: unconditional, then any
+                    outgoing.iter().find(|e| e.condition.is_none()).or(outgoing.first())
+                })
+            } else {
+                outgoing.iter().find(|e| e.condition.is_none()).or(outgoing.first())
+            };
+
             if let Some(edge) = next {
                 current = edge.to.clone();
             } else {
