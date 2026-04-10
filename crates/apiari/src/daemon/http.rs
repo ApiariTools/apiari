@@ -920,6 +920,52 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
             }
         }
 
+        // Bee escalations → action (highest priority)
+        for sig in by_source.get("escalation").unwrap_or(&vec![]) {
+            items.push(BriefingItem {
+                id: format!("escalation-{}", sig.id),
+                priority: "action".into(),
+                icon: "🚨".into(),
+                title: sig.title.clone(),
+                body: Some("Escalated by a Bee — needs your attention".into()),
+                workspace: ws.name.clone(),
+                source: "escalation".into(),
+                url: sig.url.clone(),
+                actions: vec![
+                    BriefingAction {
+                        label: "Acknowledge".into(),
+                        style: "primary".into(),
+                    },
+                    BriefingAction {
+                        label: "Dismiss".into(),
+                        style: "danger".into(),
+                    },
+                ],
+                timestamp: sig.created_at.to_rfc3339(),
+            });
+        }
+
+        // Bee fix requests → notice (CodeBee is handling it)
+        for (source, sigs) in &by_source {
+            if source.starts_with("bee_") {
+                for sig in sigs {
+                    let bee_name = source.strip_prefix("bee_").unwrap_or("Bee");
+                    items.push(BriefingItem {
+                        id: format!("bee-fix-{}", sig.id),
+                        priority: "notice".into(),
+                        icon: "🔧".into(),
+                        title: format!("{bee_name} requested fix: {}", sig.title),
+                        body: Some("CodeBee is dispatching a worker".into()),
+                        workspace: ws.name.clone(),
+                        source: source.to_string(),
+                        url: None,
+                        actions: vec![],
+                        timestamp: sig.created_at.to_rfc3339(),
+                    });
+                }
+            }
+        }
+
         // Merged PRs → quiet
         for sig in by_source
             .get("github_merged_pr")
@@ -970,6 +1016,67 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
             .then(b.timestamp.cmp(&a.timestamp))
     });
 
+    Json(items)
+}
+
+// ── Bee activity endpoint ─────────────────────────────────────────────
+
+/// GET /api/bee-activity — recent autonomous Bee actions (last 24h).
+async fn get_bee_activity(State(state): State<HttpState>) -> Json<Vec<BriefingItem>> {
+    let mut items = Vec::new();
+    let workspaces = crate::config::discover_workspaces().unwrap_or_default();
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(24)).to_rfc3339();
+
+    for ws in &workspaces {
+        let store = match crate::buzz::signal::store::SignalStore::open(&state.db_path, &ws.name) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        // Resolved signals = Bee auto-dismissed them
+        let mut stmt = match store.conn().prepare(
+            "SELECT id, source, title, resolved_at FROM signals \
+             WHERE workspace = ?1 AND status = 'resolved' AND resolved_at > ?2 \
+             ORDER BY resolved_at DESC LIMIT 20",
+        ) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        let rows = stmt
+            .query_map(rusqlite::params![&ws.name, &cutoff], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten();
+
+        for (id, source, title, resolved_at) in rows {
+            items.push(BriefingItem {
+                id: format!("dismissed-{id}"),
+                priority: "quiet".into(),
+                icon: "✓".into(),
+                title: format!(
+                    "Auto-dismissed: {}",
+                    title.chars().take(60).collect::<String>()
+                ),
+                body: Some(format!("Source: {source}")),
+                workspace: ws.name.clone(),
+                source: "bee_activity".into(),
+                url: None,
+                actions: vec![],
+                timestamp: resolved_at,
+            });
+        }
+    }
+
+    items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     Json(items)
 }
 
@@ -1495,6 +1602,7 @@ pub async fn start_http_server(
         .route("/api/chat", post(chat_handler))
         .route("/api/workflow/run", post(workflow_run_handler))
         .route("/api/briefing", get(get_briefing))
+        .route("/api/bee-activity", get(get_bee_activity))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))
         .route("/api/signals", get(get_signals))

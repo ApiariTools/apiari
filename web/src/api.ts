@@ -83,6 +83,20 @@ export async function fetchBriefing(): Promise<Array<{
   return res.json();
 }
 
+export async function fetchBeeActivity(): Promise<Array<{
+  id: string;
+  priority: string;
+  icon: string;
+  title: string;
+  body: string | null;
+  workspace: string;
+  source: string;
+  timestamp: string;
+}>> {
+  const res = await fetch(`${API_BASE}/bee-activity`);
+  return res.json();
+}
+
 export async function fetchSignals(workspace?: string): Promise<Array<{
   id: number;
   workspace: string;
