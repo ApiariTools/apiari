@@ -522,7 +522,13 @@ export default function Briefing({
         <>
           <div style={{ flex: 1, overflow: 'auto', padding: '16px 20px' }}>
             <div style={{ maxWidth: 720 }}>
-              {chatMessages.length === 0 && (
+              {(() => {
+                const filtered = chatMessages.filter(
+                  (msg) => msg.bee === targetBee && msg.workspace === targetWorkspace
+                );
+                return (
+                  <>
+              {filtered.length === 0 && (
                 <div style={{
                   textAlign: 'center', color: '#94a3b8', padding: '60px 20px',
                 }}>
@@ -531,7 +537,7 @@ export default function Briefing({
                   </div>
                 </div>
               )}
-              {chatMessages.map((msg) => (
+              {filtered.map((msg) => (
                 <div key={msg.id} style={{
                   padding: '10px 14px', marginBottom: 6, borderRadius: 10,
                   background: msg.role === 'user' ? '#f8fafc' : '#fff',
@@ -556,6 +562,9 @@ export default function Briefing({
                 </div>
               ))}
               <div ref={feedEndRef} />
+                  </>
+                );
+              })()}
             </div>
           </div>
 
