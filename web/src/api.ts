@@ -83,6 +83,15 @@ export async function fetchBriefing(): Promise<Array<{
   return res.json();
 }
 
+export async function fetchCanvas(workspace: string, bee: string): Promise<{
+  workspace: string;
+  bee: string;
+  content: string;
+}> {
+  const res = await fetch(`${API_BASE}/canvas?workspace=${encodeURIComponent(workspace)}&bee=${encodeURIComponent(bee)}`);
+  return res.json();
+}
+
 export async function fetchBeeActivity(): Promise<Array<{
   id: string;
   priority: string;

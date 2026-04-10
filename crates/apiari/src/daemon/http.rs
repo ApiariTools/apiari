@@ -1019,6 +1019,31 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
     Json(items)
 }
 
+// ── Canvas endpoint ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct CanvasQuery {
+    workspace: String,
+    bee: String,
+}
+
+/// GET /api/canvas?workspace=apiari&bee=ResearchBee — get a Bee's canvas content.
+async fn get_canvas(
+    axum::extract::Query(q): axum::extract::Query<CanvasQuery>,
+) -> Json<serde_json::Value> {
+    let workspaces = crate::config::discover_workspaces().unwrap_or_default();
+    let ws = workspaces.iter().find(|w| w.name == q.workspace);
+    let content = ws
+        .map(|w| w.config.root.join(format!(".apiari/canvas/{}.md", q.bee)))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    Json(serde_json::json!({
+        "workspace": q.workspace,
+        "bee": q.bee,
+        "content": content,
+    }))
+}
+
 // ── Bee activity endpoint ─────────────────────────────────────────────
 
 /// GET /api/bee-activity — recent autonomous Bee actions (last 24h).
@@ -1603,6 +1628,7 @@ pub async fn start_http_server(
         .route("/api/workflow/run", post(workflow_run_handler))
         .route("/api/briefing", get(get_briefing))
         .route("/api/bee-activity", get(get_bee_activity))
+        .route("/api/canvas", get(get_canvas))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))
         .route("/api/signals", get(get_signals))

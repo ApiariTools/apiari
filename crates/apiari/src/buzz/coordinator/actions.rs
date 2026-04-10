@@ -19,6 +19,8 @@ pub enum BeeAction {
     Task { title: String },
     /// Trigger a research workflow (already handled elsewhere).
     Research { topic: String },
+    /// Update the Bee's canvas — a freeform markdown display.
+    Canvas { content: String },
 }
 
 /// Parse all action markers from a Bee's response text.
@@ -59,6 +61,26 @@ pub fn parse_actions(response: &str) -> Vec<BeeAction> {
                 // No closing bracket — stop searching for this marker.
                 break;
             }
+        }
+    }
+
+    // Parse [CANVAS]...[/CANVAS] blocks (multi-line).
+    let canvas_open = "[CANVAS]";
+    let canvas_close = "[/CANVAS]";
+    let mut search_from = 0;
+    while let Some(start) = response[search_from..].find(canvas_open) {
+        let abs_start = search_from + start;
+        let content_start = abs_start + canvas_open.len();
+        if let Some(rel_end) = response[content_start..].find(canvas_close) {
+            let content = response[content_start..content_start + rel_end].trim();
+            if !content.is_empty() {
+                actions.push(BeeAction::Canvas {
+                    content: content.to_string(),
+                });
+            }
+            search_from = content_start + rel_end + canvas_close.len();
+        } else {
+            break;
         }
     }
 

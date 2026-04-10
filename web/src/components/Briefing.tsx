@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { BeeConfigView, TaskView } from '../types';
-import { dismissBriefingItem, snoozeBriefingItem } from '../api';
+import { dismissBriefingItem, snoozeBriefingItem, fetchCanvas } from '../api';
 import './Briefing.css';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -186,7 +186,8 @@ export default function Briefing({
   const [targetBee, setTargetBee] = useState('');
   const [targetWorkspace, setTargetWorkspace] = useState(workspaces[0] ?? '');
   const [hiveOpen, setHiveOpen] = useState(false);
-  const [tab, setTab] = useState<'briefing' | 'chat'>('briefing');
+  const [tab, setTab] = useState<'briefing' | 'chat' | 'canvas'>('briefing');
+  const [canvasContent, setCanvasContent] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const feedEndRef = useRef<HTMLDivElement>(null);
 
@@ -196,6 +197,13 @@ export default function Briefing({
       feedEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [chatMessages.length, tab]);
+
+  // Load canvas when switching to canvas tab or changing bee
+  useEffect(() => {
+    if (tab === 'canvas' && targetBee && targetWorkspace) {
+      fetchCanvas(targetWorkspace, targetBee).then((c) => setCanvasContent(c.content));
+    }
+  }, [tab, targetBee, targetWorkspace]);
 
   const hive = buildHive(workspaces, beesByWorkspace, tasks);
   const feed = buildFeed(tasks);
@@ -387,6 +395,13 @@ export default function Briefing({
             background: 'transparent',
             borderBottom: tab === 'chat' ? '2px solid #f59e0b' : '2px solid transparent',
           }}>Chat</button>
+          <button onClick={() => setTab('canvas')} style={{
+            flex: 1, padding: '10px 0', border: 'none', cursor: 'pointer',
+            fontSize: 14, fontWeight: tab === 'canvas' ? 600 : 400,
+            color: tab === 'canvas' ? '#0f172a' : '#94a3b8',
+            background: 'transparent',
+            borderBottom: tab === 'canvas' ? '2px solid #f59e0b' : '2px solid transparent',
+          }}>Canvas</button>
         </div>
 
         {/* ── Briefing tab ── */}
@@ -602,6 +617,51 @@ export default function Briefing({
             />
           </div>
         </>
+        )}
+
+        {/* ── Canvas tab ── */}
+        {tab === 'canvas' && (
+          <div style={{ flex: 1, overflow: 'auto', padding: '24px 28px' }}>
+            <div style={{ maxWidth: 720, margin: '0 auto' }}>
+              {canvasContent ? (
+                <>
+                  <div style={{
+                    fontSize: 12, color: '#94a3b8', marginBottom: 16,
+                    display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                    <span style={{ fontWeight: 600, color: '#d97706' }}>@{targetBee}</span>
+                    <span>{targetWorkspace}</span>
+                    <button onClick={() => {
+                      fetchCanvas(targetWorkspace, targetBee).then((c) => setCanvasContent(c.content));
+                    }} style={{
+                      marginLeft: 'auto', fontSize: 11, padding: '3px 10px',
+                      border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff',
+                      cursor: 'pointer', color: '#64748b',
+                    }}>Refresh</button>
+                  </div>
+                  <div style={{
+                    fontSize: 14, lineHeight: 1.7, color: '#1e293b',
+                    whiteSpace: 'pre-wrap', fontFamily: 'system-ui',
+                  }}>
+                    {canvasContent}
+                  </div>
+                </>
+              ) : (
+                <div style={{
+                  textAlign: 'center', color: '#94a3b8', padding: '60px 20px',
+                }}>
+                  <div style={{ fontSize: 36, marginBottom: 12 }}>🎨</div>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: '#64748b', marginBottom: 4 }}>
+                    No canvas yet
+                  </div>
+                  <div style={{ fontSize: 13 }}>
+                    @{targetBee || 'Bee'} hasn't written anything to its canvas yet.
+                    <br />Ask it to create a summary, todo list, or report.
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </div>
 

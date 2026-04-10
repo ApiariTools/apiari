@@ -876,11 +876,21 @@ async fn run_coordinator_task(
                                 "[{slot_name}] executing {} action marker(s) from {bee_name}",
                                 bee_actions.len()
                             );
+                            // Look up workspace root for canvas writes
+                            let ws_root = crate::config::discover_workspaces()
+                                .ok()
+                                .and_then(|ws| {
+                                    ws.into_iter()
+                                        .find(|w| w.name == slot_name)
+                                        .map(|w| w.config.root)
+                                })
+                                .unwrap_or_else(|| std::path::PathBuf::from("."));
                             execute_bee_actions(
                                 &bee_actions,
                                 &store,
                                 &slot_name,
                                 &bee_name,
+                                &ws_root,
                             );
                         }
                     }
@@ -910,6 +920,7 @@ fn execute_bee_actions(
     store: &crate::buzz::signal::store::SignalStore,
     slot_name: &str,
     bee_name: &str,
+    config_root: &std::path::Path,
 ) {
     use crate::buzz::coordinator::actions::BeeAction;
     use crate::buzz::signal::{Severity, SignalUpdate};
@@ -987,6 +998,22 @@ fn execute_bee_actions(
             BeeAction::Research { topic } => {
                 // Research is handled by the web UI / ResearchBee — just log it.
                 info!("[{slot_name}] action: research requested (handled elsewhere): {topic}");
+            }
+            BeeAction::Canvas { content } => {
+                // Write canvas content to .apiari/canvas/{bee_name}.md
+                let canvas_dir = config_root.join(".apiari/canvas");
+                if let Err(e) = std::fs::create_dir_all(&canvas_dir) {
+                    warn!("[{slot_name}] action: failed to create canvas dir: {e}");
+                } else {
+                    let path = canvas_dir.join(format!("{bee_name}.md"));
+                    match std::fs::write(&path, content) {
+                        Ok(()) => info!(
+                            "[{slot_name}/{bee_name}] canvas updated ({} bytes)",
+                            content.len()
+                        ),
+                        Err(e) => warn!("[{slot_name}/{bee_name}] failed to write canvas: {e}"),
+                    }
+                }
             }
         }
     }
