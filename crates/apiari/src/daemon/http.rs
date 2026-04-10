@@ -1553,7 +1553,11 @@ async fn workflow_run_handler(
                                 let _ = std::fs::create_dir_all(&canvas_dir);
                                 let bee_name = body.bee.as_deref().unwrap_or("Bee");
                                 let path = canvas_dir.join(format!("{bee_name}.md"));
-                                let _ = std::fs::write(&path, content);
+                                // Prepend new content with date header (don't overwrite)
+                                let date = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
+                                let new_section = format!("## {date} — {}\n\n{content}\n\n---\n\n", body.topic);
+                                let existing = std::fs::read_to_string(&path).unwrap_or_default();
+                                let _ = std::fs::write(&path, format!("{new_section}{existing}"));
                                 tracing::info!("[{}/{bee_name}] canvas updated after workflow", body.workspace);
                         }
                     }

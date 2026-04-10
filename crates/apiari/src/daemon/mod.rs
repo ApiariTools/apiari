@@ -1006,7 +1006,11 @@ fn execute_bee_actions(
                     warn!("[{slot_name}] action: failed to create canvas dir: {e}");
                 } else {
                     let path = canvas_dir.join(format!("{bee_name}.md"));
-                    match std::fs::write(&path, content) {
+                    // Prepend new content with date header
+                    let date = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC");
+                    let new_section = format!("## {date}\n\n{content}\n\n---\n\n");
+                    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+                    match std::fs::write(&path, format!("{new_section}{existing}")) {
                         Ok(()) => info!(
                             "[{slot_name}/{bee_name}] canvas updated ({} bytes)",
                             content.len()
