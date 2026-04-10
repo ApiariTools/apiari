@@ -936,7 +936,7 @@ fn execute_bee_actions(
                 }
             }
             BeeAction::Fix { description } => {
-                let source = format!("bee/{bee_name}");
+                let source = format!("bee_{bee_name}");
                 let external_id =
                     format!("fix-{}-{}", bee_name, chrono::Utc::now().timestamp_millis());
                 let update = SignalUpdate::new(&source, &external_id, description, Severity::Error);
@@ -965,7 +965,7 @@ fn execute_bee_actions(
                     workspace: store.workspace().to_string(),
                     title: title.clone(),
                     stage: crate::buzz::task::TaskStage::Triage,
-                    source: Some(format!("bee/{bee_name}")),
+                    source: Some(format!("bee_{bee_name}")),
                     source_url: None,
                     worker_id: None,
                     pr_url: None,
