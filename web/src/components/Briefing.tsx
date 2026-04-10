@@ -62,6 +62,7 @@ interface BriefingProps {
   onSendMessage: (bee: string, workspace: string, text: string) => void;
   onDrillIntoTask: (taskId: string) => void;
   onRefreshBriefing: () => void;
+  onWorkspaceChange?: (workspace: string) => void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -108,6 +109,7 @@ export default function Briefing({
   onSendMessage,
   onDrillIntoTask,
   onRefreshBriefing,
+  onWorkspaceChange,
 }: BriefingProps) {
   const [input, setInput] = useState('');
   const [targetBee, setTargetBee] = useState('');
@@ -157,6 +159,7 @@ export default function Briefing({
     const [ws, bee] = value.split('/');
     setTargetWorkspace(ws);
     setTargetBee(bee);
+    onWorkspaceChange?.(ws);
   }
 
   function handleSend() {
@@ -212,7 +215,7 @@ export default function Briefing({
           const isSelected = ws === targetWorkspace;
           return (
             <div key={ws} style={{ padding: '4px 0' }}>
-              <div onClick={() => setTargetWorkspace(ws)} style={{
+              <div onClick={() => { setTargetWorkspace(ws); onWorkspaceChange?.(ws); }} style={{
                 padding: '6px 16px', fontSize: 12, fontWeight: 700,
                 color: isSelected ? '#0f172a' : '#64748b',
                 background: isSelected ? '#f1f5f9' : 'transparent',

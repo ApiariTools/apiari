@@ -72,6 +72,10 @@ body {
   .briefing-input-bar {
     padding: 8px 12px !important;
   }
+
+  .workflow-sidebar {
+    display: none !important;
+  }
 }
 
 /* ── React Flow tweaks ──────────────────────────────────────────── */

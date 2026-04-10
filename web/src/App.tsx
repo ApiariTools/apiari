@@ -319,12 +319,13 @@ export default function App() {
             onSendMessage={handleSendMessage}
             onDrillIntoTask={handleDrillIntoTask}
             onRefreshBriefing={refreshBriefing}
+            onWorkspaceChange={switchWorkspace}
           />
         )}
 
         {view === 'workflow' && (
           <>
-            <div style={{
+            <div className="workflow-sidebar" style={{
               width: 280, background: '#fff', borderRight: '1px solid #e2e8f0',
               display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0,
             }}>
