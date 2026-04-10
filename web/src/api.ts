@@ -83,6 +83,15 @@ export async function fetchBriefing(): Promise<Array<{
   return res.json();
 }
 
+export async function sendWorkerMessage(workspace: string, workerId: string, text: string): Promise<{ ok: boolean }> {
+  const res = await fetch(`${API_BASE}/worker/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace, worker_id: workerId, text }),
+  });
+  return res.json();
+}
+
 export async function fetchCanvas(workspace: string, bee: string): Promise<{
   workspace: string;
   bee: string;

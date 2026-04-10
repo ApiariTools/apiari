@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { BeeConfigView, TaskView } from '../types';
-import { dismissBriefingItem, snoozeBriefingItem, fetchCanvas } from '../api';
+import { dismissBriefingItem, snoozeBriefingItem, fetchCanvas, sendWorkerMessage } from '../api';
 import './Briefing.css';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -117,6 +117,8 @@ export default function Briefing({
   const [hiveOpen, setHiveOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [canvases, setCanvases] = useState<CanvasData[]>([]);
+  const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [workerMsg, setWorkerMsg] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -269,23 +271,70 @@ export default function Briefing({
                 {actionItems.length} item{actionItems.length !== 1 ? 's' : ''} need{actionItems.length === 1 ? 's' : ''} attention
               </div>
             )}
-            {actionItems.map(item => (
+            {actionItems.map(item => {
+              const isWorker = item.source.startsWith('swarm:');
+              const workerId = isWorker ? item.source.split(':')[1] : '';
+              const isExpanded = expandedCard === item.id;
+              return (
               <div key={item.id} style={{
                 padding: '14px 18px', borderRadius: 10, marginBottom: 10,
                 border: '1.5px solid #fca5a5', background: '#fef2f2',
-                cursor: item.url ? 'pointer' : 'default',
-              }} onClick={() => item.url && window.open(item.url, '_blank')}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: 16 }}>{item.icon}</span>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>{item.workspace}</span>
-                  <span style={{ fontSize: 11, color: '#94a3b8' }}>{timeAgo(new Date(item.timestamp))}</span>
+              }}>
+                <div onClick={() => isWorker ? setExpandedCard(isExpanded ? null : item.id) : (item.url && window.open(item.url, '_blank'))}
+                  style={{ cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: 16 }}>{item.icon}</span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8' }}>{item.workspace}</span>
+                    <span style={{ fontSize: 11, color: '#94a3b8' }}>{timeAgo(new Date(item.timestamp))}</span>
+                    {isWorker && <span style={{ fontSize: 11, color: '#94a3b8', marginLeft: 'auto' }}>{isExpanded ? '▲' : '▼'}</span>}
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a', marginBottom: 4 }}>{item.title}</div>
+                  {item.body && <div style={{ fontSize: 12, color: '#64748b', marginBottom: isExpanded ? 4 : 10 }}>{item.body}</div>}
                 </div>
-                <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a', marginBottom: 4 }}>{item.title}</div>
-                {item.body && <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>{item.body}</div>}
-                {item.actions.length > 0 && (
+
+                {/* Expanded worker detail */}
+                {isWorker && isExpanded && (
+                  <div style={{ marginTop: 8, padding: '10px 0', borderTop: '1px solid #fecaca' }}>
+                    {item.url && (
+                      <a href={item.url} target="_blank" rel="noopener noreferrer" style={{
+                        fontSize: 12, color: '#2563eb', display: 'block', marginBottom: 8,
+                      }}>Open PR →</a>
+                    )}
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input
+                        value={workerMsg}
+                        onChange={(e) => setWorkerMsg(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && workerMsg.trim()) {
+                            sendWorkerMessage(item.workspace, workerId, workerMsg.trim());
+                            setWorkerMsg('');
+                          }
+                        }}
+                        placeholder={`Message ${workerId}...`}
+                        style={{
+                          flex: 1, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+                          fontSize: 14, outline: 'none',
+                        }}
+                      />
+                      <button onClick={() => {
+                        if (workerMsg.trim()) {
+                          sendWorkerMessage(item.workspace, workerId, workerMsg.trim());
+                          setWorkerMsg('');
+                        }
+                      }} style={{
+                        padding: '8px 14px', borderRadius: 8, border: 'none',
+                        background: '#f59e0b', color: '#fff', cursor: 'pointer',
+                        fontSize: 13, fontWeight: 600,
+                      }}>Send</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                {!isExpanded && item.actions.length > 0 && (
                   <div style={{ display: 'flex', gap: 8 }}>
                     {item.actions.map(action => {
-                      const signalId = parseInt(item.id.split('-').pop() ?? '0', 10);
+                      const signalId = parseInt(item.id.split('-')[1] ?? '0', 10);
                       return (
                         <button key={action.label} onClick={(e) => {
                           e.stopPropagation();
@@ -308,7 +357,8 @@ export default function Briefing({
                   </div>
                 )}
               </div>
-            ))}
+              );
+            })}
 
             {/* Notices */}
             {noticeItems.length > 0 && (

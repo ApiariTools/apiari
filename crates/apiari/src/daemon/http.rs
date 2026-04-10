@@ -818,20 +818,42 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
             by_source.entry(sig.source.as_str()).or_default().push(sig);
         }
 
-        // Workers waiting → action
+        // Workers waiting → action (with detail from metadata)
         for sig in by_source.get("swarm_worker_waiting").unwrap_or(&vec![]) {
+            let worker_id = sig
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|v| {
+                    v.get("worker_id")
+                        .and_then(|w| w.as_str().map(|s| s.to_string()))
+                })
+                .unwrap_or_default();
+            let pr_url = sig
+                .metadata
+                .as_ref()
+                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                .and_then(|v| {
+                    v.get("pr_url")
+                        .and_then(|w| w.as_str().map(|s| s.to_string()))
+                });
+            let body_text = if let Some(ref pr) = pr_url {
+                format!("Worker: {worker_id} · PR: {pr}")
+            } else {
+                format!("Worker: {worker_id} · no PR yet")
+            };
             items.push(BriefingItem {
-                id: format!("wait-{}", sig.id),
+                id: format!("wait-{}-{}", sig.id, worker_id),
                 priority: "action".into(),
                 icon: "⏸".into(),
                 title: sig.title.clone(),
-                body: Some("Worker waiting for input or review".into()),
+                body: Some(body_text),
                 workspace: ws.name.clone(),
-                source: "swarm".into(),
-                url: sig.url.clone(),
+                source: format!("swarm:{worker_id}"),
+                url: pr_url.or_else(|| sig.url.clone()),
                 actions: vec![
                     BriefingAction {
-                        label: "View".into(),
+                        label: "View PR".into(),
                         style: "primary".into(),
                     },
                     BriefingAction {
@@ -1017,6 +1039,63 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
     });
 
     Json(items)
+}
+
+// ── Worker message endpoint ───────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct WorkerMessageBody {
+    workspace: String,
+    worker_id: String,
+    text: String,
+}
+
+/// POST /api/worker/send — send a message to a swarm worker.
+async fn send_worker_message(
+    Json(body): Json<WorkerMessageBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Find the workspace root
+    let workspaces = crate::config::discover_workspaces().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to discover workspaces: {e}"),
+        )
+    })?;
+    let ws = workspaces
+        .iter()
+        .find(|w| w.name == body.workspace)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("workspace '{}' not found", body.workspace),
+            )
+        })?;
+
+    // Run swarm send command
+    let output = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(&ws.config.root)
+        .arg("send")
+        .arg(&body.worker_id)
+        .arg(&body.text)
+        .output()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to run swarm: {e}"),
+            )
+        })?;
+
+    if output.status.success() {
+        Ok(Json(serde_json::json!({ "ok": true })))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("swarm send failed: {stderr}"),
+        ))
+    }
 }
 
 // ── Canvas endpoint ───────────────────────────────────────────────────
@@ -1680,6 +1759,7 @@ pub async fn start_http_server(
         .route("/api/briefing", get(get_briefing))
         .route("/api/bee-activity", get(get_bee_activity))
         .route("/api/canvas", get(get_canvas))
+        .route("/api/worker/send", post(send_worker_message))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))
         .route("/api/signals", get(get_signals))
