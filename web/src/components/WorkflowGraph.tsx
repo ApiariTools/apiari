@@ -167,6 +167,15 @@ export default function WorkflowGraph({ graph, tasks, selectedNodeId, onSelectNo
     const isSelected = nodeId === selectedNodeId;
     const count = nodeTaskCounts.get(nodeId) ?? 0;
 
+    // Determine execution mode from action.kind
+    const action = node.action as { kind?: string; role?: string } | undefined;
+    const execMode = action?.kind;
+    const execBadge = execMode === 'dispatch_worker' ? { icon: '🔀', label: 'A2A', color: '#7c3aed' }
+      : execMode === 'custom' ? { icon: '🐝', label: 'inline', color: '#d97706' }
+      : execMode === 'create_pr' ? { icon: '⚙️', label: 'system', color: '#64748b' }
+      : execMode === 'notify' ? { icon: '📢', label: 'notify', color: '#64748b' }
+      : null;
+
     return (
       <div
         key={nodeId}
@@ -184,6 +193,15 @@ export default function WorkflowGraph({ graph, tasks, selectedNodeId, onSelectNo
         <span className="node-type-dot" />
         <div className="node-content">
           <span className="node-label">{node.label}</span>
+          {execBadge && (
+            <span style={{
+              fontSize: 10, color: execBadge.color, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 3, marginTop: 1,
+            }}>
+              <span>{execBadge.icon}</span> {execBadge.label}
+              {action?.role && <span style={{ color: '#94a3b8', fontWeight: 400 }}> · {action.role}</span>}
+            </span>
+          )}
         </div>
         {count > 0 && <span className="node-badge">{count}</span>}
       </div>
