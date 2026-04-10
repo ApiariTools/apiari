@@ -327,30 +327,6 @@ export default function App() {
 
         {view === 'workflow' && (
           <>
-            <div className="workflow-sidebar" style={{
-              width: 280, background: '#fff', borderRight: '1px solid #e2e8f0',
-              display: 'flex', flexDirection: 'column', overflow: 'hidden', flexShrink: 0,
-            }}>
-              <div style={{ flex: 1, overflow: 'auto' }}>
-                <div style={{
-                  fontSize: 11, color: '#94a3b8', padding: '14px 18px 6px',
-                  textTransform: 'uppercase', letterSpacing: 1, fontWeight: 600,
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                }}>
-                  <span>Tasks ({tasks.length})</span>
-                  {tasks.length > 0 && (
-                    <button onClick={async () => { await clearTasks(); setTasks([]); }} style={{
-                      fontSize: 10, color: '#94a3b8', background: 'none', border: '1px solid #e2e8f0',
-                      borderRadius: 4, padding: '1px 8px', cursor: 'pointer',
-                      textTransform: 'none', letterSpacing: 0, fontWeight: 500,
-                    }}>Clear</button>
-                  )}
-                </div>
-                <TaskPanel tasks={tasks} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
-              </div>
-              <div style={{ borderTop: '1px solid #e2e8f0' }}><SignalPanel /></div>
-            </div>
-
             <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
               <button onClick={() => setShowEditor(!showEditor)} style={{
                 position: 'sticky', top: 14, float: 'right', marginRight: 18, zIndex: 10,
