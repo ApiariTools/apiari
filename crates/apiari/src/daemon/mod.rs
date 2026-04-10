@@ -494,6 +494,27 @@ async fn run_coordinator_task(
                             );
                         }
 
+                        // Parse and execute action markers from chat responses
+                        let bee_actions =
+                            crate::buzz::coordinator::actions::parse_actions(&response);
+                        if !bee_actions.is_empty() {
+                            let ws_root = crate::config::discover_workspaces()
+                                .ok()
+                                .and_then(|ws| {
+                                    ws.into_iter()
+                                        .find(|w| w.name == ws_name)
+                                        .map(|w| w.config.root)
+                                })
+                                .unwrap_or_else(|| std::path::PathBuf::from("."));
+                            execute_bee_actions(
+                                &bee_actions,
+                                &store,
+                                &ws_name,
+                                &bee_name,
+                                &ws_root,
+                            );
+                        }
+
                         // Auto-compact if turn limit exceeded
                         if max_session_turns > 0 && turn_count >= max_session_turns {
                             info!("[{ws_name}] session compacted after {turn_count} turns");
