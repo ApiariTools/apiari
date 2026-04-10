@@ -98,9 +98,22 @@ pub struct WebChatRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WebChatEvent {
-    Token { text: String },
+    Token {
+        text: String,
+    },
     Done,
-    Error { text: String },
+    Error {
+        text: String,
+    },
+    /// A workflow step is starting.
+    StepStart {
+        step: String,
+        label: String,
+    },
+    /// A workflow step completed.
+    StepDone {
+        step: String,
+    },
 }
 
 // ── API view types ─────────────────────────────────────────────────────
@@ -1129,6 +1142,169 @@ async fn chat_handler(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+// ── Workflow run handler ──────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct WorkflowRunBody {
+    workspace: String,
+    #[serde(default)]
+    bee: Option<String>,
+    topic: String,
+    #[serde(default)]
+    lane: Option<String>,
+}
+
+/// POST /api/workflow/run — execute a workflow lane step-by-step via a Bee.
+///
+/// Walks the workflow graph from entry, following the specified lane.
+/// For each action node, sends the node's prompt + user's topic to the Bee
+/// and streams the response. Accumulates context across steps.
+async fn workflow_run_handler(
+    State(state): State<HttpState>,
+    Json(body): Json<WorkflowRunBody>,
+) -> Sse<impl futures::stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+    let graph = state.graph.read().await.clone();
+    let chat_tx = state.chat_tx.clone();
+
+    let stream = async_stream::stream! {
+        // Find the entry node
+        let entry_id = graph.nodes.iter()
+            .find(|(_, n)| n.node_type == crate::buzz::orchestrator::graph::NodeType::Entry)
+            .map(|(id, _)| id.clone());
+
+        let Some(entry_id) = entry_id else {
+            let data = serde_json::to_string(&WebChatEvent::Error {
+                text: "no entry node in workflow".into(),
+            }).unwrap_or_default();
+            yield Ok(SseEvent::default().data(data));
+            return;
+        };
+
+        // Walk from entry, find action nodes in the target lane.
+        // Follow edges linearly, collecting action nodes with prompts.
+        let mut steps: Vec<(String, String, String)> = Vec::new(); // (node_id, label, prompt)
+        let mut current = entry_id;
+        let mut visited = std::collections::HashSet::new();
+
+        loop {
+            if visited.contains(&current) { break; }
+            visited.insert(current.clone());
+
+            let Some(node) = graph.nodes.get(&current) else { break; };
+
+            if let Some(ref action) = node.action
+                && let Some(ref prompt) = action.prompt
+            {
+                let in_lane = body.lane.as_ref().is_none_or(|lane| {
+                    action.role.as_deref() == Some(lane.as_str())
+                        || node.label.to_lowercase().contains(&lane.to_lowercase())
+                });
+                if in_lane {
+                    steps.push((current.clone(), node.label.clone(), prompt.clone()));
+                }
+            }
+
+            if node.node_type == crate::buzz::orchestrator::graph::NodeType::Terminal {
+                break;
+            }
+
+            // Follow first unconditional edge, or first edge by priority
+            let mut outgoing: Vec<&crate::buzz::orchestrator::graph::Edge> = graph.edges.iter()
+                .filter(|e| e.from == current)
+                .collect();
+            outgoing.sort_by_key(|e| e.priority);
+            // Prefer unconditional edges
+            let next = outgoing.iter()
+                .find(|e| e.condition.is_none())
+                .or(outgoing.first());
+            if let Some(edge) = next {
+                current = edge.to.clone();
+            } else {
+                break;
+            }
+        }
+
+        if steps.is_empty() {
+            let data = serde_json::to_string(&WebChatEvent::Error {
+                text: "no action steps found in workflow lane".into(),
+            }).unwrap_or_default();
+            yield Ok(SseEvent::default().data(data));
+            return;
+        }
+
+        let mut accumulated = String::new();
+
+        for (node_id, label, prompt) in &steps {
+            // Emit step start
+            let start = serde_json::to_string(&WebChatEvent::StepStart {
+                step: node_id.clone(),
+                label: label.clone(),
+            }).unwrap_or_default();
+            yield Ok(SseEvent::default().data(start));
+
+            // Build the message for this step
+            let step_message = if accumulated.is_empty() {
+                format!("[Step: {label}]\n{prompt}\n\nTopic: {}", body.topic)
+            } else {
+                format!(
+                    "[Step: {label}]\n{prompt}\n\nOriginal topic: {}\n\nFindings so far:\n{accumulated}",
+                    body.topic
+                )
+            };
+
+            // Send to coordinator via chat channel
+            let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<WebChatEvent>();
+            let req = WebChatRequest {
+                workspace: body.workspace.clone(),
+                bee: body.bee.clone(),
+                text: step_message,
+                response_tx: resp_tx,
+            };
+
+            if chat_tx.send(req).is_err() {
+                let data = serde_json::to_string(&WebChatEvent::Error {
+                    text: "coordinator unavailable".into(),
+                }).unwrap_or_default();
+                yield Ok(SseEvent::default().data(data));
+                return;
+            }
+
+            // Stream tokens for this step
+            let mut step_text = String::new();
+            while let Some(event) = resp_rx.recv().await {
+                match &event {
+                    WebChatEvent::Token { text } => {
+                        step_text.push_str(text);
+                        let data = serde_json::to_string(&event).unwrap_or_default();
+                        yield Ok(SseEvent::default().data(data));
+                    }
+                    WebChatEvent::Done => break,
+                    WebChatEvent::Error { .. } => {
+                        let data = serde_json::to_string(&event).unwrap_or_default();
+                        yield Ok(SseEvent::default().data(data));
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
+            accumulated.push_str(&format!("\n## {label}\n{step_text}\n"));
+
+            // Emit step done
+            let done = serde_json::to_string(&WebChatEvent::StepDone {
+                step: node_id.clone(),
+            }).unwrap_or_default();
+            yield Ok(SseEvent::default().data(done));
+        }
+
+        // All steps complete
+        let data = serde_json::to_string(&WebChatEvent::Done).unwrap_or_default();
+        yield Ok(SseEvent::default().data(data));
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 // ── Briefing action handlers ──────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1233,6 +1409,7 @@ pub async fn start_http_server(
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/chat", post(chat_handler))
+        .route("/api/workflow/run", post(workflow_run_handler))
         .route("/api/briefing", get(get_briefing))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))

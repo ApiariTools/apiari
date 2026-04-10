@@ -5,7 +5,7 @@ import TaskPanel from './components/TaskPanel';
 import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchBriefing, fetchSignals, fetchConversations, clearTasks, sendChat, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchBriefing, fetchSignals, fetchConversations, clearTasks, sendChat, runWorkflow, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
 type View = 'briefing' | 'workflow' | 'bees';
@@ -169,6 +169,7 @@ export default function App() {
   async function handleSendMessage(bee: string, ws: string, text: string) {
     const id = `chat-${Date.now()}`;
     const respId = `${id}-resp`;
+    const isResearch = bee.toLowerCase().includes('research');
 
     // Show user message immediately
     setChatMessages((prev) => [...prev, {
@@ -181,12 +182,34 @@ export default function App() {
     }]);
 
     try {
-      await sendChat(ws, text, bee, (partialText) => {
-        // Update the assistant message in place as tokens stream
-        setChatMessages((prev) => prev.map(msg =>
-          msg.id === respId ? { ...msg, text: partialText } : msg
-        ));
-      });
+      if (isResearch) {
+        // Run through the workflow — shows step markers as it progresses
+        let currentStep = '';
+        await runWorkflow(ws, text, bee, 'researcher',
+          (step, label) => {
+            currentStep = label;
+            setChatMessages((prev) => prev.map(msg =>
+              msg.id === respId ? { ...msg, text: msg.text + `\n\n**${label}...**\n` } : msg
+            ));
+          },
+          (partialText) => {
+            setChatMessages((prev) => prev.map(msg =>
+              msg.id === respId ? { ...msg, text: partialText } : msg
+            ));
+          },
+          (_step) => {
+            setChatMessages((prev) => prev.map(msg =>
+              msg.id === respId ? { ...msg, text: msg.text + '\n\n---\n' } : msg
+            ));
+          },
+        );
+      } else {
+        await sendChat(ws, text, bee, (partialText) => {
+          setChatMessages((prev) => prev.map(msg =>
+            msg.id === respId ? { ...msg, text: partialText } : msg
+          ));
+        });
+      }
     } catch {
       setChatMessages((prev) => prev.map(msg =>
         msg.id === respId ? { ...msg, text: 'Failed to reach Bee' } : msg

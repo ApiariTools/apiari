@@ -172,6 +172,58 @@ export async function sendChat(
   return fullText || '(no response)';
 }
 
+export async function runWorkflow(
+  workspace: string,
+  topic: string,
+  bee?: string,
+  lane?: string,
+  onStepStart?: (step: string, label: string) => void,
+  onToken?: (text: string) => void,
+  onStepDone?: (step: string) => void,
+): Promise<string> {
+  const res = await fetch(`${API_BASE}/workflow/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspace, topic, bee, lane }),
+  });
+
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+  let fullText = '';
+
+  if (!reader) return '(no response)';
+
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const event = JSON.parse(line.slice(6));
+          if (event.type === 'token') {
+            fullText += event.text;
+            onToken?.(fullText);
+          } else if (event.type === 'step_start') {
+            onStepStart?.(event.step, event.label);
+          } else if (event.type === 'step_done') {
+            onStepDone?.(event.step);
+          } else if (event.type === 'error') {
+            return event.text;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  }
+
+  return fullText || '(no response)';
+}
+
 export function connectWs(onMessage: (msg: WsMessage) => void): WebSocket {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${window.location.host}${API_BASE}/ws`);
