@@ -281,7 +281,6 @@ impl TaskStore {
         Ok(tasks.pop())
     }
 
-    /// Delete all tasks (and their events) for a workspace.
     pub fn clear_tasks(&self, workspace: &str) -> Result<usize> {
         // Delete events for tasks in this workspace
         self.conn.execute(

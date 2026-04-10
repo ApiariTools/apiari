@@ -1165,6 +1165,8 @@ async fn workflow_run_handler(
 ) -> Sse<impl futures::stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let graph = state.graph.read().await.clone();
     let chat_tx = state.chat_tx.clone();
+    let db_path = state.db_path.clone();
+    let updates_tx = state.updates_tx.clone();
 
     let stream = async_stream::stream! {
         // Find the entry node
@@ -1247,9 +1249,67 @@ async fn workflow_run_handler(
             return;
         }
 
+        // Create a task to track this workflow run
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let first_step = &steps[0].0;
+        let cursor = crate::buzz::orchestrator::graph::walker::GraphCursor {
+            current_node: first_step.clone(),
+            counters: std::collections::HashMap::new(),
+            artifacts: std::collections::HashMap::new(),
+            history: Vec::new(),
+        };
+        let task = crate::buzz::task::Task {
+            id: task_id.clone(),
+            workspace: body.workspace.clone(),
+            title: body.topic.clone(),
+            stage: crate::buzz::task::TaskStage::InProgress,
+            source: Some("workflow".to_string()),
+            source_url: None,
+            worker_id: body.bee.clone(),
+            pr_url: None,
+            pr_number: None,
+            repo: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            resolved_at: None,
+            metadata: serde_json::json!({ "graph_cursor": cursor }),
+        };
+        if let Ok(store) = crate::buzz::task::store::TaskStore::open(&db_path) {
+            let _ = store.create_task(&task);
+            // Broadcast task creation to web UI
+            let _ = updates_tx.send(WsUpdate::TaskUpdated {
+                task: task_to_view(&task),
+            });
+        }
+
         let mut accumulated = String::new();
 
-        for (node_id, label, prompt) in &steps {
+        for (i, (node_id, label, prompt)) in steps.iter().enumerate() {
+            // Update cursor position
+            let cursor = crate::buzz::orchestrator::graph::walker::GraphCursor {
+                current_node: node_id.clone(),
+                counters: std::collections::HashMap::new(),
+                artifacts: std::collections::HashMap::new(),
+                history: steps[..=i].iter().enumerate().filter(|(j, _)| *j > 0).map(|(_, (nid, _, _))| {
+                    crate::buzz::orchestrator::graph::walker::CursorStep {
+                        from_node: steps[i.saturating_sub(1)].0.clone(),
+                        to_node: nid.clone(),
+                        timestamp: chrono::Utc::now(),
+                        trigger: "workflow_run".to_string(),
+                    }
+                }).collect(),
+            };
+            if let Ok(store) = crate::buzz::task::store::TaskStore::open(&db_path) {
+                let metadata = serde_json::json!({ "graph_cursor": cursor });
+                let _ = store.update_task_metadata(&task_id, &metadata);
+                // Broadcast updated cursor position
+                let mut updated_task = task.clone();
+                updated_task.metadata = metadata;
+                let _ = updates_tx.send(WsUpdate::TaskUpdated {
+                    task: task_to_view(&updated_task),
+                });
+            }
+
             // Emit step start
             let start = serde_json::to_string(&WebChatEvent::StepStart {
                 step: node_id.clone(),
@@ -1312,7 +1372,16 @@ async fn workflow_run_handler(
             yield Ok(SseEvent::default().data(done));
         }
 
-        // All steps complete
+        // All steps complete — mark task as done
+        if let Ok(store) = crate::buzz::task::store::TaskStore::open(&db_path) {
+            let _ = store.update_task_stage(&task_id, &crate::buzz::task::TaskStage::Merged);
+            let mut final_task = task.clone();
+            final_task.stage = crate::buzz::task::TaskStage::Merged;
+            let _ = updates_tx.send(WsUpdate::TaskUpdated {
+                task: task_to_view(&final_task),
+            });
+        }
+
         let data = serde_json::to_string(&WebChatEvent::Done).unwrap_or_default();
         yield Ok(SseEvent::default().data(data));
     };
