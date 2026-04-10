@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import Markdown from 'react-markdown';
 import type { BeeConfigView, TaskView } from '../types';
 import { dismissBriefingItem, snoozeBriefingItem, fetchCanvas } from '../api';
 import './Briefing.css';
@@ -330,8 +331,8 @@ export default function Briefing({
                     <div style={{ fontSize: 12, fontWeight: 600, color: '#d97706', marginBottom: 8 }}>
                       🎨 @{c.bee}
                     </div>
-                    <div style={{ fontSize: 14, lineHeight: 1.7, color: '#1e293b', whiteSpace: 'pre-wrap' }}>
-                      {c.content}
+                    <div className="canvas-markdown" style={{ fontSize: 14, lineHeight: 1.7, color: '#1e293b' }}>
+                      <Markdown>{c.content}</Markdown>
                     </div>
                   </div>
                 ))}
@@ -407,7 +408,9 @@ export default function Briefing({
                     </span>
                     <span style={{ fontSize: 10, color: '#94a3b8' }}>{timeAgo(msg.timestamp)}</span>
                   </div>
-                  <div style={{ fontSize: 13, color: '#1e293b', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{msg.text}</div>
+                  <div className="canvas-markdown" style={{ fontSize: 13, color: '#1e293b', lineHeight: 1.5 }}>
+                    <Markdown>{msg.text}</Markdown>
+                  </div>
                 </div>
               ))}
               <div ref={chatEndRef} />

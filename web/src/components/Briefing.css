@@ -65,3 +65,22 @@
     width: 100%;
   }
 }
+
+/* ── Markdown rendering ──────────────────────────────────────────── */
+
+.canvas-markdown h1 { font-size: 18px; font-weight: 700; margin: 16px 0 8px; color: #0f172a; }
+.canvas-markdown h2 { font-size: 15px; font-weight: 600; margin: 14px 0 6px; color: #1e293b; }
+.canvas-markdown h3 { font-size: 14px; font-weight: 600; margin: 12px 0 4px; color: #334155; }
+.canvas-markdown p { margin: 6px 0; }
+.canvas-markdown ul, .canvas-markdown ol { margin: 6px 0; padding-left: 20px; }
+.canvas-markdown li { margin: 3px 0; }
+.canvas-markdown a { color: #2563eb; text-decoration: none; }
+.canvas-markdown a:hover { text-decoration: underline; }
+.canvas-markdown code { background: #f1f5f9; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+.canvas-markdown pre { background: #f1f5f9; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 8px 0; }
+.canvas-markdown pre code { background: none; padding: 0; }
+.canvas-markdown hr { border: none; border-top: 1px solid #e2e8f0; margin: 16px 0; }
+.canvas-markdown table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+.canvas-markdown th, .canvas-markdown td { border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; }
+.canvas-markdown th { background: #f8fafc; font-weight: 600; }
+.canvas-markdown blockquote { border-left: 3px solid #f59e0b; padding-left: 12px; margin: 8px 0; color: #64748b; }
