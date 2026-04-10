@@ -1963,7 +1963,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         bee.last_heartbeat = Some(std::time::Instant::now());
 
                         let bee_name = bee.name.clone();
-                        let prompt = prompt.clone();
+                        let mut prompt = prompt.clone();
+
+                        // Append canvas update instruction to heartbeat
+                        prompt.push_str(
+                            "\n\nIf you have notable findings or status updates, write a clean summary inside [CANVAS]...[/CANVAS] tags for your canvas display. If nothing notable, skip the canvas update."
+                        );
 
                         info!("[{ws_name}/{bee_name}] heartbeat firing");
 

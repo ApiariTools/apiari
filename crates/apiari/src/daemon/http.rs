@@ -1514,6 +1514,53 @@ async fn workflow_run_handler(
             });
         }
 
+        // Ask the Bee to update its canvas with the results
+        {
+            let canvas_prompt = format!(
+                "You just completed a workflow. Here are your accumulated findings:\n\n\
+                 {accumulated}\n\n\
+                 Write a clean, well-organized summary of these findings for your canvas. \
+                 Put your summary inside [CANVAS] and [/CANVAS] tags. Make it useful — \
+                 something the user can reference later. Use markdown headers, bullet points, \
+                 and links. Be concise but thorough."
+            );
+            let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<WebChatEvent>();
+            let req = WebChatRequest {
+                workspace: body.workspace.clone(),
+                bee: body.bee.clone(),
+                text: canvas_prompt,
+                response_tx: resp_tx,
+            };
+            if chat_tx.send(req).is_ok() {
+                // Collect the canvas response (don't stream it — it's a system action)
+                let mut canvas_response = String::new();
+                while let Some(event) = resp_rx.recv().await {
+                    match event {
+                        WebChatEvent::Token { text } => canvas_response.push_str(&text),
+                        WebChatEvent::Done | WebChatEvent::Error { .. } => break,
+                        _ => {}
+                    }
+                }
+                // Parse and execute canvas action
+                let actions = crate::buzz::coordinator::actions::parse_actions(&canvas_response);
+                for action in &actions {
+                    if let crate::buzz::coordinator::actions::BeeAction::Canvas { content } = action {
+                        // Write canvas file
+                        if let Ok(workspaces) = crate::config::discover_workspaces()
+                            && let Some(ws) = workspaces.iter().find(|w| w.name == body.workspace)
+                        {
+                                let canvas_dir = ws.config.root.join(".apiari/canvas");
+                                let _ = std::fs::create_dir_all(&canvas_dir);
+                                let bee_name = body.bee.as_deref().unwrap_or("Bee");
+                                let path = canvas_dir.join(format!("{bee_name}.md"));
+                                let _ = std::fs::write(&path, content);
+                                tracing::info!("[{}/{bee_name}] canvas updated after workflow", body.workspace);
+                        }
+                    }
+                }
+            }
+        }
+
         let data = serde_json::to_string(&WebChatEvent::Done).unwrap_or_default();
         yield Ok(SseEvent::default().data(data));
     };
