@@ -169,7 +169,6 @@ export default function App() {
   async function handleSendMessage(bee: string, ws: string, text: string) {
     const id = `chat-${Date.now()}`;
     const respId = `${id}-resp`;
-    const isResearch = bee.toLowerCase().includes('research');
 
     // Show user message immediately
     setChatMessages((prev) => [...prev, {
@@ -182,33 +181,46 @@ export default function App() {
     }]);
 
     try {
-      if (isResearch) {
-        // Run through the workflow — shows step markers as it progresses
-        let currentStep = '';
-        await runWorkflow(ws, text, bee, 'researcher',
-          (step, label) => {
-            currentStep = label;
+      // Always chat normally first — the Bee decides what to do
+      const response = await sendChat(ws, text, bee, (partialText) => {
+        setChatMessages((prev) => prev.map(msg =>
+          msg.id === respId ? { ...msg, text: partialText } : msg
+        ));
+      });
+
+      // Check if the Bee triggered a workflow via [RESEARCH: ...] marker
+      const researchMatch = response.match(/\[RESEARCH:\s*(.+?)\]/);
+      if (researchMatch) {
+        const topic = researchMatch[1].trim();
+        const workflowId = `${id}-workflow`;
+
+        // Add a workflow message that will accumulate step results
+        setChatMessages((prev) => [...prev, {
+          id: workflowId, bee, workspace: ws, role: 'assistant',
+          text: '🔬 Starting research workflow...\n', timestamp: new Date(),
+        }]);
+
+        await runWorkflow(ws, topic, bee, 'researcher',
+          (_step, label) => {
             setChatMessages((prev) => prev.map(msg =>
-              msg.id === respId ? { ...msg, text: msg.text + `\n\n**${label}...**\n` } : msg
+              msg.id === workflowId
+                ? { ...msg, text: msg.text + `\n## ${label}\n` }
+                : msg
             ));
           },
           (partialText) => {
             setChatMessages((prev) => prev.map(msg =>
-              msg.id === respId ? { ...msg, text: partialText } : msg
+              msg.id === workflowId ? { ...msg, text: partialText } : msg
             ));
           },
           (_step) => {
             setChatMessages((prev) => prev.map(msg =>
-              msg.id === respId ? { ...msg, text: msg.text + '\n\n---\n' } : msg
+              msg.id === workflowId
+                ? { ...msg, text: msg.text + '\n---\n' }
+                : msg
             ));
           },
         );
-      } else {
-        await sendChat(ws, text, bee, (partialText) => {
-          setChatMessages((prev) => prev.map(msg =>
-            msg.id === respId ? { ...msg, text: partialText } : msg
-          ));
-        });
       }
     } catch {
       setChatMessages((prev) => prev.map(msg =>
