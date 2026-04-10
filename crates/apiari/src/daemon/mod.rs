@@ -69,6 +69,12 @@ struct BeeSlot {
     coord_last_respawn: Option<std::time::Instant>,
     last_user_input: Option<std::time::Instant>,
     last_nudge: Option<std::time::Instant>,
+    /// Heartbeat interval. None = no heartbeat.
+    heartbeat_interval: Option<std::time::Duration>,
+    /// Heartbeat prompt to send.
+    heartbeat_prompt: Option<String>,
+    /// When the last heartbeat fired (initialized to now so first fire waits one full interval).
+    last_heartbeat: Option<std::time::Instant>,
 }
 
 /// A workspace slot in the daemon — holds per-workspace state.
@@ -1398,6 +1404,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             ));
 
             bee_map.insert(bee.name.clone(), bee_idx);
+            let hb_interval = bee.heartbeat_duration();
+            let hb_prompt = bee.heartbeat_prompt.clone();
             bee_slots.push(BeeSlot {
                 name: bee.name.clone(),
                 coord_tx,
@@ -1407,6 +1415,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 coord_last_respawn: None,
                 last_user_input: None,
                 last_nudge: None,
+                heartbeat_interval: hb_interval,
+                heartbeat_prompt: hb_prompt,
+                // Initialize to now so Bees wait one full interval before first heartbeat.
+                last_heartbeat: if hb_interval.is_some() {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                },
             });
         }
 
@@ -1894,6 +1910,61 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             "[{}/{}] coordinator task respawned (attempt {})",
                             slot.name, bee.name, bee.coord_respawn_count
                         );
+                    }
+                }
+
+                // ── Per-Bee heartbeats ──
+                for slot in &mut slots {
+                    let ws_name = slot.name.clone();
+                    let workspace_root = slot.config.root.clone();
+                    for bee in &mut slot.bees {
+                        let Some(interval) = bee.heartbeat_interval else {
+                            continue;
+                        };
+                        let Some(ref prompt) = bee.heartbeat_prompt else {
+                            continue;
+                        };
+
+                        // Check if enough time has passed since last heartbeat
+                        let should_fire = bee
+                            .last_heartbeat
+                            .is_none_or(|last| last.elapsed() >= interval);
+                        if !should_fire {
+                            continue;
+                        }
+
+                        bee.last_heartbeat = Some(std::time::Instant::now());
+
+                        let bee_name = bee.name.clone();
+                        let prompt = prompt.clone();
+
+                        info!("[{ws_name}/{bee_name}] heartbeat firing");
+
+                        // Send heartbeat prompt as a coordinator follow-through job.
+                        // The action field carries the heartbeat prompt so it fires
+                        // even without an active session.
+                        let job = CoordinatorJob::SignalFollowThrough {
+                            signals: vec![],
+                            source: "heartbeat".to_string(),
+                            prompt_override: Some("Periodic heartbeat check:".to_string()),
+                            action: Some(prompt),
+                            queued_at: std::time::Instant::now(),
+                            ttl_secs: 600,
+                            telegram: slot.config.telegram.as_ref().and_then(|tg| {
+                                telegram_channels
+                                    .get(&tg.bot_token)
+                                    .map(|ch| (ch.clone(), tg.chat_id, tg.topic_id))
+                            }),
+                            socket_server: socket_server.clone(),
+                            slot_name: ws_name.clone(),
+                            skill_names: vec![],
+                            workspace_root: workspace_root.clone(),
+                            bee_name: bee_name.clone(),
+                        };
+
+                        if bee.coord_tx.send(job).is_err() {
+                            warn!("[{ws_name}/{bee_name}] heartbeat: coordinator not available");
+                        }
                     }
                 }
 

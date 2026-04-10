@@ -433,6 +433,38 @@ pub struct BeeConfig {
     /// Telegram topic ID for this Bee (each Bee gets its own thread).
     #[serde(default)]
     pub topic_id: Option<i64>,
+    /// Heartbeat interval (e.g. "30m", "1h", "4h"). None = no heartbeat.
+    #[serde(default)]
+    pub heartbeat: Option<String>,
+    /// Prompt sent to the Bee on each heartbeat.
+    #[serde(default)]
+    pub heartbeat_prompt: Option<String>,
+}
+
+impl BeeConfig {
+    /// Parse the heartbeat string (e.g. "30m", "1h", "4h", "30s") into a Duration.
+    pub fn heartbeat_duration(&self) -> Option<std::time::Duration> {
+        let s = self.heartbeat.as_deref()?.trim();
+        if let Some(mins) = s.strip_suffix('m') {
+            mins.trim()
+                .parse::<u64>()
+                .ok()
+                .map(|m| std::time::Duration::from_secs(m * 60))
+        } else if let Some(hours) = s.strip_suffix('h') {
+            hours
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .map(|h| std::time::Duration::from_secs(h * 3600))
+        } else if let Some(secs) = s.strip_suffix('s') {
+            secs.trim()
+                .parse::<u64>()
+                .ok()
+                .map(std::time::Duration::from_secs)
+        } else {
+            None
+        }
+    }
 }
 
 impl WorkspaceConfig {
@@ -458,6 +490,8 @@ impl WorkspaceConfig {
             max_session_turns: c.max_session_turns,
             signal_hooks: c.signal_hooks.clone(),
             topic_id: self.telegram.as_ref().and_then(|tg| tg.topic_id),
+            heartbeat: None,
+            heartbeat_prompt: None,
         }]
     }
 }
@@ -2062,5 +2096,76 @@ name = "Bee"
     fn test_merge_prs_default_is_never() {
         let config: WorkspaceConfig = toml::from_str("root = \"/tmp\"").unwrap();
         assert_eq!(config.capabilities.merge_prs, MergePrsPolicy::Never);
+    }
+
+    // ── Heartbeat duration parsing ──
+
+    fn default_bee() -> BeeConfig {
+        BeeConfig {
+            name: "TestBee".into(),
+            provider: "claude".into(),
+            model: "sonnet".into(),
+            max_turns: 20,
+            prompt: None,
+            max_session_turns: 50,
+            signal_hooks: vec![],
+            topic_id: None,
+            heartbeat: None,
+            heartbeat_prompt: None,
+        }
+    }
+
+    #[test]
+    fn test_heartbeat_duration_minutes() {
+        let bee = BeeConfig {
+            heartbeat: Some("30m".into()),
+            ..default_bee()
+        };
+        assert_eq!(
+            bee.heartbeat_duration(),
+            Some(std::time::Duration::from_secs(30 * 60))
+        );
+    }
+
+    #[test]
+    fn test_heartbeat_duration_hours() {
+        let bee = BeeConfig {
+            heartbeat: Some("4h".into()),
+            ..default_bee()
+        };
+        assert_eq!(
+            bee.heartbeat_duration(),
+            Some(std::time::Duration::from_secs(4 * 3600))
+        );
+    }
+
+    #[test]
+    fn test_heartbeat_duration_seconds() {
+        let bee = BeeConfig {
+            heartbeat: Some("30s".into()),
+            ..default_bee()
+        };
+        assert_eq!(
+            bee.heartbeat_duration(),
+            Some(std::time::Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn test_heartbeat_duration_none() {
+        let bee = BeeConfig {
+            heartbeat: None,
+            ..default_bee()
+        };
+        assert_eq!(bee.heartbeat_duration(), None);
+    }
+
+    #[test]
+    fn test_heartbeat_duration_invalid() {
+        let bee = BeeConfig {
+            heartbeat: Some("abc".into()),
+            ..default_bee()
+        };
+        assert_eq!(bee.heartbeat_duration(), None);
     }
 }
