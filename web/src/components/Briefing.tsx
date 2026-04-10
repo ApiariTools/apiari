@@ -246,6 +246,14 @@ export default function Briefing({
         </div>
       </div>
 
+      {/* Backdrop to close hive on mobile */}
+      {hiveOpen && (
+        <div onClick={() => setHiveOpen(false)} style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.15)', zIndex: 25,
+        }} />
+      )}
+
       {/* ── Main area: briefing + canvases + chat drawer ── */}
       <div className="briefing-feed">
         {/* Scrollable content area */}

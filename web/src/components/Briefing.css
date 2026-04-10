@@ -36,6 +36,7 @@
 @media (max-width: 640px) {
   .briefing-root {
     flex-direction: column;
+    position: relative;
   }
 
   .briefing-hive {
@@ -44,10 +45,16 @@
 
   .briefing-hive.hive-open {
     display: flex;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 30;
     width: 100%;
-    max-height: 50vh;
+    max-height: 60vh;
     border-right: none;
     border-bottom: 1px solid #e2e8f0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   }
 
   .briefing-mobile-header {
