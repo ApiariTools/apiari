@@ -1640,11 +1640,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             Some(chat_req) = web_chat_recv => {
                 let ws_name = &chat_req.workspace;
                 if let Some(&slot_idx) = name_map.get(ws_name) {
-                    let slot = &slots[slot_idx];
                     // Find the target bee
                     let bee_idx = chat_req.bee.as_deref()
-                        .and_then(|name| slot.bee_map.get(name).copied())
+                        .and_then(|name| slots[slot_idx].bee_map.get(name).copied())
                         .unwrap_or(0);
+                    // Track last user input for heartbeat/nudge
+                    if let Some(bee) = slots[slot_idx].bees.get_mut(bee_idx) {
+                        bee.last_user_input = Some(std::time::Instant::now());
+                        bee.last_nudge = None;
+                    }
+                    let slot = &slots[slot_idx];
                     if let Some(bee) = slot.bees.get(bee_idx) {
                         // Create a socket responder that bridges to the web chat response channel
                         let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<socket::DaemonResponse>();
@@ -3143,14 +3148,6 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
 
             _ = idle_timer.tick() => {
                 // Check each workspace slot for idle nudge eligibility.
-                let has_tui_clients = socket_server
-                    .as_ref()
-                    .is_some_and(|s| s.has_clients());
-
-                if !has_tui_clients {
-                    continue;
-                }
-
                 for slot in &mut slots {
                     for bee in &mut slot.bees {
                         let last_input = match bee.last_user_input {
@@ -3171,6 +3168,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                         bee.last_nudge = Some(std::time::Instant::now());
 
                         let ws_name = slot.name.clone();
+                        let bee_name = bee.name.clone();
                         let swarm_state_path = slot
                             .config
                             .watchers
@@ -3179,6 +3177,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             .map(|s| s.state_path.clone());
                         let repos = slot.config.repos.clone();
                         let server = socket_server.clone();
+                        let web_tx = slot.web_updates_tx.clone();
 
                         tokio::spawn(async move {
                             let nudge = tokio::time::timeout(
@@ -3196,7 +3195,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                 }
                             };
 
-                            info!("[{ws_name}] sending idle nudge");
+                            info!("[{ws_name}/{bee_name}] sending idle nudge");
+                            // Broadcast to TUI clients
                             if let Some(ref server) = server {
                                 server.broadcast_activity(
                                     "system",
@@ -3204,6 +3204,18 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                                     "assistant_message",
                                     &text,
                                 );
+                            }
+                            // Broadcast to web UI clients
+                            if let Some(ref tx) = web_tx {
+                                let _ = tx.send(http::WsUpdate::Signal {
+                                    id: chrono::Utc::now().timestamp_millis(),
+                                    workspace: ws_name,
+                                    source: format!("heartbeat/{bee_name}"),
+                                    title: text,
+                                    severity: "Info".to_string(),
+                                    url: None,
+                                    created_at: chrono::Utc::now().to_rfc3339(),
+                                });
                             }
                         });
                     }
