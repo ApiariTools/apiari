@@ -44,6 +44,7 @@ unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 serde_yaml = "0.9"
 axum = { version = "0.8", features = ["ws"] }
+async-stream.workspace = true
 tower-http = { version = "0.6", features = ["cors"] }
 
 [package.metadata.binstall]

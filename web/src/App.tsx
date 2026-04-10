@@ -162,24 +162,35 @@ export default function App() {
     fetchGraph(ws).then((g) => setGraph(g));
   }
 
+  function refreshBriefing() {
+    fetchBriefing().then(setBriefingItems).catch(() => {});
+  }
+
   async function handleSendMessage(bee: string, ws: string, text: string) {
     const id = `chat-${Date.now()}`;
+    const respId = `${id}-resp`;
+
     // Show user message immediately
     setChatMessages((prev) => [...prev, {
       id, bee, workspace: ws, role: 'user', text, timestamp: new Date(),
     }]);
-    // Send to daemon and get response
+
+    // Add empty assistant message that will be updated with tokens
+    setChatMessages((prev) => [...prev, {
+      id: respId, bee, workspace: ws, role: 'assistant', text: '', timestamp: new Date(),
+    }]);
+
     try {
-      const resp = await sendChat(ws, text, bee);
-      setChatMessages((prev) => [...prev, {
-        id: `${id}-resp`, bee, workspace: ws, role: 'assistant',
-        text: resp.text || '(no response)', timestamp: new Date(),
-      }]);
+      await sendChat(ws, text, bee, (partialText) => {
+        // Update the assistant message in place as tokens stream
+        setChatMessages((prev) => prev.map(msg =>
+          msg.id === respId ? { ...msg, text: partialText } : msg
+        ));
+      });
     } catch {
-      setChatMessages((prev) => [...prev, {
-        id: `${id}-err`, bee, workspace: ws, role: 'assistant',
-        text: 'Failed to reach Bee', timestamp: new Date(),
-      }]);
+      setChatMessages((prev) => prev.map(msg =>
+        msg.id === respId ? { ...msg, text: 'Failed to reach Bee' } : msg
+      ));
     }
   }
 
@@ -272,6 +283,7 @@ export default function App() {
             connected={connected}
             onSendMessage={handleSendMessage}
             onDrillIntoTask={handleDrillIntoTask}
+            onRefreshBriefing={refreshBriefing}
           />
         )}
 

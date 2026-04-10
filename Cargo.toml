@@ -34,6 +34,7 @@ apiari-gemini-sdk = "0.1.0"
 chrono-tz = "0.9"
 apiari-swarm = { version = "0.1.6", default-features = false, features = ["client"] }
 a2a-types = "0.1"
+async-stream = "0.3"
 
 [patch.crates-io]
 apiari-tui = { path = "vendor/apiari-tui" }

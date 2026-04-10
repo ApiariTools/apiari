@@ -111,17 +111,65 @@ export async function fetchConversations(workspace?: string): Promise<Array<{
   return res.json();
 }
 
+export async function dismissBriefingItem(signalId: number, workspace: string): Promise<void> {
+  await fetch(`${API_BASE}/briefing/dismiss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signal_id: signalId, workspace }),
+  });
+}
+
+export async function snoozeBriefingItem(signalId: number, workspace: string, hours: number = 1): Promise<void> {
+  await fetch(`${API_BASE}/briefing/snooze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signal_id: signalId, workspace, hours }),
+  });
+}
+
 export async function sendChat(
   workspace: string,
   text: string,
   bee?: string,
-): Promise<{ type: string; text: string }> {
+  onToken?: (text: string) => void,
+): Promise<string> {
   const res = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ workspace, text, bee }),
   });
-  return res.json();
+
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+  let fullText = '';
+
+  if (!reader) return '(no response)';
+
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const event = JSON.parse(line.slice(6));
+          if (event.type === 'token') {
+            fullText += event.text;
+            onToken?.(fullText);
+          } else if (event.type === 'error') {
+            return event.text;
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
+  }
+
+  return fullText || '(no response)';
 }
 
 export function connectWs(onMessage: (msg: WsMessage) => void): WebSocket {

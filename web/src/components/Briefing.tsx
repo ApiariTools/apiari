@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import type { BeeConfigView, TaskView } from '../types';
+import { dismissBriefingItem, snoozeBriefingItem } from '../api';
 import './Briefing.css';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -72,6 +73,7 @@ interface BriefingProps {
   connected: boolean;
   onSendMessage: (bee: string, workspace: string, text: string) => void;
   onDrillIntoTask: (taskId: string) => void;
+  onRefreshBriefing: () => void;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -178,6 +180,7 @@ export default function Briefing({
   connected,
   onSendMessage,
   onDrillIntoTask,
+  onRefreshBriefing,
 }: BriefingProps) {
   const [input, setInput] = useState('');
   const [targetBee, setTargetBee] = useState('');
@@ -421,7 +424,17 @@ export default function Briefing({
                           {item.actions.map(action => (
                             <button key={action.label} onClick={(e) => {
                               e.stopPropagation();
-                              if (item.url) window.open(item.url, '_blank');
+                              const idParts = item.id.split('-');
+                              const signalId = parseInt(idParts[idParts.length - 1], 10);
+                              if (action.label === 'Dismiss' && !isNaN(signalId)) {
+                                dismissBriefingItem(signalId, item.workspace).then(onRefreshBriefing);
+                              } else if (action.label === 'Snooze' && !isNaN(signalId)) {
+                                snoozeBriefingItem(signalId, item.workspace, 1).then(onRefreshBriefing);
+                              } else if (action.label === 'View' || action.label === 'Review') {
+                                if (item.url) window.open(item.url, '_blank');
+                              } else if (action.label === 'Investigate') {
+                                if (item.url) window.open(item.url, '_blank');
+                              }
                             }} style={{
                               padding: '6px 14px', borderRadius: 6, border: '1px solid',
                               borderColor: action.style === 'primary' ? '#3b82f6' : action.style === 'danger' ? '#fca5a5' : '#e2e8f0',

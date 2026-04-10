@@ -12,7 +12,10 @@ use axum::{
         ws::{Message, WebSocket},
     },
     http::StatusCode,
-    response::IntoResponse,
+    response::{
+        IntoResponse,
+        sse::{Event as SseEvent, KeepAlive, Sse},
+    },
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -784,6 +787,16 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
         };
         let signals = store.get_open_signals().unwrap_or_default();
 
+        // Filter to last 48 hours only, and exclude currently snoozed signals
+        let cutoff = chrono::Utc::now() - chrono::Duration::hours(48);
+        let now_utc = chrono::Utc::now();
+        let signals: Vec<_> = signals
+            .into_iter()
+            .filter(|s| {
+                s.created_at > cutoff && s.snoozed_until.is_none_or(|until| now_utc > until)
+            })
+            .collect();
+
         let mut by_source: std::collections::HashMap<
             &str,
             Vec<&crate::buzz::signal::SignalRecord>,
@@ -1083,7 +1096,7 @@ struct ChatBody {
 async fn chat_handler(
     State(state): State<HttpState>,
     Json(body): Json<ChatBody>,
-) -> impl IntoResponse {
+) -> Sse<impl futures::stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<WebChatEvent>();
 
     let req = WebChatRequest {
@@ -1093,34 +1106,96 @@ async fn chat_handler(
         response_tx,
     };
 
-    if state.chat_tx.send(req).is_err() {
-        return axum::response::Json(serde_json::json!({
-            "type": "error",
-            "text": "daemon chat channel closed"
-        }))
-        .into_response();
-    }
+    let send_failed = state.chat_tx.send(req).is_err();
 
-    // Collect the full response (for simplicity — SSE streaming comes later)
-    let mut full_response = String::new();
-    let mut had_error = false;
-    while let Some(event) = response_rx.recv().await {
-        match event {
-            WebChatEvent::Token { text } => full_response.push_str(&text),
-            WebChatEvent::Done => break,
-            WebChatEvent::Error { text } => {
-                full_response = text;
-                had_error = true;
+    let stream = async_stream::stream! {
+        if send_failed {
+            let err_event = WebChatEvent::Error { text: "daemon chat channel closed".into() };
+            let data = serde_json::to_string(&err_event).unwrap_or_default();
+            yield Ok(SseEvent::default().data(data));
+            return;
+        }
+
+        while let Some(event) = response_rx.recv().await {
+            let is_terminal = matches!(event, WebChatEvent::Done | WebChatEvent::Error { .. });
+            let data = serde_json::to_string(&event).unwrap_or_default();
+            yield Ok(SseEvent::default().data(data));
+            if is_terminal {
                 break;
             }
         }
-    }
+    };
 
-    axum::response::Json(serde_json::json!({
-        "type": if had_error { "error" } else { "response" },
-        "text": full_response,
-    }))
-    .into_response()
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ── Briefing action handlers ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct DismissBody {
+    signal_id: i64,
+    workspace: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnoozeBody {
+    signal_id: i64,
+    workspace: String,
+    #[serde(default = "default_snooze_hours")]
+    hours: u64,
+}
+
+fn default_snooze_hours() -> u64 {
+    1
+}
+
+/// POST /api/briefing/dismiss — resolve a signal so it disappears from briefing.
+async fn dismiss_signal(
+    State(state): State<HttpState>,
+    Json(body): Json<DismissBody>,
+) -> impl IntoResponse {
+    let store = match crate::buzz::signal::store::SignalStore::open(&state.db_path, &body.workspace)
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return Json(
+                serde_json::json!({"ok": false, "error": format!("failed to open store: {e}")}),
+            );
+        }
+    };
+    if let Err(e) = store.resolve_signal(body.signal_id) {
+        return Json(serde_json::json!({"ok": false, "error": e.to_string()}));
+    }
+    info!(
+        "[http] dismissed signal {} in workspace {}",
+        body.signal_id, body.workspace
+    );
+    Json(serde_json::json!({"ok": true}))
+}
+
+/// POST /api/briefing/snooze — snooze a signal for N hours.
+async fn snooze_signal(
+    State(state): State<HttpState>,
+    Json(body): Json<SnoozeBody>,
+) -> impl IntoResponse {
+    let store = match crate::buzz::signal::store::SignalStore::open(&state.db_path, &body.workspace)
+    {
+        Ok(s) => s,
+        Err(e) => {
+            return Json(
+                serde_json::json!({"ok": false, "error": format!("failed to open store: {e}")}),
+            );
+        }
+    };
+    let until = chrono::Utc::now() + chrono::Duration::hours(body.hours as i64);
+    if let Err(e) = store.snooze_signal(body.signal_id, until) {
+        return Json(serde_json::json!({"ok": false, "error": e.to_string()}));
+    }
+    info!(
+        "[http] snoozed signal {} for {}h in workspace {}",
+        body.signal_id, body.hours, body.workspace
+    );
+    Json(serde_json::json!({"ok": true}))
 }
 
 // ── Server setup ───────────────────────────────────────────────────────
@@ -1159,6 +1234,8 @@ pub async fn start_http_server(
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/chat", post(chat_handler))
         .route("/api/briefing", get(get_briefing))
+        .route("/api/briefing/dismiss", post(dismiss_signal))
+        .route("/api/briefing/snooze", post(snooze_signal))
         .route("/api/signals", get(get_signals))
         .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))
