@@ -159,7 +159,9 @@ export default function App() {
 
   function switchWorkspace(ws: string) {
     setWorkspace(ws);
+    setTasks([]); // Clear tasks — they're workspace-specific
     fetchGraph(ws).then((g) => setGraph(g));
+    fetchBriefing().then(setBriefingItems).catch(() => {});
   }
 
   function refreshBriefing() {
