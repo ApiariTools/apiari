@@ -3828,7 +3828,25 @@ fn build_bee_coordinator(
     coordinator.set_provider(bee.provider.clone());
     coordinator.set_name(bee.name.clone());
     let skill_ctx = build_skill_context(ws_name, ws_config);
-    coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
+    let mut extra_context = build_skills_prompt(&skill_ctx);
+
+    // Inject workflow description so the Bee knows its process
+    let workflow_path = ws_config.root.join(".apiari/workflow.yaml");
+    if let Ok(yaml) = std::fs::read_to_string(&workflow_path) {
+        extra_context.push_str("\n\n## Your Workflow\n\n");
+        extra_context.push_str("You operate within a workflow graph that defines your process. ");
+        extra_context.push_str("Here is the workflow definition:\n\n```yaml\n");
+        extra_context.push_str(&yaml);
+        extra_context.push_str("\n```\n\n");
+        extra_context.push_str(
+            "When users ask about your process, steps, or workflow, refer to this graph. ",
+        );
+        extra_context
+            .push_str("You can explain what happens at each node, what triggers transitions, ");
+        extra_context.push_str("and where a task currently is in the process.\n");
+    }
+
+    coordinator.set_extra_context(extra_context);
     if let Some(ref prompt) = bee.prompt {
         coordinator.set_prompt_preamble(prompt.clone());
     } else if let Some(ref preamble) = skill_ctx.prompt_preamble {
