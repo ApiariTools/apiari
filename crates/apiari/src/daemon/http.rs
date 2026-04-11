@@ -526,7 +526,11 @@ async fn get_yaml(State(state): State<HttpState>) -> Result<String, StatusCode> 
 }
 
 /// GET /api/tasks — return all active tasks with cursor state.
-async fn get_tasks(State(state): State<HttpState>) -> Json<Vec<TaskView>> {
+async fn get_tasks(
+    State(state): State<HttpState>,
+    axum::extract::Query(q): axum::extract::Query<WorkspaceQuery>,
+) -> Json<Vec<TaskView>> {
+    let workspace = q.workspace.as_deref().unwrap_or(state.workspace.as_str());
     let store = match TaskStore::open(&state.db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -536,7 +540,7 @@ async fn get_tasks(State(state): State<HttpState>) -> Json<Vec<TaskView>> {
     };
 
     let tasks = store
-        .get_all_tasks(&state.workspace)
+        .get_all_tasks(workspace)
         .unwrap_or_default()
         .iter()
         .map(task_to_view)

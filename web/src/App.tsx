@@ -163,8 +163,8 @@ export default function App() {
 
   function switchWorkspace(ws: string) {
     setWorkspace(ws);
-    setTasks([]);
     fetchGraph(ws).then((g) => setGraph(g));
+    fetchTasks(ws).then(setTasks).catch(() => setTasks([]));
     fetchBriefing().then(setBriefingItems).catch(() => {});
     fetchWorkers().then(setWorkers).catch(() => {});
   }

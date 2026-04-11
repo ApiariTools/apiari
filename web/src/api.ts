@@ -21,8 +21,9 @@ export async function saveGraph(graph: GraphView): Promise<{ ok: boolean; error?
   return { ok: true };
 }
 
-export async function fetchTasks(): Promise<TaskView[]> {
-  const res = await fetch(`${API_BASE}/tasks`);
+export async function fetchTasks(workspace?: string): Promise<TaskView[]> {
+  const qs = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
+  const res = await fetch(`${API_BASE}/tasks${qs}`);
   return res.json();
 }
 

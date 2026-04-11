@@ -445,11 +445,23 @@ export default function Briefing({
                             <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
                               Agent: {w.agent} · Branch: {w.branch}
                             </div>
-                            {w.pr_url && (
-                              <a href={w.pr_url} target="_blank" rel="noopener noreferrer" style={{
-                                fontSize: 12, color: '#2563eb', display: 'block', marginBottom: 8,
-                              }}>Open PR →</a>
-                            )}
+                            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                              {w.pr_url && (
+                                <a href={w.pr_url} target="_blank" rel="noopener noreferrer" style={{
+                                  fontSize: 12, color: '#2563eb',
+                                }}>Open PR →</a>
+                              )}
+                              {(() => {
+                                const matchedTask = tasks.find(t => t.worker_id === w.id);
+                                if (!matchedTask) return null;
+                                return (
+                                  <button onClick={() => onDrillIntoTask(matchedTask.id)} style={{
+                                    fontSize: 12, color: '#7c3aed', background: 'none', border: 'none',
+                                    cursor: 'pointer', padding: 0, textDecoration: 'underline',
+                                  }}>View in Workflow →</button>
+                                );
+                              })()}
+                            </div>
                             <div style={{ display: 'flex', gap: 8 }}>
                               <input
                                 value={workerMsg}
