@@ -1041,6 +1041,83 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
     Json(items)
 }
 
+// ── Workers endpoint ──────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct WorkerView {
+    id: String,
+    workspace: String,
+    branch: String,
+    agent: String,
+    status: String,
+    pr_url: Option<String>,
+}
+
+/// GET /api/workers — all swarm workers across all workspaces.
+async fn get_workers() -> Json<Vec<WorkerView>> {
+    let mut workers = Vec::new();
+    let workspaces = crate::config::discover_workspaces().unwrap_or_default();
+
+    for ws in &workspaces {
+        let state_path = ws
+            .config
+            .watchers
+            .swarm
+            .as_ref()
+            .map(|s| s.state_path.clone());
+        let Some(path) = state_path else {
+            continue;
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let state: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(wts) = state.get("worktrees").and_then(|v| v.as_array()) {
+            for wt in wts {
+                let id = wt
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let branch = wt
+                    .get("branch")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let agent = wt
+                    .get("agent_kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("claude")
+                    .to_string();
+                let status = wt
+                    .get("agent_session_status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let pr_url = wt
+                    .get("pr")
+                    .and_then(|v| v.get("url"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                workers.push(WorkerView {
+                    id,
+                    workspace: ws.name.clone(),
+                    branch,
+                    agent,
+                    status,
+                    pr_url,
+                });
+            }
+        }
+    }
+
+    Json(workers)
+}
+
 // ── Worker message endpoint ───────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1759,6 +1836,7 @@ pub async fn start_http_server(
         .route("/api/briefing", get(get_briefing))
         .route("/api/bee-activity", get(get_bee_activity))
         .route("/api/canvas", get(get_canvas))
+        .route("/api/workers", get(get_workers))
         .route("/api/worker/send", post(send_worker_message))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))

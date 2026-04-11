@@ -51,12 +51,22 @@ interface CanvasData {
   content: string;
 }
 
+interface WorkerData {
+  id: string;
+  workspace: string;
+  branch: string;
+  agent: string;
+  status: string;
+  pr_url: string | null;
+}
+
 interface BriefingProps {
   workspaces: string[];
   beesByWorkspace: Record<string, BeeConfigView[]>;
   tasks: TaskView[];
   signals: SignalItem[];
   briefingItems: BriefingItemData[];
+  workers: WorkerData[];
   chatMessages: ChatMessage[];
   connected: boolean;
   onSendMessage: (bee: string, workspace: string, text: string) => void;
@@ -110,6 +120,7 @@ export default function Briefing({
   onDrillIntoTask,
   onRefreshBriefing,
   onWorkspaceChange,
+  workers,
 }: BriefingProps) {
   const [input, setInput] = useState('');
   const [targetBee, setTargetBee] = useState('');
@@ -400,6 +411,80 @@ export default function Briefing({
                 ))}
               </>
             )}
+
+            {/* ── Workers ── */}
+            {(() => {
+              const wsWorkers = workers.filter(w => w.workspace === targetWorkspace);
+              if (wsWorkers.length === 0) return null;
+              return (
+                <>
+                  <SectionDivider label={`workers (${wsWorkers.length})`} />
+                  {wsWorkers.map(w => {
+                    const isExpanded = expandedCard === `worker-${w.id}`;
+                    const statusIcon = w.status === 'waiting' ? '⏸' : w.status === 'running' ? '▶' : '○';
+                    const statusColor = w.status === 'waiting' ? '#d97706' : w.status === 'running' ? '#16a34a' : '#94a3b8';
+                    return (
+                      <div key={w.id} style={{
+                        padding: '10px 14px', marginBottom: 4, borderRadius: 8,
+                        border: '1px solid #e2e8f0', background: '#fff',
+                      }}>
+                        <div onClick={() => setExpandedCard(isExpanded ? null : `worker-${w.id}`)}
+                          style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 14 }}>{statusIcon}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 500, color: '#334155' }}>{w.id}</div>
+                            <div style={{ fontSize: 11, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {w.branch.replace('swarm/', '')}
+                            </div>
+                          </div>
+                          <span style={{ fontSize: 11, color: statusColor, fontWeight: 600 }}>{w.status}</span>
+                          <span style={{ fontSize: 11, color: '#94a3b8' }}>{isExpanded ? '▲' : '▼'}</span>
+                        </div>
+                        {isExpanded && (
+                          <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #f1f5f9' }}>
+                            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 6 }}>
+                              Agent: {w.agent} · Branch: {w.branch}
+                            </div>
+                            {w.pr_url && (
+                              <a href={w.pr_url} target="_blank" rel="noopener noreferrer" style={{
+                                fontSize: 12, color: '#2563eb', display: 'block', marginBottom: 8,
+                              }}>Open PR →</a>
+                            )}
+                            <div style={{ display: 'flex', gap: 8 }}>
+                              <input
+                                value={workerMsg}
+                                onChange={(e) => setWorkerMsg(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' && workerMsg.trim()) {
+                                    sendWorkerMessage(w.workspace, w.id, workerMsg.trim());
+                                    setWorkerMsg('');
+                                  }
+                                }}
+                                placeholder={`Message ${w.id}...`}
+                                style={{
+                                  flex: 1, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+                                  fontSize: 14, outline: 'none',
+                                }}
+                              />
+                              <button onClick={() => {
+                                if (workerMsg.trim()) {
+                                  sendWorkerMessage(w.workspace, w.id, workerMsg.trim());
+                                  setWorkerMsg('');
+                                }
+                              }} style={{
+                                padding: '8px 14px', borderRadius: 8, border: 'none',
+                                background: '#f59e0b', color: '#fff', cursor: 'pointer',
+                                fontSize: 13, fontWeight: 600,
+                              }}>Send</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </>
+              );
+            })()}
 
             {/* Quiet */}
             {quietItems.length > 0 && (

@@ -5,7 +5,7 @@ import TaskPanel from './components/TaskPanel';
 import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchBriefing, fetchSignals, fetchConversations, clearTasks, sendChat, runWorkflow, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchBriefing, fetchSignals, fetchWorkers, fetchConversations, clearTasks, sendChat, runWorkflow, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
 type View = 'briefing' | 'workflow' | 'bees';
@@ -22,6 +22,9 @@ export default function App() {
   const [workspace, setWorkspace] = useState('');
   const [workspaces, setWorkspaces] = useState<string[]>([]);
   const [beesByWorkspace, setBeesByWorkspace] = useState<Record<string, BeeConfigView[]>>({});
+  const [workers, setWorkers] = useState<Array<{
+    id: string; workspace: string; branch: string; agent: string; status: string; pr_url: string | null;
+  }>>([]);
   const [briefingItems, setBriefingItems] = useState<Array<{
     id: string;
     priority: string;
@@ -111,8 +114,9 @@ export default function App() {
         allSignals.sort((a, b) => b.created_at.localeCompare(a.created_at));
         setSignals(allSignals.slice(0, 100));
 
-        // Load briefing items
+        // Load briefing items + workers
         fetchBriefing().then(setBriefingItems).catch(() => {});
+        fetchWorkers().then(setWorkers).catch(() => {});
       })
       .catch(() => {
         setError('Failed to connect to daemon API.');
@@ -159,9 +163,10 @@ export default function App() {
 
   function switchWorkspace(ws: string) {
     setWorkspace(ws);
-    setTasks([]); // Clear tasks — they're workspace-specific
+    setTasks([]);
     fetchGraph(ws).then((g) => setGraph(g));
     fetchBriefing().then(setBriefingItems).catch(() => {});
+    fetchWorkers().then(setWorkers).catch(() => {});
   }
 
   function refreshBriefing() {
@@ -316,6 +321,7 @@ export default function App() {
             tasks={tasks}
             signals={signals}
             briefingItems={briefingItems}
+            workers={workers}
             chatMessages={chatMessages}
             connected={connected}
             onSendMessage={handleSendMessage}

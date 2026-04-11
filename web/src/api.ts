@@ -83,6 +83,18 @@ export async function fetchBriefing(): Promise<Array<{
   return res.json();
 }
 
+export async function fetchWorkers(): Promise<Array<{
+  id: string;
+  workspace: string;
+  branch: string;
+  agent: string;
+  status: string;
+  pr_url: string | null;
+}>> {
+  const res = await fetch(`${API_BASE}/workers`);
+  return res.json();
+}
+
 export async function sendWorkerMessage(workspace: string, workerId: string, text: string): Promise<{ ok: boolean }> {
   const res = await fetch(`${API_BASE}/worker/send`, {
     method: 'POST',
