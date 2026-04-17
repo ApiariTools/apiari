@@ -81,7 +81,7 @@ export default function Dashboard({
   const [targetBee, setTargetBee] = useState(bees[0]?.name ?? '');
   const [input, setInput] = useState('');
   const [chatOpen, setChatOpen] = useState(false);
-  const [expandedWorker, setExpandedWorker] = useState<string | null>(null);
+  const [expandedItem, setExpandedItem] = useState<string | null>(null);
   const [workerMsg, setWorkerMsg] = useState('');
   const [canvases, setCanvases] = useState<CanvasData[]>([]);
   const [expandedCanvas, setExpandedCanvas] = useState<string | null>(null);
@@ -134,18 +134,69 @@ export default function Dashboard({
             )}
             {actionItems.map(item => {
               const signalId = parseInt(item.id.split('-')[1] ?? '0', 10);
+              const isWorker = item.source.startsWith('swarm:');
+              const workerId = isWorker ? item.source.split(':')[1] : '';
+              const isEscalation = item.source === 'escalation';
+              const isExpanded = expandedItem === item.id;
+              const matchedWorker = isWorker ? wsWorkers.find(w => w.id === workerId) : null;
+              const matchedTask = matchedWorker ? tasks.find(t => t.worker_id === workerId) : null;
+
               return (
-                <div key={item.id} className="attention-item">
-                  <span className="attention-icon">{item.icon}</span>
-                  <div className="attention-content">
-                    <div className="attention-title">{item.title}</div>
-                    {item.body && <div className="attention-body">{item.body}</div>}
+                <div key={item.id} className="attention-item-wrap">
+                  <div className="attention-item" onClick={() => setExpandedItem(isExpanded ? null : item.id)}>
+                    <span className="attention-icon">{item.icon}</span>
+                    <div className="attention-content">
+                      <div className="attention-title">{item.title}</div>
+                      {item.body && <div className="attention-body">{item.body}</div>}
+                    </div>
+                    <span style={{ fontSize: 11, color: '#94a3b8' }}>{isExpanded ? '▲' : '▼'}</span>
                   </div>
-                  <div className="attention-actions">
-                    {item.url && <button className="btn-sm btn-primary" onClick={() => window.open(item.url!, '_blank')}>View</button>}
-                    <button className="btn-sm btn-muted" onClick={() => snoozeBriefingItem(signalId, workspace).then(onRefreshBriefing)}>Snooze</button>
-                    <button className="btn-sm btn-danger" onClick={() => dismissBriefingItem(signalId, workspace).then(onRefreshBriefing)}>✕</button>
-                  </div>
+
+                  {isExpanded && (
+                    <div className="attention-detail">
+                      {/* Worker actions */}
+                      {isWorker && matchedWorker && (
+                        <>
+                          <div className="attention-detail-row">
+                            <span className="detail-label">Branch:</span>
+                            <span className="detail-value">{matchedWorker.branch.replace('swarm/', '')}</span>
+                          </div>
+                          {matchedWorker.pr_url && (
+                            <a href={matchedWorker.pr_url} target="_blank" rel="noopener noreferrer" className="detail-link">Open PR →</a>
+                          )}
+                          {matchedTask && (
+                            <button className="detail-link" onClick={() => onDrillIntoTask(matchedTask.id)}>View in Workflow →</button>
+                          )}
+                          <div className="worker-msg-row" style={{ marginTop: 6 }}>
+                            <input value={workerMsg} onChange={e => setWorkerMsg(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter' && workerMsg.trim()) { sendWorkerMessage(workspace, workerId, workerMsg.trim()); setWorkerMsg(''); } }}
+                              placeholder={`Message ${workerId}...`} className="worker-msg-input" />
+                            <button className="btn-sm btn-primary" onClick={() => { if (workerMsg.trim()) { sendWorkerMessage(workspace, workerId, workerMsg.trim()); setWorkerMsg(''); } }}>Send</button>
+                          </div>
+                        </>
+                      )}
+
+                      {/* Escalation / general actions */}
+                      {isEscalation && (
+                        <div style={{ marginBottom: 6 }}>
+                          <button className="detail-link" onClick={() => { setTargetBee('CustomerBee'); setChatOpen(true); }}>
+                            Ask CustomerBee about this →
+                          </button>
+                        </div>
+                      )}
+
+                      {/* PR-related */}
+                      {!isWorker && item.url && (
+                        <a href={item.url} target="_blank" rel="noopener noreferrer" className="detail-link">Open in GitHub →</a>
+                      )}
+
+                      {/* Always show dismiss/snooze */}
+                      <div className="attention-actions" style={{ marginTop: 6 }}>
+                        <button className="btn-sm btn-muted" onClick={() => snoozeBriefingItem(signalId, workspace).then(onRefreshBriefing)}>Snooze 1h</button>
+                        <button className="btn-sm btn-danger" onClick={() => dismissBriefingItem(signalId, workspace).then(onRefreshBriefing)}>Dismiss</button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -186,11 +237,11 @@ export default function Dashboard({
               <div className="bento-empty">No active workers</div>
             )}
             {wsWorkers.map(w => {
-              const isExpanded = expandedWorker === w.id;
+              const isExpanded = expandedItem === `worker-${w.id}`;
               const icon = w.status === 'waiting' ? '⏸' : w.status === 'running' ? '▶' : '○';
               return (
                 <div key={w.id} className="worker-item">
-                  <div className="worker-row" onClick={() => setExpandedWorker(isExpanded ? null : w.id)}>
+                  <div className="worker-row" onClick={() => setExpandedItem(isExpanded ? null : `worker-${w.id}`)}>
                     <span className="worker-icon">{icon}</span>
                     <span className="worker-id">{w.id}</span>
                     <span className={`worker-status worker-${w.status}`}>{w.status}</span>
