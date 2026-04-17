@@ -167,10 +167,17 @@ export default function Dashboard({
                           {matchedTask && (
                             <button className="detail-link" onClick={() => onDrillIntoTask(matchedTask.id)}>View in Workflow →</button>
                           )}
+                          <button className="detail-link" onClick={() => {
+                            setTargetBee('CodeBee');
+                            setChatOpen(true);
+                            onSendMessage('CodeBee', workspace, `What's the status of worker ${workerId}? It's on branch ${matchedWorker?.branch ?? 'unknown'}${matchedWorker?.pr_url ? ` with PR: ${matchedWorker.pr_url}` : ' (no PR yet)'}. Is it stuck? What should I do?`);
+                          }}>
+                            Ask CodeBee about this →
+                          </button>
                           <div className="worker-msg-row" style={{ marginTop: 6 }}>
                             <input value={workerMsg} onChange={e => setWorkerMsg(e.target.value)}
                               onKeyDown={e => { if (e.key === 'Enter' && workerMsg.trim()) { sendWorkerMessage(workspace, workerId, workerMsg.trim()); setWorkerMsg(''); } }}
-                              placeholder={`Message ${workerId}...`} className="worker-msg-input" />
+                              placeholder={`Message ${workerId} directly...`} className="worker-msg-input" />
                             <button className="btn-sm btn-primary" onClick={() => { if (workerMsg.trim()) { sendWorkerMessage(workspace, workerId, workerMsg.trim()); setWorkerMsg(''); } }}>Send</button>
                           </div>
                         </>
@@ -179,7 +186,11 @@ export default function Dashboard({
                       {/* Escalation / general actions */}
                       {isEscalation && (
                         <div style={{ marginBottom: 6 }}>
-                          <button className="detail-link" onClick={() => { setTargetBee('CustomerBee'); setChatOpen(true); }}>
+                          <button className="detail-link" onClick={() => {
+                            setTargetBee('CustomerBee');
+                            setChatOpen(true);
+                            onSendMessage('CustomerBee', workspace, `Tell me more about this escalation: "${item.title}"`);
+                          }}>
                             Ask CustomerBee about this →
                           </button>
                         </div>
