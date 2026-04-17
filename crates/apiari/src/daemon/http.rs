@@ -1244,7 +1244,7 @@ async fn get_worker_activity(
         .parent()
         .unwrap_or(std::path::Path::new("."));
 
-    let events_path = state_dir.join(format!("worktrees/{}/events.jsonl", q.worker_id));
+    let events_path = state_dir.join(format!("agents/{}/events.jsonl", q.worker_id));
     let content = match std::fs::read_to_string(&events_path) {
         Ok(c) => c,
         Err(_) => return Json(vec![]),
@@ -1258,77 +1258,52 @@ async fn get_worker_activity(
         let event_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         match event_type {
-            "user" => {
-                let text = val
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| {
-                        c.as_str().map(|s| s.to_string()).or_else(|| {
-                            c.as_array().and_then(|blocks| {
-                                blocks.iter().find_map(|b| {
-                                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        b.get("text")
-                                            .and_then(|t| t.as_str())
-                                            .map(|s| s.to_string())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                        })
-                    })
-                    .unwrap_or_default();
-                if !text.is_empty() {
+            "start" => {
+                if let Some(prompt) = val.get("prompt").and_then(|p| p.as_str()) {
+                    let preview: String = prompt.chars().take(200).collect();
                     entries.push(WorkerActivityEntry {
                         role: "user".into(),
-                        text,
+                        text: format!("{preview}…"),
                     });
                 }
             }
-            "assistant" => {
-                let content_blocks = val
-                    .get("message")
-                    .and_then(|m| m.get("message"))
-                    .and_then(|m| m.get("content"))
-                    .and_then(|c| c.as_array());
-
-                if let Some(blocks) = content_blocks {
-                    for block in blocks {
-                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                        match block_type {
-                            "text" => {
-                                if let Some(t) = block.get("text").and_then(|t| t.as_str())
-                                    && !t.trim().is_empty()
-                                {
-                                    entries.push(WorkerActivityEntry {
-                                        role: "assistant".into(),
-                                        text: t.to_string(),
-                                    });
-                                }
-                            }
-                            "tool_use" => {
-                                let name =
-                                    block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
-                                let input = block
-                                    .get("input")
-                                    .map(|i| {
-                                        let s = i.to_string();
-                                        if s.len() > 200 {
-                                            format!("{}…", &s[..200])
-                                        } else {
-                                            s
-                                        }
-                                    })
-                                    .unwrap_or_default();
-                                entries.push(WorkerActivityEntry {
-                                    role: "tool".into(),
-                                    text: format!("**{name}** `{input}`"),
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
+            "user_message" => {
+                if let Some(text) = val.get("text").and_then(|t| t.as_str())
+                    && !text.trim().is_empty()
+                {
+                    entries.push(WorkerActivityEntry {
+                        role: "user".into(),
+                        text: text.to_string(),
+                    });
                 }
+            }
+            "assistant_text" => {
+                if let Some(text) = val.get("text").and_then(|t| t.as_str())
+                    && !text.trim().is_empty()
+                {
+                    entries.push(WorkerActivityEntry {
+                        role: "assistant".into(),
+                        text: text.to_string(),
+                    });
+                }
+            }
+            "tool_use" => {
+                let tool = val.get("tool").and_then(|t| t.as_str()).unwrap_or("tool");
+                let input = val
+                    .get("input")
+                    .map(|i| {
+                        let s = i.to_string();
+                        if s.len() > 200 {
+                            format!("{}…", &s[..200])
+                        } else {
+                            s
+                        }
+                    })
+                    .unwrap_or_default();
+                entries.push(WorkerActivityEntry {
+                    role: "tool".into(),
+                    text: format!("**{tool}** `{input}`"),
+                });
             }
             _ => {}
         }
