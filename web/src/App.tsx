@@ -1,14 +1,12 @@
 import { useEffect, useState } from 'react';
-import Briefing from './components/Briefing';
+import Dashboard from './components/Dashboard';
 import WorkflowGraph from './components/WorkflowGraph';
-import TaskPanel from './components/TaskPanel';
-import SignalPanel from './components/SignalPanel';
 import GraphEditor from './components/GraphEditor';
 import BeeEditor from './components/BeeEditor';
-import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchBriefing, fetchSignals, fetchWorkers, fetchConversations, clearTasks, sendChat, runWorkflow, connectWs } from './api';
+import { fetchGraph, fetchTasks, fetchBees, fetchWorkspaces, fetchBriefing, fetchWorkers, fetchConversations, clearTasks, sendChat, runWorkflow, connectWs } from './api';
 import type { BeeConfigView, GraphView, TaskView } from './types';
 
-type View = 'briefing' | 'workflow' | 'bees';
+type View = 'home' | 'dashboard' | 'workflow' | 'bees';
 
 export default function App() {
   const [graph, setGraph] = useState<GraphView | null>(null);
@@ -18,70 +16,43 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
-  const [view, setView] = useState<View>('briefing');
+  const [view, setView] = useState<View>('home');
   const [workspace, setWorkspace] = useState('');
   const [workspaces, setWorkspaces] = useState<string[]>([]);
   const [beesByWorkspace, setBeesByWorkspace] = useState<Record<string, BeeConfigView[]>>({});
+
+  const [briefingItems, setBriefingItems] = useState<Array<{
+    id: string; priority: string; icon: string; title: string; body: string | null;
+    workspace: string; source: string; url: string | null;
+    actions: Array<{ label: string; style: string }>; timestamp: string;
+  }>>([]);
   const [workers, setWorkers] = useState<Array<{
     id: string; workspace: string; branch: string; agent: string; status: string; pr_url: string | null;
   }>>([]);
-  const [briefingItems, setBriefingItems] = useState<Array<{
-    id: string;
-    priority: string;
-    icon: string;
-    title: string;
-    body: string | null;
-    workspace: string;
-    source: string;
-    url: string | null;
-    actions: Array<{ label: string; style: string }>;
-    timestamp: string;
-  }>>([]);
-  const [signals, setSignals] = useState<Array<{
-    id: number;
-    workspace: string;
-    source: string;
-    title: string;
-    severity: string;
-    url?: string | null;
-    created_at: string;
-  }>>([]);
   const [chatMessages, setChatMessages] = useState<Array<{
-    id: string;
-    bee: string;
-    workspace: string;
-    role: 'user' | 'assistant';
-    text: string;
-    timestamp: Date;
+    id: string; bee: string; workspace: string; role: 'user' | 'assistant';
+    text: string; timestamp: Date;
   }>>([]);
 
-  // Flat list of bees for the current workspace (for config editor)
   const currentBees = beesByWorkspace[workspace] ?? [];
 
-  // Load all workspaces and their bees on mount
+  // ── Load everything on mount ──
   useEffect(() => {
-    Promise.all([fetchGraph(), fetchTasks(), fetchWorkspaces()])
-      .then(async ([g, t, ws]) => {
-        setGraph(g);
-        setTasks(t);
+    Promise.all([fetchWorkspaces()])
+      .then(async ([ws]) => {
         setWorkspaces(ws);
         setError(null);
 
-        // Load bees for all workspaces
         const allBees: Record<string, BeeConfigView[]> = {};
         for (const w of ws) {
-          try {
-            const b = await fetchBees(w);
-            allBees[w] = b.bees;
-            if (!workspace) setWorkspace(b.workspace);
-          } catch {
-            allBees[w] = [];
-          }
+          try { const b = await fetchBees(w); allBees[w] = b.bees; } catch { allBees[w] = []; }
         }
         setBeesByWorkspace(allBees);
-        if (!workspace && ws.length > 0) setWorkspace(ws[0]);
 
-        // Load conversation history for all workspaces
+        fetchBriefing().then(setBriefingItems).catch(() => {});
+        fetchWorkers().then(setWorkers).catch(() => {});
+
+        // Load conversations
         const allMessages: typeof chatMessages = [];
         for (const w of ws) {
           try {
@@ -90,80 +61,44 @@ export default function App() {
               if (c.role === 'user' || c.role === 'assistant') {
                 allMessages.push({
                   id: `hist-${c.created_at}-${allMessages.length}`,
-                  bee: c.bee,
-                  workspace: c.workspace,
+                  bee: c.bee, workspace: c.workspace,
                   role: c.role as 'user' | 'assistant',
-                  text: c.content,
-                  timestamp: new Date(c.created_at),
+                  text: c.content, timestamp: new Date(c.created_at),
                 });
               }
             }
-          } catch { /* ignore */ }
+          } catch {}
         }
         allMessages.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
         setChatMessages(allMessages);
-
-        // Load signals for all workspaces
-        const allSignals: typeof signals = [];
-        for (const w of ws) {
-          try {
-            const sigs = await fetchSignals(w);
-            allSignals.push(...sigs);
-          } catch { /* ignore */ }
-        }
-        allSignals.sort((a, b) => b.created_at.localeCompare(a.created_at));
-        setSignals(allSignals.slice(0, 100));
-
-        // Load briefing items + workers
-        fetchBriefing().then(setBriefingItems).catch(() => {});
-        fetchWorkers().then(setWorkers).catch(() => {});
       })
-      .catch(() => {
-        setError('Failed to connect to daemon API.');
-      });
+      .catch(() => setError('Failed to connect to daemon API.'));
   }, []);
 
-  // WebSocket for live updates
+  // ── WebSocket ──
   useEffect(() => {
     const ws = connectWs((msg) => {
       setConnected(true);
       switch (msg.type) {
-        case 'snapshot':
-          setGraph(msg.graph);
-          setTasks(msg.tasks);
-          break;
+        case 'snapshot': setGraph(msg.graph); setTasks(msg.tasks); break;
         case 'task_updated':
-          setTasks((prev) => {
-            const idx = prev.findIndex((t) => t.id === msg.task.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = msg.task;
-              return next;
-            }
+          setTasks(prev => {
+            const idx = prev.findIndex(t => t.id === msg.task.id);
+            if (idx >= 0) { const next = [...prev]; next[idx] = msg.task; return next; }
             return [...prev, msg.task];
           });
           break;
-        case 'signal_processed':
-          fetchTasks().then(setTasks).catch(console.error);
-          break;
-        case 'graph_updated':
-          setGraph(msg.graph);
-          break;
-        case 'signal':
-          setSignals((prev) => {
-            // Deduplicate by id
-            if (prev.some((s) => s.id === msg.id)) return prev;
-            return [msg, ...prev].slice(0, 100);
-          });
-          break;
+        case 'signal_processed': fetchTasks(workspace).then(setTasks).catch(() => {}); break;
+        case 'graph_updated': setGraph(msg.graph); break;
       }
     });
     return () => ws.close();
   }, []);
 
-  function switchWorkspace(ws: string) {
+  function enterWorkspace(ws: string) {
     setWorkspace(ws);
-    fetchGraph(ws).then((g) => setGraph(g));
+    setView('dashboard');
+    fetchGraph(ws).then(setGraph);
     fetchTasks(ws).then(setTasks).catch(() => setTasks([]));
     fetchBriefing().then(setBriefingItems).catch(() => {});
     fetchWorkers().then(setWorkers).catch(() => {});
@@ -171,204 +106,159 @@ export default function App() {
 
   function refreshBriefing() {
     fetchBriefing().then(setBriefingItems).catch(() => {});
+    fetchWorkers().then(setWorkers).catch(() => {});
   }
 
   async function handleSendMessage(bee: string, ws: string, text: string) {
     const id = `chat-${Date.now()}`;
     const respId = `${id}-resp`;
-
-    // Show user message immediately
-    setChatMessages((prev) => [...prev, {
-      id, bee, workspace: ws, role: 'user', text, timestamp: new Date(),
-    }]);
-
-    // Add empty assistant message that will be updated with tokens
-    setChatMessages((prev) => [...prev, {
-      id: respId, bee, workspace: ws, role: 'assistant', text: '', timestamp: new Date(),
-    }]);
-
+    setChatMessages(prev => [...prev, { id, bee, workspace: ws, role: 'user', text, timestamp: new Date() }]);
+    setChatMessages(prev => [...prev, { id: respId, bee, workspace: ws, role: 'assistant', text: '', timestamp: new Date() }]);
     try {
-      // Always chat normally first — the Bee decides what to do
       const response = await sendChat(ws, text, bee, (partialText) => {
-        setChatMessages((prev) => prev.map(msg =>
-          msg.id === respId ? { ...msg, text: partialText } : msg
-        ));
+        setChatMessages(prev => prev.map(msg => msg.id === respId ? { ...msg, text: partialText } : msg));
       });
-
-      // Check if the Bee triggered a workflow via [RESEARCH: ...] marker
       const researchMatch = response.match(/\[RESEARCH:\s*(.+?)\]/);
       if (researchMatch) {
         const topic = researchMatch[1].trim();
-        const workflowId = `${id}-workflow`;
-
-        // Add a workflow message that will accumulate step results
-        setChatMessages((prev) => [...prev, {
-          id: workflowId, bee, workspace: ws, role: 'assistant',
-          text: '🔬 Starting research workflow...\n', timestamp: new Date(),
-        }]);
-
+        const wfId = `${id}-workflow`;
+        setChatMessages(prev => [...prev, { id: wfId, bee, workspace: ws, role: 'assistant', text: '🔬 Starting research workflow...\n', timestamp: new Date() }]);
         await runWorkflow(ws, topic, bee, 'researcher',
-          (_step, label) => {
-            setChatMessages((prev) => prev.map(msg =>
-              msg.id === workflowId
-                ? { ...msg, text: msg.text + `\n## ${label}\n` }
-                : msg
-            ));
-          },
-          (partialText) => {
-            setChatMessages((prev) => prev.map(msg =>
-              msg.id === workflowId ? { ...msg, text: partialText } : msg
-            ));
-          },
-          (_step) => {
-            setChatMessages((prev) => prev.map(msg =>
-              msg.id === workflowId
-                ? { ...msg, text: msg.text + '\n---\n' }
-                : msg
-            ));
-          },
+          (_s, label) => { setChatMessages(prev => prev.map(m => m.id === wfId ? { ...m, text: m.text + `\n## ${label}\n` } : m)); },
+          (pt) => { setChatMessages(prev => prev.map(m => m.id === wfId ? { ...m, text: pt } : m)); },
+          () => { setChatMessages(prev => prev.map(m => m.id === wfId ? { ...m, text: m.text + '\n---\n' } : m)); },
         );
       }
     } catch {
-      setChatMessages((prev) => prev.map(msg =>
-        msg.id === respId ? { ...msg, text: 'Failed to reach Bee' } : msg
-      ));
+      setChatMessages(prev => prev.map(msg => msg.id === respId ? { ...msg, text: 'Failed to reach Bee' } : msg));
     }
   }
 
-  function handleDrillIntoTask(taskId: string) {
-    setSelectedTaskId(taskId);
-    setView('workflow');
-  }
-
-  // ── Error screen ──
+  // ── Error ──
   if (error) {
     return (
-      <div style={{
-        height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: '#f8fafc', color: '#1e293b', fontFamily: 'system-ui, sans-serif',
-      }}>
-        <div style={{ textAlign: 'center', maxWidth: 420, padding: 24 }}>
+      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', fontFamily: 'system-ui' }}>
+        <div style={{ textAlign: 'center', padding: 24 }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>🐝</div>
-          <h2 style={{ marginBottom: 8, fontSize: 20 }}>Not Connected</h2>
-          <p style={{ color: '#64748b', lineHeight: 1.6, fontSize: 14, marginBottom: 20 }}>{error}</p>
-          <button onClick={() => window.location.reload()} style={{
-            padding: '8px 24px', borderRadius: 8, border: '1px solid #e2e8f0',
-            background: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 500,
-          }}>Retry</button>
+          <h2 style={{ fontSize: 20, marginBottom: 8 }}>Not Connected</h2>
+          <p style={{ color: '#64748b', fontSize: 14, marginBottom: 20 }}>{error}</p>
+          <button onClick={() => window.location.reload()} style={{ padding: '8px 24px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer' }}>Retry</button>
         </div>
       </div>
     );
   }
 
-  // ── Loading ──
-  if (!graph) {
-    return (
-      <div style={{
-        height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: '#f8fafc', color: '#64748b', fontFamily: 'system-ui', fontSize: 14,
-      }}>Loading...</div>
-    );
-  }
-
   return (
-    <div className="app-shell" style={{
-      color: '#1e293b',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-    }}>
-      {/* ── Top nav ── */}
-      <div className="nav-bar" style={{
-        height: 44, borderBottom: '1px solid #e2e8f0', background: '#fff',
-        display: 'flex', alignItems: 'center', padding: '0 16px', gap: 2, flexShrink: 0,
-      }}>
-        <span style={{ fontSize: 18, marginRight: 8 }}>🐝</span>
-        <span style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginRight: 20 }}>apiari</span>
+    <div className="app-shell" style={{ color: '#1e293b', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
 
-        <NavTab active={view === 'briefing'} onClick={() => setView('briefing')}>
-          Briefing
-        </NavTab>
-        <NavTab active={view === 'workflow'} onClick={() => setView('workflow')} className="nav-tab-workflow">
-          Workflow
-        </NavTab>
-        <NavTab active={view === 'bees'} onClick={() => setView('bees')} className="nav-tab-bees">
-          Bees
-        </NavTab>
+      {/* ── Home: Workspace picker ── */}
+      {view === 'home' && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 48, marginBottom: 8 }}>🐝</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a' }}>apiari</div>
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
+            {workspaces.map(ws => {
+              const wsBees = beesByWorkspace[ws] ?? [];
+              const wsWorkers = workers.filter(w => w.workspace === ws);
+              const wsActions = briefingItems.filter(i => i.workspace === ws && i.priority === 'action');
+              return (
+                <button key={ws} onClick={() => enterWorkspace(ws)} style={{
+                  padding: '20px 28px', borderRadius: 12, border: '1.5px solid #e2e8f0',
+                  background: '#fff', cursor: 'pointer', minWidth: 160,
+                  display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8,
+                  transition: 'all 0.15s',
+                }}>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>{ws}</span>
+                  <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#64748b' }}>
+                    <span>🐝 {wsBees.length}</span>
+                    <span>🔧 {wsWorkers.length}</span>
+                    {wsActions.length > 0 && <span style={{ color: '#dc2626', fontWeight: 600 }}>⚠️ {wsActions.length}</span>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#94a3b8' }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: connected ? '#22c55e' : '#ef4444' }} />
+            {connected ? 'connected' : 'connecting...'}
+          </div>
+        </div>
+      )}
 
-        <div style={{ flex: 1 }} />
-
-        {workspaces.length > 1 && view !== 'briefing' && (
-          <select value={workspace} onChange={(e) => switchWorkspace(e.target.value)} style={{
-            fontSize: 12, padding: '4px 8px', border: '1px solid #e2e8f0', borderRadius: 6,
-            background: '#f8fafc', color: '#0f172a', marginRight: 8, cursor: 'pointer',
+      {/* ── Workspace views ── */}
+      {view !== 'home' && (
+        <>
+          {/* Nav bar */}
+          <div className="nav-bar" style={{
+            height: 44, borderBottom: '1px solid #e2e8f0', background: '#fff',
+            display: 'flex', alignItems: 'center', padding: '0 12px', gap: 2, flexShrink: 0,
           }}>
-            {workspaces.map((ws) => <option key={ws} value={ws}>{ws}</option>)}
-          </select>
-        )}
+            <button onClick={() => setView('home')} style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: 16, padding: '4px 8px', color: '#64748b',
+            }}>←</button>
+            <span style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginRight: 16 }}>{workspace}</span>
 
-        <span style={{
-          width: 8, height: 8, borderRadius: '50%',
-          background: connected ? '#22c55e' : '#ef4444',
-          boxShadow: connected ? '0 0 6px rgba(34, 197, 94, 0.4)' : 'none',
-        }} />
-      </div>
+            <NavTab active={view === 'dashboard'} onClick={() => setView('dashboard')}>Dashboard</NavTab>
+            <NavTab active={view === 'workflow'} onClick={() => setView('workflow')} className="nav-tab-workflow">Workflow</NavTab>
+            <NavTab active={view === 'bees'} onClick={() => setView('bees')} className="nav-tab-bees">Bees</NavTab>
 
-      {/* ── Content ── */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'auto', minHeight: 0 }}>
-        {view === 'briefing' && (
-          <Briefing
-            workspaces={workspaces}
-            beesByWorkspace={beesByWorkspace}
-            tasks={tasks}
-            signals={signals}
-            briefingItems={briefingItems}
-            workers={workers}
-            chatMessages={chatMessages}
-            connected={connected}
-            onSendMessage={handleSendMessage}
-            onDrillIntoTask={handleDrillIntoTask}
-            onRefreshBriefing={refreshBriefing}
-            onWorkspaceChange={switchWorkspace}
-          />
-        )}
+            <div style={{ flex: 1 }} />
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: connected ? '#22c55e' : '#ef4444' }} />
+          </div>
 
-        {view === 'workflow' && (
-          <>
-            <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-              <button onClick={() => setShowEditor(!showEditor)} style={{
-                position: 'sticky', top: 14, float: 'right', marginRight: 18, zIndex: 10,
-                padding: '6px 14px', borderRadius: 6, border: '1px solid #e2e8f0',
-                background: showEditor ? '#eff6ff' : '#fff',
-                color: showEditor ? '#2563eb' : '#64748b',
-                cursor: 'pointer', fontSize: 12, fontWeight: 600,
-              }}>{showEditor ? 'Close Editor' : 'Edit Graph'}</button>
-              <WorkflowGraph graph={graph} tasks={tasks} selectedNodeId={selectedNodeId}
-                onSelectNode={showEditor ? setSelectedNodeId : undefined} />
-            </div>
+          {/* Content */}
+          <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+            {view === 'dashboard' && (
+              <Dashboard
+                workspace={workspace}
+                bees={currentBees}
+                briefingItems={briefingItems}
+                workers={workers}
+                tasks={tasks}
+                chatMessages={chatMessages}
+                connected={connected}
+                onSendMessage={handleSendMessage}
+                onDrillIntoTask={(taskId) => { setSelectedTaskId(taskId); setView('workflow'); }}
+                onRefreshBriefing={refreshBriefing}
+              />
+            )}
 
-            {showEditor && (
-              <div style={{
-                width: 300, background: '#fff', borderLeft: '1px solid #e2e8f0',
-                overflow: 'hidden', flexShrink: 0,
-              }}>
-                <GraphEditor graph={graph} selectedNodeId={selectedNodeId}
-                  onSelectNode={setSelectedNodeId} onGraphChange={setGraph} />
+            {view === 'workflow' && graph && (
+              <>
+                <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+                  <button onClick={() => setShowEditor(!showEditor)} style={{
+                    position: 'sticky', top: 14, float: 'right', marginRight: 18, zIndex: 10,
+                    padding: '6px 14px', borderRadius: 6, border: '1px solid #e2e8f0',
+                    background: showEditor ? '#eff6ff' : '#fff',
+                    color: showEditor ? '#2563eb' : '#64748b',
+                    cursor: 'pointer', fontSize: 12, fontWeight: 600,
+                  }}>{showEditor ? 'Close Editor' : 'Edit Graph'}</button>
+                  <WorkflowGraph graph={graph} tasks={tasks} selectedNodeId={selectedNodeId}
+                    onSelectNode={showEditor ? setSelectedNodeId : undefined} />
+                </div>
+                {showEditor && (
+                  <div style={{ width: 300, background: '#fff', borderLeft: '1px solid #e2e8f0', overflow: 'hidden', flexShrink: 0 }}>
+                    <GraphEditor graph={graph} selectedNodeId={selectedNodeId}
+                      onSelectNode={setSelectedNodeId} onGraphChange={setGraph} />
+                  </div>
+                )}
+              </>
+            )}
+
+            {view === 'bees' && (
+              <div style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
+                <div style={{ width: '100%', maxWidth: 640, background: '#fff', borderLeft: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0' }}>
+                  <BeeEditor bees={currentBees} workspace={workspace}
+                    onBeesChange={(b) => setBeesByWorkspace(prev => ({ ...prev, [workspace]: b }))} />
+                </div>
               </div>
             )}
-          </>
-        )}
-
-        {view === 'bees' && (
-          <div style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
-            <div style={{
-              width: '100%', maxWidth: 640, background: '#fff',
-              borderLeft: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0',
-            }}>
-              <BeeEditor bees={currentBees} workspace={workspace}
-                onBeesChange={(b) => setBeesByWorkspace((prev) => ({ ...prev, [workspace]: b }))} />
-            </div>
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }
@@ -378,7 +268,7 @@ function NavTab({ active, onClick, children, className }: {
 }) {
   return (
     <button onClick={onClick} className={className} style={{
-      padding: '8px 14px', borderRadius: 6, border: 'none',
+      padding: '8px 12px', borderRadius: 6, border: 'none',
       background: active ? '#f1f5f9' : 'transparent',
       color: active ? '#0f172a' : '#64748b',
       cursor: 'pointer', fontSize: 13, fontWeight: active ? 600 : 400,
