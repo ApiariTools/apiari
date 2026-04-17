@@ -96,6 +96,14 @@ export async function fetchWorkers(): Promise<Array<{
   return res.json();
 }
 
+export async function fetchWorkerActivity(workspace: string, workerId: string): Promise<Array<{
+  role: string;
+  text: string;
+}>> {
+  const res = await fetch(`${API_BASE}/worker/activity?workspace=${encodeURIComponent(workspace)}&worker_id=${encodeURIComponent(workerId)}`);
+  return res.json();
+}
+
 export async function sendWorkerMessage(workspace: string, workerId: string, text: string): Promise<{ ok: boolean }> {
   const res = await fetch(`${API_BASE}/worker/send`, {
     method: 'POST',

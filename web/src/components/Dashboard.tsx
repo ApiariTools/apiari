@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { dismissBriefingItem, snoozeBriefingItem, fetchCanvas, sendWorkerMessage } from '../api';
+import { dismissBriefingItem, snoozeBriefingItem, fetchCanvas, fetchWorkerActivity, sendWorkerMessage } from '../api';
 import type { BeeConfigView, TaskView } from '../types';
 import './Dashboard.css';
 
@@ -87,6 +87,7 @@ export default function Dashboard({
   const [expandedCanvas, setExpandedCanvas] = useState<string | null>(null);
   const [activeWorker, setActiveWorker] = useState<string | null>(null);
   const [activeWorkerMsg, setActiveWorkerMsg] = useState('');
+  const [workerActivity, setWorkerActivity] = useState<Array<{ role: string; text: string }>>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -106,6 +107,13 @@ export default function Dashboard({
   useEffect(() => {
     if (!targetBee && bees.length > 0) setTargetBee(bees[0].name);
   }, [bees]);
+
+  // Load worker activity when selected
+  useEffect(() => {
+    if (activeWorker) {
+      fetchWorkerActivity(workspace, activeWorker).then(setWorkerActivity).catch(() => setWorkerActivity([]));
+    }
+  }, [activeWorker, workspace]);
 
   function handleSend() {
     const text = input.trim();
@@ -175,11 +183,32 @@ export default function Dashboard({
             </div>
           )}
 
-          {/* Chat area — this is where you talk to the worker */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '12px 16px', background: '#fff' }}>
-            <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 13, padding: '20px 0' }}>
-              Send a message directly to this worker
-            </div>
+          {/* Worker conversation */}
+          <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px', background: '#fff' }}>
+            {workerActivity.length === 0 && (
+              <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 13, padding: '20px 0' }}>
+                No activity yet
+              </div>
+            )}
+            {workerActivity.map((entry, i) => (
+              <div key={i} style={{
+                padding: '6px 10px', marginBottom: 3, borderRadius: 6, fontSize: 13,
+                background: entry.role === 'user' ? '#f8fafc' : entry.role === 'tool' ? '#f0fdf4' : '#fff',
+                border: `1px solid ${entry.role === 'user' ? '#e2e8f0' : entry.role === 'tool' ? '#bbf7d0' : '#fde68a'}`,
+              }}>
+                <div style={{
+                  fontSize: 10, fontWeight: 600, marginBottom: 2,
+                  color: entry.role === 'user' ? '#64748b' : entry.role === 'tool' ? '#16a34a' : '#d97706',
+                }}>
+                  {entry.role === 'user' ? 'PROMPT' : entry.role === 'tool' ? 'TOOL' : 'ASSISTANT'}
+                </div>
+                <div className="canvas-markdown" style={{ lineHeight: 1.4 }}>
+                  <Markdown remarkPlugins={[remarkGfm]}>{
+                    entry.text.length > 500 ? entry.text.slice(0, 500) + '…' : entry.text
+                  }</Markdown>
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Message input */}

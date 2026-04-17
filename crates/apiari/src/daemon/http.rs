@@ -1207,6 +1207,140 @@ async fn send_worker_message(
     }
 }
 
+// ── Worker activity endpoint ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct WorkerActivityQuery {
+    workspace: String,
+    worker_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkerActivityEntry {
+    role: String,
+    text: String,
+}
+
+/// GET /api/worker/activity — worker conversation/tool history from events.jsonl.
+async fn get_worker_activity(
+    axum::extract::Query(q): axum::extract::Query<WorkerActivityQuery>,
+) -> Json<Vec<WorkerActivityEntry>> {
+    let workspaces = crate::config::discover_workspaces().unwrap_or_default();
+    let ws = match workspaces.iter().find(|w| w.name == q.workspace) {
+        Some(w) => w,
+        None => return Json(vec![]),
+    };
+
+    let state_path = ws
+        .config
+        .watchers
+        .swarm
+        .as_ref()
+        .map(|s| s.state_path.clone());
+    let Some(state_path) = state_path else {
+        return Json(vec![]);
+    };
+    let state_dir = std::path::Path::new(&state_path)
+        .parent()
+        .unwrap_or(std::path::Path::new("."));
+
+    let events_path = state_dir.join(format!("worktrees/{}/events.jsonl", q.worker_id));
+    let content = match std::fs::read_to_string(&events_path) {
+        Ok(c) => c,
+        Err(_) => return Json(vec![]),
+    };
+
+    let mut entries = Vec::new();
+    for line in content.lines() {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let event_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        match event_type {
+            "user" => {
+                let text = val
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| {
+                        c.as_str().map(|s| s.to_string()).or_else(|| {
+                            c.as_array().and_then(|blocks| {
+                                blocks.iter().find_map(|b| {
+                                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        b.get("text")
+                                            .and_then(|t| t.as_str())
+                                            .map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                        })
+                    })
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    entries.push(WorkerActivityEntry {
+                        role: "user".into(),
+                        text,
+                    });
+                }
+            }
+            "assistant" => {
+                let content_blocks = val
+                    .get("message")
+                    .and_then(|m| m.get("message"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array());
+
+                if let Some(blocks) = content_blocks {
+                    for block in blocks {
+                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match block_type {
+                            "text" => {
+                                if let Some(t) = block.get("text").and_then(|t| t.as_str())
+                                    && !t.trim().is_empty()
+                                {
+                                    entries.push(WorkerActivityEntry {
+                                        role: "assistant".into(),
+                                        text: t.to_string(),
+                                    });
+                                }
+                            }
+                            "tool_use" => {
+                                let name =
+                                    block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                                let input = block
+                                    .get("input")
+                                    .map(|i| {
+                                        let s = i.to_string();
+                                        if s.len() > 200 {
+                                            format!("{}…", &s[..200])
+                                        } else {
+                                            s
+                                        }
+                                    })
+                                    .unwrap_or_default();
+                                entries.push(WorkerActivityEntry {
+                                    role: "tool".into(),
+                                    text: format!("**{name}** `{input}`"),
+                                });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if entries.len() > 50 {
+        entries = entries.split_off(entries.len() - 50);
+    }
+
+    Json(entries)
+}
+
 // ── Canvas endpoint ───────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1869,6 +2003,7 @@ pub async fn start_http_server(
         .route("/api/bee-activity", get(get_bee_activity))
         .route("/api/canvas", get(get_canvas))
         .route("/api/workers", get(get_workers))
+        .route("/api/worker/activity", get(get_worker_activity))
         .route("/api/worker/send", post(send_worker_message))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))
