@@ -822,54 +822,62 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
             by_source.entry(sig.source.as_str()).or_default().push(sig);
         }
 
-        // Workers waiting → action (with detail from metadata)
-        for sig in by_source.get("swarm_worker_waiting").unwrap_or(&vec![]) {
-            let worker_id = sig
-                .metadata
-                .as_ref()
-                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                .and_then(|v| {
-                    v.get("worker_id")
-                        .and_then(|w| w.as_str().map(|s| s.to_string()))
-                })
-                .unwrap_or_default();
-            let pr_url = sig
-                .metadata
-                .as_ref()
-                .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
-                .and_then(|v| {
-                    v.get("pr_url")
-                        .and_then(|w| w.as_str().map(|s| s.to_string()))
+        // Workers waiting → action (deduplicated by worker_id)
+        {
+            let mut seen_workers: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for sig in by_source.get("swarm_worker_waiting").unwrap_or(&vec![]) {
+                let worker_id = sig
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                    .and_then(|v| {
+                        v.get("worker_id")
+                            .and_then(|w| w.as_str().map(|s| s.to_string()))
+                    })
+                    .unwrap_or_default();
+                // Skip duplicate worker IDs
+                if !worker_id.is_empty() && !seen_workers.insert(worker_id.clone()) {
+                    continue;
+                }
+                let pr_url = sig
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
+                    .and_then(|v| {
+                        v.get("pr_url")
+                            .and_then(|w| w.as_str().map(|s| s.to_string()))
+                    });
+                let body_text = if let Some(ref pr) = pr_url {
+                    format!("Worker: {worker_id} · PR: {pr}")
+                } else {
+                    format!("Worker: {worker_id} · no PR yet")
+                };
+                items.push(BriefingItem {
+                    id: format!("wait-{}-{}", sig.id, worker_id),
+                    priority: "action".into(),
+                    icon: "⏸".into(),
+                    title: sig.title.clone(),
+                    body: Some(body_text),
+                    workspace: ws.name.clone(),
+                    source: format!("swarm:{worker_id}"),
+                    url: pr_url.or_else(|| sig.url.clone()),
+                    actions: vec![
+                        BriefingAction {
+                            label: "View PR".into(),
+                            style: "primary".into(),
+                        },
+                        BriefingAction {
+                            label: "Snooze".into(),
+                            style: "default".into(),
+                        },
+                    ],
+                    timestamp: sig.created_at.to_rfc3339(),
                 });
-            let body_text = if let Some(ref pr) = pr_url {
-                format!("Worker: {worker_id} · PR: {pr}")
-            } else {
-                format!("Worker: {worker_id} · no PR yet")
-            };
-            items.push(BriefingItem {
-                id: format!("wait-{}-{}", sig.id, worker_id),
-                priority: "action".into(),
-                icon: "⏸".into(),
-                title: sig.title.clone(),
-                body: Some(body_text),
-                workspace: ws.name.clone(),
-                source: format!("swarm:{worker_id}"),
-                url: pr_url.or_else(|| sig.url.clone()),
-                actions: vec![
-                    BriefingAction {
-                        label: "View PR".into(),
-                        style: "primary".into(),
-                    },
-                    BriefingAction {
-                        label: "Snooze".into(),
-                        style: "default".into(),
-                    },
-                ],
-                timestamp: sig.created_at.to_rfc3339(),
-            });
+            }
         }
 
-        // PRs with CI pass → check if bot reviewed too → action
+        // PRs with CI pass → check if bot reviewed too → action (deduplicate by URL)
         for sig in by_source.get("github_ci_pass").unwrap_or(&vec![]) {
             let has_review = by_source.get("github_bot_review").is_some_and(|reviews| {
                 reviews
@@ -1028,6 +1036,26 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
                 timestamp: sig.created_at.to_rfc3339(),
             });
         }
+    }
+
+    // Deduplicate: group similar items
+    {
+        let mut seen = std::collections::HashSet::new();
+        items.retain(|item| {
+            // Extract PR number if present (e.g. "PR #375 ..." → "PR#375")
+            let pr_key = item.title.find("#").and_then(|pos| {
+                let rest = &item.title[pos + 1..];
+                let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if num.is_empty() {
+                    None
+                } else {
+                    Some(format!("PR#{num}"))
+                }
+            });
+            let dedup_key = pr_key.unwrap_or_else(|| item.title.chars().take(25).collect());
+            let key = format!("{}:{}:{}", item.workspace, item.source, dedup_key);
+            seen.insert(key)
+        });
     }
 
     // Sort: action > notice > quiet, then newest first
