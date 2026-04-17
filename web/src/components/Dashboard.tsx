@@ -85,6 +85,8 @@ export default function Dashboard({
   const [workerMsg, setWorkerMsg] = useState('');
   const [canvases, setCanvases] = useState<CanvasData[]>([]);
   const [expandedCanvas, setExpandedCanvas] = useState<string | null>(null);
+  const [activeWorker, setActiveWorker] = useState<string | null>(null);
+  const [activeWorkerMsg, setActiveWorkerMsg] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -117,9 +119,103 @@ export default function Dashboard({
   const wsWorkers = workers.filter(w => w.workspace === workspace);
   const filteredChat = chatMessages.filter(m => m.bee === targetBee && m.workspace === workspace);
 
+  const activeWorkerData = activeWorker ? wsWorkers.find(w => w.id === activeWorker) : null;
+  const activeWorkerTask = activeWorkerData ? tasks.find(t => t.worker_id === activeWorkerData.id) : null;
+
   return (
     <div className="dashboard">
+
+      {/* ── Worker Detail View ── */}
+      {activeWorkerData && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          {/* Header */}
+          <div style={{
+            padding: '12px 16px', borderBottom: '1px solid #e2e8f0', background: '#fff',
+            display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
+          }}>
+            <button onClick={() => setActiveWorker(null)} style={{
+              background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#64748b', padding: '4px 8px',
+            }}>←</button>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>{activeWorkerData.id}</div>
+              <div style={{ fontSize: 12, color: '#94a3b8' }}>{activeWorkerData.branch.replace('swarm/', '')}</div>
+            </div>
+            <div style={{ flex: 1 }} />
+            <span style={{
+              fontSize: 12, fontWeight: 600, padding: '3px 10px', borderRadius: 6,
+              background: activeWorkerData.status === 'waiting' ? '#fef3c7' : activeWorkerData.status === 'running' ? '#dcfce7' : '#f1f5f9',
+              color: activeWorkerData.status === 'waiting' ? '#92400e' : activeWorkerData.status === 'running' ? '#166534' : '#64748b',
+            }}>{activeWorkerData.status}</span>
+          </div>
+
+          {/* Detail info */}
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid #f1f5f9', background: '#fafbfc', fontSize: 13, display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+            <div><span style={{ color: '#94a3b8' }}>Agent:</span> <span style={{ color: '#334155' }}>{activeWorkerData.agent}</span></div>
+            <div><span style={{ color: '#94a3b8' }}>Branch:</span> <span style={{ color: '#334155', fontFamily: 'monospace', fontSize: 12 }}>{activeWorkerData.branch}</span></div>
+            {activeWorkerData.pr_url && (
+              <a href={activeWorkerData.pr_url} target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb', textDecoration: 'none' }}>Open PR →</a>
+            )}
+            {activeWorkerTask && (
+              <button onClick={() => onDrillIntoTask(activeWorkerTask.id)} style={{
+                color: '#7c3aed', background: 'none', border: 'none', cursor: 'pointer', fontSize: 13,
+              }}>View in Workflow →</button>
+            )}
+          </div>
+
+          {/* Task/cursor info */}
+          {activeWorkerTask?.cursor && (
+            <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 12 }}>
+              <span style={{ color: '#94a3b8' }}>Current step: </span>
+              <span style={{ color: '#334155', fontWeight: 600 }}>{activeWorkerTask.cursor.current_node}</span>
+              {activeWorkerTask.cursor.history.length > 0 && (
+                <span style={{ color: '#94a3b8', marginLeft: 8 }}>
+                  Path: {activeWorkerTask.cursor.history.map(s => s.to_node).join(' → ')}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Chat area — this is where you talk to the worker */}
+          <div style={{ flex: 1, overflow: 'auto', padding: '12px 16px', background: '#fff' }}>
+            <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 13, padding: '20px 0' }}>
+              Send a message directly to this worker
+            </div>
+          </div>
+
+          {/* Message input */}
+          <div style={{
+            padding: '10px 16px 14px', borderTop: '1px solid #e2e8f0', background: '#fff',
+            display: 'flex', gap: 8, alignItems: 'flex-end',
+          }}>
+            <textarea
+              value={activeWorkerMsg}
+              onChange={e => setActiveWorkerMsg(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey && activeWorkerMsg.trim()) {
+                  e.preventDefault();
+                  sendWorkerMessage(workspace, activeWorkerData.id, activeWorkerMsg.trim());
+                  setActiveWorkerMsg('');
+                }
+              }}
+              placeholder={`Message ${activeWorkerData.id}...`}
+              rows={2}
+              style={{
+                flex: 1, padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+                fontSize: 16, outline: 'none', resize: 'none', fontFamily: 'inherit', lineHeight: 1.4,
+              }}
+            />
+            <button onClick={() => {
+              if (activeWorkerMsg.trim()) {
+                sendWorkerMessage(workspace, activeWorkerData.id, activeWorkerMsg.trim());
+                setActiveWorkerMsg('');
+              }
+            }} className={`chat-send ${activeWorkerMsg.trim() ? 'chat-send-active' : ''}`}>Send</button>
+          </div>
+        </div>
+      )}
+
       {/* ── Bento Grid ── */}
+      {!activeWorkerData && (
       <div className="bento-grid">
 
         {/* Attention card */}
@@ -252,7 +348,7 @@ export default function Dashboard({
               const icon = w.status === 'waiting' ? '⏸' : w.status === 'running' ? '▶' : '○';
               return (
                 <div key={w.id} className="worker-item">
-                  <div className="worker-row" onClick={() => setExpandedItem(isExpanded ? null : `worker-${w.id}`)}>
+                  <div className="worker-row" onClick={() => setActiveWorker(w.id)}>
                     <span className="worker-icon">{icon}</span>
                     <span className="worker-id">{w.id}</span>
                     <span className={`worker-status worker-${w.status}`}>{w.status}</span>
@@ -311,6 +407,7 @@ export default function Dashboard({
         </div>
 
       </div>
+      )}
 
       {/* ── Chat drawer ── */}
       <div className={`chat-drawer ${chatOpen ? 'chat-open' : ''}`}>
