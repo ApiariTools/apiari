@@ -137,26 +137,26 @@ export default function App() {
   // ── Error ──
   if (error) {
     return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', fontFamily: 'system-ui' }}>
+      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg, #f8fafc)', fontFamily: 'system-ui' }}>
         <div style={{ textAlign: 'center', padding: 24 }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>🐝</div>
           <h2 style={{ fontSize: 20, marginBottom: 8 }}>Not Connected</h2>
-          <p style={{ color: '#64748b', fontSize: 14, marginBottom: 20 }}>{error}</p>
-          <button onClick={() => window.location.reload()} style={{ padding: '8px 24px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer' }}>Retry</button>
+          <p style={{ color: 'var(--text-muted, #64748b)', fontSize: 14, marginBottom: 20 }}>{error}</p>
+          <button onClick={() => window.location.reload()} style={{ padding: '8px 24px', borderRadius: 8, border: '1px solid var(--border, #e2e8f0)', background: 'var(--bg-card, #fff)', cursor: 'pointer' }}>Retry</button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="app-shell" style={{ color: '#1e293b', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+    <div className="app-shell" style={{ color: 'var(--text, #1e293b)', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
 
       {/* ── Home: Workspace picker ── */}
       {view === 'home' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 24, padding: 24 }}>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 48, marginBottom: 8 }}>🐝</div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: '#0f172a' }}>apiari</div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--text-bright, #0f172a)' }}>apiari</div>
           </div>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
             {workspaces.map(ws => {
@@ -166,12 +166,12 @@ export default function App() {
               return (
                 <button key={ws} onClick={() => enterWorkspace(ws)} style={{
                   padding: '20px 28px', borderRadius: 12, border: '1.5px solid #e2e8f0',
-                  background: '#fff', cursor: 'pointer', minWidth: 160,
+                  background: 'var(--bg-card, #fff)', cursor: 'pointer', minWidth: 160,
                   display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8,
                   transition: 'all 0.15s',
                 }}>
-                  <span style={{ fontSize: 16, fontWeight: 700, color: '#0f172a' }}>{ws}</span>
-                  <div style={{ display: 'flex', gap: 12, fontSize: 12, color: '#64748b' }}>
+                  <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-bright, #0f172a)' }}>{ws}</span>
+                  <div style={{ display: 'flex', gap: 12, fontSize: 12, color: 'var(--text-muted, #64748b)' }}>
                     <span>🐝 {wsBees.length}</span>
                     <span>🔧 {wsWorkers.length}</span>
                     {wsActions.length > 0 && <span style={{ color: '#dc2626', fontWeight: 600 }}>⚠️ {wsActions.length}</span>}
@@ -192,14 +192,14 @@ export default function App() {
         <>
           {/* Nav bar */}
           <div className="nav-bar" style={{
-            height: 44, borderBottom: '1px solid #e2e8f0', background: '#fff',
+            height: 44, borderBottom: '1px solid var(--border, #e2e8f0)', background: 'var(--bg-card, #fff)',
             display: 'flex', alignItems: 'center', padding: '0 12px', gap: 2, flexShrink: 0,
           }}>
             <button onClick={() => setView('home')} style={{
               background: 'none', border: 'none', cursor: 'pointer',
-              fontSize: 16, padding: '4px 8px', color: '#64748b',
+              fontSize: 16, padding: '4px 8px', color: 'var(--text-muted, #64748b)',
             }}>←</button>
-            <span style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginRight: 16 }}>{workspace}</span>
+            <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-bright, #0f172a)', marginRight: 16 }}>{workspace}</span>
 
             <NavTab active={view === 'dashboard'} onClick={() => setView('dashboard')}>Dashboard</NavTab>
             <NavTab active={view === 'workflow'} onClick={() => setView('workflow')} className="nav-tab-workflow">Workflow</NavTab>
@@ -231,7 +231,7 @@ export default function App() {
                 <div style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
                   <button onClick={() => setShowEditor(!showEditor)} style={{
                     position: 'sticky', top: 14, float: 'right', marginRight: 18, zIndex: 10,
-                    padding: '6px 14px', borderRadius: 6, border: '1px solid #e2e8f0',
+                    padding: '6px 14px', borderRadius: 6, border: '1px solid var(--border, #e2e8f0)',
                     background: showEditor ? '#eff6ff' : '#fff',
                     color: showEditor ? '#2563eb' : '#64748b',
                     cursor: 'pointer', fontSize: 12, fontWeight: 600,
@@ -240,7 +240,7 @@ export default function App() {
                     onSelectNode={showEditor ? setSelectedNodeId : undefined} />
                 </div>
                 {showEditor && (
-                  <div style={{ width: 300, background: '#fff', borderLeft: '1px solid #e2e8f0', overflow: 'hidden', flexShrink: 0 }}>
+                  <div style={{ width: 300, background: 'var(--bg-card, #fff)', borderLeft: '1px solid var(--border, #e2e8f0)', overflow: 'hidden', flexShrink: 0 }}>
                     <GraphEditor graph={graph} selectedNodeId={selectedNodeId}
                       onSelectNode={setSelectedNodeId} onGraphChange={setGraph} />
                   </div>
@@ -250,7 +250,7 @@ export default function App() {
 
             {view === 'bees' && (
               <div style={{ flex: 1, display: 'flex', justifyContent: 'center' }}>
-                <div style={{ width: '100%', maxWidth: 640, background: '#fff', borderLeft: '1px solid #e2e8f0', borderRight: '1px solid #e2e8f0' }}>
+                <div style={{ width: '100%', maxWidth: 640, background: 'var(--bg-card, #fff)', borderLeft: '1px solid var(--border, #e2e8f0)', borderRight: '1px solid var(--border, #e2e8f0)' }}>
                   <BeeEditor bees={currentBees} workspace={workspace}
                     onBeesChange={(b) => setBeesByWorkspace(prev => ({ ...prev, [workspace]: b }))} />
                 </div>

@@ -1,0 +1,148 @@
+/* ── Terminal Theme ─────────────────────────────────────────────── */
+
+:root {
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-hover: #1c2333;
+  --bg-input: #0d1117;
+  --border: #30363d;
+  --border-focus: #58a6ff;
+  --text: #c9d1d9;
+  --text-bright: #e6edf3;
+  --text-muted: #6e7681;
+  --accent: #f59e0b;
+  --accent-dim: #92400e;
+  --green: #3fb950;
+  --red: #f85149;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --orange: #d29922;
+  --font: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+
+body {
+  background: var(--bg) !important;
+  color: var(--text);
+  font-family: var(--font);
+}
+
+.app-shell {
+  background: var(--bg) !important;
+  font-family: var(--font) !important;
+}
+
+/* Nav bar */
+.nav-bar {
+  background: var(--bg-card) !important;
+  border-bottom-color: var(--border) !important;
+  color: var(--text) !important;
+}
+
+/* Bento grid */
+.bento-card {
+  background: var(--bg-card) !important;
+  border-color: var(--border) !important;
+}
+
+.bento-header {
+  border-bottom-color: var(--border) !important;
+}
+
+.bento-title { color: var(--text-bright) !important; }
+.bento-count { background: var(--bg) !important; color: var(--text-muted) !important; }
+.bento-empty { color: var(--text-muted) !important; }
+
+/* Attention */
+.bento-attention { border-color: var(--red) !important; }
+.bento-attention .bento-header { border-bottom-color: #f8514933 !important; }
+.bento-attention .bento-count { background: #f8514922 !important; color: var(--red) !important; }
+
+.attention-item, .attention-item-wrap .attention-item {
+  background: #f8514915 !important;
+}
+
+.attention-item:hover { background: #f8514925 !important; }
+.attention-title { color: var(--text-bright) !important; }
+.attention-body { color: var(--text-muted) !important; }
+.attention-detail { color: var(--text-muted) !important; }
+
+.detail-label { color: var(--text-muted) !important; }
+.detail-value { color: var(--text) !important; }
+.detail-link { color: var(--blue) !important; }
+
+/* Bees */
+.bee-row { color: var(--text) !important; }
+.bee-row:hover { background: var(--bg-hover) !important; }
+.bee-active { background: #f59e0b15 !important; }
+.bee-dot { background: var(--text-muted) !important; }
+.bee-active .bee-dot { background: var(--accent) !important; }
+.bee-name { color: var(--text-bright) !important; }
+.bee-provider { color: var(--text-muted) !important; }
+
+/* Workers */
+.worker-row { color: var(--text) !important; }
+.worker-row:hover { background: var(--bg-hover) !important; }
+.worker-id { color: var(--text-bright) !important; }
+.worker-waiting { color: var(--orange) !important; }
+.worker-running { color: var(--green) !important; }
+.worker-detail { color: var(--text-muted) !important; }
+.worker-branch { color: var(--text-muted) !important; }
+.worker-pr { color: var(--blue) !important; }
+.worker-workflow { color: var(--purple) !important; }
+.worker-msg-input {
+  background: var(--bg-input) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+}
+
+/* Canvas */
+.canvas-row { color: var(--text) !important; }
+.canvas-row:hover { background: var(--bg-hover) !important; }
+.canvas-bee { color: var(--accent) !important; }
+.canvas-preview { color: var(--text-muted) !important; }
+.canvas-content { color: var(--text) !important; }
+
+/* Markdown in terminal theme */
+.canvas-markdown h1, .canvas-markdown h2, .canvas-markdown h3 { color: var(--text-bright) !important; }
+.canvas-markdown p, .canvas-markdown li { color: var(--text) !important; }
+.canvas-markdown a { color: var(--blue) !important; }
+.canvas-markdown code { background: var(--bg) !important; color: var(--accent) !important; }
+.canvas-markdown pre { background: var(--bg) !important; border: 1px solid var(--border); }
+.canvas-markdown hr { border-top-color: var(--border) !important; }
+.canvas-markdown th { background: var(--bg) !important; color: var(--text-bright) !important; }
+.canvas-markdown th, .canvas-markdown td { border-color: var(--border) !important; color: var(--text) !important; }
+.canvas-markdown blockquote { border-left-color: var(--accent) !important; color: var(--text-muted) !important; }
+
+/* Buttons */
+.btn-sm.btn-primary { background: var(--blue) !important; border-color: var(--blue) !important; }
+.btn-sm.btn-muted { background: var(--bg-card) !important; color: var(--text-muted) !important; border-color: var(--border) !important; }
+.btn-sm.btn-danger { background: var(--bg-card) !important; color: var(--red) !important; border-color: #f8514955 !important; }
+
+/* Chat drawer */
+.chat-drawer { background: var(--bg-card) !important; border-top-color: var(--border) !important; }
+.chat-header { color: var(--text) !important; }
+.chat-toggle { color: var(--text-muted) !important; }
+.chat-bee-select { background: var(--bg) !important; border-color: var(--border) !important; color: var(--text) !important; }
+.chat-empty { color: var(--text-muted) !important; }
+
+.chat-msg.chat-user { background: var(--bg) !important; border-color: var(--border) !important; }
+.chat-msg.chat-assistant { background: var(--bg-card) !important; border-color: #f59e0b33 !important; }
+.chat-user .chat-msg-author { color: var(--text-muted) !important; }
+.chat-assistant .chat-msg-author { color: var(--accent) !important; }
+.chat-msg-time { color: var(--text-muted) !important; }
+.chat-msg-body { color: var(--text) !important; }
+
+.chat-textarea {
+  background: var(--bg-input) !important;
+  border-color: var(--border) !important;
+  color: var(--text) !important;
+  font-family: var(--font) !important;
+}
+
+.chat-textarea:focus { border-color: var(--border-focus) !important; }
+
+.chat-send { background: var(--border) !important; color: var(--text-muted) !important; }
+.chat-send-active { background: var(--accent) !important; color: #000 !important; }
+
+/* Workspace picker */
+.app-shell button { font-family: var(--font); }

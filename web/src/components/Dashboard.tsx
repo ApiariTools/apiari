@@ -138,15 +138,15 @@ export default function Dashboard({
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           {/* Header */}
           <div style={{
-            padding: '12px 16px', borderBottom: '1px solid #e2e8f0', background: '#fff',
+            padding: '12px 16px', borderBottom: '1px solid var(--border, #e2e8f0)', background: 'var(--bg-card, #fff)',
             display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
           }}>
             <button onClick={() => setActiveWorker(null)} style={{
-              background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#64748b', padding: '4px 8px',
+              background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: 'var(--text-muted, #64748b)', padding: '4px 8px',
             }}>←</button>
             <div>
-              <div style={{ fontSize: 15, fontWeight: 600, color: '#0f172a' }}>{activeWorkerData.id}</div>
-              <div style={{ fontSize: 12, color: '#94a3b8' }}>{activeWorkerData.branch.replace('swarm/', '')}</div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-bright, #0f172a)' }}>{activeWorkerData.id}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted, #94a3b8)' }}>{activeWorkerData.branch.replace('swarm/', '')}</div>
             </div>
             <div style={{ flex: 1 }} />
             <span style={{
@@ -157,9 +157,9 @@ export default function Dashboard({
           </div>
 
           {/* Detail info */}
-          <div style={{ padding: '12px 16px', borderBottom: '1px solid #f1f5f9', background: '#fafbfc', fontSize: 13, display: 'flex', flexWrap: 'wrap', gap: 16 }}>
-            <div><span style={{ color: '#94a3b8' }}>Agent:</span> <span style={{ color: '#334155' }}>{activeWorkerData.agent}</span></div>
-            <div><span style={{ color: '#94a3b8' }}>Branch:</span> <span style={{ color: '#334155', fontFamily: 'monospace', fontSize: 12 }}>{activeWorkerData.branch}</span></div>
+          <div style={{ padding: '12px 16px', borderBottom: '1px solid #f1f5f9', background: 'var(--bg, #fafbfc)', fontSize: 13, display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+            <div><span style={{ color: 'var(--text-muted, #94a3b8)' }}>Agent:</span> <span style={{ color: 'var(--text, #334155)' }}>{activeWorkerData.agent}</span></div>
+            <div><span style={{ color: 'var(--text-muted, #94a3b8)' }}>Branch:</span> <span style={{ color: 'var(--text, #334155)', fontFamily: 'monospace', fontSize: 12 }}>{activeWorkerData.branch}</span></div>
             {activeWorkerData.pr_url && (
               <a href={activeWorkerData.pr_url} target="_blank" rel="noopener noreferrer" style={{ color: '#2563eb', textDecoration: 'none' }}>Open PR →</a>
             )}
@@ -173,10 +173,10 @@ export default function Dashboard({
           {/* Task/cursor info */}
           {activeWorkerTask?.cursor && (
             <div style={{ padding: '10px 16px', borderBottom: '1px solid #f1f5f9', fontSize: 12 }}>
-              <span style={{ color: '#94a3b8' }}>Current step: </span>
-              <span style={{ color: '#334155', fontWeight: 600 }}>{activeWorkerTask.cursor.current_node}</span>
+              <span style={{ color: 'var(--text-muted, #94a3b8)' }}>Current step: </span>
+              <span style={{ color: 'var(--text, #334155)', fontWeight: 600 }}>{activeWorkerTask.cursor.current_node}</span>
               {activeWorkerTask.cursor.history.length > 0 && (
-                <span style={{ color: '#94a3b8', marginLeft: 8 }}>
+                <span style={{ color: 'var(--text-muted, #94a3b8)', marginLeft: 8 }}>
                   Path: {activeWorkerTask.cursor.history.map(s => s.to_node).join(' → ')}
                 </span>
               )}
@@ -184,9 +184,9 @@ export default function Dashboard({
           )}
 
           {/* Worker conversation */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px', background: '#fff' }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px', background: 'var(--bg-card, #fff)' }}>
             {workerActivity.length === 0 && (
-              <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 13, padding: '20px 0' }}>
+              <div style={{ textAlign: 'center', color: 'var(--text-muted, #94a3b8)', fontSize: 13, padding: '20px 0' }}>
                 No activity yet
               </div>
             )}
@@ -213,7 +213,7 @@ export default function Dashboard({
 
           {/* Message input */}
           <div style={{
-            padding: '10px 16px 14px', borderTop: '1px solid #e2e8f0', background: '#fff',
+            padding: '10px 16px 14px', borderTop: '1px solid var(--border, #e2e8f0)', background: 'var(--bg-card, #fff)',
             display: 'flex', gap: 8, alignItems: 'flex-end',
           }}>
             <textarea
@@ -229,7 +229,7 @@ export default function Dashboard({
               placeholder={`Message ${activeWorkerData.id}...`}
               rows={2}
               style={{
-                flex: 1, padding: '10px 12px', border: '1px solid #e2e8f0', borderRadius: 8,
+                flex: 1, padding: '10px 12px', border: '1px solid var(--border, #e2e8f0)', borderRadius: 8,
                 fontSize: 16, outline: 'none', resize: 'none', fontFamily: 'inherit', lineHeight: 1.4,
               }}
             />
@@ -274,7 +274,7 @@ export default function Dashboard({
                       <div className="attention-title">{item.title}</div>
                       {item.body && <div className="attention-body">{item.body}</div>}
                     </div>
-                    <span style={{ fontSize: 11, color: '#94a3b8' }}>{isExpanded ? '▲' : '▼'}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted, #94a3b8)' }}>{isExpanded ? '▲' : '▼'}</span>
                   </div>
 
                   {isExpanded && (

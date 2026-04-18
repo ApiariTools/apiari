@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import './index.css'
+import './theme.css'
 import App from './App'
 
 // iOS Safari: enable click event bubbling on non-interactive elements
