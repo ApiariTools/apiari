@@ -1,23 +1,14 @@
-pub mod bot;
-pub mod config_watcher;
-pub mod db;
-pub mod docs;
-pub mod events;
-pub mod followup;
-pub mod init;
-pub mod pr_feedback;
-pub mod pr_review;
-pub mod publish;
-pub mod remote;
-pub mod research;
-pub mod review;
-pub mod routes;
-pub mod sentry_watcher;
-pub mod setup;
-pub mod simulator;
-pub mod stt;
-pub mod swarm;
-pub mod tick;
-pub mod tts;
-pub mod usage;
-pub mod watcher;
+//! Hive library — re-exports modules for integration tests.
+
+pub mod buzz;
+pub mod presence;
+pub mod quest;
+pub mod routing;
+pub mod signal;
+pub mod workspace;
+
+// Re-export ui::inbox for integration tests (daemon writes events here).
+pub mod ui {
+    pub mod history;
+    pub mod inbox;
+}

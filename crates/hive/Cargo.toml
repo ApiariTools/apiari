@@ -1,42 +1,40 @@
 [package]
 name = "apiari-hive"
-version = "0.5.3"
+version = "0.1.0"
 edition.workspace = true
-description = "Workspace chat hub — multi-bot, multi-provider AI assistant with swarm integration"
 license.workspace = true
-repository = "https://github.com/ApiariTools/hive"
-keywords = ["ai", "chat", "workspace", "assistant"]
-categories = ["command-line-utilities"]
-include = ["src/**/*", "web/dist/**/*", "build.rs", "Cargo.toml", "README.md", "LICENSE", "tts/*.py", "tts/*.sh", "tts/*.txt", "hooks/**/*"]
+description = "Plan and coordinate the work. Quests, coordinator, context."
 
 [dependencies]
-axum = { version = "0.8", features = ["ws", "multipart"] }
-chrono.workspace = true
-croner = "3"
+apiari-common.workspace = true
+apiari-claude-sdk.workspace = true
+apiari-tui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 clap.workspace = true
 color-eyre.workspace = true
-futures-core = "0.3"
-futures-util = "0.3"
-rusqlite = { version = "0.34", features = ["bundled"] }
-rust-embed = { version = "8", features = ["compression"] }
-mime_guess = "2"
-serde.workspace = true
-apiari-claude-sdk.workspace = true
-apiari-codex-sdk.workspace = true
-apiari-gemini-sdk.workspace = true
-async-stream = "0.3"
+chrono.workspace = true
+uuid.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+serde_yaml = "0.9"
+reqwest = { version = "0.12", features = ["json"] }
 async-trait = "0.1"
-serde_json.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
-tokio-stream = { version = "0.1", features = ["io-util"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 toml = "0.8"
-apiari-swarm = { workspace = true, features = ["client", "server"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+croner = "3"
+dirs = "6"
 tempfile = "3"
-reqwest = { version = "0.12", features = ["json", "multipart"] }
-tower-http = { version = "0.6", features = ["cors"] }
-tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+pulldown-cmark = "0.13"
 
 [dev-dependencies]
-tower = "0.5"
+mockall = "0.12"
+tokio-test = "0.4"
+tokio = { workspace = true, features = ["test-util"] }
