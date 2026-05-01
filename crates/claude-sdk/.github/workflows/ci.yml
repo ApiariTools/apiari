@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout apiari-claude-sdk
+        uses: actions/checkout@v4
+        with:
+          path: claude-sdk
+
+      - name: Create workspace root
+        run: |
+          cat > Cargo.toml << 'TOML'
+          [workspace]
+          resolver = "3"
+          members = ["claude-sdk"]
+
+          [workspace.package]
+          edition = "2024"
+          license = "MIT"
+
+          [workspace.dependencies]
+          serde = { version = "1", features = ["derive"] }
+          serde_json = "1"
+          tokio = { version = "1", features = ["full"] }
+          chrono = { version = "0.4", features = ["serde"] }
+          uuid = { version = "1", features = ["v4"] }
+          thiserror = "2"
+          tracing = "0.1"
+          libc = "0.2"
+          TOML
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt -p apiari-claude-sdk --check
+
+      - name: Clippy
+        run: cargo clippy -p apiari-claude-sdk -- -D warnings
+
+      - name: Test
+        run: cargo test -p apiari-claude-sdk

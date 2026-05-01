@@ -1,0 +1,142 @@
+.bar {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  height: 48px;
+  flex-shrink: 0;
+  gap: 4px;
+  background: var(--bg);
+}
+
+.logo {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-right: 28px;
+}
+
+.hamburger {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 8px;
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.hamburger span {
+  display: block;
+  width: 18px;
+  height: 2px;
+  background: var(--text-faint);
+  border-radius: 1px;
+}
+
+.hamburger:hover span {
+  background: var(--text);
+}
+
+.tabScroll {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: clip;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  flex: 1;
+  min-width: 0;
+}
+
+.tabScroll::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  padding: 12px 18px;
+  font-size: 15px;
+  color: var(--text-faint);
+  cursor: pointer;
+  border: none;
+  background: none;
+  position: relative;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.active {
+  color: var(--text-strong);
+}
+
+.active::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 14px;
+  right: 14px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}
+
+.remoteBadge {
+  font-size: 10px;
+  color: var(--text-faint);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+  vertical-align: middle;
+  font-weight: 400;
+}
+
+.usageDots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: 8px;
+}
+
+.usageDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+
+.searchBtn {
+  margin-left: 0;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+}
+
+.searchBtn:hover {
+  color: var(--text);
+  background: var(--bg-card);
+}
+
+@media (max-width: 768px) {
+  .hamburger {
+    display: flex;
+  }
+}

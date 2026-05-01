@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hive",
+    "crates/swarm",
+    "crates/common",
+    "crates/tui",
+    "crates/claude-sdk",
+    "crates/codex-sdk",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+apiari-common = { path = "crates/common" }
+apiari-claude-sdk = { path = "crates/claude-sdk" }
+apiari-codex-sdk = { path = "crates/codex-sdk" }
+apiari-swarm = { path = "crates/swarm", default-features = false }
+apiari-tui = { path = "crates/tui" }
+apiari-gemini-sdk = "0.2.0"
+
+# Shared external dependencies
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+crossterm = { version = "0.28", features = ["event-stream"] }
+libc = "0.2"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }

@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html><head><meta name="viewport" content="width=device-width"><title>TTS Test</title>
+<style>
+body { background: #111; color: #eee; font-family: system-ui; padding: 20px; }
+button { background: #282828; border: 1px solid #444; color: #eee; padding: 16px 24px; border-radius: 8px; font-size: 18px; margin: 8px; display: block; width: 100%; }
+#log { margin-top: 20px; font-size: 13px; color: #888; white-space: pre-wrap; }
+</style></head><body>
+<h2>TTS Debug</h2>
+
+<button onclick="testAudio()">1. HTML Audio element</button>
+<button onclick="testHowlHtml5()">2. Howler html5:true</button>
+<button onclick="testHowlWebAudio()">3. Howler html5:false</button>
+<button onclick="testFetch()">4. Fetch + blob Audio</button>
+
+<div id="log"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
+<script>
+const url = '/api/tts/speak?text=Testing+one+two+three';
+const log = document.getElementById('log');
+function l(msg) { log.textContent += msg + '\n'; }
+
+function testAudio() {
+  l('--- HTML Audio ---');
+  const a = new Audio(url);
+  a.onplay = () => l('playing');
+  a.onerror = (e) => l('error: ' + a.error?.message);
+  a.onended = () => l('ended');
+  a.play().then(() => l('play() resolved')).catch(e => l('play() rejected: ' + e));
+}
+
+function testHowlHtml5() {
+  l('--- Howler html5:true ---');
+  const h = new Howl({ src: [url], format: ['wav'], html5: true,
+    onplay: () => l('playing'),
+    onend: () => l('ended'),
+    onloaderror: (id, e) => l('load error: ' + e),
+    onplayerror: (id, e) => l('play error: ' + e),
+  });
+  h.play();
+}
+
+function testHowlWebAudio() {
+  l('--- Howler html5:false ---');
+  const h = new Howl({ src: [url], format: ['wav'],
+    onplay: () => l('playing'),
+    onend: () => l('ended'),
+    onloaderror: (id, e) => l('load error: ' + e),
+    onplayerror: (id, e) => l('play error: ' + e),
+  });
+  h.play();
+}
+
+async function testFetch() {
+  l('--- Fetch + blob ---');
+  try {
+    const res = await fetch(url);
+    l('fetch status: ' + res.status);
+    const blob = await res.blob();
+    l('blob size: ' + blob.size);
+    const blobUrl = URL.createObjectURL(blob);
+    const a = new Audio(blobUrl);
+    a.onplay = () => l('playing');
+    a.onerror = () => l('error: ' + a.error?.message);
+    a.onended = () => { l('ended'); URL.revokeObjectURL(blobUrl); };
+    a.play().then(() => l('play() resolved')).catch(e => l('play() rejected: ' + e));
+  } catch(e) { l('fetch error: ' + e); }
+}
+</script>
+</body></html>

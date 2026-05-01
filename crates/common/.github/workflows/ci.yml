@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      # apiari-common uses workspace inheritance, so we create a minimal
+      # single-member workspace to satisfy Cargo.
+      - name: Checkout apiari-common
+        uses: actions/checkout@v4
+        with:
+          path: common
+
+      - name: Create workspace root
+        run: |
+          cat > Cargo.toml << 'TOML'
+          [workspace]
+          resolver = "3"
+          members = ["common"]
+
+          [workspace.package]
+          edition = "2024"
+          license = "MIT"
+
+          [workspace.dependencies]
+          serde = { version = "1", features = ["derive"] }
+          serde_json = "1"
+          TOML
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt -p apiari-common --check
+
+      - name: Clippy
+        run: cargo clippy -p apiari-common -- -D warnings
+
+      - name: Test
+        run: cargo test -p apiari-common

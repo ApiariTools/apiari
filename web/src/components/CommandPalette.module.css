@@ -1,0 +1,139 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.dialog {
+  position: fixed;
+  top: 20%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1001;
+  width: 90vw;
+  max-width: 500px;
+  max-height: 400px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog [cmdk-input] {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: var(--bg-card);
+  color: var(--text-strong);
+  padding: 12px 16px;
+  font-size: 16px;
+  font-family: var(--font);
+  border-bottom: 1px solid var(--border);
+}
+
+.dialog [cmdk-input]:focus-visible {
+  border-color: var(--accent);
+}
+
+.dialog [cmdk-input]::placeholder {
+  color: var(--text-faint);
+}
+
+.dialog [cmdk-list] {
+  overflow-y: auto;
+  flex: 1;
+  max-height: 340px;
+}
+
+.dialog [cmdk-group-heading] {
+  color: var(--text-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 8px 16px;
+  user-select: none;
+}
+
+.dialog [cmdk-item] {
+  padding: 10px 16px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+}
+
+.dialog [cmdk-item][data-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--text-strong);
+}
+
+.dialog [cmdk-empty] {
+  padding: 24px 16px;
+  color: var(--text-faint);
+  text-align: center;
+  font-size: 14px;
+}
+
+.unreadBadge {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 10px;
+  padding: 1px 6px;
+  margin-left: 8px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.current {
+  color: var(--accent);
+  font-size: 11px;
+  margin-left: 8px;
+}
+
+.remoteBadge {
+  font-size: 10px;
+  color: var(--text-faint);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-left: 6px;
+}
+
+.workerInfo {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.workerName {
+  font-size: 13px;
+}
+
+.workerDesc {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workerMeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.workerStatus {
+  color: var(--text-faint);
+  font-size: 12px;
+}

@@ -1,0 +1,65 @@
+[package]
+name = "apiari-swarm"
+version = "0.1.8"
+edition.workspace = true
+description = "Run agents in parallel. Git worktrees + custom daemons + vibes."
+license.workspace = true
+repository = "https://github.com/ApiariTools/swarm"
+
+[[bin]]
+name = "swarm"
+path = "src/main.rs"
+required-features = ["tui", "daemon-ipc"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/swarm-{ target }{ binary-ext }"
+bin-dir = "swarm{ binary-ext }"
+pkg-fmt = "bin"
+
+# Core dependencies used by both lib and binary
+[dependencies]
+apiari-common.workspace = true
+apiari-claude-sdk.workspace = true
+apiari-codex-sdk.workspace = true
+apiari-gemini-sdk.workspace = true
+apiari-tui = { workspace = true, optional = true }
+color-eyre.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+dirs = "6"
+chrono.workspace = true
+uuid.workspace = true
+clap.workspace = true
+libc.workspace = true
+tracing.workspace = true
+ratatui = { workspace = true, optional = true }
+crossterm = { workspace = true, optional = true }
+pulldown-cmark = "0.13"
+a2a-types = "0.1"
+async-trait = "0.1"
+axum = "0.8"
+futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+
+# Features
+[features]
+# Default features for binary build
+default = ["daemon-ipc", "tui"]
+# Client-side IPC types and helpers for talking to the swarm daemon (Unix-only)
+client = []
+# Daemon IPC support (requires daemon module); disabled for lib-only builds
+daemon-ipc = []
+# Server-side daemon: exposes daemon::start() and lifecycle helpers through the library.
+# Does NOT pull in TUI dependencies (ratatui, crossterm).
+server = ["daemon-ipc"]
+# TUI dependencies (ratatui, crossterm, apiari-tui); disable for lightweight lib builds
+tui = ["dep:ratatui", "dep:crossterm", "dep:apiari-tui"]
+
+[dev-dependencies]
+tempfile = "3"
+mockall = "0.12"
+tokio-test = "0.4"

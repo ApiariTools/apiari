@@ -1,0 +1,10 @@
+[package]
+name = "apiari-common"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Shared types, JSONL IPC, and utilities for Apiari tools"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

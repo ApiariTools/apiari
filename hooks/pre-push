@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -e
+
+echo "==> Running pre-push checks..."
+
+echo "  cargo fmt --check"
+cargo fmt --check
+
+echo "  cargo clippy"
+cargo clippy -- -D warnings -A clippy::too_many_arguments
+
+echo "  cargo test"
+cargo test
+
+echo "  npx tsc --noEmit"
+(cd web && npx tsc --noEmit)
+
+echo "  npx vitest run"
+(cd web && npx vitest run)
+
+echo "  npx vite build"
+(cd web && npx vite build)
+
+echo "==> All checks passed!"

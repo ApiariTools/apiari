@@ -1,0 +1,96 @@
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  background: var(--bg-card);
+}
+
+.card.fired {
+  border-color: var(--green);
+}
+
+.card.inline {
+  opacity: 1;
+  border: none;
+  border-left: 3px solid var(--green);
+  border-radius: 4px;
+  background: transparent;
+  margin: 4px 0;
+}
+
+.card.cancelled {
+  opacity: 0.4;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.timer {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.firedLabel {
+  font-size: 13px;
+  color: var(--green);
+  font-weight: 500;
+}
+
+.cancelledLabel {
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.action {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+  margin-bottom: 6px;
+}
+
+.footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cancelBtn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-faint);
+  font-size: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.cancelBtn:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.sticky {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: 6px 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+  z-index: 5;
+}
+
+.stickyTimer {
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: var(--accent);
+  font-weight: 600;
+}
