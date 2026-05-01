@@ -1,0 +1,22 @@
+[package]
+name = "apiari"
+version = "0.5.3"
+edition.workspace = true
+description = "CLI binary for Hive — workspace chat hub daemon"
+license.workspace = true
+
+[[bin]]
+name = "hive"
+path = "src/main.rs"
+
+[dependencies]
+apiari-hive = { path = "../hive" }
+axum = "0.8"
+clap.workspace = true
+color-eyre.workspace = true
+tokio.workspace = true
+toml = "0.8"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+reqwest = { version = "0.12", features = ["json", "multipart"] }

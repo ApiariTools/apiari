@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/apiari",
     "crates/hive",
     "crates/swarm",
     "crates/common",
@@ -15,6 +16,7 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates
+apiari-hive = { path = "crates/hive" }
 apiari-common = { path = "crates/common" }
 apiari-claude-sdk = { path = "crates/claude-sdk" }
 apiari-codex-sdk = { path = "crates/codex-sdk" }

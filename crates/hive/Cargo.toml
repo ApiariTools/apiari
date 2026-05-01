@@ -9,10 +9,6 @@ keywords = ["ai", "chat", "workspace", "assistant"]
 categories = ["command-line-utilities"]
 include = ["src/**/*", "web/dist/**/*", "build.rs", "Cargo.toml", "README.md", "LICENSE", "tts/*.py", "tts/*.sh", "tts/*.txt", "hooks/**/*"]
 
-[[bin]]
-name = "hive"
-path = "src/main.rs"
-
 [dependencies]
 axum = { version = "0.8", features = ["ws", "multipart"] }
 chrono.workspace = true

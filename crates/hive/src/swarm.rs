@@ -4,6 +4,42 @@ use clap::Subcommand;
 use color_eyre::Result;
 use std::path::{Path, PathBuf};
 
+/// Find the `default_agent` setting from the workspace TOML whose root matches `work_dir`.
+pub fn find_default_agent(
+    config_dir: &std::path::Path,
+    work_dir: &std::path::Path,
+) -> Option<String> {
+    let workspaces_dir = config_dir.join("workspaces");
+    let entries = std::fs::read_dir(&workspaces_dir).ok()?;
+
+    let canonical_work_dir =
+        std::fs::canonicalize(work_dir).unwrap_or_else(|_| work_dir.to_path_buf());
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "toml")
+            && let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(config) = toml::from_str::<toml::Value>(&content)
+            && let Some(root) = config
+                .get("workspace")
+                .and_then(|w| w.get("root"))
+                .and_then(|r| r.as_str())
+        {
+            let canonical_root =
+                std::fs::canonicalize(root).unwrap_or_else(|_| PathBuf::from(root));
+            if canonical_root == canonical_work_dir {
+                return config
+                    .get("workspace")
+                    .and_then(|w| w.get("default_agent"))
+                    .and_then(|a| a.as_str())
+                    .map(|s| s.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 #[derive(Subcommand)]
 pub enum SwarmCommand {
     /// Create a new swarm worker
@@ -158,7 +194,7 @@ pub async fn run(dir: PathBuf, cmd: SwarmCommand, config_dir: &std::path::Path) 
             prompt,
             prompt_file,
         } => {
-            let config_default_agent = crate::find_default_agent(config_dir, &dir);
+            let config_default_agent = find_default_agent(config_dir, &dir);
             let agent = resolve_agent(agent, config_default_agent);
 
             let req = build_create_request(&dir, repo, agent, prompt, prompt_file)?;

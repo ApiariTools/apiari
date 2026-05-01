@@ -1,7 +1,11 @@
 use color_eyre::Result;
 use std::process::Command;
 
-use super::dirs;
+mod dirs {
+    pub fn home_dir() -> Option<std::path::PathBuf> {
+        std::env::var_os("HOME").map(std::path::PathBuf::from)
+    }
+}
 
 pub fn run() -> Result<()> {
     println!("\n=== Hive Voice Setup ===\n");

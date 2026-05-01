@@ -4,28 +4,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing::info;
 
-mod config_watcher;
-mod db;
-mod docs;
-mod events;
-mod followup;
-mod init;
-mod pr_feedback;
-mod pr_review;
-mod publish;
-mod remote;
-mod research;
-mod review;
-mod routes;
-mod sentry_watcher;
-mod setup;
-mod simulator;
-mod stt;
-mod swarm;
-mod tick;
-mod tts;
-mod usage;
-mod watcher;
+use apiari_hive::{
+    config_watcher, db, docs, events, followup, init, pr_feedback, pr_review, publish, remote,
+    research, review, routes, sentry_watcher, setup, stt, swarm, tick, tts, usage, watcher,
+};
 
 #[derive(Parser)]
 #[command(name = "hive", about = "Workspace command hub")]
@@ -94,7 +76,7 @@ async fn main() -> Result<()> {
     let config_dir = cli
         .config_dir
         .clone()
-        .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config/hive"));
+        .unwrap_or_else(|| dirs_home_dir().unwrap().join(".config/hive"));
     std::fs::create_dir_all(&config_dir)?;
 
     // Handle subcommands before daemon startup
@@ -510,9 +492,6 @@ pub fn find_default_agent(
 }
 
 /// Resolve the workspace root directory for `hive swarm` when `--dir` is not provided.
-/// Finds the most specific workspace root that is a parent of the cwd.
-/// Canonicalizes both paths to handle symlinks correctly.
-/// Falls back to the current directory if no matching workspace is found.
 fn resolve_swarm_dir(config_dir: &std::path::Path) -> Result<PathBuf> {
     let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
     let mut best: Option<PathBuf> = None;
@@ -540,12 +519,6 @@ fn load_workspace_roots(config_dir: &std::path::Path) -> Vec<PathBuf> {
 
 fn dirs_home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME").map(std::path::PathBuf::from)
-}
-
-mod dirs {
-    pub fn home_dir() -> Option<std::path::PathBuf> {
-        super::dirs_home_dir()
-    }
 }
 
 #[cfg(test)]
