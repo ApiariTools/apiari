@@ -247,7 +247,7 @@ impl QuestStore {
             }
         }
 
-        quests.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        quests.sort_by_key(|q| std::cmp::Reverse(q.updated_at));
         Ok(quests)
     }
 
