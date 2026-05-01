@@ -1,0 +1,403 @@
+//! Config awareness skill — teaches the coordinator about current workspace
+//! configuration and how to guide users through setting up integrations.
+
+use super::SkillContext;
+
+/// Build the config awareness prompt. Always included.
+pub fn build_prompt(ctx: &SkillContext) -> String {
+    let mut prompt = String::new();
+
+    // Current config summary
+    prompt.push_str("## Current Workspace Config\n");
+
+    if ctx.has_telegram {
+        prompt.push_str("- Telegram: ✓ configured\n");
+    } else {
+        prompt.push_str("- Telegram: ✗ not configured\n");
+    }
+
+    if !ctx.repos.is_empty() {
+        let github_label = if ctx.has_review_queue {
+            format!(
+                "✓ watching {} repo(s), {} review queue(s)",
+                ctx.repos.len(),
+                ctx.review_queue_names.len()
+            )
+        } else {
+            format!("✓ {} repo(s), no review queue", ctx.repos.len())
+        };
+        prompt.push_str(&format!("- GitHub: {github_label}\n"));
+    } else {
+        prompt.push_str("- GitHub: ✗ no repos configured\n");
+    }
+
+    if ctx.has_swarm {
+        prompt.push_str("- Swarm: ✓ connected\n");
+    } else {
+        prompt.push_str("- Swarm: ✗ not configured\n");
+    }
+
+    if ctx.has_sentry {
+        prompt.push_str("- Sentry: ✓ configured\n");
+    } else {
+        prompt.push_str("- Sentry: ✗ not configured\n");
+    }
+
+    if ctx.has_linear {
+        let names = ctx.linear_names.join(", ");
+        prompt.push_str(&format!("- Linear: ✓ configured ({names})\n"));
+    } else {
+        prompt.push_str("- Linear: ✗ not configured\n");
+    }
+
+    if ctx.has_email {
+        let names = ctx.email_names.join(", ");
+        prompt.push_str(&format!("- Email: ✓ configured ({names})\n"));
+    } else {
+        prompt.push_str("- Email: ✗ not configured\n");
+    }
+
+    if ctx.has_notion {
+        let names = ctx.notion_names.join(", ");
+        prompt.push_str(&format!("- Notion: ✓ configured ({names})\n"));
+    } else {
+        prompt.push_str("- Notion: ✗ not configured\n");
+    }
+
+    prompt.push_str(&format!(
+        "\nThe workspace config file is at `{}`.\n",
+        ctx.config_path.display(),
+    ));
+
+    // Config set skill
+    prompt.push_str(
+        "\n## Updating Config\n\
+         You can update config values directly using the `apiari config set` command via Bash:\n\
+         ```\n\
+         apiari config set <key> <value>\n\
+         ```\n\
+         Examples:\n\
+         ```\n\
+         apiari config set telegram.bot_token \"8139996548:AAGxyz\"\n\
+         apiari config set telegram.chat_id -1003861140305\n\
+         apiari config set watchers.github.interval_secs 120\n\
+         apiari config set coordinator.model \"opus\"\n\
+         ```\n\
+         Keys are dot-separated paths into the TOML config. Values are auto-detected \
+         as integer, boolean, or string.\n\n\
+         **Rules for config changes:**\n\
+         - ALWAYS tell the user what you're about to change before running the command.\n\
+         - Wait for the user to confirm, unless they explicitly asked you to just do it.\n\
+         - After writing, tell the user: \"Restart the daemon with `/reinstall` or \
+         `apiari daemon restart` to pick up the changes.\"\n\
+         - You can chain multiple sets: \
+         `apiari config set telegram.bot_token \"tok\" && apiari config set telegram.chat_id -123`\n",
+    );
+
+    // Setup guides
+    prompt.push_str(
+        "\n## Integration Setup Guides\n\
+         When a user asks how to set up an integration, give them the exact TOML snippet \
+         to add to their config file. Here are the available integrations:\n\n\
+         **Telegram setup:**\n\
+         ```toml\n\
+         [telegram]\n\
+         bot_token = \"TOKEN_FROM_BOTFATHER\"\n\
+         chat_id = 0        # get from @userinfobot\n\
+         # topic_id = 12345   # optional: forum thread ID\n\
+         allowed_user_ids = []  # empty = allow all\n\
+         ```\n\n\
+         **GitHub watcher setup:**\n\
+         ```toml\n\
+         [watchers.github]\n\
+         interval_secs = 120\n\
+         \n\
+         [[watchers.github.review_queue]]\n\
+         name = \"Review Requested\"\n\
+         query = \"is:pr is:open review-requested:@me org:YourOrg\"\n\
+         \n\
+         [[watchers.github.review_queue]]\n\
+         name = \"Open PRs\"\n\
+         query = \"is:pr is:open author:@me org:YourOrg\"\n\
+         ```\n\n\
+         **Sentry setup:**\n\
+         ```toml\n\
+         [watchers.sentry]\n\
+         org = \"your-org-slug\"\n\
+         project = \"your-project-slug\"\n\
+         token = \"sntrys_...\"\n\
+         interval_secs = 120\n\
+         ```\n\n\
+         **Swarm setup:**\n\
+         ```toml\n\
+         [watchers.swarm]\n\
+         state_path = \"/path/to/.swarm/state.json\"\n\
+         interval_secs = 30\n\
+         ```\n\n\
+         **Linear setup:**\n\
+         ```toml\n\
+         [[watchers.linear]]\n\
+         name = \"linear\"\n\
+         api_key = \"lin_api_...\"\n\
+         poll_interval_secs = 60\n\
+         \n\
+         [[watchers.linear.review_queue]]\n\
+         name = \"Unread notifications\"\n\
+         query = \"notifications:unread\"\n\
+         \n\
+         [[watchers.linear.review_queue]]\n\
+         name = \"Assigned to me\"\n\
+         query = \"assignee:me\"\n\
+         ```\n\n\
+         **Email (IMAP) setup:**\n\
+         ```toml\n\
+         [[watchers.email]]\n\
+         name = \"gmail\"\n\
+         host = \"imap.gmail.com\"\n\
+         port = 993\n\
+         tls = true\n\
+         username = \"you@gmail.com\"\n\
+         password = \"app-password\"\n\
+         folder = \"INBOX\"\n\
+         filter = \"UNSEEN\"\n\
+         ```\n\n\
+         **Notion setup:**\n\
+         ```toml\n\
+         [[watchers.notion]]\n\
+         name = \"notion\"\n\
+         token = \"secret_...\"\n\
+         user_id = \"your-notion-user-id\"\n\
+         poll_database_ids = [\"db-id-1\"]  # optional\n\
+         ```\n\n\
+         **Signal hooks setup:**\n\
+         Signal hooks trigger coordinator follow-through when signals arrive.\n\
+         The optional `action` field is a natural-language instruction telling you what to DO \
+         when this hook fires. If omitted, you just notify (current default behavior).\n\
+         ```toml\n\
+         [[coordinator.signal_hooks]]\n\
+         source = \"github\"\n\
+         prompt = \"CI failed: {events}\"\n\
+         action = \"Find the relevant swarm worker for this PR and send it the CI error details.\"\n\
+         ttl_secs = 300\n\
+         \n\
+         [[coordinator.signal_hooks]]\n\
+         source = \"github_bot_review\"\n\
+         prompt = \"Bot review received: {events}\"\n\
+         action = \"Find the swarm worker whose branch matches this PR and forward the review.\"\n\
+         ttl_secs = 300\n\
+         \n\
+         [[coordinator.signal_hooks]]\n\
+         source = \"github_release\"\n\
+         prompt = \"Release completed: {events}\"\n\
+         ttl_secs = 300\n\
+         ```\n",
+    );
+
+    prompt
+}
+
+/// Build a summary of the current workspace configuration for the `/config` command.
+pub fn build_config_summary(ctx: &SkillContext) -> String {
+    let mut text = format!("Workspace: {}\n\n", ctx.workspace_name);
+
+    if ctx.has_telegram {
+        text.push_str("✓ Telegram — configured\n");
+    } else {
+        text.push_str("✗ Telegram — not configured\n");
+    }
+
+    if !ctx.repos.is_empty() {
+        let rq = if ctx.has_review_queue {
+            format!(", {} review queue(s)", ctx.review_queue_names.len())
+        } else {
+            String::new()
+        };
+        text.push_str(&format!("✓ GitHub — {} repo(s){rq}\n", ctx.repos.len()));
+    } else {
+        text.push_str("✗ GitHub — no repos configured\n");
+    }
+
+    if ctx.has_swarm {
+        text.push_str("✓ Swarm — connected\n");
+    } else {
+        text.push_str("✗ Swarm — not configured\n");
+    }
+
+    if ctx.has_sentry {
+        text.push_str("✓ Sentry — configured\n");
+    } else {
+        text.push_str("✗ Sentry — not configured\n");
+    }
+
+    if ctx.has_linear {
+        let names = ctx.linear_names.join(", ");
+        text.push_str(&format!("✓ Linear — {names}\n"));
+    } else {
+        text.push_str("✗ Linear — not configured\n");
+    }
+
+    if ctx.has_email {
+        let names = ctx.email_names.join(", ");
+        text.push_str(&format!("✓ Email — {names}\n"));
+    } else {
+        text.push_str("✗ Email — not configured\n");
+    }
+
+    if ctx.has_notion {
+        let names = ctx.notion_names.join(", ");
+        text.push_str(&format!("✓ Notion — {names}\n"));
+    } else {
+        text.push_str("✗ Notion — not configured\n");
+    }
+
+    // Show tilde-based path to avoid leaking the home directory in chat outputs
+    let display_path = if let Some(home) = dirs::home_dir() {
+        if let Ok(suffix) = ctx.config_path.strip_prefix(&home) {
+            format!("~/{}", suffix.display())
+        } else {
+            ctx.config_path.display().to_string()
+        }
+    } else {
+        ctx.config_path.display().to_string()
+    };
+    text.push_str(&format!("\nConfig file: {display_path}"));
+
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn full_ctx() -> SkillContext {
+        SkillContext {
+            workspace_name: "myproject".to_string(),
+            workspace_root: PathBuf::from("/home/user/myproject"),
+            config_path: PathBuf::from("/home/user/.config/apiari/workspaces/myproject.toml"),
+            repos: vec!["org/repo".to_string()],
+            has_sentry: true,
+            has_swarm: true,
+            has_review_queue: true,
+            review_queue_names: vec!["Review Requested".to_string()],
+            has_linear: true,
+            linear_names: vec!["linear".to_string()],
+            has_email: true,
+            email_names: vec!["gmail".to_string()],
+            has_notion: true,
+            notion_names: vec!["notion".to_string()],
+            has_scripts: false,
+            script_names: vec![],
+            has_telegram: true,
+            prompt_preamble: None,
+            default_agent: "claude".to_string(),
+            authority: crate::config::WorkspaceAuthority::Autonomous,
+            capabilities: crate::config::WorkspaceCapabilities::default(),
+        }
+    }
+
+    fn empty_ctx() -> SkillContext {
+        SkillContext {
+            workspace_name: "empty".to_string(),
+            workspace_root: PathBuf::from("/home/user/empty"),
+            config_path: PathBuf::from("/home/user/.config/apiari/workspaces/empty.toml"),
+            repos: vec![],
+            has_sentry: false,
+            has_swarm: false,
+            has_review_queue: false,
+            review_queue_names: vec![],
+            has_linear: false,
+            linear_names: vec![],
+            has_email: false,
+            email_names: vec![],
+            has_notion: false,
+            has_telegram: false,
+            notion_names: vec![],
+            has_scripts: false,
+            script_names: vec![],
+            prompt_preamble: None,
+            default_agent: "claude".to_string(),
+            authority: crate::config::WorkspaceAuthority::Autonomous,
+            capabilities: crate::config::WorkspaceCapabilities::default(),
+        }
+    }
+
+    #[test]
+    fn test_prompt_includes_all_configured() {
+        let prompt = build_prompt(&full_ctx());
+        assert!(prompt.contains("Telegram: ✓"));
+        assert!(prompt.contains("GitHub: ✓"));
+        assert!(prompt.contains("Swarm: ✓"));
+        assert!(prompt.contains("Sentry: ✓"));
+        assert!(prompt.contains("Linear: ✓"));
+        assert!(prompt.contains("Email: ✓"));
+        assert!(prompt.contains("Notion: ✓"));
+    }
+
+    #[test]
+    fn test_prompt_shows_not_configured() {
+        let prompt = build_prompt(&empty_ctx());
+        assert!(prompt.contains("Telegram: ✗"));
+        assert!(prompt.contains("GitHub: ✗"));
+        assert!(prompt.contains("Swarm: ✗"));
+        assert!(prompt.contains("Sentry: ✗"));
+        assert!(prompt.contains("Linear: ✗"));
+        assert!(prompt.contains("Email: ✗"));
+        assert!(prompt.contains("Notion: ✗"));
+    }
+
+    #[test]
+    fn test_prompt_includes_setup_guides() {
+        let prompt = build_prompt(&empty_ctx());
+        assert!(prompt.contains("## Integration Setup Guides"));
+        assert!(prompt.contains("**Telegram setup:**"));
+        assert!(prompt.contains("[telegram]"));
+        assert!(prompt.contains("**GitHub watcher setup:**"));
+        assert!(prompt.contains("[watchers.github]"));
+        assert!(prompt.contains("**Sentry setup:**"));
+        assert!(prompt.contains("[watchers.sentry]"));
+        assert!(prompt.contains("**Swarm setup:**"));
+        assert!(prompt.contains("[watchers.swarm]"));
+        assert!(prompt.contains("**Linear setup:**"));
+        assert!(prompt.contains("[[watchers.linear]]"));
+        assert!(prompt.contains("**Email (IMAP) setup:**"));
+        assert!(prompt.contains("[[watchers.email]]"));
+        assert!(prompt.contains("**Notion setup:**"));
+        assert!(prompt.contains("[[watchers.notion]]"));
+        assert!(prompt.contains("**Signal hooks setup:**"));
+        assert!(prompt.contains("[[coordinator.signal_hooks]]"));
+    }
+
+    #[test]
+    fn test_prompt_includes_config_path() {
+        let prompt = build_prompt(&full_ctx());
+        assert!(prompt.contains("myproject.toml"));
+    }
+
+    #[test]
+    fn test_summary_configured() {
+        let summary = build_config_summary(&full_ctx());
+        assert!(summary.contains("Workspace: myproject"));
+        assert!(summary.contains("✓ Telegram"));
+        assert!(summary.contains("✓ GitHub"));
+        assert!(summary.contains("✓ Swarm"));
+        assert!(summary.contains("✓ Sentry"));
+        assert!(summary.contains("✓ Linear"));
+        assert!(summary.contains("✓ Email"));
+        assert!(summary.contains("✓ Notion"));
+        assert!(summary.contains("Config file:"));
+    }
+
+    #[test]
+    fn test_summary_not_configured() {
+        let summary = build_config_summary(&empty_ctx());
+        assert!(summary.contains("✗ Telegram"));
+        assert!(summary.contains("✗ GitHub"));
+        assert!(summary.contains("✗ Swarm"));
+        assert!(summary.contains("✗ Sentry"));
+        assert!(summary.contains("✗ Linear"));
+        assert!(summary.contains("✗ Email"));
+        assert!(summary.contains("✗ Notion"));
+    }
+}
