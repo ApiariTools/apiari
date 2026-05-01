@@ -409,7 +409,11 @@ fn view_to_graph(view: &GraphView) -> color_eyre::Result<WorkflowGraph> {
         });
     }
 
-    Ok(WorkflowGraph { name: view.name.clone(), nodes, edges })
+    Ok(WorkflowGraph {
+        name: view.name.clone(),
+        nodes,
+        edges,
+    })
 }
 
 // ── Route handlers ─────────────────────────────────────────────────────

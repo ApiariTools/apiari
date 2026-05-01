@@ -483,10 +483,7 @@ impl InputMessage {
     /// Create a user message with text and images.
     ///
     /// Images should be provided as `(media_type, base64_data)` tuples.
-    pub fn user_with_images(
-        text: impl Into<String>,
-        images: Vec<(String, String)>,
-    ) -> Self {
+    pub fn user_with_images(text: impl Into<String>, images: Vec<(String, String)>) -> Self {
         let mut blocks: Vec<InputContentBlock> = images
             .into_iter()
             .map(|(media_type, data)| InputContentBlock::Image {
