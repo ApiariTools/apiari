@@ -437,14 +437,68 @@ impl SignalStore {
         Ok(records)
     }
 
-    pub fn cancel_followup(&self, id: &str) -> Result<bool> {
+    pub fn get_followup(&self, id: &str) -> Result<Option<FollowupRecord>> {
+        let result = self.conn.query_row(
+            "SELECT id, bot, action, created_at, fires_at, status
+             FROM followups
+             WHERE workspace = ?1 AND id = ?2",
+            params![self.workspace, id],
+            |row| {
+                Ok(FollowupRecord {
+                    id: row.get(0)?,
+                    bot: row.get(1)?,
+                    action: row.get(2)?,
+                    created_at: row.get(3)?,
+                    fires_at: row.get(4)?,
+                    status: row.get(5)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn list_due_followups(&self) -> Result<Vec<FollowupRecord>> {
+        let now = Utc::now().to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, bot, action, created_at, fires_at, status
+             FROM followups
+             WHERE workspace = ?1 AND status = 'pending' AND fires_at <= ?2
+             ORDER BY fires_at ASC, created_at ASC",
+        )?;
+
+        let records = stmt
+            .query_map(params![self.workspace, now], |row| {
+                Ok(FollowupRecord {
+                    id: row.get(0)?,
+                    bot: row.get(1)?,
+                    action: row.get(2)?,
+                    created_at: row.get(3)?,
+                    fires_at: row.get(4)?,
+                    status: row.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    pub fn set_followup_status(&self, id: &str, status: &str) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE followups
-             SET status = 'cancelled'
-             WHERE workspace = ?1 AND id = ?2 AND status != 'cancelled'",
-            params![self.workspace, id],
+             SET status = ?3
+             WHERE workspace = ?1 AND id = ?2",
+            params![self.workspace, id, status],
         )?;
         Ok(changed > 0)
+    }
+
+    pub fn cancel_followup(&self, id: &str) -> Result<bool> {
+        self.set_followup_status(id, "cancelled")
     }
 
     /// Resolve a signal by ID.

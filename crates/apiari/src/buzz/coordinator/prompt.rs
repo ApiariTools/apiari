@@ -93,6 +93,19 @@ pub fn build_system_prompt(
          ending with `_review_queue` that auto-appear in the Reviews panel.\n\n",
     );
 
+    prompt.push_str(
+        "## Action Markers\n\
+         When you need the system to take a structured side effect, emit one of these markers exactly:\n\
+         - `[DISMISS: <signal_id>]`\n\
+         - `[ESCALATE: <message>]`\n\
+         - `[FIX: <description>]`\n\
+         - `[SNOOZE: <signal_id>, <hours>]`\n\
+         - `[TASK: <title>]`\n\
+         - `[RESEARCH: <topic>]`\n\
+         - `[FOLLOWUP: <delay-or-rfc3339> | <action>]` for scheduled reminders or deferred checks. Use short relative delays like `15m`, `2h`, `1d`, or an absolute RFC3339 timestamp.\n\
+         - `[CANVAS]...[/CANVAS]` for canvas updates.\n\n",
+    );
+
     // Separate CI signals from other signals for dedicated section
     let (ci_signals, other_signals): (Vec<&SignalRecord>, Vec<&SignalRecord>) =
         signals.iter().partition(|s| {

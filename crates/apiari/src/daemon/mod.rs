@@ -160,6 +160,7 @@ enum CoordinatorJob {
         ttl_secs: u64,
         telegram: Option<(TelegramChannel, i64, Option<i64>)>,
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
+        web_updates_tx: Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
         slot_name: String,
         /// Playbook skill names to load for this session.
         skill_names: Vec<String>,
@@ -231,6 +232,72 @@ fn send_web_bot_status(
             tool_name: tool_name.map(|name| name.to_string()),
         });
     }
+}
+
+fn send_web_followup_created(
+    web_updates_tx: &Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
+    workspace: &str,
+    bee_name: &str,
+    id: &str,
+    action: &str,
+    fires_at: &str,
+) {
+    if let Some(tx) = web_updates_tx {
+        let _ = tx.send(http::WsUpdate::FollowupCreated {
+            id: id.to_string(),
+            workspace: workspace.to_string(),
+            bot: web_bee_name(bee_name),
+            action: action.to_string(),
+            fires_at: fires_at.to_string(),
+            status: "pending".to_string(),
+        });
+    }
+}
+
+fn send_web_followup_fired(
+    web_updates_tx: &Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
+    workspace: &str,
+    bee_name: &str,
+    id: &str,
+    action: &str,
+    fires_at: &str,
+) {
+    if let Some(tx) = web_updates_tx {
+        let _ = tx.send(http::WsUpdate::FollowupFired {
+            id: id.to_string(),
+            workspace: workspace.to_string(),
+            bot: web_bee_name(bee_name),
+            action: action.to_string(),
+            fires_at: fires_at.to_string(),
+            status: "fired".to_string(),
+        });
+    }
+}
+
+fn parse_followup_fires_at(spec: &str, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    let spec = spec.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(spec) {
+        return Some(dt.with_timezone(&chrono::Utc).to_rfc3339());
+    }
+
+    let unit = spec.chars().last()?;
+    let amount = spec
+        .get(..spec.len().checked_sub(unit.len_utf8())?)?
+        .trim()
+        .parse::<i64>()
+        .ok()?;
+    if amount <= 0 {
+        return None;
+    }
+
+    let dt = match unit {
+        's' => now + chrono::Duration::seconds(amount),
+        'm' => now + chrono::Duration::minutes(amount),
+        'h' => now + chrono::Duration::hours(amount),
+        'd' => now + chrono::Duration::days(amount),
+        _ => return None,
+    };
+    Some(dt.to_rfc3339())
 }
 
 fn bee_matches_signal_source(bee: &BeeConfig, source: &str) -> bool {
@@ -697,6 +764,7 @@ async fn run_coordinator_task(
                                 &ws_name,
                                 &bee_name,
                                 &ws_root,
+                                &web_updates_tx,
                             );
                         }
 
@@ -912,6 +980,7 @@ async fn run_coordinator_task(
                 ttl_secs,
                 telegram,
                 socket_server,
+                web_updates_tx,
                 slot_name,
                 skill_names,
                 workspace_root,
@@ -1139,6 +1208,7 @@ async fn run_coordinator_task(
                                 &slot_name,
                                 &bee_name,
                                 &ws_root,
+                                &web_updates_tx,
                             );
                         }
                     }
@@ -1169,6 +1239,7 @@ fn execute_bee_actions(
     slot_name: &str,
     bee_name: &str,
     config_root: &std::path::Path,
+    web_updates_tx: &Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
 ) {
     use crate::buzz::coordinator::actions::BeeAction;
     use crate::buzz::signal::{Severity, SignalUpdate};
@@ -1247,6 +1318,35 @@ fn execute_bee_actions(
                 // Research is handled by the web UI / ResearchBee — just log it.
                 info!("[{slot_name}] action: research requested (handled elsewhere): {topic}");
             }
+            BeeAction::Followup { when, action } => {
+                let now = chrono::Utc::now();
+                let Some(fires_at) = parse_followup_fires_at(when, now) else {
+                    warn!("[{slot_name}] action: invalid followup time spec: {when}");
+                    continue;
+                };
+                let id = uuid::Uuid::new_v4().to_string();
+                match store.create_followup(
+                    &id,
+                    &web_bee_name(bee_name),
+                    action,
+                    &now.to_rfc3339(),
+                    &fires_at,
+                    "pending",
+                ) {
+                    Ok(()) => {
+                        info!("[{slot_name}] action: scheduled followup {id} for {fires_at}");
+                        send_web_followup_created(
+                            web_updates_tx,
+                            slot_name,
+                            bee_name,
+                            &id,
+                            action,
+                            &fires_at,
+                        );
+                    }
+                    Err(e) => warn!("[{slot_name}] action: failed to create followup: {e}"),
+                }
+            }
             BeeAction::Canvas { content } => {
                 // Write canvas content to .apiari/canvas/{bee_name}.md
                 let canvas_dir = config_root.join(".apiari/canvas");
@@ -1267,6 +1367,81 @@ fn execute_bee_actions(
                     }
                 }
             }
+        }
+    }
+}
+
+fn dispatch_due_followups(
+    slot: &mut WorkspaceSlot,
+    socket_server: &Option<Arc<socket::DaemonSocketServer>>,
+    telegram_channels: &HashMap<String, TelegramChannel>,
+) {
+    let due_followups = match slot.store.list_due_followups() {
+        Ok(records) => records,
+        Err(e) => {
+            warn!("[{}] failed to load due followups: {e}", slot.name);
+            return;
+        }
+    };
+
+    if due_followups.is_empty() {
+        return;
+    }
+
+    let workspace_root = slot.config.root.clone();
+    for followup in due_followups {
+        let display_bot = followup.bot.clone();
+        let bee_name = if display_bot == "Main" {
+            "Bee".to_string()
+        } else {
+            display_bot.clone()
+        };
+        let bee_idx = slot.bee_map.get(&bee_name).copied().unwrap_or(0);
+        if !slot
+            .store
+            .set_followup_status(&followup.id, "fired")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let job = CoordinatorJob::SignalFollowThrough {
+            signals: vec![format!("Scheduled follow-up: {}", followup.action)],
+            source: "followup".to_string(),
+            prompt_override: Some(
+                "A scheduled follow-up reached its fire time:\n{events}\nIf this still matters, carry out the follow-up now. Otherwise respond with just \"ack\".".to_string(),
+            ),
+            action: Some(followup.action.clone()),
+            queued_at: std::time::Instant::now(),
+            ttl_secs: 300,
+            telegram: slot.config.telegram.as_ref().and_then(|tg| {
+                telegram_channels
+                    .get(&tg.bot_token)
+                    .map(|ch| (ch.clone(), tg.chat_id, tg.topic_id))
+            }),
+            socket_server: socket_server.clone(),
+            web_updates_tx: slot.web_updates_tx.clone(),
+            slot_name: slot.name.clone(),
+            skill_names: vec![],
+            workspace_root: workspace_root.clone(),
+            bee_name: bee_name.clone(),
+        };
+
+        if let Err(e) = slot.bees[bee_idx].coord_tx.send(job) {
+            warn!(
+                "[{}/{}] failed to dispatch due followup {}: {e}",
+                slot.name, bee_name, followup.id
+            );
+            let _ = slot.store.set_followup_status(&followup.id, "pending");
+        } else {
+            send_web_followup_fired(
+                &slot.web_updates_tx,
+                &slot.name,
+                &bee_name,
+                &followup.id,
+                &followup.action,
+                &followup.fires_at,
+            );
         }
     }
 }
@@ -2287,6 +2462,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                     .map(|ch| (ch.clone(), tg.chat_id, tg.topic_id))
                             }),
                             socket_server: socket_server.clone(),
+                            web_updates_tx: slot.web_updates_tx.clone(),
                             slot_name: ws_name.clone(),
                             skill_names: vec![],
                             workspace_root: workspace_root.clone(),
@@ -2322,6 +2498,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                             scheduler.mark_sent(now);
                         }
                     }
+
+                    dispatch_due_followups(slot, &socket_server, &telegram_channels);
 
                     if slot.registry.is_empty() {
                         continue;
@@ -3286,6 +3464,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                             ttl_secs: first.ttl_secs,
                             telegram: telegram_info,
                             socket_server: socket_server.clone(),
+                            web_updates_tx: slot.web_updates_tx.clone(),
                             slot_name: slot.name.clone(),
                             skill_names: first.skills.clone(),
                             workspace_root: slot.config.root.clone(),
@@ -5333,5 +5512,116 @@ mod tests {
             http::WsUpdate::BotStatus { bot, status, streaming_content, .. }
                 if bot == "Main" && status == "idle" && streaming_content.is_empty()
         )));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_web_chat_followup_action_creates_pending_followup_and_emits_event() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _path_guard = install_fake_gemini(
+            temp.path(),
+            &[
+                r#"{"type":"init","session_id":"gemini-session-456"}"#,
+                r#"{"type":"message","role":"assistant","content":"I'll check later. [FOLLOWUP: 1h | Check PR status again]","delta":true}"#,
+                r#"{"type":"result","status":"success","stats":{"input_tokens":5,"output_tokens":8,"cached":0}}"#,
+            ],
+        );
+
+        let db_path = temp.path().join("signals.db");
+        let store = SignalStore::open(&db_path, "ws").unwrap();
+        let mut coordinator = crate::buzz::coordinator::Coordinator::new("gemini-2.5-flash", 20);
+        coordinator.set_provider("gemini".to_string());
+        coordinator.set_working_dir(temp.path().to_path_buf());
+
+        let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let cancel_token = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let task = tokio::spawn(async move {
+            super::run_coordinator_task(
+                coordinator,
+                store,
+                job_rx,
+                cancel_token,
+                0,
+                crate::config::WorkspaceAuthority::default(),
+            )
+            .await;
+        });
+
+        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<socket::DaemonResponse>();
+        let (updates_tx, mut updates_rx) = broadcast::channel::<http::WsUpdate>(32);
+
+        job_tx
+            .send(super::CoordinatorJob::TuiChat {
+                text: "remind me later".to_string(),
+                source: "web".to_string(),
+                broadcast_user_activity: true,
+                responder: resp_tx,
+                socket_server: None,
+                web_updates_tx: Some(updates_tx),
+                ws_name: "ws".to_string(),
+                bee_name: "Bee".to_string(),
+            })
+            .unwrap();
+        drop(job_tx);
+
+        while let Some(event) = resp_rx.recv().await {
+            if matches!(event, socket::DaemonResponse::Done { .. }) {
+                break;
+            }
+        }
+
+        let mut ws_updates = Vec::new();
+        while let Ok(update) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), updates_rx.recv()).await
+        {
+            match update {
+                Ok(update) => ws_updates.push(update),
+                Err(_) => break,
+            }
+        }
+
+        task.await.unwrap();
+
+        let verify_store = SignalStore::open(&db_path, "ws").unwrap();
+        let followups = verify_store.list_followups().unwrap();
+        assert_eq!(followups.len(), 1);
+        assert_eq!(followups[0].bot, "Main");
+        assert_eq!(followups[0].action, "Check PR status again");
+        assert_eq!(followups[0].status, "pending");
+        let fires_at = chrono::DateTime::parse_from_rfc3339(&followups[0].fires_at)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(fires_at > chrono::Utc::now() + chrono::Duration::minutes(59));
+
+        assert!(ws_updates.iter().any(|update| matches!(
+            update,
+            http::WsUpdate::FollowupCreated { bot, action, status, .. }
+                if bot == "Main" && action == "Check PR status again" && status == "pending"
+        )));
+    }
+
+    #[test]
+    fn test_parse_followup_fires_at_supports_relative_and_absolute_times() {
+        let now = chrono::Utc::now();
+        let relative = super::parse_followup_fires_at("15m", now).expect("relative fires_at");
+        let relative_dt = chrono::DateTime::parse_from_rfc3339(&relative)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(relative_dt >= now + chrono::Duration::minutes(15));
+
+        let absolute = "2026-05-02T12:00:00Z";
+        let absolute_dt = chrono::DateTime::parse_from_rfc3339(
+            &super::parse_followup_fires_at(absolute, now).expect("absolute fires_at"),
+        )
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+        assert_eq!(
+            absolute_dt,
+            chrono::DateTime::parse_from_rfc3339(absolute)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        );
+        assert!(super::parse_followup_fires_at("nonsense", now).is_none());
     }
 }

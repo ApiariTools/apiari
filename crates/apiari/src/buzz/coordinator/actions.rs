@@ -19,6 +19,8 @@ pub enum BeeAction {
     Task { title: String },
     /// Trigger a research workflow (already handled elsewhere).
     Research { topic: String },
+    /// Schedule a follow-up action for later.
+    Followup { when: String, action: String },
     /// Update the Bee's canvas — a freeform markdown display.
     Canvas { content: String },
 }
@@ -32,6 +34,7 @@ pub enum BeeAction {
 /// - `[SNOOZE: <signal_id>, <hours>]`
 /// - `[TASK: <title>]`
 /// - `[RESEARCH: <topic>]`
+/// - `[FOLLOWUP: <delay-or-rfc3339> | <action>]`
 pub fn parse_actions(response: &str) -> Vec<BeeAction> {
     let mut actions = Vec::new();
     let markers = [
@@ -41,6 +44,7 @@ pub fn parse_actions(response: &str) -> Vec<BeeAction> {
         ("SNOOZE", parse_snooze),
         ("TASK", parse_task),
         ("RESEARCH", parse_research),
+        ("FOLLOWUP", parse_followup),
     ];
 
     // Scan for each `[MARKER: ...]` occurrence.
@@ -142,6 +146,17 @@ fn parse_research(content: &str) -> Option<BeeAction> {
     }
 }
 
+fn parse_followup(content: &str) -> Option<BeeAction> {
+    let (when, action) = content.split_once('|')?;
+    let when = when.trim().to_string();
+    let action = action.trim().to_string();
+    if when.is_empty() || action.is_empty() {
+        None
+    } else {
+        Some(BeeAction::Followup { when, action })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +219,18 @@ mod tests {
             actions,
             vec![BeeAction::Research {
                 topic: "Neon cold start mitigation strategies".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_followup() {
+        let actions = parse_actions("[FOLLOWUP: 2h | Check PR status again]");
+        assert_eq!(
+            actions,
+            vec![BeeAction::Followup {
+                when: "2h".to_string(),
+                action: "Check PR status again".to_string(),
             }]
         );
     }

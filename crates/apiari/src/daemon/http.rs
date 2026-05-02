@@ -94,6 +94,33 @@ pub enum WsUpdate {
         streaming_content: String,
         tool_name: Option<String>,
     },
+    /// A followup was created.
+    FollowupCreated {
+        id: String,
+        workspace: String,
+        bot: String,
+        action: String,
+        fires_at: String,
+        status: String,
+    },
+    /// A followup fired.
+    FollowupFired {
+        id: String,
+        workspace: String,
+        bot: String,
+        action: String,
+        fires_at: String,
+        status: String,
+    },
+    /// A followup was cancelled.
+    FollowupCancelled {
+        id: String,
+        workspace: String,
+        bot: String,
+        action: String,
+        fires_at: String,
+        status: String,
+    },
 }
 
 /// A test signal to inject (dev mode).
@@ -1447,6 +1474,7 @@ async fn list_workspace_followups(Path(workspace): Path<String>) -> Json<Vec<Fol
 
 async fn cancel_workspace_followup(
     Path((workspace, followup_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
 ) -> Json<serde_json::Value> {
     let store = match crate::buzz::signal::store::SignalStore::open(
         &crate::config::db_path(),
@@ -1455,8 +1483,24 @@ async fn cancel_workspace_followup(
         Ok(store) => store,
         Err(e) => return Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     };
+    let followup = match store.get_followup(&followup_id) {
+        Ok(record) => record,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    };
     match store.cancel_followup(&followup_id) {
-        Ok(changed) => Json(serde_json::json!({ "ok": changed })),
+        Ok(changed) => {
+            if changed && let Some(followup) = followup {
+                let _ = state.updates_tx.send(WsUpdate::FollowupCancelled {
+                    id: followup.id,
+                    workspace: workspace.clone(),
+                    bot: followup.bot,
+                    action: followup.action,
+                    fires_at: followup.fires_at,
+                    status: "cancelled".to_string(),
+                });
+            }
+            Json(serde_json::json!({ "ok": changed }))
+        }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
 }
@@ -4104,14 +4148,32 @@ model = "gpt-5.3-codex"
             )
             .unwrap();
 
+        let (updates_tx, mut updates_rx) = broadcast::channel(4);
+        let (signal_tx, _signal_rx) = mpsc::unbounded_channel();
+        let (chat_tx, _chat_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, _cancel_rx) = mpsc::unbounded_channel();
+        let state = HttpState {
+            graph: Arc::new(RwLock::new(
+                crate::buzz::orchestrator::graph::builtin::builtin_workflow(),
+            )),
+            yaml_path: Arc::new(None),
+            db_path: Arc::new(crate::config::db_path()),
+            workspace: Arc::new("apiari".to_string()),
+            updates_tx,
+            signal_tx,
+            chat_tx,
+            cancel_tx,
+        };
+
         let followups = list_workspace_followups(Path("apiari".to_string())).await.0;
         assert_eq!(followups.len(), 1);
         assert_eq!(followups[0].id, "f1");
         assert_eq!(followups[0].status, "pending");
 
-        let cancelled = cancel_workspace_followup(Path(("apiari".to_string(), "f1".to_string())))
-            .await
-            .0;
+        let cancelled =
+            cancel_workspace_followup(Path(("apiari".to_string(), "f1".to_string())), State(state))
+                .await
+                .0;
         assert_eq!(
             cancelled.get("ok").and_then(|value| value.as_bool()),
             Some(true)
@@ -4119,6 +4181,12 @@ model = "gpt-5.3-codex"
 
         let followups = list_workspace_followups(Path("apiari".to_string())).await.0;
         assert_eq!(followups[0].status, "cancelled");
+        let update = updates_rx.recv().await.expect("followup cancel update");
+        assert!(matches!(
+            update,
+            WsUpdate::FollowupCancelled { id, bot, status, .. }
+                if id == "f1" && bot == "Main" && status == "cancelled"
+        ));
     }
 
     #[tokio::test]
