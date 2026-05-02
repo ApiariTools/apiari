@@ -77,6 +77,12 @@ type AppFixture = {
     fires_at: string;
     status: "pending" | "fired" | "cancelled";
   }>>;
+  docsByWorkspace: Record<string, Array<{
+    name: string;
+    title: string;
+    content: string;
+    updated_at: string;
+  }>>;
   usage?: { installed: boolean; providers: Array<unknown>; updated_at: string | null };
 };
 
@@ -220,6 +226,23 @@ function defaultFixture(): AppFixture {
       [workspaceKey("apiari")]: [],
       [workspaceKey("mgm")]: [],
     },
+    docsByWorkspace: {
+      [workspaceKey("apiari")]: [
+        {
+          name: "architecture.md",
+          title: "Architecture",
+          content: "# Architecture\n\nCurrent system layout.",
+          updated_at: "2026-05-02T00:00:00.000Z",
+        },
+        {
+          name: "setup-guide.md",
+          title: "Setup Guide",
+          content: "# Setup Guide\n\nInstall dependencies.",
+          updated_at: "2026-05-02T00:00:00.000Z",
+        },
+      ],
+      [workspaceKey("mgm")]: [],
+    },
     usage: { installed: true, providers: [], updated_at: "2026-05-02T00:00:00.000Z" },
   };
 }
@@ -318,6 +341,16 @@ async function wireMockApi(page: Page, fixture: AppFixture) {
     if (method === "GET" && suffix === "followups") {
       return fulfillJson(route, fixture.followupsByWorkspace[wsKey] ?? []);
     }
+    if (method === "GET" && suffix === "docs") {
+      return fulfillJson(
+        route,
+        (fixture.docsByWorkspace[wsKey] ?? []).map((doc) => ({
+          name: doc.name,
+          title: doc.title,
+          updated_at: doc.updated_at,
+        })),
+      );
+    }
 
     if (method === "GET" && suffix.startsWith("conversations/")) {
       const bot = decodeURIComponent(suffix.slice("conversations/".length));
@@ -327,6 +360,34 @@ async function wireMockApi(page: Page, fixture: AppFixture) {
       return fulfillJson(route, { status: "idle", streaming_content: "", tool_name: null });
     }
     if (method === "POST" && suffix.startsWith("seen/")) {
+      return fulfillJson(route, { ok: true });
+    }
+    if (method === "GET" && suffix.startsWith("docs/")) {
+      const filename = decodeURIComponent(suffix.slice("docs/".length));
+      const doc = (fixture.docsByWorkspace[wsKey] ?? []).find((entry) => entry.name === filename);
+      return fulfillJson(route, doc ?? null);
+    }
+    if (method === "PUT" && suffix.startsWith("docs/")) {
+      const filename = decodeURIComponent(suffix.slice("docs/".length));
+      const body = req.postDataJSON() as { content: string };
+      const docs = fixture.docsByWorkspace[wsKey] ?? [];
+      const existing = docs.find((entry) => entry.name === filename);
+      if (existing) {
+        existing.content = body.content;
+      } else {
+        docs.push({
+          name: filename,
+          title: filename.replace(/\.md$/, "").replace(/[-_]/g, " ").replace(/\b\w/g, (m) => m.toUpperCase()),
+          content: body.content,
+          updated_at: "2026-05-02T00:00:00.000Z",
+        });
+        fixture.docsByWorkspace[wsKey] = docs;
+      }
+      return fulfillJson(route, { ok: true });
+    }
+    if (method === "DELETE" && suffix.startsWith("docs/")) {
+      const filename = decodeURIComponent(suffix.slice("docs/".length));
+      fixture.docsByWorkspace[wsKey] = (fixture.docsByWorkspace[wsKey] ?? []).filter((entry) => entry.name !== filename);
       return fulfillJson(route, { ok: true });
     }
     if (method === "GET" && suffix.startsWith("workers/") && !suffix.endsWith("/diff")) {
@@ -456,5 +517,16 @@ test.describe("apiari web", () => {
     await expect(page.getByText("Investigate repo slug resolution")).toBeVisible();
     await page.getByRole("button", { name: "Chat" }).click();
     await expect(page.getByPlaceholder("Message worker...")).toBeVisible();
+  });
+
+  test("opens docs and loads document content", async ({ page }) => {
+    await bootApp(page, defaultFixture());
+
+    await page.getByRole("button", { name: "Docs" }).click();
+    await expect(page.getByText("Architecture")).toBeVisible();
+    await page.getByText("Architecture").click();
+
+    await expect(page.getByText("Current system layout.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Switch to preview" })).toBeVisible();
   });
 });

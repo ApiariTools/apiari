@@ -742,9 +742,23 @@ struct ResearchTaskView {
     output_file: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct DocView {
+    name: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    updated_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct ResearchRequestBody {
     topic: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SaveDocBody {
+    content: String,
 }
 
 fn load_workspace_by_name(workspace: &str) -> Option<crate::config::Workspace> {
@@ -752,6 +766,89 @@ fn load_workspace_by_name(workspace: &str) -> Option<crate::config::Workspace> {
         .ok()?
         .into_iter()
         .find(|ws| ws.name == workspace)
+}
+
+fn workspace_docs_dir(config: &crate::config::WorkspaceConfig) -> std::path::PathBuf {
+    config.root.join("docs")
+}
+
+fn doc_title_from_filename(name: &str) -> String {
+    let stem = std::path::Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    stem.split(['-', '_', ' '])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn doc_title_from_content(name: &str, content: &str) -> String {
+    content
+        .lines()
+        .find_map(|line| line.strip_prefix("# ").map(str::trim))
+        .filter(|title| !title.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| doc_title_from_filename(name))
+}
+
+fn doc_updated_at(metadata: &std::fs::Metadata) -> String {
+    metadata
+        .modified()
+        .ok()
+        .map(chrono::DateTime::<chrono::Utc>::from)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339()
+}
+
+fn load_workspace_docs(config: &crate::config::WorkspaceConfig) -> Vec<DocView> {
+    let docs_dir = workspace_docs_dir(config);
+    let mut docs = Vec::new();
+    let entries = match std::fs::read_dir(docs_dir) {
+        Ok(entries) => entries,
+        Err(_) => return docs,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|file| file.to_str()) else {
+            continue;
+        };
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(_) => continue,
+        };
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        docs.push(DocView {
+            name: name.to_string(),
+            title: doc_title_from_content(name, &content),
+            content: None,
+            updated_at: doc_updated_at(&metadata),
+        });
+    }
+
+    docs.sort_by(|a, b| a.name.cmp(&b.name));
+    docs
+}
+
+fn sanitize_doc_name(name: &str) -> Option<String> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 fn display_bee_name(_bees: &[crate::config::BeeConfig], bee: &crate::config::BeeConfig) -> String {
@@ -1158,6 +1255,53 @@ async fn get_usage() -> Json<UsageView> {
         providers: vec![],
         updated_at: None,
     })
+}
+
+async fn list_workspace_docs(
+    Path(workspace): Path<String>,
+) -> Result<Json<Vec<DocView>>, StatusCode> {
+    let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(load_workspace_docs(&ws.config)))
+}
+
+async fn get_workspace_doc(
+    Path((workspace, filename)): Path<(String, String)>,
+) -> Result<Json<DocView>, StatusCode> {
+    let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
+    let filename = sanitize_doc_name(&filename).ok_or(StatusCode::BAD_REQUEST)?;
+    let path = workspace_docs_dir(&ws.config).join(&filename);
+    let content = std::fs::read_to_string(&path).map_err(|_| StatusCode::NOT_FOUND)?;
+    let metadata = std::fs::metadata(&path).map_err(|_| StatusCode::NOT_FOUND)?;
+
+    Ok(Json(DocView {
+        name: filename.clone(),
+        title: doc_title_from_content(&filename, &content),
+        content: Some(content),
+        updated_at: doc_updated_at(&metadata),
+    }))
+}
+
+async fn save_workspace_doc(
+    Path((workspace, filename)): Path<(String, String)>,
+    Json(body): Json<SaveDocBody>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
+    let filename = sanitize_doc_name(&filename).ok_or(StatusCode::BAD_REQUEST)?;
+    let docs_dir = workspace_docs_dir(&ws.config);
+    std::fs::create_dir_all(&docs_dir).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let path = docs_dir.join(filename);
+    std::fs::write(path, body.content).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn delete_workspace_doc(
+    Path((workspace, filename)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
+    let filename = sanitize_doc_name(&filename).ok_or(StatusCode::BAD_REQUEST)?;
+    let path = workspace_docs_dir(&ws.config).join(filename);
+    std::fs::remove_file(path).map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn list_workspace_followups(Path(_workspace): Path<String>) -> Json<Vec<FollowupView>> {
@@ -2693,6 +2837,13 @@ pub async fn start_http_server(
             "/api/workspaces/{workspace}/workers/{worker_id}/diff",
             get(get_workspace_worker_diff),
         )
+        .route("/api/workspaces/{workspace}/docs", get(list_workspace_docs))
+        .route(
+            "/api/workspaces/{workspace}/docs/{filename}",
+            get(get_workspace_doc)
+                .put(save_workspace_doc)
+                .delete(delete_workspace_doc),
+        )
         .route(
             "/api/workspaces/{workspace}/conversations/{bot}",
             get(get_workspace_conversations),
@@ -2932,6 +3083,12 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, serde_json::to_vec_pretty(body).unwrap()).unwrap();
+    }
+
+    fn write_doc(root: &Path, name: &str, content: &str) {
+        let docs_dir = root.join("docs");
+        fs::create_dir_all(&docs_dir).unwrap();
+        fs::write(docs_dir.join(name), content).unwrap();
     }
 
     fn init_git_repo(path: &Path) {
@@ -3623,5 +3780,132 @@ state_path = "{}"
         assert!(text.contains("diff --git"));
         assert!(text.contains("-before"));
         assert!(text.contains("+after"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn docs_endpoints_list_get_save_and_delete_workspace_docs() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+        write_doc(&root, "architecture.md", "# Architecture\n\nDetails");
+        write_doc(&root, "setup-guide.md", "Getting started");
+
+        let docs = list_workspace_docs(Path("apiari".to_string()))
+            .await
+            .expect("docs list should resolve")
+            .0;
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0].name, "architecture.md");
+        assert_eq!(docs[0].title, "Architecture");
+        assert_eq!(docs[1].title, "Setup Guide");
+
+        let architecture =
+            get_workspace_doc(Path(("apiari".to_string(), "architecture.md".to_string())))
+                .await
+                .expect("doc get should resolve")
+                .0;
+        assert_eq!(
+            architecture.content.as_deref(),
+            Some("# Architecture\n\nDetails")
+        );
+
+        let save = save_workspace_doc(
+            Path(("apiari".to_string(), "notes.md".to_string())),
+            Json(SaveDocBody {
+                content: "# Notes\n\nTodo".to_string(),
+            }),
+        )
+        .await
+        .expect("doc save should resolve")
+        .0;
+        assert_eq!(save.get("ok").and_then(|value| value.as_bool()), Some(true));
+        assert_eq!(
+            fs::read_to_string(root.join("docs/notes.md")).unwrap(),
+            "# Notes\n\nTodo"
+        );
+
+        let delete = delete_workspace_doc(Path(("apiari".to_string(), "notes.md".to_string())))
+            .await
+            .expect("doc delete should resolve")
+            .0;
+        assert_eq!(
+            delete.get("ok").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(!root.join("docs/notes.md").exists());
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn docs_endpoints_reject_path_traversal() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        let result =
+            get_workspace_doc(Path(("apiari".to_string(), "../secret.md".to_string()))).await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn followups_endpoint_returns_empty_list_and_cancel_ack() {
+        let followups = list_workspace_followups(Path("apiari".to_string())).await.0;
+        assert!(followups.is_empty());
+
+        let cancelled = cancel_workspace_followup(Path(("apiari".to_string(), "f1".to_string())))
+            .await
+            .0;
+        assert_eq!(
+            cancelled.get("ok").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn research_endpoint_returns_empty_list_and_running_shape() {
+        let research = list_workspace_research(Path("apiari".to_string())).await.0;
+        assert!(research.is_empty());
+
+        let started = start_workspace_research(
+            Path("apiari".to_string()),
+            Json(ResearchRequestBody {
+                topic: "monorepo cleanup".to_string(),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(
+            started.get("workspace").and_then(|value| value.as_str()),
+            Some("apiari")
+        );
+        assert_eq!(
+            started.get("topic").and_then(|value| value.as_str()),
+            Some("monorepo cleanup")
+        );
+        assert_eq!(
+            started.get("status").and_then(|value| value.as_str()),
+            Some("running")
+        );
+        assert!(
+            started
+                .get("id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|id| id.starts_with("research-"))
+        );
     }
 }
