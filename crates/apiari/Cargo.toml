@@ -6,6 +6,8 @@ license.workspace = true
 repository = "https://github.com/ApiariTools/apiari"
 description = "Ops coordinator CLI — daemon, signals, TUI, and swarm integration"
 
+default-run = "apiari"
+
 [[bin]]
 name = "apiari"
 path = "src/main.rs"

@@ -116,8 +116,11 @@ enum CoordinatorJob {
     /// Handle a TUI chat message with streaming tokens.
     TuiChat {
         text: String,
+        source: String,
+        broadcast_user_activity: bool,
         responder: mpsc::UnboundedSender<socket::DaemonResponse>,
         socket_server: Option<Arc<socket::DaemonSocketServer>>,
+        web_updates_tx: Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
         ws_name: String,
         bee_name: String,
     },
@@ -179,6 +182,54 @@ fn get_channel<'a>(
 
 fn conversation_scope(ws_name: &str, bee_name: &str) -> String {
     format!("{ws_name}/{bee_name}")
+}
+
+fn web_bee_name(bee_name: &str) -> String {
+    if bee_name == "Bee" {
+        "Main".to_string()
+    } else {
+        bee_name.to_string()
+    }
+}
+
+fn send_web_message_update(
+    web_updates_tx: &Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
+    id: i64,
+    workspace: &str,
+    bee_name: &str,
+    role: &str,
+    content: &str,
+    created_at: &str,
+) {
+    if let Some(tx) = web_updates_tx {
+        let _ = tx.send(http::WsUpdate::Message {
+            id,
+            workspace: workspace.to_string(),
+            bot: web_bee_name(bee_name),
+            role: role.to_string(),
+            content: content.to_string(),
+            created_at: created_at.to_string(),
+        });
+    }
+}
+
+fn send_web_bot_status(
+    web_updates_tx: &Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
+    workspace: &str,
+    bee_name: &str,
+    status: &str,
+    streaming_content: &str,
+    tool_name: Option<&str>,
+) {
+    if let Some(tx) = web_updates_tx {
+        let _ = tx.send(http::WsUpdate::BotStatus {
+            workspace: workspace.to_string(),
+            bot: web_bee_name(bee_name),
+            status: status.to_string(),
+            streaming_content: streaming_content.to_string(),
+            tool_name: tool_name.map(|name| name.to_string()),
+        });
+    }
 }
 
 fn bee_matches_signal_source(bee: &BeeConfig, source: &str) -> bool {
@@ -379,17 +430,83 @@ async fn run_coordinator_task(
 
             CoordinatorJob::TuiChat {
                 text,
+                source,
+                broadcast_user_activity,
                 responder,
                 socket_server,
+                web_updates_tx,
                 ws_name,
                 bee_name,
             } => {
+                let conv_scope = conversation_scope(&ws_name, &bee_name);
+                let user_created_at = chrono::Utc::now().to_rfc3339();
+                let user_message_id = {
+                    let conv = ConversationStore::new(store.conn(), &conv_scope);
+                    match conv.save_message("user", &text, Some(&source), None, None) {
+                        Ok(id) => Some(id),
+                        Err(e) => {
+                            warn!("[{ws_name}] failed to save user message: {e}");
+                            None
+                        }
+                    }
+                };
+                {
+                    if broadcast_user_activity {
+                    if let Some(ref server) = socket_server {
+                        server.broadcast_activity("tui", &ws_name, "user_message", &text);
+                    }
+                        if let Some(id) = user_message_id {
+                            send_web_message_update(
+                                &web_updates_tx,
+                                id,
+                                &ws_name,
+                                &bee_name,
+                                "user",
+                                &text,
+                                &user_created_at,
+                            );
+                        }
+                    }
+                }
+                if let Err(e) = store.set_bot_status(&bee_name, "thinking", "", None) {
+                    warn!("[{ws_name}] failed to set thinking status: {e}");
+                }
+                send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "thinking", "", None);
+
                 let bundle = match coordinator.prepare_dispatch(&store) {
                     Ok(b) => b,
                     Err(e) => {
+                        let err_text = e.to_string();
+                        let err_created_at = chrono::Utc::now().to_rfc3339();
+                        let err_message_id = {
+                            let conv = ConversationStore::new(store.conn(), &conv_scope);
+                            match conv.save_message("assistant", &err_text, Some("system"), None, None)
+                            {
+                                Ok(id) => Some(id),
+                                Err(save_err) => {
+                                    warn!("[{ws_name}] failed to save prepare-dispatch error: {save_err}");
+                                    None
+                                }
+                            }
+                        };
+                        if let Err(status_err) = store.set_bot_status(&bee_name, "idle", "", None) {
+                            warn!("[{ws_name}] failed to clear bot status: {status_err}");
+                        }
+                        if let Some(id) = err_message_id {
+                            send_web_message_update(
+                                &web_updates_tx,
+                                id,
+                                &ws_name,
+                                &bee_name,
+                                "assistant",
+                                &err_text,
+                                &err_created_at,
+                            );
+                        }
+                        send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "idle", "", None);
                         let _ = responder.send(socket::DaemonResponse::Error {
                             workspace: ws_name.clone(),
-                            text: format!("{e}"),
+                            text: err_text,
                         });
                         continue;
                     }
@@ -407,10 +524,33 @@ async fn run_coordinator_task(
                 let name_for_cb = ws_name.clone();
                 let model_for_cb = coordinator.model().to_string();
                 let responder_for_cb = responder.clone();
+                let status_db_path = store.db_path().to_path_buf();
+                let status_ws_name = ws_name.clone();
+                let status_bee_name = bee_name.clone();
+                let mut streaming_content = String::new();
 
                 let result = coordinator
                     .dispatch_message(&dispatch_text, bundle, |event| match event {
                         CoordinatorEvent::Token(t) => {
+                            streaming_content.push_str(&t);
+                            if let Ok(status_store) = SignalStore::open(&status_db_path, &status_ws_name) {
+                                if let Err(e) = status_store.set_bot_status(
+                                    &status_bee_name,
+                                    "streaming",
+                                    &streaming_content,
+                                    None,
+                                ) {
+                                    warn!("[{name_for_cb}] failed to update streaming status: {e}");
+                                }
+                            }
+                            send_web_bot_status(
+                                &web_updates_tx,
+                                &name_for_cb,
+                                &bee_name,
+                                "streaming",
+                                &streaming_content,
+                                None,
+                            );
                             let _ = responder_for_cb.send(socket::DaemonResponse::Token {
                                 workspace: name_for_cb.clone(),
                                 text: t,
@@ -432,6 +572,24 @@ async fn run_coordinator_task(
                             command,
                             matched_pattern,
                         } => {
+                            if let Ok(status_store) = SignalStore::open(&status_db_path, &status_ws_name) {
+                                if let Err(e) = status_store.set_bot_status(
+                                    &status_bee_name,
+                                    "streaming",
+                                    &streaming_content,
+                                    Some("Bash"),
+                                ) {
+                                    warn!("[{name_for_cb}] failed to update tool status: {e}");
+                                }
+                            }
+                            send_web_bot_status(
+                                &web_updates_tx,
+                                &name_for_cb,
+                                &bee_name,
+                                "streaming",
+                                &streaming_content,
+                                Some("Bash"),
+                            );
                             warn!(
                                 "[{name_for_cb}] coordinator bash MUTATING ({matched_pattern}): {command}"
                             );
@@ -449,34 +607,46 @@ async fn run_coordinator_task(
                     })
                     .await;
 
-                // Persist messages to DB (scoped to drop before any further borrows)
-                {
-                    let conv_scope = conversation_scope(&ws_name, &bee_name);
-                    let conv = ConversationStore::new(store.conn(), &conv_scope);
-                    if let Err(e) = conv.save_message("user", &text, Some("tui"), None, None) {
-                        warn!("[{ws_name}] failed to save user message: {e}");
-                    }
-                    // Only persist non-empty assistant responses (tool-only turns
-                    // produce empty text which clutters history).
-                    if let Ok(ref response) = result
-                        && !response.trim().is_empty()
-                    {
-                        let session_id = coordinator.session_token().map(|t| t.token.as_str());
-                        let provider = Some(coordinator.provider());
-                        if let Err(e) = conv.save_message(
-                            "assistant",
-                            response,
-                            Some("system"),
-                            provider,
-                            session_id,
-                        ) {
-                            warn!("[{ws_name}] failed to save assistant message: {e}");
-                        }
-                    }
-                }
-
                 match result {
                     Ok(response) => {
+                        if let Err(e) = store.set_bot_status(&bee_name, "idle", "", None) {
+                            warn!("[{ws_name}] failed to clear bot status: {e}");
+                        }
+                        send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "idle", "", None);
+                        // Only persist non-empty assistant responses (tool-only turns
+                        // produce empty text which clutters history).
+                        if !response.trim().is_empty() {
+                            let session_id = coordinator.session_token().map(|t| t.token.as_str());
+                            let provider = Some(coordinator.provider());
+                            let assistant_created_at = chrono::Utc::now().to_rfc3339();
+                            let assistant_message_id = {
+                                let conv = ConversationStore::new(store.conn(), &conv_scope);
+                                match conv.save_message(
+                                    "assistant",
+                                    &response,
+                                    Some("system"),
+                                    provider,
+                                    session_id,
+                                ) {
+                                    Ok(id) => Some(id),
+                                    Err(e) => {
+                                        warn!("[{ws_name}] failed to save assistant message: {e}");
+                                        None
+                                    }
+                                }
+                            };
+                            if let Some(id) = assistant_message_id {
+                                send_web_message_update(
+                                    &web_updates_tx,
+                                    id,
+                                    &ws_name,
+                                    &bee_name,
+                                    "assistant",
+                                    &response,
+                                    &assistant_created_at,
+                                );
+                            }
+                        }
                         turn_count += 1;
                         let _ = responder.send(socket::DaemonResponse::Done {
                             workspace: ws_name.clone(),
@@ -523,6 +693,7 @@ async fn run_coordinator_task(
                         }
                     }
                     Err(e) => {
+                        let err_text = e.to_string();
                         // Restore pending context so it's available on the
                         // next attempt — the coordinator never ingested it.
                         if let Some(ctx) = pending_ctx {
@@ -536,9 +707,36 @@ async fn run_coordinator_task(
                             coordinator.reset_session();
                             turn_count = 0;
                         }
+                        let err_created_at = chrono::Utc::now().to_rfc3339();
+                        let err_message_id = {
+                            let conv = ConversationStore::new(store.conn(), &conv_scope);
+                            match conv.save_message("assistant", &err_text, Some("system"), None, None)
+                            {
+                                Ok(id) => Some(id),
+                                Err(save_err) => {
+                                    warn!("[{ws_name}] failed to save assistant error: {save_err}");
+                                    None
+                                }
+                            }
+                        };
+                        if let Err(status_err) = store.set_bot_status(&bee_name, "idle", "", None) {
+                            warn!("[{ws_name}] failed to clear bot status: {status_err}");
+                        }
+                        if let Some(id) = err_message_id {
+                            send_web_message_update(
+                                &web_updates_tx,
+                                id,
+                                &ws_name,
+                                &bee_name,
+                                "assistant",
+                                &err_text,
+                                &err_created_at,
+                            );
+                        }
+                        send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "idle", "", None);
                         let _ = responder.send(socket::DaemonResponse::Error {
                             workspace: ws_name.clone(),
-                            text: format!("{e}"),
+                            text: err_text,
                         });
                     }
                 }
@@ -1046,6 +1244,10 @@ fn execute_bee_actions(
 
 /// Run the daemon in the foreground with auto-restart on errors.
 pub async fn run_foreground() -> Result<()> {
+    run_foreground_with_web_port(7422).await
+}
+
+pub async fn run_foreground_with_web_port(web_port: u16) -> Result<()> {
     if let Some(pid) = read_pid()
         && is_process_alive(pid)
     {
@@ -1068,7 +1270,7 @@ pub async fn run_foreground() -> Result<()> {
 
         info!("discovered {} workspace(s)", workspaces.len());
 
-        match run_event_loop(workspaces).await {
+        match run_event_loop(workspaces, web_port).await {
             ExitReason::Shutdown => {
                 info!("clean shutdown");
                 break;
@@ -1078,9 +1280,13 @@ pub async fn run_foreground() -> Result<()> {
                 info!("exec'ing new binary...");
                 remove_pid();
                 let exe = std::env::current_exe()?;
-                let err = std::process::Command::new(&exe)
-                    .args(["daemon", "start", "--foreground"])
-                    .exec();
+                let mut cmd = std::process::Command::new(&exe);
+                if web_port == 7422 {
+                    cmd.args(["daemon", "start", "--foreground"]);
+                } else {
+                    cmd.args(["web", "--port", &web_port.to_string()]);
+                }
+                let err = cmd.exec();
                 // exec only returns on error
                 error!("exec failed: {err}");
                 break;
@@ -1151,7 +1357,7 @@ pub fn stop_daemon() -> Result<()> {
 }
 
 /// Main event loop across all workspaces.
-async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
+async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason {
     let db = db_path();
     if let Err(e) = std::fs::create_dir_all(db.parent().unwrap()) {
         return ExitReason::Error(e.into());
@@ -1576,7 +1782,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
         }
     };
 
-    // Start web UI HTTP server (port 7422) for the first workspace.
+    // Start web UI HTTP server for the first workspace.
     // The web UI shows the workflow graph and live task state.
     let mut web_signal_rx: Option<mpsc::UnboundedReceiver<http::InjectSignal>> = None;
     let mut web_chat_rx: Option<mpsc::UnboundedReceiver<http::WebChatRequest>> = None;
@@ -1588,7 +1794,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
             Some(yaml_path),
             first_slot.db_path.clone(),
             first_slot.name.clone(),
-            7422,
+            web_port,
         )
         .await
         {
@@ -1600,7 +1806,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                 }
                 web_signal_rx = Some(signal_rx);
                 web_chat_rx = Some(chat_rx);
-                info!("[daemon] web UI server started on http://127.0.0.1:7422");
+                info!("[daemon] web UI server started on http://127.0.0.1:{web_port}");
             }
             Err(e) => {
                 warn!("[daemon] failed to start web UI server: {e}");
@@ -1855,8 +2061,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             .unwrap_or_default();
                         let job = CoordinatorJob::TuiChat {
                             text: chat_req.text,
+                            source: "web".to_string(),
+                            broadcast_user_activity: true,
                             responder: resp_tx,
                             socket_server: socket_server.clone(),
+                            web_updates_tx: slot.web_updates_tx.clone(),
                             ws_name: ws_name.clone(),
                             bee_name,
                         };
@@ -3089,8 +3298,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>) -> ExitReason {
                             let ws_name_for_err = ws_name.clone();
                             let job = CoordinatorJob::TuiChat {
                                 text: user_text,
+                                source: "tui".to_string(),
+                                broadcast_user_activity: false,
                                 responder: client_req.responder.clone(),
                                 socket_server: socket_server.clone(),
+                                web_updates_tx: slot.web_updates_tx.clone(),
                                 ws_name,
                                 bee_name: slot.bees[bee_idx].name.clone(),
                             };

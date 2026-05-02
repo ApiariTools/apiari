@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     Json, Router,
     extract::{
-        State, WebSocketUpgrade,
+        Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
@@ -73,6 +73,23 @@ pub enum WsUpdate {
         severity: String,
         url: Option<String>,
         created_at: String,
+    },
+    /// A chat message changed for a bot.
+    Message {
+        id: i64,
+        workspace: String,
+        bot: String,
+        role: String,
+        content: String,
+        created_at: String,
+    },
+    /// A bot's live status changed.
+    BotStatus {
+        workspace: String,
+        bot: String,
+        status: String,
+        streaming_content: String,
+        tool_name: Option<String>,
     },
 }
 
@@ -608,14 +625,447 @@ struct WorkspaceQuery {
     workspace: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct WorkspaceListItem {
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct BotListItem {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default)]
+    watch: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RepoListItem {
+    name: String,
+    path: String,
+    has_swarm: bool,
+    is_clean: bool,
+    branch: String,
+    workers: Vec<WorkerView>,
+}
+
+#[derive(Debug, Serialize)]
+struct BotStatusView {
+    status: String,
+    streaming_content: String,
+    tool_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConversationMessageView {
+    id: i64,
+    workspace: String,
+    bot: String,
+    role: String,
+    content: String,
+    attachments: Option<String>,
+    created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceChatBody {
+    message: String,
+    #[serde(default)]
+    attachments: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Serialize)]
+struct UsageProviderView {
+    name: String,
+    status: String,
+    usage_percent: Option<f64>,
+    remaining: Option<String>,
+    limit: Option<String>,
+    resets_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct UsageView {
+    installed: bool,
+    providers: Vec<UsageProviderView>,
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FollowupView {
+    id: String,
+    workspace: String,
+    bot: String,
+    action: String,
+    created_at: String,
+    fires_at: String,
+    status: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ResearchTaskView {
+    id: String,
+    workspace: String,
+    topic: String,
+    status: String,
+    error: Option<String>,
+    started_at: String,
+    completed_at: Option<String>,
+    output_file: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchRequestBody {
+    topic: String,
+}
+
+fn load_workspace_by_name(workspace: &str) -> Option<crate::config::Workspace> {
+    crate::config::discover_workspaces()
+        .ok()?
+        .into_iter()
+        .find(|ws| ws.name == workspace)
+}
+
+fn display_bee_name(_bees: &[crate::config::BeeConfig], bee: &crate::config::BeeConfig) -> String {
+    if bee.name == "Bee" {
+        "Main".to_string()
+    } else {
+        bee.name.clone()
+    }
+}
+
+fn resolve_bee_name_for_api(
+    config: &crate::config::WorkspaceConfig,
+    api_name: &str,
+) -> Option<String> {
+    let bees = config.resolved_bees();
+    if api_name == "Main" {
+        if let Some(bee) = bees.iter().find(|bee| bee.name == "Bee") {
+            return Some(bee.name.clone());
+        }
+        if let Some(first) = bees.first() {
+            return Some(first.name.clone());
+        }
+    }
+
+    bees.into_iter()
+        .find(|bee| bee.name == api_name)
+        .map(|bee| bee.name)
+}
+
+fn bot_items_for_workspace(config: &crate::config::WorkspaceConfig) -> Vec<BotListItem> {
+    let bees = config.resolved_bees();
+    bees.iter()
+        .map(|bee| BotListItem {
+            name: display_bee_name(&bees, bee),
+            role: bee.prompt.clone(),
+            description: bee.prompt.clone(),
+            provider: Some(bee.provider.clone()),
+            model: (!bee.model.trim().is_empty()).then(|| bee.model.clone()),
+            watch: bee
+                .signal_hooks
+                .iter()
+                .map(|hook| hook.source.clone())
+                .collect(),
+        })
+        .collect()
+}
+
+fn repo_slug_to_local_path(root: &std::path::Path, repo: &str) -> std::path::PathBuf {
+    let direct = root.join(repo);
+    if direct.exists() {
+        return direct;
+    }
+
+    let basename = repo.rsplit('/').next().unwrap_or(repo);
+    let by_name = root.join(basename);
+    if by_name.exists() {
+        return by_name;
+    }
+
+    root.to_path_buf()
+}
+
+fn git_output(path: &std::path::Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn is_git_clean(path: &std::path::Path) -> bool {
+    git_output(path, &["status", "--porcelain"])
+        .map(|out| out.trim().is_empty())
+        .unwrap_or(true)
+}
+
+fn current_git_branch(path: &std::path::Path) -> String {
+    git_output(path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default()
+}
+
 // ── Bee config handlers ────────────────────────────────────────────────
 
 /// GET /api/workspaces — list all configured workspaces.
-async fn list_workspaces() -> Json<Vec<String>> {
+async fn list_workspaces() -> Json<Vec<WorkspaceListItem>> {
     let names = crate::config::discover_workspaces()
-        .map(|ws| ws.into_iter().map(|w| w.name).collect())
+        .map(|ws| {
+            ws.into_iter()
+                .map(|w| WorkspaceListItem { name: w.name })
+                .collect()
+        })
         .unwrap_or_default();
     Json(names)
+}
+
+/// GET /api/workspaces/:workspace/bots — list UI bots for a workspace.
+async fn list_workspace_bots(Path(workspace): Path<String>) -> Json<Vec<BotListItem>> {
+    let bots = load_workspace_by_name(&workspace)
+        .map(|ws| bot_items_for_workspace(&ws.config))
+        .unwrap_or_default();
+    Json(bots)
+}
+
+/// GET /api/workspaces/:workspace/repos — list repos for a workspace.
+async fn list_workspace_repos(Path(workspace): Path<String>) -> Json<Vec<RepoListItem>> {
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(vec![]);
+    };
+
+    let all_workers = get_workers().await.0;
+    let workspace_workers: Vec<WorkerView> = all_workers
+        .into_iter()
+        .filter(|worker| worker.workspace == workspace)
+        .collect();
+
+    let repos = crate::config::resolve_repos(&ws.config)
+        .into_iter()
+        .map(|repo| {
+            let local_path = repo_slug_to_local_path(&ws.config.root, &repo);
+            let basename = local_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(&repo).to_string());
+
+            RepoListItem {
+                name: basename.clone(),
+                path: local_path.display().to_string(),
+                has_swarm: local_path.join(".swarm").exists(),
+                is_clean: is_git_clean(&local_path),
+                branch: current_git_branch(&local_path),
+                workers: workspace_workers
+                    .iter()
+                    .filter(|worker| worker.branch.starts_with(&basename))
+                    .cloned()
+                    .collect(),
+            }
+        })
+        .collect();
+
+    Json(repos)
+}
+
+/// GET /api/workspaces/:workspace/conversations/:bot — load history for one bot.
+async fn get_workspace_conversations(
+    Path((workspace, bot)): Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<Vec<ConversationMessageView>> {
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(30);
+
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(vec![]);
+    };
+
+    let actual_bot = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
+    let store = match crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), &workspace) {
+        Ok(store) => store,
+        Err(_) => return Json(vec![]),
+    };
+
+    let mut rows = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+
+    let mut scopes = vec![format!("{workspace}/{actual_bot}")];
+    if bot == "Main" {
+        scopes.push(format!("{workspace}/Main"));
+        scopes.push(format!("{workspace}/Bee"));
+        scopes.push(workspace.clone());
+    } else if actual_bot != bot {
+        scopes.push(format!("{workspace}/{bot}"));
+    }
+
+    for scope in scopes {
+        let scoped = crate::buzz::conversation::ConversationStore::new(store.conn(), &scope);
+        if let Ok(history) = scoped.load_history(limit) {
+            for row in history {
+                if seen_ids.insert(row.id) {
+                    rows.push(row);
+                }
+            }
+        }
+    }
+
+    rows.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    if rows.len() > limit {
+        rows = rows.split_off(rows.len() - limit);
+    }
+
+    Json(rows
+        .into_iter()
+        .map(|row| ConversationMessageView {
+            id: row.id,
+            workspace: workspace.clone(),
+            bot: bot.clone(),
+            role: row.role,
+            content: row.content,
+            attachments: None,
+            created_at: row.created_at,
+        })
+        .collect())
+}
+
+/// GET /api/workspaces/:workspace/workers — list workers for one workspace.
+async fn get_workspace_workers(Path(workspace): Path<String>) -> Json<Vec<WorkerView>> {
+    Json(
+        get_workers()
+            .await
+            .0
+            .into_iter()
+            .filter(|worker| worker.workspace == workspace)
+            .collect(),
+    )
+}
+
+/// GET /api/workspaces/:workspace/bots/:bot/status — current bot status.
+async fn get_workspace_bot_status(
+    Path((workspace, bot)): Path<(String, String)>,
+) -> Json<BotStatusView> {
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(BotStatusView {
+            status: "idle".to_string(),
+            streaming_content: String::new(),
+            tool_name: None,
+        });
+    };
+    let actual_bot = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot);
+    let status = crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), &workspace)
+        .ok()
+        .and_then(|store| store.get_bot_status(&actual_bot).ok().flatten());
+
+    match status {
+        Some(status) => Json(BotStatusView {
+            status: status.status,
+            streaming_content: status.streaming_content,
+            tool_name: status.tool_name,
+        }),
+        None => Json(BotStatusView {
+            status: "idle".to_string(),
+            streaming_content: String::new(),
+            tool_name: None,
+        }),
+    }
+}
+
+/// GET /api/workspaces/:workspace/unread — unread message counts by bot.
+async fn get_workspace_unread(Path(_workspace): Path<String>) -> Json<serde_json::Map<String, serde_json::Value>> {
+    Json(serde_json::Map::new())
+}
+
+/// POST /api/workspaces/:workspace/seen/:bot — mark a bot as seen.
+async fn mark_workspace_seen(
+    Path((_workspace, _bot)): Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true }))
+}
+
+/// POST /api/workspaces/:workspace/bots/:bot/cancel — cancel a running bot.
+async fn cancel_workspace_bot(
+    Path((_workspace, _bot)): Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true }))
+}
+
+async fn get_usage() -> Json<UsageView> {
+    Json(UsageView {
+        installed: false,
+        providers: vec![],
+        updated_at: None,
+    })
+}
+
+async fn list_workspace_followups(Path(_workspace): Path<String>) -> Json<Vec<FollowupView>> {
+    Json(vec![])
+}
+
+async fn cancel_workspace_followup(
+    Path((_workspace, _followup_id)): Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "ok": true }))
+}
+
+async fn list_workspace_research(Path(_workspace): Path<String>) -> Json<Vec<ResearchTaskView>> {
+    Json(vec![])
+}
+
+async fn start_workspace_research(
+    Path(workspace): Path<String>,
+    Json(body): Json<ResearchRequestBody>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "id": format!("research-{}", chrono::Utc::now().timestamp_millis()),
+        "topic": body.topic,
+        "status": "running",
+        "workspace": workspace,
+    }))
+}
+
+/// POST /api/workspaces/:workspace/chat/:bot — enqueue a user message for a bot.
+async fn send_workspace_chat(
+    Path((workspace, bot)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    Json(body): Json<WorkspaceChatBody>,
+) -> Json<serde_json::Value> {
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(serde_json::json!({ "ok": false, "error": "workspace not found" }));
+    };
+    let actual_bot = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
+
+    let message = if let Some(attachments) = body.attachments
+        && !attachments.is_empty()
+    {
+        format!("{}\n\n[attachments: {} file(s)]", body.message, attachments.len())
+    } else {
+        body.message
+    };
+
+    let (response_tx, _response_rx) = mpsc::unbounded_channel::<WebChatEvent>();
+    let req = WebChatRequest {
+        workspace,
+        bee: Some(actual_bot),
+        text: message,
+        response_tx,
+    };
+
+    let ok = state.chat_tx.send(req).is_ok();
+    Json(serde_json::json!({ "ok": ok }))
 }
 
 /// GET /api/bees — returns the resolved bee config for a workspace.
@@ -1043,7 +1493,7 @@ async fn get_briefing(State(state): State<HttpState>) -> Json<Vec<BriefingItem>>
 
 // ── Workers endpoint ──────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct WorkerView {
     id: String,
     workspace: String,
@@ -1939,6 +2389,34 @@ pub async fn start_http_server(
         .route("/api/tasks", get(get_tasks).delete(clear_tasks))
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
+        .route("/api/workspaces/{workspace}/bots", get(list_workspace_bots))
+        .route("/api/workspaces/{workspace}/repos", get(list_workspace_repos))
+        .route("/api/workspaces/{workspace}/workers", get(get_workspace_workers))
+        .route(
+            "/api/workspaces/{workspace}/conversations/{bot}",
+            get(get_workspace_conversations),
+        )
+        .route(
+            "/api/workspaces/{workspace}/bots/{bot}/status",
+            get(get_workspace_bot_status),
+        )
+        .route(
+            "/api/workspaces/{workspace}/bots/{bot}/cancel",
+            post(cancel_workspace_bot),
+        )
+        .route("/api/workspaces/{workspace}/unread", get(get_workspace_unread))
+        .route("/api/workspaces/{workspace}/seen/{bot}", post(mark_workspace_seen))
+        .route("/api/workspaces/{workspace}/followups", get(list_workspace_followups))
+        .route(
+            "/api/workspaces/{workspace}/followups/{followup_id}",
+            axum::routing::delete(cancel_workspace_followup),
+        )
+        .route(
+            "/api/workspaces/{workspace}/research",
+            get(list_workspace_research).post(start_workspace_research),
+        )
+        .route("/api/workspaces/{workspace}/chat/{bot}", post(send_workspace_chat))
+        .route("/api/usage", get(get_usage))
         .route("/api/chat", post(chat_handler))
         .route("/api/workflow/run", post(workflow_run_handler))
         .route("/api/briefing", get(get_briefing))
@@ -1953,6 +2431,7 @@ pub async fn start_http_server(
         .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))
         .route("/api/ws", get(ws_handler))
+        .route("/ws", get(ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(state);
 

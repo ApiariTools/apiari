@@ -41,6 +41,23 @@ function pushHash(r: Route) {
   if (window.location.hash !== h) history.pushState(null, "", h || "/");
 }
 
+function mergeMessages(prev: Message[], incoming: Message): Message[] {
+  const withoutMatchingTemps = incoming.id >= 0
+    ? prev.filter((msg) => !(msg.id < 0
+      && msg.workspace === incoming.workspace
+      && msg.bot === incoming.bot
+      && msg.role === incoming.role
+      && msg.content === incoming.content))
+    : prev;
+  const existingIndex = withoutMatchingTemps.findIndex((msg) => msg.id === incoming.id);
+  if (existingIndex >= 0) {
+    const next = withoutMatchingTemps.slice();
+    next[existingIndex] = incoming;
+    return next;
+  }
+  return [...withoutMatchingTemps, incoming].sort((a, b) => a.id - b.id);
+}
+
 // ── App ──
 
 export default function App() {
@@ -71,10 +88,34 @@ export default function App() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [usage, setUsage] = useState<api.UsageData>({ installed: false, providers: [], updated_at: null });
   const lastMsgId = useRef<number>(0);
+  const nextTempId = useRef(-1);
   const loadingRef = useRef(false);
   const tabHiddenRef = useRef(document.hidden);
   const remoteRef = useRef(remote);
+  const streamingContentRef = useRef("");
   useEffect(() => { remoteRef.current = remote; }, [remote]);
+  useEffect(() => { streamingContentRef.current = streamingContent; }, [streamingContent]);
+
+  const appendLocalMessage = useCallback((role: string, content: string) => {
+    const tempId = nextTempId.current--;
+    const message: Message = {
+      id: tempId,
+      workspace,
+      bot,
+      role,
+      content,
+      attachments: null,
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => mergeMessages(prev, message));
+    return message;
+  }, [workspace, bot]);
+
+  const finalizeStreamingAssistant = useCallback(() => {
+    const content = streamingContentRef.current.trim();
+    if (!content) return;
+    appendLocalMessage("assistant", content);
+  }, [appendLocalMessage]);
 
   // Track mobile state
   useEffect(() => {
@@ -119,6 +160,7 @@ export default function App() {
       if (event.type === "bot_status") {
         if (isCurrentWs && event.bot === bot) {
           if (event.status === "idle") {
+            finalizeStreamingAssistant();
             setLoading(false);
             setLoadingStatus(undefined);
             setStreamingContent("");
@@ -127,6 +169,7 @@ export default function App() {
             setLoadingStatus(
               event.tool_name ? `Using ${event.tool_name}...` : "Thinking...",
             );
+            setStreamingContent(typeof event.streaming_content === "string" ? event.streaming_content : "");
           }
         }
       }
@@ -157,16 +200,27 @@ export default function App() {
       if (event.type === "message") {
         // Refresh unread counts
         if (workspace) api.getUnread(workspace, remote).then(setUnread);
-        // Trigger an immediate fetch instead of appending directly —
-        // this avoids duplicates from WS + poll both adding the same message
         if (isCurrentWs && event.bot === bot) {
+          const eventMessage = event as Message;
+          if (typeof eventMessage.id === "number") {
+            lastMsgId.current = Math.max(lastMsgId.current, eventMessage.id);
+            setMessages((prev) => mergeMessages(prev, {
+              id: eventMessage.id,
+              workspace: eventMessage.workspace,
+              bot: eventMessage.bot,
+              role: eventMessage.role,
+              content: eventMessage.content,
+              attachments: null,
+              created_at: eventMessage.created_at,
+            }));
+          }
           api.getConversations(workspace, bot, 30, remote).then((msgs) => {
             const latestId = msgs.length > 0 ? msgs[msgs.length - 1].id : 0;
-            if (latestId > lastMsgId.current) {
+            if (latestId >= lastMsgId.current) {
               lastMsgId.current = latestId;
               setMessages(msgs);
             }
-          });
+          }).catch(() => {});
         }
       }
     });
@@ -243,6 +297,7 @@ export default function App() {
       const statusP = api.getBotStatus(workspace, bot, r).then((s) => {
         if (cancelled) return;
         if (s.status === "idle") {
+          finalizeStreamingAssistant();
           setLoading(false);
           setLoadingStatus(undefined);
           setStreamingContent("");
@@ -468,12 +523,14 @@ export default function App() {
       }));
 
       // Fire and forget — daemon handles everything
+      appendLocalMessage("user", text);
+      setMessagesLoading(false);
       setLoading(true);
       setLoadingStatus("Thinking...");
       await api.sendMessage(workspace, bot, text, apiAttachments, remote);
       // Polling will pick up the user message + bot response from DB
     },
-    [workspace, bot, remote],
+    [appendLocalMessage, workspace, bot, remote],
   );
 
   // Merge fresh worker data (5s poll) into repos (30s poll) so worker status stays current

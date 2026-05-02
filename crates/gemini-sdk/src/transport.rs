@@ -5,7 +5,7 @@
 //! stdin is `/dev/null` — gemini exec is unidirectional.
 
 use crate::error::{Result, SdkError};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tracing::{debug, warn};
 
@@ -16,8 +16,6 @@ use tracing::{debug, warn};
 pub struct ReadOnlyTransport {
     child: Child,
     stdout_reader: BufReader<ChildStdout>,
-    /// Whether the single JSON payload has already been emitted.
-    emitted: bool,
     /// Handle to the stderr reader task.
     stderr_task: Option<tokio::task::JoinHandle<String>>,
 }
@@ -43,9 +41,9 @@ impl ReadOnlyTransport {
 
         let _ = subcommand;
 
-        // Current Gemini CLI's reliable headless contract is a final JSON
-        // object containing session_id / response / stats.
-        cmd.args(["--output-format", "json"]);
+        // Current Gemini CLI's reliable headless contract is a line-delimited
+        // JSON stream on stdout in stream-json mode.
+        cmd.args(["--output-format", "stream-json"]);
         cmd.arg("--skip-trust");
 
         // Caller-supplied arguments (model, sandbox, etc.).
@@ -86,12 +84,11 @@ impl ReadOnlyTransport {
         Ok(Self {
             child,
             stdout_reader,
-            emitted: false,
             stderr_task,
         })
     }
 
-    /// Read the final JSON object from stdout and parse it as a JSON value.
+    /// Read the next JSON object from stdout and parse it as a JSON value.
     ///
     /// Returns `Ok(None)` when stdout reaches EOF (process exited).
     ///
@@ -100,26 +97,26 @@ impl ReadOnlyTransport {
     /// Returns [`SdkError::InvalidJson`] if a line is not valid JSON.
     /// Returns [`SdkError::Io`] on read failure.
     pub async fn recv(&mut self) -> Result<Option<serde_json::Value>> {
-        if self.emitted {
-            return Ok(None);
-        }
+        loop {
+            let mut line = String::new();
+            let read = self.stdout_reader.read_line(&mut line).await?;
+            if read == 0 {
+                return Ok(None);
+            }
 
-        let mut output = String::new();
-        self.stdout_reader.read_to_string(&mut output).await?;
-        let trimmed = output.trim();
-        if trimmed.is_empty() {
-            self.emitted = true;
-            return Ok(None);
-        }
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
 
-        debug!(line = %trimmed, "stdout <-");
-        let value = serde_json::from_str(trimmed).map_err(|e| SdkError::InvalidJson {
-            message: e.to_string(),
-            line: trimmed.to_owned(),
-            source: e,
-        })?;
-        self.emitted = true;
-        Ok(Some(value))
+            debug!(line = %trimmed, "stdout <-");
+            let value = serde_json::from_str(trimmed).map_err(|e| SdkError::InvalidJson {
+                message: e.to_string(),
+                line: trimmed.to_owned(),
+                source: e,
+            })?;
+            return Ok(Some(value));
+        }
     }
 
     /// Send an interrupt signal (SIGINT on Unix) to the subprocess.

@@ -106,26 +106,42 @@ export function connectWebSocket(
   onEvent: (event: { type: string; workspace: string; bot: string; [key: string]: unknown }) => void,
 ): ManagedWebSocket {
   let intentionalClose = false;
+  let reconnectTimer: number | null = null;
+  let ws: WebSocket | null = null;
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${window.location.host}/ws`;
-  const ws = new WebSocket(wsUrl);
-  ws.onmessage = (e) => {
-    try {
-      const event = JSON.parse(e.data);
-      onEvent(event);
-    } catch {}
-  };
-  ws.onclose = () => {
-    if (!intentionalClose) {
-      // Reconnect after 3s only if not intentionally closed
-      setTimeout(() => connectWebSocket(onEvent), 3000);
-    }
-  };
+
+  function connect() {
+    if (intentionalClose) return;
+    ws = new WebSocket(wsUrl);
+    ws.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        onEvent(event);
+      } catch {}
+    };
+    ws.onclose = () => {
+      ws = null;
+      if (!intentionalClose) {
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, 3000);
+      }
+    };
+  }
+
+  connect();
+
   return {
     close() {
       intentionalClose = true;
-      ws.close();
-    },
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      ws?.close();
+    }
   };
 }
 

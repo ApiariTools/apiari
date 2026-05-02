@@ -1,8 +1,14 @@
 //! Buzz coordinator — multi-provider LLM wrapper with signal awareness.
 //!
-//! The coordinator maintains an LLM session (Claude, Codex, or Gemini) with
-//! a system prompt that includes open signals and accumulated memory. It
-//! handles user messages and can proactively notify about signal changes.
+//! Claude runs as a long-lived interactive session. Codex and Gemini are
+//! resumable single-turn executions: each user message spawns a fresh process
+//! and resumes provider state with a saved session token when available.
+//!
+//! Because those alt providers ingest the system prompt inline with the user
+//! turn, we intentionally compact first-turn workspace context for them. The
+//! goal is behavioral parity with Claude, not byte-for-byte prompt parity.
+//! They should keep the same coordinator role and visible capabilities without
+//! paying the latency cost of the full monorepo prompt on every first turn.
 
 pub mod actions;
 pub mod audit;
@@ -53,6 +59,65 @@ pub fn max_context_tokens(model: &str) -> u64 {
         1_000_000
     } else {
         200_000
+    }
+}
+
+/// Reduce first-turn workspace context for Codex/Gemini.
+///
+/// Claude can tolerate the full expanded skills prompt because it has a
+/// dedicated long-lived system prompt channel. Codex and Gemini do not: their
+/// first turn carries that context inline with the user message, and the full
+/// monorepo prompt materially hurts latency. Keep the coordinator contract and
+/// project identity, but drop the long operational manuals and workflow dump.
+fn compact_alt_provider_context(extra_context: Option<&str>) -> Option<String> {
+    let extra_context = extra_context?;
+    let mut kept = Vec::new();
+    let mut current_heading: Option<String> = None;
+    let mut current_lines: Vec<&str> = Vec::new();
+
+    let flush_section =
+        |heading: &Option<String>, lines: &mut Vec<&str>, kept: &mut Vec<String>| {
+            let Some(heading) = heading.as_deref() else {
+                lines.clear();
+                return;
+            };
+            let keep = matches!(
+                heading,
+                "## Workspace"
+                    | "## Repos in this workspace"
+                    | "## Communication Style"
+                    | "## Project Context"
+                    | "## Available Playbooks"
+                    | "## Authority Level"
+            );
+            if keep {
+                let mut section = String::new();
+                section.push_str(heading);
+                section.push('\n');
+                let body = lines.join("\n").trim().to_string();
+                if !body.is_empty() {
+                    section.push_str(&body);
+                    section.push('\n');
+                }
+                kept.push(section);
+            }
+            lines.clear();
+        };
+
+    for line in extra_context.lines() {
+        if line.starts_with("## ") {
+            flush_section(&current_heading, &mut current_lines, &mut kept);
+            current_heading = Some(line.to_string());
+        } else if current_heading.is_some() {
+            current_lines.push(line);
+        }
+    }
+    flush_section(&current_heading, &mut current_lines, &mut kept);
+
+    if kept.is_empty() {
+        Some(extra_context.to_string())
+    } else {
+        Some(kept.join("\n"))
     }
 }
 
@@ -466,14 +531,15 @@ impl Coordinator {
     pub fn prepare_dispatch(&self, store: &SignalStore) -> Result<DispatchBundle> {
         match self.provider.as_str() {
             "codex" | "gemini" => {
-                // Build system prompt for first message (Codex/Gemini don't have
-                // a separate system prompt mechanism).
+                // Codex/Gemini do not have Claude's dedicated long-lived system
+                // prompt channel, so we inline a compact first-turn prompt.
                 let system_prompt = if self.session_id.is_none() {
                     let signals = store.get_open_signals().unwrap_or_default();
+                    let compact_context = compact_alt_provider_context(self.extra_context.as_deref());
                     Some(prompt::build_system_prompt(
                         &signals,
                         &[],
-                        self.extra_context.as_deref(),
+                        compact_context.as_deref(),
                         Some(&self.name),
                         self.prompt_preamble.as_deref(),
                         None,
@@ -498,12 +564,14 @@ impl Coordinator {
     ) -> Result<DispatchBundle> {
         match self.provider.as_str() {
             "codex" | "gemini" => {
-                // Build system prompt with playbook content for first message.
+                // Same compact first-turn prompt path, plus any hook-triggered
+                // playbook content that must be present for this run.
                 let signals = store.get_open_signals().unwrap_or_default();
+                let compact_context = compact_alt_provider_context(self.extra_context.as_deref());
                 let system_prompt = Some(prompt::build_system_prompt(
                     &signals,
                     &[],
-                    self.extra_context.as_deref(),
+                    compact_context.as_deref(),
                     Some(&self.name),
                     self.prompt_preamble.as_deref(),
                     hook_playbooks,
@@ -558,6 +626,7 @@ impl Coordinator {
         use apiari_codex_sdk::{CodexClient, ExecOptions, ResumeOptions};
 
         let client = CodexClient::new();
+        let model = (!self.model.trim().is_empty()).then(|| self.model.clone());
 
         let snapshot = self
             .safety_hooks
@@ -570,7 +639,7 @@ impl Coordinator {
                     prompt,
                     ResumeOptions {
                         session_id: Some(sid.clone()),
-                        model: Some(self.model.clone()),
+                        model: model.clone(),
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
@@ -582,7 +651,7 @@ impl Coordinator {
                 .exec(
                     prompt,
                     ExecOptions {
-                        model: Some(self.model.clone()),
+                        model,
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
@@ -651,7 +720,7 @@ impl Coordinator {
     where
         F: FnMut(CoordinatorEvent),
     {
-        use apiari_gemini_sdk::{GeminiClient, GeminiOptions};
+        use apiari_gemini_sdk::{Event as GeminiEvent, GeminiClient, GeminiOptions};
 
         let client = GeminiClient::new();
 
@@ -689,16 +758,39 @@ impl Coordinator {
 
         let mut response = String::new();
 
-        while let Ok(Some(event)) = execution.next_event().await {
+        while let Some(event) = execution.next_event().await? {
             match &event {
-                apiari_gemini_sdk::Event::ThreadStarted { thread_id } => {
+                GeminiEvent::ThreadStarted { thread_id } => {
                     self.session_id = Some(thread_id.clone());
                     self.session_token = Some(SessionToken {
                         provider: "gemini".to_string(),
                         token: thread_id.clone(),
                     });
                 }
-                apiari_gemini_sdk::Event::ItemCompleted { item } => {
+                GeminiEvent::Init { session_id, .. } => {
+                    self.session_id = Some(session_id.clone());
+                    self.session_token = Some(SessionToken {
+                        provider: "gemini".to_string(),
+                        token: session_id.clone(),
+                    });
+                }
+                GeminiEvent::Message { role, delta, .. } => {
+                    if role.as_deref() != Some("assistant") {
+                        continue;
+                    }
+                    if let Some(text) = event.text()
+                        && !text.is_empty()
+                    {
+                        if delta.unwrap_or(false) {
+                            response.push_str(&text);
+                            on_event(CoordinatorEvent::Token(text));
+                        } else {
+                            response = text.clone();
+                            on_event(CoordinatorEvent::Token(text));
+                        }
+                    }
+                }
+                GeminiEvent::ItemCompleted { item } => {
                     if let Some(text) = item.text()
                         && !text.is_empty()
                     {
@@ -706,7 +798,36 @@ impl Coordinator {
                         on_event(CoordinatorEvent::Token(text.to_string()));
                     }
                 }
-                apiari_gemini_sdk::Event::TurnCompleted { usage: Some(u) } => {
+                GeminiEvent::JsonOutput {
+                    session_id,
+                    response: json_response,
+                    stats,
+                    ..
+                } => {
+                    if let Some(session_id) = session_id {
+                        self.session_id = Some(session_id.clone());
+                        self.session_token = Some(SessionToken {
+                            provider: "gemini".to_string(),
+                            token: session_id.clone(),
+                        });
+                    }
+                    if let Some(text) = json_response.as_deref().map(str::trim)
+                        && !text.is_empty()
+                        && response.trim().is_empty()
+                    {
+                        response = text.to_string();
+                        on_event(CoordinatorEvent::Token(text.to_string()));
+                    }
+                    if let Some(stats) = stats {
+                        on_event(CoordinatorEvent::Usage(UsageStats {
+                            input_tokens: stats.input_tokens.unwrap_or_default(),
+                            output_tokens: stats.output_tokens.unwrap_or_default(),
+                            cache_read_tokens: stats.cached.unwrap_or_default(),
+                            total_cost_usd: None,
+                        }));
+                    }
+                }
+                GeminiEvent::TurnCompleted { usage: Some(u) } => {
                     on_event(CoordinatorEvent::Usage(UsageStats {
                         input_tokens: u.input_tokens,
                         output_tokens: u.output_tokens,
@@ -714,19 +835,51 @@ impl Coordinator {
                         total_cost_usd: None,
                     }));
                 }
-                apiari_gemini_sdk::Event::TurnFailed { error, .. } => {
+                GeminiEvent::UsageEvent {
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    ..
+                } => {
+                    on_event(CoordinatorEvent::Usage(UsageStats {
+                        input_tokens: input_tokens.unwrap_or_default(),
+                        output_tokens: output_tokens.unwrap_or_default(),
+                        cache_read_tokens: cached_tokens.unwrap_or_default(),
+                        total_cost_usd: None,
+                    }));
+                }
+                GeminiEvent::Result { status, stats, .. } => {
+                    if matches!(status.as_deref(), Some("failed" | "error")) {
+                        return Err(color_eyre::eyre::eyre!("gemini turn failed"));
+                    }
+                    if let Some(stats) = stats {
+                        on_event(CoordinatorEvent::Usage(UsageStats {
+                            input_tokens: stats.input_tokens.unwrap_or_default(),
+                            output_tokens: stats.output_tokens.unwrap_or_default(),
+                            cache_read_tokens: stats.cached.unwrap_or_default(),
+                            total_cost_usd: None,
+                        }));
+                    }
+                }
+                GeminiEvent::TurnFailed { error, .. } => {
                     let msg = error
                         .as_ref()
                         .and_then(|e| e.message.as_deref())
                         .unwrap_or("gemini turn failed");
                     return Err(color_eyre::eyre::eyre!("{msg}"));
                 }
-                apiari_gemini_sdk::Event::Error { message, .. } => {
+                GeminiEvent::Error { message, .. } => {
                     let msg = message.as_deref().unwrap_or("gemini error");
                     return Err(color_eyre::eyre::eyre!("{msg}"));
                 }
                 _ => {}
             }
+        }
+
+        // If we somehow finished with no captured text but the execution learned
+        // a resumable session, keep that state and return the empty response.
+        if response.contains("[Thought: true]") {
+            response = response.replace("[Thought: true]", "").trim().to_string();
         }
 
         // Post-turn safety hooks

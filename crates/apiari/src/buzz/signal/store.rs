@@ -12,6 +12,13 @@ use rusqlite::{Connection, params};
 
 use super::{Severity, SignalRecord, SignalStatus, SignalUpdate};
 
+#[derive(Debug, Clone)]
+pub struct BotStatusRecord {
+    pub status: String,
+    pub streaming_content: String,
+    pub tool_name: Option<String>,
+}
+
 /// SQLite signal store, scoped to a workspace.
 pub struct SignalStore {
     conn: Connection,
@@ -105,18 +112,36 @@ impl SignalStore {
             );
             CREATE INDEX IF NOT EXISTS idx_conversations_workspace
                 ON conversations(workspace, created_at);
+
+            CREATE TABLE IF NOT EXISTS bot_status (
+                workspace TEXT NOT NULL,
+                bot TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'idle',
+                streaming_content TEXT NOT NULL DEFAULT '',
+                tool_name TEXT,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                PRIMARY KEY(workspace, bot)
+            );
             ",
         )?;
 
-        // Migration: add snoozed_until column if missing.
-        // Ignore "duplicate column" errors (column already exists), propagate others.
-        if let Err(e) = self
-            .conn
-            .execute_batch("ALTER TABLE signals ADD COLUMN snoozed_until TEXT;")
-        {
-            let msg = e.to_string();
-            if !msg.contains("duplicate column") {
-                return Err(e).wrap_err("failed to add snoozed_until column");
+        // Migrations for legacy signal schemas.
+        // Ignore duplicate-column errors, propagate everything else.
+        for (sql, column_name) in [
+            (
+                "ALTER TABLE signals ADD COLUMN resolved_at TEXT;",
+                "resolved_at",
+            ),
+            (
+                "ALTER TABLE signals ADD COLUMN snoozed_until TEXT;",
+                "snoozed_until",
+            ),
+        ] {
+            if let Err(e) = self.conn.execute_batch(sql) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column") {
+                    return Err(e).wrap_err(format!("failed to add {column_name} column"));
+                }
             }
         }
 
@@ -268,6 +293,48 @@ impl SignalStore {
 
         match result {
             Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn set_bot_status(
+        &self,
+        bot: &str,
+        status: &str,
+        streaming_content: &str,
+        tool_name: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO bot_status (workspace, bot, status, streaming_content, tool_name, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+             ON CONFLICT(workspace, bot) DO UPDATE SET
+               status = ?3,
+               streaming_content = ?4,
+               tool_name = ?5,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+            params![self.workspace, bot, status, streaming_content, tool_name],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_bot_status(&self, bot: &str) -> Result<Option<BotStatusRecord>> {
+        let result = self.conn.query_row(
+            "SELECT status, streaming_content, tool_name
+             FROM bot_status
+             WHERE workspace = ?1 AND bot = ?2",
+            params![self.workspace, bot],
+            |row| {
+                Ok(BotStatusRecord {
+                    status: row.get(0)?,
+                    streaming_content: row.get(1)?,
+                    tool_name: row.get(2)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(status) => Ok(Some(status)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }

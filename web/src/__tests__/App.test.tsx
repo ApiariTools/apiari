@@ -209,10 +209,12 @@ describe("WebSocket message dedup", () => {
     // Simulate a WS message event for the active bot
     wsCallback({
       type: "message",
+      id: 3,
       workspace: "apiari",
       bot: "Main",
       role: "user",
       content: "new message",
+      created_at: new Date().toISOString(),
     });
 
     // Should trigger getConversations fetch (not a direct append)
@@ -227,6 +229,42 @@ describe("WebSocket message dedup", () => {
     const matches = screen.getAllByText("new message");
     expect(matches).toHaveLength(1);
   });
+
+  it("keeps websocket message visible even if the immediate refetch is stale", async () => {
+    let wsCallback: (event: Record<string, unknown>) => void = () => {};
+    (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (event: Record<string, unknown>) => void) => {
+        wsCallback = cb;
+        return { close: vi.fn() };
+      },
+    );
+
+    await renderAndSelectBot("Main");
+
+    await waitFor(() => {
+      expect(screen.getByText("hello")).toBeInTheDocument();
+    });
+
+    (api.getConversations as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { id: 1, workspace: "apiari", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
+      { id: 2, workspace: "apiari", bot: "Main", role: "assistant", content: "Hi! How can I help?", attachments: null, created_at: new Date().toISOString() },
+    ]);
+
+    wsCallback({
+      type: "message",
+      id: 3,
+      workspace: "apiari",
+      bot: "Main",
+      role: "assistant",
+      content: "fresh websocket reply",
+      created_at: new Date().toISOString(),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("fresh websocket reply")).toBeInTheDocument();
+    });
+  });
+
 });
 
 describe("Research command", () => {
@@ -256,6 +294,21 @@ describe("Research command", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Research started: test topic")).toBeInTheDocument();
+    });
+  });
+});
+
+describe("Optimistic chat", () => {
+  it("shows the user message immediately after send", async () => {
+    const user = await renderAndSelectBot("Main");
+    await waitFor(() => expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument());
+
+    const textarea = screen.getByPlaceholderText(/Message Main/);
+    await user.type(textarea, "optimistic hello");
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    await waitFor(() => {
+      expect(screen.getByText("optimistic hello")).toBeInTheDocument();
     });
   });
 });

@@ -234,7 +234,7 @@ async fn main() -> Result<()> {
             }
         },
         Some(Command::Web { port }) => {
-            daemon::http::run_dev_server(port).await?;
+            daemon::run_foreground_with_web_port(port).await?;
         }
         Some(Command::ValidateBash) => {
             std::process::exit(validate_bash::run());

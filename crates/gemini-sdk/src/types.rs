@@ -90,7 +90,9 @@ pub enum Event {
         #[serde(default)]
         role: Option<String>,
         #[serde(default)]
-        content: Vec<ContentPart>,
+        content: MessageContent,
+        #[serde(default)]
+        delta: Option<bool>,
     },
 
     #[serde(rename = "tool_request")]
@@ -110,7 +112,7 @@ pub enum Event {
         #[serde(default)]
         name: Option<String>,
         #[serde(default)]
-        content: Vec<ContentPart>,
+        content: MessageContent,
         #[serde(default)]
         is_error: Option<bool>,
     },
@@ -223,6 +225,18 @@ pub enum Item {
 
     #[serde(other)]
     Unknown,
+}
+
+/// Content payload within the current Gemini `message` / `tool_response`
+/// schema. Recent CLI builds send a raw string for text deltas, while older
+/// builds emitted structured parts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+    #[default]
+    Empty,
 }
 
 /// A content part within the current Gemini `message` / `tool_response` schema.
@@ -350,24 +364,14 @@ impl Event {
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(ToOwned::to_owned),
-            Event::Message { role, content } => {
+            Event::Message { role, content, .. } => {
                 if role.as_deref() == Some("user") {
                     return None;
                 }
-                let text = content
-                    .iter()
-                    .filter_map(ContentPart::text)
-                    .collect::<Vec<_>>()
-                    .join("");
-                if text.is_empty() { None } else { Some(text) }
+                content.text()
             }
             Event::ToolResponse { content, .. } => {
-                let text = content
-                    .iter()
-                    .filter_map(ContentPart::text)
-                    .collect::<Vec<_>>()
-                    .join("");
-                if text.is_empty() { None } else { Some(text) }
+                content.text()
             }
             Event::AgentEnd { data, .. } => data
                 .as_ref()
@@ -380,6 +384,26 @@ impl Event {
                 item.text().map(ToOwned::to_owned)
             }
             _ => None,
+        }
+    }
+}
+
+impl MessageContent {
+    pub fn text(&self) -> Option<String> {
+        match self {
+            MessageContent::Text(text) => {
+                let text = text.trim();
+                (!text.is_empty()).then(|| text.to_owned())
+            }
+            MessageContent::Parts(parts) => {
+                let text = parts
+                    .iter()
+                    .filter_map(ContentPart::text)
+                    .collect::<Vec<_>>()
+                    .join("");
+                (!text.is_empty()).then_some(text)
+            }
+            MessageContent::Empty => None,
         }
     }
 }
@@ -462,6 +486,13 @@ mod tests {
     fn test_deserialize_current_message_event() {
         let json =
             r#"{"type":"message","role":"agent","content":[{"type":"text","text":"hello"}]}"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert_eq!(event.text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_deserialize_current_message_string_content() {
+        let json = r#"{"type":"message","role":"assistant","content":"hello","delta":true}"#;
         let event: Event = serde_json::from_str(json).unwrap();
         assert_eq!(event.text().as_deref(), Some("hello"));
     }

@@ -1,6 +1,7 @@
 //! Workspace configuration for the apiari CLI.
 //!
-//! Each workspace is a self-contained TOML file at `~/.config/apiari/workspaces/{name}.toml`.
+//! Supports both the legacy `~/.config/apiari/` layout and the current
+//! `~/.config/hive/` layout.
 
 use std::{
     collections::HashMap,
@@ -11,11 +12,33 @@ use std::{
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
 
-/// Root directory for all apiari config.
-pub fn config_dir() -> PathBuf {
+fn apiari_config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| ".".into())
         .join(".config/apiari")
+}
+
+fn hive_config_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| ".".into())
+        .join(".config/hive")
+}
+
+fn dir_has_workspace_state(dir: &Path) -> bool {
+    dir.join("workspaces").is_dir()
+        || dir.join("workspaces.toml").is_file()
+        || dir.join("hive.db").is_file()
+        || dir.join("apiari.db").is_file()
+}
+
+/// Root directory for all apiari config.
+pub fn config_dir() -> PathBuf {
+    let hive = hive_config_dir();
+    if dir_has_workspace_state(&hive) {
+        return hive;
+    }
+
+    apiari_config_dir()
 }
 
 /// Directory containing workspace TOML files.
@@ -25,7 +48,13 @@ pub fn workspaces_dir() -> PathBuf {
 
 /// Path to the shared SQLite database.
 pub fn db_path() -> PathBuf {
-    config_dir().join("apiari.db")
+    let dir = config_dir();
+    let hive_db = dir.join("hive.db");
+    if hive_db.exists() {
+        hive_db
+    } else {
+        dir.join("apiari.db")
+    }
 }
 
 /// Path to the daemon PID file.
@@ -785,13 +814,107 @@ pub struct Workspace {
     pub config: WorkspaceConfig,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct HiveWorkspaceFile {
+    workspace: HiveWorkspaceSection,
+    #[serde(default)]
+    bots: Vec<HiveBotConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HiveWorkspaceSection {
+    root: PathBuf,
+    #[allow(dead_code)]
+    name: Option<String>,
+    #[allow(dead_code)]
+    description: Option<String>,
+    #[serde(default)]
+    default_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HiveBotConfig {
+    name: String,
+    #[serde(default = "default_provider")]
+    provider: String,
+    #[serde(default = "default_model")]
+    model: String,
+}
+
+impl From<HiveWorkspaceFile> for WorkspaceConfig {
+    fn from(value: HiveWorkspaceFile) -> Self {
+        let bees = (!value.bots.is_empty()).then(|| {
+            let mut bees = vec![BeeConfig {
+                name: default_coordinator_name(),
+                provider: default_provider(),
+                model: default_model(),
+                max_turns: default_max_turns(),
+                prompt: None,
+                max_session_turns: default_max_session_turns(),
+                signal_hooks: vec![],
+                topic_id: None,
+                heartbeat: None,
+                heartbeat_prompt: None,
+            }];
+
+            bees.extend(value.bots.into_iter().map(|bot| BeeConfig {
+                model: legacy_bot_model(&bot.provider, &bot.model),
+                name: bot.name,
+                provider: bot.provider,
+                max_turns: default_max_turns(),
+                prompt: None,
+                max_session_turns: default_max_session_turns(),
+                signal_hooks: vec![],
+                topic_id: None,
+                heartbeat: None,
+                heartbeat_prompt: None,
+            }));
+
+            bees
+        });
+
+        Self {
+            config_version: None,
+            root: value.workspace.root,
+            repos: vec![],
+            authority: WorkspaceAuthority::default(),
+            capabilities: WorkspaceCapabilities::default(),
+            telegram: None,
+            coordinator: CoordinatorConfig::default(),
+            bees,
+            watchers: WatchersConfig::default(),
+            orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
+            swarm: SwarmConfig {
+                default_agent: value
+                    .workspace
+                    .default_agent
+                    .unwrap_or_else(default_swarm_agent),
+            },
+            commands: vec![],
+            morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_endpoints: vec![],
+            shells: ShellsConfig::default(),
+            schedule: None,
+            activity: ActivityConfig::default(),
+        }
+    }
+}
+
 /// Load a single workspace config from a TOML file.
 pub fn load_workspace(path: &Path) -> Result<WorkspaceConfig> {
     let contents = std::fs::read_to_string(path)
         .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    let config: WorkspaceConfig = toml::from_str(&contents)
+    if let Ok(config) = toml::from_str::<WorkspaceConfig>(&contents) {
+        return Ok(config);
+    }
+
+    let hive_config: HiveWorkspaceFile = toml::from_str(&contents)
         .wrap_err_with(|| format!("failed to parse {}", path.display()))?;
-    Ok(config)
+    Ok(hive_config.into())
 }
 
 /// Discover all workspace configs from `~/.config/apiari/workspaces/*.toml`.
@@ -1231,6 +1354,14 @@ fn default_provider() -> String {
     "claude".to_string()
 }
 
+fn legacy_bot_model(provider: &str, model: &str) -> String {
+    if provider == "codex" && model == default_model() {
+        String::new()
+    } else {
+        model.to_string()
+    }
+}
+
 fn default_watcher_interval() -> u64 {
     120
 }
@@ -1302,6 +1433,37 @@ root = "/tmp/test"
             "github_bot_review"
         );
         assert_eq!(config.coordinator.signal_hooks[2].source, "github");
+    }
+
+    #[test]
+    fn test_parse_hive_workspace_format() {
+        let toml_str = r##"
+[workspace]
+root = "/Users/josh/Developer/apiari"
+name = "apiari"
+default_agent = "codex"
+
+[[bots]]
+name = "Claude"
+provider = "claude"
+model = "claude-sonnet-4.6"
+
+[[bots]]
+name = "Codex"
+provider = "codex"
+"##;
+
+        let config = toml::from_str::<HiveWorkspaceFile>(toml_str).unwrap();
+        let config: WorkspaceConfig = config.into();
+
+        assert_eq!(config.root, PathBuf::from("/Users/josh/Developer/apiari"));
+        assert_eq!(config.swarm.default_agent, "codex");
+        let bees = config.resolved_bees();
+        assert_eq!(bees.len(), 2);
+        assert_eq!(bees[0].name, "Claude");
+        assert_eq!(bees[0].provider, "claude");
+        assert_eq!(bees[1].name, "Codex");
+        assert_eq!(bees[1].provider, "codex");
     }
 
     #[test]

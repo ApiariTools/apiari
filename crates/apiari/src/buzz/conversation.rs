@@ -57,25 +57,35 @@ impl<'a> ConversationStore<'a> {
         session_id: Option<&str>,
     ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "INSERT INTO conversations (workspace, role, content, source, provider, session_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![&self.workspace, role, content, source, provider, session_id, now],
-        )?;
+        if self.is_legacy_schema()? {
+            let (workspace, bot) = split_scope(&self.workspace);
+            self.conn.execute(
+                "INSERT INTO conversations (workspace, bot, role, content, attachments, created_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+                params![workspace, bot, role, content, now],
+            )?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO conversations (workspace, role, content, source, provider, session_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![&self.workspace, role, content, source, provider, session_id, now],
+            )?;
+        }
         Ok(self.conn.last_insert_rowid())
     }
 
     /// Load the last N messages ordered by created_at.
     pub fn load_history(&self, limit: usize) -> Result<Vec<ConversationRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, workspace, role, content, source, provider, session_id, created_at
-             FROM conversations
-             WHERE workspace = ?1
-             ORDER BY created_at DESC, id DESC
-             LIMIT ?2",
-        )?;
-        let mut rows: Vec<ConversationRow> = stmt
-            .query_map(params![&self.workspace, limit as i64], |row| {
+        let mut rows: Vec<ConversationRow> = if self.is_legacy_schema()? {
+            let (workspace, bot) = split_scope(&self.workspace);
+            let mut stmt = self.conn.prepare(
+                "SELECT id, workspace, role, content, NULL as source, NULL as provider, NULL as session_id, created_at
+                 FROM conversations
+                 WHERE workspace = ?1 AND bot = ?2
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?3",
+            )?;
+            stmt.query_map(params![workspace, bot, limit as i64], |row| {
                 Ok(ConversationRow {
                     id: row.get(0)?,
                     workspace: row.get(1)?,
@@ -87,7 +97,29 @@ impl<'a> ConversationStore<'a> {
                     created_at: row.get(7)?,
                 })
             })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, workspace, role, content, source, provider, session_id, created_at
+                 FROM conversations
+                 WHERE workspace = ?1
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?2",
+            )?;
+            stmt.query_map(params![&self.workspace, limit as i64], |row| {
+                Ok(ConversationRow {
+                    id: row.get(0)?,
+                    workspace: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    source: row.get(4)?,
+                    provider: row.get(5)?,
+                    session_id: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
         // Reverse so oldest first
         rows.reverse();
         Ok(rows)
@@ -95,6 +127,10 @@ impl<'a> ConversationStore<'a> {
 
     /// Get the most recent (provider, session_id) pair for session resumption.
     pub fn last_session(&self) -> Result<Option<SessionToken>> {
+        if self.is_legacy_schema()? {
+            return Ok(None);
+        }
+
         let result = self.conn.query_row(
             "SELECT provider, session_id FROM conversations
              WHERE workspace = ?1 AND provider IS NOT NULL AND session_id IS NOT NULL
@@ -114,6 +150,22 @@ impl<'a> ConversationStore<'a> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn is_legacy_schema(&self) -> Result<bool> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(conversations)")?;
+        let names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(names.iter().any(|name| name == "bot") && !names.iter().any(|name| name == "source"))
+    }
+}
+
+fn split_scope(scope: &str) -> (&str, &str) {
+    if let Some((workspace, bot)) = scope.split_once('/') {
+        (workspace, bot)
+    } else {
+        (scope, "Main")
     }
 }
 
