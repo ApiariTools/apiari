@@ -4820,6 +4820,58 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_worker_update_clamps_worker_chat_when_selected_worker_disappears() {
+        let mut app = make_app(&["ws1"], false);
+        app.workspaces[0].workers = vec![
+            test_worker_with("worker-1", "running", None, None),
+            test_worker_with("worker-2", "running", None, None),
+        ];
+        app.worker_selection = 1;
+        app.view = View::WorkerChat(1);
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![test_worker_with("worker-1", "running", None, None)],
+        )]);
+
+        assert_eq!(app.worker_selection, 0);
+        assert_eq!(app.view, View::WorkerChat(0));
+    }
+
+    #[test]
+    fn test_apply_worker_update_announces_closed_worker_and_pr_only_once() {
+        let mut app = make_app(&["ws1"], false);
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![test_worker_with("worker-1", "running", None, Some(42))],
+        )]);
+        app.workspaces[0].chat_history.clear();
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![test_worker_with(
+                "worker-1",
+                "closed",
+                Some("running"),
+                Some(42),
+            )],
+        )]);
+
+        let rendered = app.workspaces[0]
+            .chat_history
+            .iter()
+            .filter_map(|line| match line {
+                ChatLine::System(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("worker-1 closed"));
+        assert!(!rendered.contains("opened PR #42"));
+    }
+
+    #[test]
     fn test_append_assistant_token_skips_telegram_entry() {
         let mut app = make_app(&["ws1"], false);
         // Simulate a Telegram assistant message already in history

@@ -1059,6 +1059,83 @@ mod tests {
     }
 
     #[test]
+    fn test_bot_status_and_followups_persist_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            store
+                .set_bot_status("Main", "streaming", "hello", Some("Bash"))
+                .unwrap();
+            store.mark_bot_seen("Main", 42).unwrap();
+            store
+                .create_followup(
+                    "fu-1",
+                    "Main",
+                    "Check CI status",
+                    "2026-05-02T00:00:00Z",
+                    "2026-05-02T01:00:00Z",
+                    "pending",
+                )
+                .unwrap();
+        }
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            let status = store.get_bot_status("Main").unwrap().unwrap();
+            assert_eq!(status.status, "streaming");
+            assert_eq!(status.streaming_content, "hello");
+            assert_eq!(status.tool_name.as_deref(), Some("Bash"));
+
+            assert_eq!(store.get_bot_seen_message_id("Main").unwrap(), Some(42));
+
+            let followup = store.get_followup("fu-1").unwrap().unwrap();
+            assert_eq!(followup.bot, "Main");
+            assert_eq!(followup.action, "Check CI status");
+            assert_eq!(followup.status, "pending");
+        }
+    }
+
+    #[test]
+    fn test_due_followups_survive_reopen_and_can_be_fired() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let past = (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            store
+                .create_followup(
+                    "fu-due",
+                    "Main",
+                    "Check deploy status",
+                    "2026-05-02T00:00:00Z",
+                    &past,
+                    "pending",
+                )
+                .unwrap();
+        }
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            let due = store.list_due_followups().unwrap();
+            assert_eq!(due.len(), 1);
+            assert_eq!(due[0].id, "fu-due");
+            assert_eq!(due[0].status, "pending");
+
+            assert!(store.set_followup_status("fu-due", "fired").unwrap());
+        }
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            let followup = store.get_followup("fu-due").unwrap().unwrap();
+            assert_eq!(followup.status, "fired");
+            assert!(store.list_due_followups().unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn test_resolve_missing_signals() {
         let store = test_store();
         store

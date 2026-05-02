@@ -163,6 +163,24 @@ describe("Workspace switching", () => {
     });
     Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
   });
+
+  it("passes remote workspace routing through API calls", async () => {
+    (api.getWorkspaces as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { name: "apiari" },
+      { name: "apiari", remote: "staging" },
+    ]);
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("staging")).toBeInTheDocument());
+    await user.click(screen.getByText("staging").closest("button")!);
+
+    await waitFor(() => {
+      expect(api.getBots).toHaveBeenCalledWith("apiari", "staging");
+      expect(api.getRepos).toHaveBeenCalledWith("apiari", "staging");
+      expect(api.getWorkers).toHaveBeenCalledWith("apiari", "staging");
+    });
+  });
 });
 
 describe("Mobile auto-select", () => {
@@ -337,6 +355,44 @@ describe("WebSocket message dedup", () => {
 
     await new Promise((r) => setTimeout(r, 10));
     expect(screen.queryByText("ignore me")).not.toBeInTheDocument();
+    expect(api.getConversations).not.toHaveBeenCalled();
+  });
+
+  it("ignores websocket events for the same workspace when the remote does not match", async () => {
+    (api.getWorkspaces as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { name: "apiari" },
+      { name: "apiari", remote: "staging" },
+    ]);
+    let wsCallback: (event: Record<string, unknown>) => void = () => {};
+    (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (event: Record<string, unknown>) => void) => {
+        wsCallback = cb;
+        return { close: vi.fn() };
+      },
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(screen.getByText("staging")).toBeInTheDocument());
+    await user.click(screen.getByText("staging").closest("button")!);
+    await waitFor(() => expect(screen.getByText("Main")).toBeInTheDocument());
+    await user.click(screen.getByText("Main"));
+    await waitFor(() => expect(api.getConversations).toHaveBeenCalledWith("apiari", "Main", 30, "staging"));
+    (api.getConversations as ReturnType<typeof vi.fn>).mockClear();
+
+    wsCallback({
+      type: "message",
+      id: 50,
+      workspace: "apiari",
+      remote: "prod",
+      bot: "Main",
+      role: "assistant",
+      content: "wrong remote",
+      created_at: new Date().toISOString(),
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(screen.queryByText("wrong remote")).not.toBeInTheDocument();
     expect(api.getConversations).not.toHaveBeenCalled();
   });
 
@@ -594,6 +650,101 @@ describe("Worker lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 5200));
     await waitFor(() => {
       expect(screen.getByText("waiting · common/fix-sdk")).toBeInTheDocument();
+    });
+  }, 10000);
+
+  it("keeps selected worker detail aligned when the worker transitions into PR review", async () => {
+    (api.getWorkers as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([
+        {
+          id: "common-sdk-fix",
+          branch: "common/fix-sdk",
+          status: "running",
+          agent: "codex",
+          pr_url: null,
+          pr_title: null,
+          description: "Repair shared repo detection",
+          elapsed_secs: 125,
+          dispatched_by: "Main",
+        },
+      ])
+      .mockResolvedValue([
+        {
+          id: "common-sdk-fix",
+          branch: "common/fix-sdk",
+          status: "waiting",
+          agent: "codex",
+          pr_url: "https://example.com/pr/1",
+          pr_title: "Fix SDK mapping",
+          description: "Repair shared repo detection",
+          elapsed_secs: 130,
+          dispatched_by: "Main",
+          review_state: "open",
+        },
+      ]);
+    (api.getRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        name: "common",
+        path: "/dev/common",
+        has_swarm: true,
+        is_clean: false,
+        branch: "main",
+        workers: [
+          {
+            id: "common-sdk-fix",
+            branch: "common/fix-sdk",
+            status: "running",
+            agent: "codex",
+            pr_url: null,
+            pr_title: null,
+            description: "Repair shared repo detection",
+            elapsed_secs: 125,
+            dispatched_by: "Main",
+          },
+        ],
+      },
+    ]);
+    (api.getWorkerDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        id: "common-sdk-fix",
+        branch: "common/fix-sdk",
+        status: "running",
+        agent: "codex",
+        pr_url: null,
+        pr_title: null,
+        description: "Repair shared repo detection",
+        elapsed_secs: 125,
+        dispatched_by: "Main",
+        prompt: "Investigate repo slug resolution",
+        output: "Working through daemon/http.rs",
+        conversation: [],
+      })
+      .mockResolvedValue({
+        id: "common-sdk-fix",
+        branch: "common/fix-sdk",
+        status: "waiting",
+        agent: "codex",
+        pr_url: "https://example.com/pr/1",
+        pr_title: "Fix SDK mapping",
+        description: "Repair shared repo detection",
+        elapsed_secs: 130,
+        dispatched_by: "Main",
+        review_state: "open",
+        prompt: "Investigate repo slug resolution",
+        output: "Waiting on review for PR #1",
+        conversation: [],
+      });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("common-sdk-fix")).toBeInTheDocument());
+    await user.click(screen.getByText("common-sdk-fix"));
+    await waitFor(() => expect(screen.getByText("Working through daemon/http.rs")).toBeInTheDocument());
+
+    await new Promise((resolve) => setTimeout(resolve, 5200));
+    await waitFor(() => {
+      expect(screen.getByText("Waiting on review for PR #1")).toBeInTheDocument();
     });
   }, 10000);
 });

@@ -1557,7 +1557,10 @@ mod tests {
 
         assert_turn(&codex.first_turn, &expected.first_turn);
         assert_turn(&codex.second_turn, &expected.second_turn);
-        assert_eq!(codex.session_token.provider, expected.session_token.provider);
+        assert_eq!(
+            codex.session_token.provider,
+            expected.session_token.provider
+        );
         assert_eq!(codex.session_token.token, expected.session_token.token);
 
         assert_turn(&gemini.first_turn, &expected.first_turn);
@@ -1647,19 +1650,49 @@ mod tests {
                 10,
             );
             coord.set_provider(provider.to_string());
-            let bundle = coord.prepare_dispatch(&store).unwrap();
-            let response = coord
-                .dispatch_message("Reply with OK and nothing else.", bundle, |_| {})
+            let first_bundle = coord.prepare_dispatch(&store).unwrap();
+            let first_response = coord
+                .dispatch_message("Reply with OK and nothing else.", first_bundle, |_| {})
                 .await
                 .unwrap();
-            let normalized = response
+            let normalized = first_response
                 .trim()
                 .trim_matches(|c: char| c == '.' || c.is_whitespace());
             assert!(
                 normalized.eq_ignore_ascii_case("ok")
                     || normalized.to_ascii_lowercase().contains("ok"),
-                "provider {provider} returned unexpected smoke response: {response}"
+                "provider {provider} returned unexpected first smoke response: {first_response}"
             );
+            let first_token = coord
+                .session_token()
+                .cloned()
+                .expect("session token after first turn");
+            assert_eq!(first_token.provider, provider);
+
+            let second_bundle = coord.prepare_dispatch(&store).unwrap();
+            let second_response = coord
+                .dispatch_message(
+                    "Respond with exactly one follow-up marker and no prose: [FOLLOWUP: 1h | Check CI status again]",
+                    second_bundle,
+                    |_| {},
+                )
+                .await
+                .unwrap();
+            let actions = crate::buzz::coordinator::actions::parse_actions(&second_response);
+            assert!(
+                actions.iter().any(|action| matches!(
+                    action,
+                    crate::buzz::coordinator::actions::BeeAction::Followup { when, action }
+                        if when == "1h" && action == "Check CI status again"
+                )),
+                "provider {provider} returned unexpected followup smoke response: {second_response}"
+            );
+            let second_token = coord
+                .session_token()
+                .cloned()
+                .expect("session token after second turn");
+            assert_eq!(second_token.provider, provider);
+            assert_eq!(second_token.token, first_token.token);
         }
     }
 }
