@@ -441,3 +441,159 @@ describe("Optimistic chat", () => {
     });
   });
 });
+
+describe("Worker lifecycle", () => {
+  it("loads worker detail when a worker is selected", async () => {
+    (api.getWorkers as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "common-sdk-fix",
+        branch: "common/fix-sdk",
+        status: "running",
+        agent: "codex",
+        pr_url: "https://example.com/pr/1",
+        pr_title: "Fix SDK mapping",
+        description: "Repair shared repo detection",
+        elapsed_secs: 125,
+        dispatched_by: "Main",
+      },
+    ]);
+    (api.getRepos as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        name: "common",
+        path: "/dev/common",
+        has_swarm: true,
+        is_clean: false,
+        branch: "main",
+        workers: [
+          {
+            id: "common-sdk-fix",
+            branch: "common/fix-sdk",
+            status: "running",
+            agent: "codex",
+            pr_url: "https://example.com/pr/1",
+            pr_title: "Fix SDK mapping",
+            description: "Repair shared repo detection",
+            elapsed_secs: 125,
+            dispatched_by: "Main",
+          },
+        ],
+      },
+    ]);
+    (api.getWorkerDetail as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      id: "common-sdk-fix",
+      branch: "common/fix-sdk",
+      status: "running",
+      agent: "codex",
+      pr_url: "https://example.com/pr/1",
+      pr_title: "Fix SDK mapping",
+      description: "Repair shared repo detection",
+      elapsed_secs: 125,
+      dispatched_by: "Main",
+      prompt: "Investigate repo slug resolution",
+      output: "Working through daemon/http.rs",
+      conversation: [
+        { role: "user", content: "Investigate repo slug resolution" },
+        { role: "assistant", content: "Found fallback to workspace root." },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("common-sdk-fix")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("common-sdk-fix"));
+
+    await waitFor(() => {
+      expect(api.getWorkerDetail).toHaveBeenCalledWith("apiari", "common-sdk-fix", undefined);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Working through daemon/http.rs")).toBeInTheDocument();
+    });
+  });
+
+  it("refreshes the selected worker status from the worker poll", async () => {
+    (api.getWorkers as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([
+        {
+          id: "common-sdk-fix",
+          branch: "common/fix-sdk",
+          status: "running",
+          agent: "codex",
+          pr_url: null,
+          pr_title: null,
+          description: "Repair shared repo detection",
+          elapsed_secs: 125,
+          dispatched_by: "Main",
+        },
+      ])
+      .mockResolvedValue([
+        {
+          id: "common-sdk-fix",
+          branch: "common/fix-sdk",
+          status: "waiting",
+          agent: "codex",
+          pr_url: null,
+          pr_title: null,
+          description: "Repair shared repo detection",
+          elapsed_secs: 130,
+          dispatched_by: "Main",
+        },
+      ]);
+    (api.getRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        name: "common",
+        path: "/dev/common",
+        has_swarm: true,
+        is_clean: false,
+        branch: "main",
+        workers: [
+          {
+            id: "common-sdk-fix",
+            branch: "common/fix-sdk",
+            status: "running",
+            agent: "codex",
+            pr_url: null,
+            pr_title: null,
+            description: "Repair shared repo detection",
+            elapsed_secs: 125,
+            dispatched_by: "Main",
+          },
+        ],
+      },
+    ]);
+    (api.getWorkerDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "common-sdk-fix",
+      branch: "common/fix-sdk",
+      status: "running",
+      agent: "codex",
+      pr_url: null,
+      pr_title: null,
+      description: "Repair shared repo detection",
+      elapsed_secs: 125,
+      dispatched_by: "Main",
+      prompt: "Investigate repo slug resolution",
+      output: "Working through daemon/http.rs",
+      conversation: [],
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("common-sdk-fix")).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("common-sdk-fix"));
+
+    await waitFor(() => {
+      expect(screen.getByText("running · common/fix-sdk")).toBeInTheDocument();
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 5200));
+    await waitFor(() => {
+      expect(screen.getByText("waiting · common/fix-sdk")).toBeInTheDocument();
+    });
+  }, 10000);
+});

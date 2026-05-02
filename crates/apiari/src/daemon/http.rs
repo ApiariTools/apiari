@@ -673,6 +673,28 @@ struct ConversationMessageView {
     created_at: String,
 }
 
+#[derive(Debug, Serialize)]
+struct WorkerConversationMessageView {
+    role: String,
+    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timestamp: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkerDetailView {
+    #[serde(flatten)]
+    worker: WorkerView,
+    prompt: Option<String>,
+    output: Option<String>,
+    conversation: Vec<WorkerConversationMessageView>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkerDiffView {
+    diff: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct WorkspaceChatBody {
     message: String,
@@ -990,6 +1012,92 @@ async fn get_workspace_workers(Path(workspace): Path<String>) -> Json<Vec<Worker
             .filter(|worker| worker.workspace == workspace)
             .collect(),
     )
+}
+
+/// GET /api/workspaces/:workspace/workers/:worker_id — detailed worker state.
+async fn get_workspace_worker_detail(
+    Path((workspace, worker_id)): Path<(String, String)>,
+) -> Result<Json<WorkerDetailView>, StatusCode> {
+    let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
+    let worker = find_worker_state(&ws.config, &worker_id).ok_or(StatusCode::NOT_FOUND)?;
+    let worker_view = worker_view_from_state(&workspace, &worker);
+    let conversation = worker_conversation_messages(&ws.config.resolved_swarm_dir(), &worker_id);
+    let output = worker_output_from_conversation(&conversation).or_else(|| worker.summary.clone());
+
+    Ok(Json(WorkerDetailView {
+        worker: worker_view,
+        prompt: (!worker.prompt.trim().is_empty()).then_some(worker.prompt),
+        output,
+        conversation,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkspaceWorkerMessageBody {
+    message: String,
+}
+
+/// POST /api/workspaces/:workspace/workers/:worker_id/send — send a message to a worker.
+async fn send_workspace_worker_message(
+    Path((workspace, worker_id)): Path<(String, String)>,
+    Json(body): Json<WorkspaceWorkerMessageBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let ws = load_workspace_by_name(&workspace).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("workspace '{workspace}' not found"),
+        )
+    })?;
+
+    let output = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(&ws.config.root)
+        .arg("send")
+        .arg(&worker_id)
+        .arg(&body.message)
+        .output()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to run swarm: {e}"),
+            )
+        })?;
+
+    if output.status.success() {
+        Ok(Json(serde_json::json!({ "ok": true })))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("swarm send failed: {stderr}"),
+        ))
+    }
+}
+
+/// GET /api/workspaces/:workspace/workers/:worker_id/diff — current worker worktree diff.
+async fn get_workspace_worker_diff(
+    Path((workspace, worker_id)): Path<(String, String)>,
+) -> Json<WorkerDiffView> {
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(WorkerDiffView { diff: None });
+    };
+
+    let worktree = ws.config.resolved_swarm_dir().join("wt").join(worker_id);
+    let output = std::process::Command::new("git")
+        .args(["diff", "--no-ext-diff", "--unified=3", "HEAD"])
+        .current_dir(worktree)
+        .output();
+
+    let diff = output.ok().and_then(|out| {
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        (!text.trim().is_empty()).then_some(text)
+    });
+
+    Json(WorkerDiffView { diff })
 }
 
 /// GET /api/workspaces/:workspace/bots/:bot/status — current bot status.
@@ -1546,6 +1654,197 @@ struct WorkerView {
     agent: String,
     status: String,
     pr_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pr_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elapsed_secs: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatched_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ci_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_comments: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    open_comments: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_comments: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SwarmStateFile {
+    #[serde(default)]
+    worktrees: Vec<SwarmWorktreeState>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SwarmWorktreeState {
+    id: String,
+    branch: String,
+    #[serde(default)]
+    prompt: String,
+    #[serde(default)]
+    agent_kind: String,
+    #[serde(default)]
+    created_at: Option<chrono::DateTime<chrono::Local>>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    pr: Option<SwarmWorkerPrState>,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    agent_session_status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SwarmWorkerPrState {
+    #[serde(default)]
+    number: Option<u64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+}
+
+fn load_swarm_state(config: &crate::config::WorkspaceConfig) -> Option<SwarmStateFile> {
+    let path = swarm_state_path(config);
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn worker_status_for_state(worker: &SwarmWorktreeState) -> String {
+    match worker.phase.as_deref() {
+        Some("running") if worker.agent_session_status.as_deref() == Some("waiting") => {
+            "waiting".to_string()
+        }
+        Some(phase) => phase.to_string(),
+        None => worker
+            .agent_session_status
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+fn elapsed_secs(created_at: Option<chrono::DateTime<chrono::Local>>) -> Option<i64> {
+    created_at.map(|ts| {
+        chrono::Local::now()
+            .signed_duration_since(ts)
+            .num_seconds()
+            .max(0)
+    })
+}
+
+fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> WorkerView {
+    WorkerView {
+        id: worker.id.clone(),
+        workspace: workspace.to_string(),
+        branch: worker.branch.clone(),
+        agent: if worker.agent_kind.is_empty() {
+            "claude".to_string()
+        } else {
+            worker.agent_kind.clone()
+        },
+        status: worker_status_for_state(worker),
+        pr_url: worker
+            .pr
+            .as_ref()
+            .and_then(|pr| pr.url.clone())
+            .filter(|url| !url.is_empty()),
+        pr_title: worker.pr.as_ref().and_then(|pr| pr.title.clone()),
+        description: worker
+            .summary
+            .clone()
+            .or_else(|| (!worker.prompt.trim().is_empty()).then(|| worker.prompt.clone())),
+        elapsed_secs: elapsed_secs(worker.created_at),
+        dispatched_by: None,
+        review_state: worker.pr.as_ref().and_then(|pr| pr.state.clone()),
+        ci_status: None,
+        total_comments: None,
+        open_comments: None,
+        resolved_comments: None,
+    }
+}
+
+fn load_worker_views(workspace: &str, config: &crate::config::WorkspaceConfig) -> Vec<WorkerView> {
+    load_swarm_state(config)
+        .map(|state| {
+            state
+                .worktrees
+                .iter()
+                .map(|worker| worker_view_from_state(workspace, worker))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn find_worker_state(
+    config: &crate::config::WorkspaceConfig,
+    worker_id: &str,
+) -> Option<SwarmWorktreeState> {
+    load_swarm_state(config)?
+        .worktrees
+        .into_iter()
+        .find(|worker| worker.id == worker_id)
+}
+
+fn worker_conversation_messages(
+    swarm_dir: &std::path::Path,
+    worker_id: &str,
+) -> Vec<WorkerConversationMessageView> {
+    let events_path = swarm_dir
+        .join("agents")
+        .join(worker_id)
+        .join("events.jsonl");
+    apiari_tui::events_parser::parse_events(&events_path)
+        .into_iter()
+        .map(|entry| match entry {
+            apiari_tui::conversation::ConversationEntry::User { text, timestamp } => {
+                WorkerConversationMessageView {
+                    role: "user".to_string(),
+                    content: text,
+                    timestamp: Some(timestamp),
+                }
+            }
+            apiari_tui::conversation::ConversationEntry::AssistantText { text, timestamp }
+            | apiari_tui::conversation::ConversationEntry::Question { text, timestamp } => {
+                WorkerConversationMessageView {
+                    role: "assistant".to_string(),
+                    content: text,
+                    timestamp: Some(timestamp),
+                }
+            }
+            apiari_tui::conversation::ConversationEntry::ToolCall { tool, .. } => {
+                WorkerConversationMessageView {
+                    role: "tool".to_string(),
+                    content: tool,
+                    timestamp: None,
+                }
+            }
+            apiari_tui::conversation::ConversationEntry::Status { text } => {
+                WorkerConversationMessageView {
+                    role: "assistant".to_string(),
+                    content: text,
+                    timestamp: None,
+                }
+            }
+        })
+        .collect()
+}
+
+fn worker_output_from_conversation(
+    conversation: &[WorkerConversationMessageView],
+) -> Option<String> {
+    conversation
+        .iter()
+        .rev()
+        .find(|entry| entry.role == "assistant")
+        .map(|entry| entry.content.clone())
 }
 
 /// GET /api/workers — all swarm workers across all workspaces.
@@ -1554,52 +1853,7 @@ async fn get_workers() -> Json<Vec<WorkerView>> {
     let workspaces = crate::config::discover_workspaces().unwrap_or_default();
 
     for ws in &workspaces {
-        let path = swarm_state_path(&ws.config);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let state: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if let Some(wts) = state.get("worktrees").and_then(|v| v.as_array()) {
-            for wt in wts {
-                let id = wt
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let branch = wt
-                    .get("branch")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let agent = wt
-                    .get("agent_kind")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("claude")
-                    .to_string();
-                let status = wt
-                    .get("agent_session_status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let pr_url = wt
-                    .get("pr")
-                    .and_then(|v| v.get("url"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                workers.push(WorkerView {
-                    id,
-                    workspace: ws.name.clone(),
-                    branch,
-                    agent,
-                    status,
-                    pr_url,
-                });
-            }
-        }
+        workers.extend(load_worker_views(&ws.name, &ws.config));
     }
 
     Json(workers)
@@ -2428,6 +2682,18 @@ pub async fn start_http_server(
             get(get_workspace_workers),
         )
         .route(
+            "/api/workspaces/{workspace}/workers/{worker_id}",
+            get(get_workspace_worker_detail),
+        )
+        .route(
+            "/api/workspaces/{workspace}/workers/{worker_id}/send",
+            post(send_workspace_worker_message),
+        )
+        .route(
+            "/api/workspaces/{workspace}/workers/{worker_id}/diff",
+            get(get_workspace_worker_diff),
+        )
+        .route(
             "/api/workspaces/{workspace}/conversations/{bot}",
             get(get_workspace_conversations),
         )
@@ -2613,6 +2879,7 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
 mod tests {
     use std::{
         fs,
+        io::Write,
         path::{Path, PathBuf},
         process::Command,
         sync::{Mutex, OnceLock},
@@ -2658,6 +2925,13 @@ mod tests {
             name,
             &format!("root = {:?}\n", root.display().to_string()),
         )
+    }
+
+    fn write_swarm_state(path: &Path, body: &serde_json::Value) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, serde_json::to_vec_pretty(body).unwrap()).unwrap();
     }
 
     fn init_git_repo(path: &Path) {
@@ -2864,6 +3138,15 @@ mod tests {
                 agent: "claude".to_string(),
                 status: "running".to_string(),
                 pr_url: None,
+                pr_title: None,
+                description: None,
+                elapsed_secs: None,
+                dispatched_by: None,
+                review_state: None,
+                ci_status: None,
+                total_comments: None,
+                open_comments: None,
+                resolved_comments: None,
             },
             WorkerView {
                 id: "worker-common".to_string(),
@@ -2872,6 +3155,15 @@ mod tests {
                 agent: "gemini".to_string(),
                 status: "running".to_string(),
                 pr_url: None,
+                pr_title: None,
+                description: None,
+                elapsed_secs: None,
+                dispatched_by: None,
+                review_state: None,
+                ci_status: None,
+                total_comments: None,
+                open_comments: None,
+                resolved_comments: None,
             },
         ];
 
@@ -3120,5 +3412,216 @@ model = "sonnet"
         assert_eq!(request.bee.as_deref(), Some("Bee"));
         assert!(request.text.starts_with("hello"));
         assert!(request.text.contains("[attachments: 1 file(s)]"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_workers_uses_resolved_state_path_and_filters_workspace() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+
+        let apiari_root = temp.path().join("apiari");
+        let apiari_state = temp.path().join("runtime/apiari-workers.json");
+        fs::create_dir_all(&apiari_root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+
+[watchers.swarm]
+state_path = "{}"
+"#,
+                apiari_root.display(),
+                apiari_state.display()
+            ),
+        );
+        write_swarm_state(
+            &apiari_state,
+            &serde_json::json!({
+                "worktrees": [
+                    {
+                        "id": "common-sdk-fix",
+                        "branch": "common/fix-sdk",
+                        "agent_kind": "codex",
+                        "phase": "running",
+                        "agent_session_status": "waiting",
+                        "prompt": "Fix shared repo mapping",
+                        "summary": "Repair local slug resolution",
+                        "pr": {
+                            "url": "https://example.com/pr/1",
+                            "title": "Fix SDK mapping",
+                            "state": "OPEN"
+                        }
+                    }
+                ]
+            }),
+        );
+
+        let mgm_root = temp.path().join("mgm");
+        fs::create_dir_all(&mgm_root).unwrap();
+        write_minimal_workspace(temp.path(), "mgm", &mgm_root);
+        write_swarm_state(
+            &mgm_root.join(".swarm/state.json"),
+            &serde_json::json!({
+                "worktrees": [
+                    {
+                        "id": "mgm-worker",
+                        "branch": "mgm/landing-page",
+                        "agent_kind": "claude",
+                        "phase": "running",
+                        "prompt": "Ship landing page"
+                    }
+                ]
+            }),
+        );
+
+        let workers = get_workspace_workers(Path("apiari".to_string())).await.0;
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "common-sdk-fix");
+        assert_eq!(workers[0].workspace, "apiari");
+        assert_eq!(workers[0].agent, "codex");
+        assert_eq!(workers[0].status, "waiting");
+        assert_eq!(workers[0].pr_title.as_deref(), Some("Fix SDK mapping"));
+        assert_eq!(
+            workers[0].description.as_deref(),
+            Some("Repair local slug resolution")
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_worker_detail_returns_prompt_output_and_conversation() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        let swarm_dir = root.join(".swarm");
+        fs::create_dir_all(&swarm_dir).unwrap();
+
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+        write_swarm_state(
+            &swarm_dir.join("state.json"),
+            &serde_json::json!({
+                "worktrees": [
+                    {
+                        "id": "common-sdk-fix",
+                        "branch": "common/fix-sdk",
+                        "agent_kind": "codex",
+                        "phase": "running",
+                        "prompt": "Investigate repo slug resolution",
+                        "summary": "Working through daemon/http.rs",
+                        "pr": {
+                            "url": "https://example.com/pr/1",
+                            "title": "Fix SDK mapping",
+                            "state": "OPEN"
+                        }
+                    }
+                ]
+            }),
+        );
+
+        let agent_dir = swarm_dir.join("agents/common-sdk-fix");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let mut events = fs::File::create(agent_dir.join("events.jsonl")).unwrap();
+        writeln!(
+            events,
+            "{}",
+            serde_json::to_string(&apiari_tui::events_parser::AgentEvent::Start {
+                timestamp: chrono::Utc::now(),
+                prompt: "Investigate repo slug resolution".to_string(),
+                model: Some("gpt-5.3-codex".to_string()),
+            })
+            .unwrap()
+        )
+        .unwrap();
+        writeln!(
+            events,
+            "{}",
+            serde_json::to_string(&apiari_tui::events_parser::AgentEvent::AssistantText {
+                timestamp: chrono::Utc::now(),
+                text: "Found fallback to workspace root.".to_string(),
+            })
+            .unwrap()
+        )
+        .unwrap();
+
+        let detail =
+            get_workspace_worker_detail(Path(("apiari".to_string(), "common-sdk-fix".to_string())))
+                .await
+                .expect("worker detail should resolve")
+                .0;
+
+        assert_eq!(detail.worker.id, "common-sdk-fix");
+        assert_eq!(detail.worker.status, "running");
+        assert_eq!(
+            detail.prompt.as_deref(),
+            Some("Investigate repo slug resolution")
+        );
+        assert_eq!(
+            detail.output.as_deref(),
+            Some("Found fallback to workspace root.")
+        );
+        assert_eq!(detail.conversation.len(), 2);
+        assert_eq!(detail.conversation[0].role, "user");
+        assert_eq!(detail.conversation[1].role, "assistant");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_worker_diff_returns_current_worktree_diff() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        let worktree = root.join(".swarm/wt/common-sdk-fix");
+        fs::create_dir_all(&worktree).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        fs::write(worktree.join("file.txt"), "before\n").unwrap();
+        Command::new("git")
+            .args(["add", "file.txt"])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Apiari Tests",
+                "-c",
+                "user.email=tests@apiari.dev",
+                "commit",
+                "-qm",
+                "initial",
+            ])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        fs::write(worktree.join("file.txt"), "after\n").unwrap();
+
+        let diff =
+            get_workspace_worker_diff(Path(("apiari".to_string(), "common-sdk-fix".to_string())))
+                .await
+                .0;
+
+        let text = diff.diff.expect("diff should be present");
+        assert!(text.contains("diff --git"));
+        assert!(text.contains("-before"));
+        assert!(text.contains("+after"));
     }
 }

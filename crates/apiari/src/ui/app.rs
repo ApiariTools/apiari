@@ -2280,6 +2280,20 @@ impl App {
             self.worker_selection = worker_count - 1;
         }
 
+        match self.view {
+            View::WorkerDetail(_) | View::WorkerChat(_) if worker_count == 0 => {
+                self.view = View::Dashboard;
+                self.focused_panel = Panel::Workers;
+            }
+            View::WorkerDetail(_) => {
+                self.view = View::WorkerDetail(self.worker_selection);
+            }
+            View::WorkerChat(_) => {
+                self.view = View::WorkerChat(self.worker_selection);
+            }
+            _ => {}
+        }
+
         if sig_count == 0 {
             self.signal_selection = 0;
         } else if self.signal_selection >= sig_count {
@@ -4688,6 +4702,121 @@ mod tests {
             &app.workspaces[0].chat_history[0],
             ChatLine::System(s) if s.contains("previous session")
         ));
+    }
+
+    fn test_worker_with(
+        id: &str,
+        phase: &str,
+        session_status: Option<&str>,
+        pr_number: Option<u64>,
+    ) -> WorkerInfo {
+        WorkerInfo {
+            id: id.to_string(),
+            branch: format!("swarm/{id}"),
+            prompt: format!("Task for {id}"),
+            agent_kind: "claude".to_string(),
+            phase: Some(phase.to_string()),
+            agent_session_status: session_status.map(str::to_string),
+            summary: Some(format!("Summary for {id}")),
+            created_at: None,
+            pr: pr_number.map(|number| PrInfo {
+                number,
+                title: format!("PR {number}"),
+                state: "OPEN".to_string(),
+                url: format!("https://example.com/pr/{number}"),
+            }),
+            last_activity: None,
+            conversation: Vec::new(),
+            conv_scroll: ScrollState::new(),
+            activity: Vec::new(),
+            activity_scroll: ScrollState::new(),
+        }
+    }
+
+    #[test]
+    fn test_apply_worker_update_announces_worker_lifecycle_transitions() {
+        let mut app = make_app(&["ws1"], false);
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![test_worker_with("worker-1", "running", None, None)],
+        )]);
+        assert!(app.workspaces[0].chat_history.is_empty());
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![test_worker_with(
+                "worker-1",
+                "running",
+                Some("waiting"),
+                Some(42),
+            )],
+        )]);
+        let rendered = app.workspaces[0]
+            .chat_history
+            .iter()
+            .filter_map(|line| match line {
+                ChatLine::System(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("worker-1 waiting for input"));
+        assert!(rendered.contains("worker-1 opened PR #42: PR 42"));
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![test_worker_with("worker-1", "running", None, Some(42))],
+        )]);
+        let rendered = app.workspaces[0]
+            .chat_history
+            .iter()
+            .filter_map(|line| match line {
+                ChatLine::System(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("worker-1 resumed"));
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![
+                test_worker_with("worker-1", "running", None, Some(42)),
+                test_worker_with("worker-2", "running", None, None),
+            ],
+        )]);
+        let rendered = app.workspaces[0]
+            .chat_history
+            .iter()
+            .filter_map(|line| match line {
+                ChatLine::System(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("worker-2 spawned"));
+    }
+
+    #[test]
+    fn test_apply_worker_update_clamps_worker_detail_when_selected_worker_disappears() {
+        let mut app = make_app(&["ws1"], false);
+        app.workspaces[0].workers = vec![
+            test_worker_with("worker-1", "running", None, None),
+            test_worker_with("worker-2", "running", None, None),
+        ];
+        app.worker_selection = 1;
+        app.view = View::WorkerDetail(1);
+
+        app.apply_worker_update(vec![(
+            "ws1".into(),
+            vec![test_worker_with("worker-1", "running", None, None)],
+        )]);
+
+        assert_eq!(app.worker_selection, 0);
+        assert_eq!(app.view, View::WorkerDetail(0));
+        assert_eq!(app.workspaces[0].workers.len(), 1);
+        assert_eq!(app.workspaces[0].workers[0].id, "worker-1");
     }
 
     #[test]
