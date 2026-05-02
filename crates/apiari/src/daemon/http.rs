@@ -18,6 +18,7 @@ use axum::{
     },
     routing::{get, post},
 };
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tower_http::cors::CorsLayer;
@@ -47,6 +48,8 @@ pub struct HttpState {
     signal_tx: mpsc::UnboundedSender<InjectSignal>,
     /// Channel for chat messages from web UI to daemon coordinator.
     chat_tx: mpsc::UnboundedSender<WebChatRequest>,
+    /// Channel for cancellation requests from the web UI.
+    cancel_tx: mpsc::UnboundedSender<WebCancelRequest>,
 }
 
 /// A WebSocket update message sent to all connected clients.
@@ -109,6 +112,12 @@ pub struct WebChatRequest {
     pub bee: Option<String>,
     pub text: String,
     pub response_tx: mpsc::UnboundedSender<WebChatEvent>,
+}
+
+#[derive(Debug)]
+pub struct WebCancelRequest {
+    pub workspace: String,
+    pub bee: Option<String>,
 }
 
 /// Streaming chat response events.
@@ -896,6 +905,64 @@ fn bot_items_for_workspace(config: &crate::config::WorkspaceConfig) -> Vec<BotLi
         .collect()
 }
 
+fn conversation_scopes_for_bot(
+    workspace: &str,
+    config: &crate::config::WorkspaceConfig,
+    bot: &str,
+) -> Vec<String> {
+    let actual_bot = resolve_bee_name_for_api(config, bot).unwrap_or_else(|| bot.to_string());
+    let mut scopes = vec![format!("{workspace}/{actual_bot}")];
+    if bot == "Main" {
+        scopes.push(format!("{workspace}/Main"));
+        scopes.push(format!("{workspace}/Bee"));
+        scopes.push(workspace.to_string());
+    } else if actual_bot != bot {
+        scopes.push(format!("{workspace}/{bot}"));
+    }
+    scopes
+}
+
+fn latest_message_id_for_scopes(conn: &rusqlite::Connection, scopes: &[String]) -> Option<i64> {
+    scopes
+        .iter()
+        .filter_map(|scope| {
+            conn.query_row(
+                "SELECT MAX(id) FROM conversations WHERE workspace = ?1",
+                params![scope],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+        })
+        .max()
+}
+
+fn unread_assistant_count_for_scopes(
+    conn: &rusqlite::Connection,
+    scopes: &[String],
+    seen_id: i64,
+) -> usize {
+    let mut seen_ids = std::collections::HashSet::new();
+    for scope in scopes {
+        let mut stmt = match conn.prepare(
+            "SELECT id
+             FROM conversations
+             WHERE workspace = ?1 AND role = 'assistant' AND id > ?2",
+        ) {
+            Ok(stmt) => stmt,
+            Err(_) => continue,
+        };
+        let rows = match stmt.query_map(params![scope, seen_id], |row| row.get::<_, i64>(0)) {
+            Ok(rows) => rows,
+            Err(_) => continue,
+        };
+        for id in rows.flatten() {
+            seen_ids.insert(id);
+        }
+    }
+    seen_ids.len()
+}
+
 fn repo_slug_to_local_path(root: &std::path::Path, repo: &str) -> std::path::PathBuf {
     let direct = root.join(repo);
     if direct.exists() {
@@ -1043,7 +1110,6 @@ async fn get_workspace_conversations(
         return Json(vec![]);
     };
 
-    let actual_bot = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
     let store = match crate::buzz::signal::store::SignalStore::open(
         &crate::config::db_path(),
         &workspace,
@@ -1055,14 +1121,7 @@ async fn get_workspace_conversations(
     let mut rows = Vec::new();
     let mut seen_ids = std::collections::HashSet::new();
 
-    let mut scopes = vec![format!("{workspace}/{actual_bot}")];
-    if bot == "Main" {
-        scopes.push(format!("{workspace}/Main"));
-        scopes.push(format!("{workspace}/Bee"));
-        scopes.push(workspace.clone());
-    } else if actual_bot != bot {
-        scopes.push(format!("{workspace}/{bot}"));
-    }
+    let scopes = conversation_scopes_for_bot(&workspace, &ws.config, &bot);
 
     for scope in scopes {
         let scoped = crate::buzz::conversation::ConversationStore::new(store.conn(), &scope);
@@ -1230,22 +1289,79 @@ async fn get_workspace_bot_status(
 
 /// GET /api/workspaces/:workspace/unread — unread message counts by bot.
 async fn get_workspace_unread(
-    Path(_workspace): Path<String>,
+    Path(workspace): Path<String>,
 ) -> Json<serde_json::Map<String, serde_json::Value>> {
-    Json(serde_json::Map::new())
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(serde_json::Map::new());
+    };
+    let store = match crate::buzz::signal::store::SignalStore::open(
+        &crate::config::db_path(),
+        &workspace,
+    ) {
+        Ok(store) => store,
+        Err(_) => return Json(serde_json::Map::new()),
+    };
+
+    let mut unread = serde_json::Map::new();
+    for bot in bot_items_for_workspace(&ws.config) {
+        let seen_id = store
+            .get_bot_seen_message_id(&bot.name)
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        let scopes = conversation_scopes_for_bot(&workspace, &ws.config, &bot.name);
+        let count = unread_assistant_count_for_scopes(store.conn(), &scopes, seen_id);
+        if count > 0 {
+            unread.insert(bot.name, serde_json::json!(count));
+        }
+    }
+
+    Json(unread)
 }
 
 /// POST /api/workspaces/:workspace/seen/:bot — mark a bot as seen.
 async fn mark_workspace_seen(
-    Path((_workspace, _bot)): Path<(String, String)>,
+    Path((workspace, bot)): Path<(String, String)>,
 ) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true }))
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(serde_json::json!({ "ok": false, "error": "workspace not found" }));
+    };
+    let store = match crate::buzz::signal::store::SignalStore::open(
+        &crate::config::db_path(),
+        &workspace,
+    ) {
+        Ok(store) => store,
+        Err(e) => {
+            return Json(serde_json::json!({ "ok": false, "error": e.to_string() }));
+        }
+    };
+    let scopes = conversation_scopes_for_bot(&workspace, &ws.config, &bot);
+    let latest_id = latest_message_id_for_scopes(store.conn(), &scopes).unwrap_or(0);
+    match store.mark_bot_seen(&bot, latest_id) {
+        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
 }
 
 /// POST /api/workspaces/:workspace/bots/:bot/cancel — cancel a running bot.
 async fn cancel_workspace_bot(
-    Path((_workspace, _bot)): Path<(String, String)>,
+    Path((workspace, bot)): Path<(String, String)>,
+    State(state): State<HttpState>,
 ) -> Json<serde_json::Value> {
+    let Some(ws) = load_workspace_by_name(&workspace) else {
+        return Json(serde_json::json!({ "ok": false, "error": "workspace not found" }));
+    };
+    let bee = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot);
+    if state
+        .cancel_tx
+        .send(WebCancelRequest {
+            workspace,
+            bee: Some(bee),
+        })
+        .is_err()
+    {
+        return Json(serde_json::json!({ "ok": false, "error": "cancel channel unavailable" }));
+    }
     Json(serde_json::json!({ "ok": true }))
 }
 
@@ -1304,14 +1420,45 @@ async fn delete_workspace_doc(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn list_workspace_followups(Path(_workspace): Path<String>) -> Json<Vec<FollowupView>> {
-    Json(vec![])
+async fn list_workspace_followups(Path(workspace): Path<String>) -> Json<Vec<FollowupView>> {
+    let store = match crate::buzz::signal::store::SignalStore::open(
+        &crate::config::db_path(),
+        &workspace,
+    ) {
+        Ok(store) => store,
+        Err(_) => return Json(vec![]),
+    };
+    let followups = store
+        .list_followups()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|followup| FollowupView {
+            id: followup.id,
+            workspace: workspace.clone(),
+            bot: followup.bot,
+            action: followup.action,
+            created_at: followup.created_at,
+            fires_at: followup.fires_at,
+            status: followup.status,
+        })
+        .collect();
+    Json(followups)
 }
 
 async fn cancel_workspace_followup(
-    Path((_workspace, _followup_id)): Path<(String, String)>,
+    Path((workspace, followup_id)): Path<(String, String)>,
 ) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true }))
+    let store = match crate::buzz::signal::store::SignalStore::open(
+        &crate::config::db_path(),
+        &workspace,
+    ) {
+        Ok(store) => store,
+        Err(e) => return Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    };
+    match store.cancel_followup(&followup_id) {
+        Ok(changed) => Json(serde_json::json!({ "ok": changed })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+    }
 }
 
 async fn list_workspace_research(Path(_workspace): Path<String>) -> Json<Vec<ResearchTaskView>> {
@@ -2795,10 +2942,12 @@ pub async fn start_http_server(
     broadcast::Sender<WsUpdate>,
     mpsc::UnboundedReceiver<InjectSignal>,
     mpsc::UnboundedReceiver<WebChatRequest>,
+    mpsc::UnboundedReceiver<WebCancelRequest>,
 )> {
     let (updates_tx, _) = broadcast::channel(256);
     let (signal_tx, signal_rx) = mpsc::unbounded_channel();
     let (chat_tx, chat_rx) = mpsc::unbounded_channel();
+    let (cancel_tx, cancel_rx) = mpsc::unbounded_channel();
 
     let state = HttpState {
         graph: Arc::new(RwLock::new(graph)),
@@ -2808,6 +2957,7 @@ pub async fn start_http_server(
         updates_tx: updates_tx.clone(),
         signal_tx,
         chat_tx,
+        cancel_tx,
     };
 
     let app = Router::new()
@@ -2908,7 +3058,7 @@ pub async fn start_http_server(
         }
     });
 
-    Ok((updates_tx, signal_rx, chat_rx))
+    Ok((updates_tx, signal_rx, chat_rx, cancel_rx))
 }
 
 /// Run a standalone dev server — no daemon needed.
@@ -2954,7 +3104,7 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
     eprintln!("Press Ctrl+C to stop.");
     eprintln!();
 
-    let (updates_tx, mut signal_rx, _chat_rx) = start_http_server(
+    let (updates_tx, mut signal_rx, _chat_rx, _cancel_rx) = start_http_server(
         graph,
         Some(yaml_path),
         db_path.clone(),
@@ -3539,6 +3689,7 @@ model = "sonnet"
         let (updates_tx, _) = broadcast::channel(4);
         let (signal_tx, _signal_rx) = mpsc::unbounded_channel();
         let (chat_tx, mut chat_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, _cancel_rx) = mpsc::unbounded_channel();
         let state = HttpState {
             graph: Arc::new(RwLock::new(
                 crate::buzz::orchestrator::graph::builtin::builtin_workflow(),
@@ -3549,6 +3700,7 @@ model = "sonnet"
             updates_tx,
             signal_tx,
             chat_tx,
+            cancel_tx,
         };
 
         let response = send_workspace_chat(
@@ -3863,9 +4015,99 @@ state_path = "{}"
     }
 
     #[tokio::test]
-    async fn followups_endpoint_returns_empty_list_and_cancel_ack() {
+    #[allow(clippy::await_holding_lock)]
+    async fn unread_and_seen_endpoints_track_assistant_messages_per_bot() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+
+[[bees]]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+
+[[bees]]
+name = "Codex"
+provider = "codex"
+model = "gpt-5.3-codex"
+"#,
+                root.display()
+            ),
+        );
+
+        let store =
+            crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), "apiari")
+                .unwrap();
+        let main_scope =
+            crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
+        main_scope
+            .save_message("assistant", "main reply", Some("system"), None, None)
+            .unwrap();
+        let codex_scope =
+            crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Codex");
+        codex_scope
+            .save_message("assistant", "codex reply", Some("system"), None, None)
+            .unwrap();
+
+        let unread_before = get_workspace_unread(Path("apiari".to_string())).await.0;
+        assert_eq!(unread_before.get("Main").and_then(|v| v.as_u64()), Some(1));
+        assert_eq!(unread_before.get("Codex").and_then(|v| v.as_u64()), Some(1));
+
+        let seen = mark_workspace_seen(Path(("apiari".to_string(), "Main".to_string())))
+            .await
+            .0;
+        assert_eq!(seen.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+        let unread_after = get_workspace_unread(Path("apiari".to_string())).await.0;
+        assert!(unread_after.get("Main").is_none());
+        assert_eq!(unread_after.get("Codex").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn followups_endpoint_lists_and_cancels_persisted_followups() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        let store =
+            crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), "apiari")
+                .unwrap();
+        store
+            .create_followup(
+                "f1",
+                "Main",
+                "Check CI status",
+                "2026-05-02T00:00:00Z",
+                "2026-05-02T01:00:00Z",
+                "pending",
+            )
+            .unwrap();
+
         let followups = list_workspace_followups(Path("apiari".to_string())).await.0;
-        assert!(followups.is_empty());
+        assert_eq!(followups.len(), 1);
+        assert_eq!(followups[0].id, "f1");
+        assert_eq!(followups[0].status, "pending");
 
         let cancelled = cancel_workspace_followup(Path(("apiari".to_string(), "f1".to_string())))
             .await
@@ -3874,6 +4116,66 @@ state_path = "{}"
             cancelled.get("ok").and_then(|value| value.as_bool()),
             Some(true)
         );
+
+        let followups = list_workspace_followups(Path("apiari".to_string())).await.0;
+        assert_eq!(followups[0].status, "cancelled");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn cancel_bot_endpoint_enqueues_cancel_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let _env_guard = env_lock();
+        let _home_guard = install_temp_home(home);
+        let root = home.join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            home,
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+"#,
+                root.display()
+            ),
+        );
+
+        let (updates_tx, _) = broadcast::channel(4);
+        let (signal_tx, _signal_rx) = mpsc::unbounded_channel();
+        let (chat_tx, _chat_rx) = mpsc::unbounded_channel();
+        let (cancel_tx, mut cancel_rx) = mpsc::unbounded_channel();
+        let state = HttpState {
+            graph: Arc::new(RwLock::new(
+                crate::buzz::orchestrator::graph::builtin::builtin_workflow(),
+            )),
+            yaml_path: Arc::new(None),
+            db_path: Arc::new(crate::config::db_path()),
+            workspace: Arc::new("apiari".to_string()),
+            updates_tx,
+            signal_tx,
+            chat_tx,
+            cancel_tx,
+        };
+
+        let response = cancel_workspace_bot(
+            Path(("apiari".to_string(), "Main".to_string())),
+            State(state),
+        )
+        .await
+        .0;
+        assert_eq!(
+            response.get("ok").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let request = cancel_rx.recv().await.expect("cancel should be queued");
+        assert_eq!(request.workspace, "apiari");
+        assert_eq!(request.bee.as_deref(), Some("Bee"));
     }
 
     #[tokio::test]

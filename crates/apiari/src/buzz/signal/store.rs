@@ -19,6 +19,16 @@ pub struct BotStatusRecord {
     pub tool_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct FollowupRecord {
+    pub id: String,
+    pub bot: String,
+    pub action: String,
+    pub created_at: String,
+    pub fires_at: String,
+    pub status: String,
+}
+
 /// SQLite signal store, scoped to a workspace.
 pub struct SignalStore {
     conn: Connection,
@@ -121,6 +131,24 @@ impl SignalStore {
                 tool_name TEXT,
                 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
                 PRIMARY KEY(workspace, bot)
+            );
+
+            CREATE TABLE IF NOT EXISTS bot_seen (
+                workspace TEXT NOT NULL,
+                bot TEXT NOT NULL,
+                last_seen_message_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                PRIMARY KEY(workspace, bot)
+            );
+
+            CREATE TABLE IF NOT EXISTS followups (
+                id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                bot TEXT NOT NULL,
+                action TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                fires_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
             );
             ",
         )?;
@@ -338,6 +366,85 @@ impl SignalStore {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    pub fn mark_bot_seen(&self, bot: &str, last_seen_message_id: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO bot_seen (workspace, bot, last_seen_message_id, updated_at)
+             VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+             ON CONFLICT(workspace, bot) DO UPDATE SET
+               last_seen_message_id = ?3,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+            params![self.workspace, bot, last_seen_message_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_bot_seen_message_id(&self, bot: &str) -> Result<Option<i64>> {
+        let result = self.conn.query_row(
+            "SELECT last_seen_message_id
+             FROM bot_seen
+             WHERE workspace = ?1 AND bot = ?2",
+            params![self.workspace, bot],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn create_followup(
+        &self,
+        id: &str,
+        bot: &str,
+        action: &str,
+        created_at: &str,
+        fires_at: &str,
+        status: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO followups (id, workspace, bot, action, created_at, fires_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, self.workspace, bot, action, created_at, fires_at, status],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_followups(&self) -> Result<Vec<FollowupRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, bot, action, created_at, fires_at, status
+             FROM followups
+             WHERE workspace = ?1
+             ORDER BY fires_at ASC, created_at ASC",
+        )?;
+
+        let records = stmt
+            .query_map(params![self.workspace], |row| {
+                Ok(FollowupRecord {
+                    id: row.get(0)?,
+                    bot: row.get(1)?,
+                    action: row.get(2)?,
+                    created_at: row.get(3)?,
+                    fires_at: row.get(4)?,
+                    status: row.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    pub fn cancel_followup(&self, id: &str) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE followups
+             SET status = 'cancelled'
+             WHERE workspace = ?1 AND id = ?2 AND status != 'cancelled'",
+            params![self.workspace, id],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Resolve a signal by ID.

@@ -64,6 +64,7 @@ struct BeeSlot {
     name: String,
     coord_tx: mpsc::UnboundedSender<CoordinatorJob>,
     coord_handle: Option<tokio::task::JoinHandle<()>>,
+    cancel_token: Arc<std::sync::Mutex<Option<CancellationToken>>>,
     max_session_turns: u32,
     coord_respawn_count: u32,
     coord_last_respawn: Option<std::time::Instant>,
@@ -243,6 +244,7 @@ async fn run_coordinator_task(
     mut coordinator: Coordinator,
     store: SignalStore,
     mut job_rx: mpsc::UnboundedReceiver<CoordinatorJob>,
+    cancel_token: Arc<std::sync::Mutex<Option<CancellationToken>>>,
     max_session_turns: u32,
     authority: crate::config::WorkspaceAuthority,
 ) {
@@ -535,9 +537,11 @@ async fn run_coordinator_task(
                 let status_ws_name = ws_name.clone();
                 let status_bee_name = bee_name.clone();
                 let mut streaming_content = String::new();
+                let turn_cancel = CancellationToken::new();
+                *cancel_token.lock().unwrap() = Some(turn_cancel.clone());
 
-                let result = coordinator
-                    .dispatch_message(&dispatch_text, bundle, |event| match event {
+                let result = tokio::select! {
+                    res = coordinator.dispatch_message(&dispatch_text, bundle, |event| match event {
                         CoordinatorEvent::Token(t) => {
                             streaming_content.push_str(&t);
                             if let Ok(status_store) =
@@ -613,8 +617,10 @@ async fn run_coordinator_task(
                                 file_list.join(", ")
                             );
                         }
-                    })
-                    .await;
+                    }) => res,
+                    _ = turn_cancel.cancelled() => Err(color_eyre::eyre::eyre!("cancelled")),
+                };
+                *cancel_token.lock().unwrap() = None;
 
                 match result {
                     Ok(response) => {
@@ -702,6 +708,7 @@ async fn run_coordinator_task(
                         }
                     }
                     Err(e) => {
+                        let was_cancelled = e.to_string() == "cancelled";
                         let err_text = e.to_string();
                         // Restore pending context so it's available on the
                         // next attempt — the coordinator never ingested it.
@@ -717,7 +724,9 @@ async fn run_coordinator_task(
                             turn_count = 0;
                         }
                         let err_created_at = chrono::Utc::now().to_rfc3339();
-                        let err_message_id = {
+                        let err_message_id = if was_cancelled {
+                            None
+                        } else {
                             let conv = ConversationStore::new(store.conn(), &conv_scope);
                             match conv.save_message(
                                 "assistant",
@@ -748,9 +757,15 @@ async fn run_coordinator_task(
                             );
                         }
                         send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "idle", "", None);
-                        let _ = responder.send(socket::DaemonResponse::Error {
-                            workspace: ws_name.clone(),
-                            text: err_text,
+                        let _ = responder.send(if was_cancelled {
+                            socket::DaemonResponse::Done {
+                                workspace: ws_name.clone(),
+                            }
+                        } else {
+                            socket::DaemonResponse::Error {
+                                workspace: ws_name.clone(),
+                                text: err_text,
+                            }
                         });
                     }
                 }
@@ -1670,10 +1685,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 Err(e) => return ExitReason::Error(e),
             };
             let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
+            let cancel_token = Arc::new(std::sync::Mutex::new(None));
             let coord_handle = tokio::spawn(run_coordinator_task(
                 coordinator,
                 coord_store,
                 coord_rx,
+                cancel_token.clone(),
                 bee.max_session_turns,
                 ws.config.authority,
             ));
@@ -1685,6 +1702,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 name: bee.name.clone(),
                 coord_tx,
                 coord_handle: Some(coord_handle),
+                cancel_token,
                 max_session_turns: bee.max_session_turns,
                 coord_respawn_count: 0,
                 coord_last_respawn: None,
@@ -1803,6 +1821,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
     // The web UI shows the workflow graph and live task state.
     let mut web_signal_rx: Option<mpsc::UnboundedReceiver<http::InjectSignal>> = None;
     let mut web_chat_rx: Option<mpsc::UnboundedReceiver<http::WebChatRequest>> = None;
+    let mut web_cancel_rx: Option<mpsc::UnboundedReceiver<http::WebCancelRequest>> = None;
     if let Some(first_slot) = slots.first() {
         let graph = first_slot.orchestrator.workflow_graph().clone();
         let yaml_path = first_slot.config.root.join(".apiari/workflow.yaml");
@@ -1815,7 +1834,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
         )
         .await
         {
-            Ok((updates_tx, signal_rx, chat_rx)) => {
+            Ok((updates_tx, signal_rx, chat_rx, cancel_rx)) => {
                 // Store the broadcast sender on the slot so signal processing can push updates
                 // (we'll set it on the mutable slot below)
                 if let Some(slot) = slots.first_mut() {
@@ -1823,6 +1842,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 }
                 web_signal_rx = Some(signal_rx);
                 web_chat_rx = Some(chat_rx);
+                web_cancel_rx = Some(cancel_rx);
                 info!("[daemon] web UI server started on http://127.0.0.1:{web_port}");
             }
             Err(e) => {
@@ -1983,6 +2003,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             }
         };
 
+        let web_cancel_recv = async {
+            match web_cancel_rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutting down");
@@ -2105,6 +2132,22 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 }
             }
 
+            // ── Web UI cancel ──
+            Some(cancel_req) = web_cancel_recv => {
+                let ws_name = &cancel_req.workspace;
+                if let Some(&slot_idx) = name_map.get(ws_name) {
+                    let bee_idx = cancel_req.bee.as_deref()
+                        .and_then(|name| slots[slot_idx].bee_map.get(name).copied())
+                        .unwrap_or(0);
+                    let slot = &slots[slot_idx];
+                    if let Some(bee) = slot.bees.get(bee_idx)
+                        && let Some(token) = bee.cancel_token.lock().unwrap().as_ref()
+                    {
+                        token.cancel();
+                    }
+                }
+            }
+
             _ = poll_timer.tick() => {
                 // ── Coordinator health check (before watchers so hook dispatches don't get dropped) ──
                 for slot in &mut slots {
@@ -2176,11 +2219,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                         restore_coordinator_session(&mut coordinator, &coord_store, &slot.name, &bee.name);
 
                         let (new_tx, new_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
+                        let cancel_token = Arc::new(std::sync::Mutex::new(None));
                         bee.coord_tx = new_tx;
+                        bee.cancel_token = cancel_token.clone();
                         bee.coord_handle = Some(tokio::spawn(run_coordinator_task(
                             coordinator,
                             coord_store,
                             new_rx,
+                            cancel_token,
                             bee.max_session_turns,
                             slot.config.authority,
                         )));
@@ -5091,11 +5137,13 @@ mod tests {
         coordinator.set_working_dir(temp.path().to_path_buf());
 
         let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let cancel_token = std::sync::Arc::new(std::sync::Mutex::new(None));
         let task = tokio::spawn(async move {
             super::run_coordinator_task(
                 coordinator,
                 store,
                 job_rx,
+                cancel_token,
                 0,
                 crate::config::WorkspaceAuthority::default(),
             )
@@ -5207,11 +5255,13 @@ mod tests {
         coordinator.set_working_dir(temp.path().to_path_buf());
 
         let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let cancel_token = std::sync::Arc::new(std::sync::Mutex::new(None));
         let task = tokio::spawn(async move {
             super::run_coordinator_task(
                 coordinator,
                 store,
                 job_rx,
+                cancel_token,
                 0,
                 crate::config::WorkspaceAuthority::default(),
             )
