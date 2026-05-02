@@ -2611,9 +2611,54 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, process::Command};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+        sync::{Mutex, OnceLock},
+    };
 
     use super::*;
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct HomeGuard {
+        previous_home: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for HomeGuard {
+        fn drop(&mut self) {
+            match self.previous_home.take() {
+                Some(home) => unsafe { std::env::set_var("HOME", home) },
+                None => unsafe { std::env::remove_var("HOME") },
+            }
+        }
+    }
+
+    fn install_temp_home(home: &Path) -> HomeGuard {
+        let previous_home = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", home) };
+        HomeGuard { previous_home }
+    }
+
+    fn write_workspace_file(home: &Path, name: &str, body: &str) -> PathBuf {
+        let workspaces_dir = home.join(".config/hive/workspaces");
+        fs::create_dir_all(&workspaces_dir).unwrap();
+        let path = workspaces_dir.join(format!("{name}.toml"));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn write_minimal_workspace(home: &Path, name: &str, root: &Path) -> PathBuf {
+        write_workspace_file(
+            home,
+            name,
+            &format!("root = {:?}\n", root.display().to_string()),
+        )
+    }
 
     fn init_git_repo(path: &Path) {
         fs::create_dir_all(path).unwrap();
@@ -2725,7 +2770,10 @@ mod tests {
             },
         ]);
 
-        assert_eq!(resolve_bee_name_for_api(&config, "Main").as_deref(), Some("Bee"));
+        assert_eq!(
+            resolve_bee_name_for_api(&config, "Main").as_deref(),
+            Some("Bee")
+        );
         assert_eq!(
             resolve_bee_name_for_api(&config, "Codex").as_deref(),
             Some("Codex")
@@ -2861,5 +2909,216 @@ mod tests {
         });
 
         assert_eq!(swarm_state_path(&config), explicit);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn list_workspaces_reads_workspace_contract_from_discovered_configs() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+
+        write_minimal_workspace(temp.path(), "apiari", &temp.path().join("apiari"));
+        write_minimal_workspace(temp.path(), "mgm", &temp.path().join("mgm"));
+
+        let workspaces = list_workspaces().await.0;
+        let names: Vec<_> = workspaces.into_iter().map(|ws| ws.name).collect();
+        assert_eq!(names, vec!["apiari", "mgm"]);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn list_workspace_bots_exposes_main_for_default_bee() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+
+[[bees]]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+
+[[bees]]
+name = "Codex"
+provider = "codex"
+model = "gpt-5.3-codex"
+"#,
+                temp.path().join("apiari").display()
+            ),
+        );
+
+        let bots = list_workspace_bots(Path("apiari".to_string())).await.0;
+        assert_eq!(bots.len(), 2);
+        assert_eq!(bots[0].name, "Main");
+        assert_eq!(bots[0].provider.as_deref(), Some("claude"));
+        assert_eq!(bots[1].name, "Codex");
+        assert_eq!(bots[1].provider.as_deref(), Some("codex"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_conversations_merges_main_legacy_scopes() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+"#,
+                root.display()
+            ),
+        );
+
+        let store =
+            crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), "apiari")
+                .unwrap();
+        let bee_scope =
+            crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
+        bee_scope
+            .save_message("assistant", "from bee scope", Some("system"), None, None)
+            .unwrap();
+        let root_scope = crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari");
+        root_scope
+            .save_message(
+                "assistant",
+                "from workspace scope",
+                Some("system"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let messages = get_workspace_conversations(
+            Path(("apiari".to_string(), "Main".to_string())),
+            axum::extract::Query(std::collections::HashMap::new()),
+        )
+        .await
+        .0;
+
+        let contents: Vec<_> = messages.into_iter().map(|msg| msg.content).collect();
+        assert_eq!(contents, vec!["from bee scope", "from workspace scope"]);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_bot_status_uses_resolved_main_bee_name() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+"#,
+                root.display()
+            ),
+        );
+
+        let store =
+            crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), "apiari")
+                .unwrap();
+        store
+            .set_bot_status("Bee", "streaming", "working", Some("Bash"))
+            .unwrap();
+
+        let status = get_workspace_bot_status(Path(("apiari".to_string(), "Main".to_string())))
+            .await
+            .0;
+        assert_eq!(status.status, "streaming");
+        assert_eq!(status.streaming_content, "working");
+        assert_eq!(status.tool_name.as_deref(), Some("Bash"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_workspace_chat_enqueues_request_for_resolved_main_bee() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+"#,
+                root.display()
+            ),
+        );
+
+        let (updates_tx, _) = broadcast::channel(4);
+        let (signal_tx, _signal_rx) = mpsc::unbounded_channel();
+        let (chat_tx, mut chat_rx) = mpsc::unbounded_channel();
+        let state = HttpState {
+            graph: Arc::new(RwLock::new(
+                crate::buzz::orchestrator::graph::builtin::builtin_workflow(),
+            )),
+            yaml_path: Arc::new(None),
+            db_path: Arc::new(crate::config::db_path()),
+            workspace: Arc::new("apiari".to_string()),
+            updates_tx,
+            signal_tx,
+            chat_tx,
+        };
+
+        let response = send_workspace_chat(
+            Path(("apiari".to_string(), "Main".to_string())),
+            State(state),
+            Json(WorkspaceChatBody {
+                message: "hello".to_string(),
+                attachments: Some(vec![serde_json::json!({"name": "spec.txt"})]),
+            }),
+        )
+        .await
+        .0;
+
+        assert_eq!(response.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+        let request = chat_rx.recv().await.expect("chat request should be queued");
+        assert_eq!(request.workspace, "apiari");
+        assert_eq!(request.bee.as_deref(), Some("Bee"));
+        assert!(request.text.starts_with("hello"));
+        assert!(request.text.contains("[attachments: 1 file(s)]"));
     }
 }

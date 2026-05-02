@@ -14,8 +14,7 @@ fn hive_bin() -> std::path::PathBuf {
     }
 
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .join("../../target/debug/apiari-hive")
+    manifest_dir.join("../../target/debug/apiari-hive")
 }
 
 #[test]

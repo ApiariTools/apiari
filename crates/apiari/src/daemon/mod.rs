@@ -5195,7 +5195,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let _path_guard = install_fake_gemini(
             temp.path(),
-            &[r#"{"type":"error","status":"UNAUTHENTICATED","message":"login required","fatal":true}"#],
+            &[
+                r#"{"type":"error","status":"UNAUTHENTICATED","message":"login required","fatal":true}"#,
+            ],
         );
 
         let db_path = temp.path().join("signals.db");
