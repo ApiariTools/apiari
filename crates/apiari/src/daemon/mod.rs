@@ -452,9 +452,9 @@ async fn run_coordinator_task(
                 };
                 {
                     if broadcast_user_activity {
-                    if let Some(ref server) = socket_server {
-                        server.broadcast_activity("tui", &ws_name, "user_message", &text);
-                    }
+                        if let Some(ref server) = socket_server {
+                            server.broadcast_activity("tui", &ws_name, "user_message", &text);
+                        }
                         if let Some(id) = user_message_id {
                             send_web_message_update(
                                 &web_updates_tx,
@@ -480,11 +480,18 @@ async fn run_coordinator_task(
                         let err_created_at = chrono::Utc::now().to_rfc3339();
                         let err_message_id = {
                             let conv = ConversationStore::new(store.conn(), &conv_scope);
-                            match conv.save_message("assistant", &err_text, Some("system"), None, None)
-                            {
+                            match conv.save_message(
+                                "assistant",
+                                &err_text,
+                                Some("system"),
+                                None,
+                                None,
+                            ) {
                                 Ok(id) => Some(id),
                                 Err(save_err) => {
-                                    warn!("[{ws_name}] failed to save prepare-dispatch error: {save_err}");
+                                    warn!(
+                                        "[{ws_name}] failed to save prepare-dispatch error: {save_err}"
+                                    );
                                     None
                                 }
                             }
@@ -533,15 +540,16 @@ async fn run_coordinator_task(
                     .dispatch_message(&dispatch_text, bundle, |event| match event {
                         CoordinatorEvent::Token(t) => {
                             streaming_content.push_str(&t);
-                            if let Ok(status_store) = SignalStore::open(&status_db_path, &status_ws_name) {
-                                if let Err(e) = status_store.set_bot_status(
+                            if let Ok(status_store) =
+                                SignalStore::open(&status_db_path, &status_ws_name)
+                                && let Err(e) = status_store.set_bot_status(
                                     &status_bee_name,
                                     "streaming",
                                     &streaming_content,
                                     None,
-                                ) {
-                                    warn!("[{name_for_cb}] failed to update streaming status: {e}");
-                                }
+                                )
+                            {
+                                warn!("[{name_for_cb}] failed to update streaming status: {e}");
                             }
                             send_web_bot_status(
                                 &web_updates_tx,
@@ -572,15 +580,16 @@ async fn run_coordinator_task(
                             command,
                             matched_pattern,
                         } => {
-                            if let Ok(status_store) = SignalStore::open(&status_db_path, &status_ws_name) {
-                                if let Err(e) = status_store.set_bot_status(
+                            if let Ok(status_store) =
+                                SignalStore::open(&status_db_path, &status_ws_name)
+                                && let Err(e) = status_store.set_bot_status(
                                     &status_bee_name,
                                     "streaming",
                                     &streaming_content,
                                     Some("Bash"),
-                                ) {
-                                    warn!("[{name_for_cb}] failed to update tool status: {e}");
-                                }
+                                )
+                            {
+                                warn!("[{name_for_cb}] failed to update tool status: {e}");
                             }
                             send_web_bot_status(
                                 &web_updates_tx,
@@ -710,8 +719,13 @@ async fn run_coordinator_task(
                         let err_created_at = chrono::Utc::now().to_rfc3339();
                         let err_message_id = {
                             let conv = ConversationStore::new(store.conn(), &conv_scope);
-                            match conv.save_message("assistant", &err_text, Some("system"), None, None)
-                            {
+                            match conv.save_message(
+                                "assistant",
+                                &err_text,
+                                Some("system"),
+                                None,
+                                None,
+                            ) {
                                 Ok(id) => Some(id),
                                 Err(save_err) => {
                                     warn!("[{ws_name}] failed to save assistant error: {save_err}");
@@ -1479,7 +1493,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 "swarm",
             );
             registry.add_with_interval_and_schedule(
-                Box::new(SwarmWatcher::new(ws.config.root.clone())),
+                Box::new(SwarmWatcher::new(
+                    ws.config.root.clone(),
+                    ws.config.resolved_swarm_state_path(),
+                )),
                 swarm_config.interval_secs,
                 swarm_sched,
             );
@@ -1848,6 +1865,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
         {
             let channel = channel.clone();
             let ws_name = slot.name.clone();
+            let ws_config_path = crate::config::workspaces_dir().join(format!("{ws_name}.toml"));
             tokio::spawn(async move {
                 match channel.validate().await {
                     Ok(username) => {
@@ -1856,7 +1874,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                     Err(description) => {
                         warn!(
                             "[{ws_name}] Telegram bot token appears invalid (getMe failed: {description}). \
-                             Notifications will not be delivered. Check your bot_token in ~/.config/apiari/workspaces/{ws_name}.toml"
+                             Notifications will not be delivered. Check your bot_token in {}",
+                            ws_config_path.display()
                         );
                     }
                 }
@@ -2246,8 +2265,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                             let params = morning_brief::BriefParams {
                                 model: slot.config.resolved_bees()[0].model.clone(),
                                 signals: slot.store.get_open_signals().unwrap_or_default(),
-                                swarm_state_path: slot.config.watchers.swarm.as_ref()
-                                    .map(|s| s.state_path.clone()),
+                                swarm_state_path: Some(slot.config.resolved_swarm_state_path()),
                                 workspace: slot.name.clone(),
                                 channel: channel.clone(),
                                 chat_id: tg.chat_id,
@@ -2739,7 +2757,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                         && let Ok(Some(task)) = task_store.find_task_by_reviewer_worker(&slot.name, &worker_id)
                                                 {
                                                     // Read verdict from swarm state file while worker is still present
-                                                    let state_path = slot.config.root.join(".swarm").join("state.json");
+                                                    let state_path =
+                                                        slot.config.resolved_swarm_state_path();
                                                     if let Ok(raw) = std::fs::read_to_string(&state_path)
                                                         && let Ok(state_json) = serde_json::from_str::<serde_json::Value>(&raw)
                                                     {
@@ -3470,8 +3489,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                         let params = morning_brief::BriefParams {
                                             model: slot.config.resolved_bees()[0].model.clone(),
                                             signals: slot.store.get_open_signals().unwrap_or_default(),
-                                            swarm_state_path: slot.config.watchers.swarm.as_ref()
-                                                .map(|s| s.state_path.clone()),
+                                            swarm_state_path: Some(
+                                                slot.config.resolved_swarm_state_path(),
+                                            ),
                                             workspace: slot.name.clone(),
                                             channel: channel.clone(),
                                             chat_id,
@@ -3620,12 +3640,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
 
                         let ws_name = slot.name.clone();
                         let bee_name = bee.name.clone();
-                        let swarm_state_path = slot
-                            .config
-                            .watchers
-                            .swarm
-                            .as_ref()
-                            .map(|s| s.state_path.clone());
+                        let swarm_state_path = Some(slot.config.resolved_swarm_state_path());
                         let repos = slot.config.repos.clone();
                         let server = socket_server.clone();
                         let web_tx = slot.web_updates_tx.clone();
@@ -4230,12 +4245,7 @@ async fn handle_tui_command(
                     let params = morning_brief::BriefParams {
                         model: slot.config.resolved_bees()[0].model.clone(),
                         signals: slot.store.get_open_signals().unwrap_or_default(),
-                        swarm_state_path: slot
-                            .config
-                            .watchers
-                            .swarm
-                            .as_ref()
-                            .map(|s| s.state_path.clone()),
+                        swarm_state_path: Some(slot.config.resolved_swarm_state_path()),
                         workspace: slot.name.clone(),
                         channel: channel.clone(),
                         chat_id: tg.chat_id,
@@ -4476,8 +4486,8 @@ async fn build_full_status(slot: &WorkspaceSlot) -> String {
     let mut summary = format_signal_summary(&signals);
 
     // Worker states from swarm state file
-    if let Some(ref swarm_cfg) = slot.config.watchers.swarm
-        && let Ok(contents) = tokio::fs::read_to_string(&swarm_cfg.state_path).await
+    let swarm_state_path = slot.config.resolved_swarm_state_path();
+    if let Ok(contents) = tokio::fs::read_to_string(&swarm_state_path).await
         && let Ok(state) = serde_json::from_str::<serde_json::Value>(&contents)
         && let Some(worktrees) = state.get("worktrees").and_then(|v| v.as_array())
         && !worktrees.is_empty()
@@ -4897,8 +4907,67 @@ fn execute_workflow_action(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::Path,
+        sync::{Mutex, OnceLock},
+    };
+
     use crate::buzz::task::{Task, TaskStage, store::TaskStore};
+    use crate::{
+        buzz::{conversation::ConversationStore, signal::store::SignalStore},
+        daemon::{http, socket},
+    };
     use chrono::Utc;
+    use tokio::sync::{broadcast, mpsc};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct PathGuard {
+        old_path: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            match self.old_path.take() {
+                Some(path) => unsafe { std::env::set_var("PATH", path) },
+                None => unsafe { std::env::remove_var("PATH") },
+            }
+        }
+    }
+
+    fn install_fake_gemini(dir: &Path, stdout_lines: &[&str]) -> PathGuard {
+        let bin_dir = dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("gemini");
+        let body = format!(
+            "#!/bin/sh\n{}\n",
+            stdout_lines
+                .iter()
+                .map(|line| format!("printf '%s\\n' '{}'", line.replace('\'', "'\"'\"'")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![bin_dir];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        let joined = std::env::join_paths(paths).unwrap();
+        unsafe { std::env::set_var("PATH", joined) };
+
+        PathGuard { old_path }
+    }
 
     fn make_task(workspace: &str, worker_id: &str, repo: &str, pr_number: i64) -> Task {
         Task {
@@ -4997,6 +5066,126 @@ mod tests {
         assert!(!super::should_auto_close_pr_worker(&make(
             "claude-tui",
             WorkerPhase::Running
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_web_chat_flow_persists_messages_and_returns_bot_to_idle() {
+        let temp = tempfile::tempdir().unwrap();
+        let _path_guard = {
+            let _env_guard = env_lock();
+            install_fake_gemini(
+                temp.path(),
+                &[
+                    r#"{"type":"init","session_id":"gemini-session-123"}"#,
+                    r#"{"type":"message","role":"assistant","content":"Hello","delta":true}"#,
+                    r#"{"type":"message","role":"assistant","content":" world","delta":true}"#,
+                    r#"{"type":"result","status":"success","stats":{"input_tokens":5,"output_tokens":2,"cached":0}}"#,
+                ],
+            )
+        };
+
+        let db_path = temp.path().join("signals.db");
+        let store = SignalStore::open(&db_path, "ws").unwrap();
+        let mut coordinator = crate::buzz::coordinator::Coordinator::new("gemini-2.5-flash", 20);
+        coordinator.set_provider("gemini".to_string());
+        coordinator.set_working_dir(temp.path().to_path_buf());
+
+        let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            super::run_coordinator_task(
+                coordinator,
+                store,
+                job_rx,
+                0,
+                crate::config::WorkspaceAuthority::default(),
+            )
+            .await;
+        });
+
+        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<socket::DaemonResponse>();
+        let (updates_tx, mut updates_rx) = broadcast::channel::<http::WsUpdate>(32);
+
+        job_tx
+            .send(super::CoordinatorJob::TuiChat {
+                text: "hello".to_string(),
+                source: "web".to_string(),
+                broadcast_user_activity: true,
+                responder: resp_tx,
+                socket_server: None,
+                web_updates_tx: Some(updates_tx),
+                ws_name: "ws".to_string(),
+                bee_name: "Bee".to_string(),
+            })
+            .unwrap();
+        drop(job_tx);
+
+        let mut daemon_events = Vec::new();
+        while let Some(event) = resp_rx.recv().await {
+            let done = matches!(event, socket::DaemonResponse::Done { .. });
+            daemon_events.push(event);
+            if done {
+                break;
+            }
+        }
+
+        let mut ws_updates = Vec::new();
+        while let Ok(update) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), updates_rx.recv()).await
+        {
+            match update {
+                Ok(update) => ws_updates.push(update),
+                Err(_) => break,
+            }
+        }
+
+        task.await.unwrap();
+
+        let verify_store = SignalStore::open(&db_path, "ws").unwrap();
+        let status = verify_store.get_bot_status("Bee").unwrap().unwrap();
+        assert_eq!(status.status, "idle");
+        assert!(status.streaming_content.is_empty());
+        assert!(status.tool_name.is_none());
+
+        let conv = ConversationStore::new(verify_store.conn(), "ws/Bee");
+        let history = conv.load_history(10).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[0].content, "hello");
+        assert_eq!(history[1].role, "assistant");
+        assert_eq!(history[1].content, "Hello world");
+
+        assert!(daemon_events.iter().any(
+            |event| matches!(event, socket::DaemonResponse::Token { text, .. } if text == "Hello")
+        ));
+        assert!(daemon_events.iter().any(
+            |event| matches!(event, socket::DaemonResponse::Token { text, .. } if text == " world")
+        ));
+        assert!(
+            daemon_events
+                .iter()
+                .any(|event| matches!(event, socket::DaemonResponse::Done { .. }))
+        );
+
+        assert!(ws_updates.iter().any(|update| matches!(
+            update,
+            http::WsUpdate::Message { bot, role, content, .. }
+                if bot == "Main" && role == "user" && content == "hello"
+        )));
+        assert!(ws_updates.iter().any(|update| matches!(
+            update,
+            http::WsUpdate::Message { bot, role, content, .. }
+                if bot == "Main" && role == "assistant" && content == "Hello world"
+        )));
+        assert!(ws_updates.iter().any(|update| matches!(
+            update,
+            http::WsUpdate::BotStatus { bot, status, streaming_content, .. }
+                if bot == "Main" && status == "streaming" && streaming_content == "Hello world"
+        )));
+        assert!(ws_updates.iter().any(|update| matches!(
+            update,
+            http::WsUpdate::BotStatus { bot, status, streaming_content, .. }
+                if bot == "Main" && status == "idle" && streaming_content.is_empty()
         )));
     }
 }

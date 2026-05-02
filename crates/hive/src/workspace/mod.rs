@@ -76,11 +76,13 @@ pub fn load_registry_at(path: &Path) -> Vec<RegistryEntry> {
 ///
 /// Adds the entry if not already present (match by canonical path).
 /// Creates the registry file and parent directories if needed.
+#[allow(dead_code)]
 pub fn register_workspace(path: &Path, name: &str) -> Result<()> {
     register_workspace_at(&registry_path(), path, name)
 }
 
 /// Register a workspace in a specific registry file.
+#[allow(dead_code)]
 pub fn register_workspace_at(reg_path: &Path, path: &Path, name: &str) -> Result<()> {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 

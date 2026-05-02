@@ -1391,7 +1391,7 @@ action = "Report the PR"
             "CI passed",
             serde_json::json!({"worker_id": "w1"}),
         );
-        let result = orchestrator.process_signal(&store, "test", &sig).unwrap();
+        let _result = orchestrator.process_signal(&store, "test", &sig).unwrap();
         // github_ci_pass won't match the task (not in worker lifecycle matching)
         // so graph won't run — task stays at coding
         let tasks = store.get_all_tasks("test").unwrap();

@@ -390,7 +390,7 @@ mod tests {
     #[test]
     fn test_parse_toml_value_float() {
         let item = parse_toml_value("3.14");
-        assert!((item.as_float().unwrap() - 3.14).abs() < f64::EPSILON);
+        assert_eq!(item.as_float().unwrap(), 314.0 / 100.0);
     }
 
     #[test]

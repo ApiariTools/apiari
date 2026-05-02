@@ -30,12 +30,13 @@ async fn exec_simple_prompt() {
         match &event {
             Event::ThreadStarted { .. } => saw_thread_started = true,
             Event::ItemCompleted {
-                item: Item::AgentMessage { text, .. },
+                item:
+                    Item::AgentMessage {
+                        text: Some(text), ..
+                    },
             } => {
-                if let Some(text) = text {
-                    println!("Agent: {text}");
-                    saw_agent_message = true;
-                }
+                println!("Agent: {text}");
+                saw_agent_message = true;
             }
             _ => {}
         }

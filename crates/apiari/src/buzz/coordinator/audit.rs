@@ -429,7 +429,8 @@ fn contains_pattern(command: &str, pattern: &str) -> bool {
 /// - `/tmp/` — the coordinator needs this for swarm `--prompt-file`.
 /// - Claude Code project memory paths (`~/.claude/.../memory/`) — the
 ///   coordinator is allowed to update its own persistent memory.
-/// - `~/.config/apiari/` — workspace config files managed by the coordinator.
+/// - `~/.config/apiari/` or `~/.config/hive/` — workspace config files managed
+///   by the coordinator.
 /// - `.apiari/` (workspace root) — coordinator-owned config files
 ///   (`context.md`, `skills/*.md`). Both relative `.apiari/` paths and
 ///   absolute paths resolving under `{cwd}/.apiari/` are accepted.
@@ -457,12 +458,15 @@ fn is_allowed_write_target(path: &str) -> bool {
         || path.starts_with("/Users/")
         || path.starts_with("/home/")
         || path.starts_with("$HOME/");
-    let in_apiari_config = path.contains("/.config/apiari/") || path.ends_with("/.config/apiari");
+    let in_config_dir = path.contains("/.config/apiari/")
+        || path.ends_with("/.config/apiari")
+        || path.contains("/.config/hive/")
+        || path.ends_with("/.config/hive");
     // Block writes to the devmode state file (prevent privilege escalation).
     if path.ends_with("/.devmode") {
         return false;
     }
-    (is_home_anchored && in_apiari_config) || path == "~/.config/apiari"
+    (is_home_anchored && in_config_dir) || path == "~/.config/apiari" || path == "~/.config/hive"
 }
 
 /// Check if a path targets the workspace `.apiari/` directory.
@@ -1094,6 +1098,28 @@ if len(data) > 0:
             result,
             BashClassification::ReadOnly,
             "append redirect to ~/.config/apiari/workspaces/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_hive_config_dir_cp_allowed() {
+        let result =
+            classify_bash_command("cp /tmp/apiari-new.toml ~/.config/hive/workspaces/apiari.toml");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "cp to ~/.config/hive/ should be ReadOnly"
+        );
+    }
+
+    #[test]
+    fn test_hive_config_dir_redirect_allowed() {
+        let result =
+            classify_bash_command("echo '[workspace]' > ~/.config/hive/workspaces/test.toml");
+        assert_eq!(
+            result,
+            BashClassification::ReadOnly,
+            "redirect to ~/.config/hive/ should be ReadOnly"
         );
     }
 

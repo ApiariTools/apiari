@@ -430,9 +430,11 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
+    type MockEventQueue = Arc<Mutex<VecDeque<Result<Option<AgentEventWire>, color_eyre::Report>>>>;
+
     /// Mock agent that returns a predefined sequence of events.
     struct MockAgent {
-        events: Arc<Mutex<VecDeque<Result<Option<AgentEventWire>, color_eyre::Report>>>>,
+        events: MockEventQueue,
         session_id: Option<String>,
         accepts: bool,
         finished: bool,

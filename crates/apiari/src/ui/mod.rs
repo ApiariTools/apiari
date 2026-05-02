@@ -628,12 +628,13 @@ async fn event_loop(
                             && let Some(ws) = app.current_ws()
                             && let Some(worker) = ws.workers.get(idx)
                         {
-                            let root = ws.config.root.clone();
+                            let swarm_dir = ws.config.resolved_swarm_dir();
                             let worker_id = worker.id.clone();
                             let ws_name = ws.name.clone();
                             let tx = update_tx.clone();
                             tokio::task::spawn_blocking(move || {
-                                let entries = app::load_worker_conversation_blocking(&root, &worker_id);
+                                let entries =
+                                    app::load_worker_conversation_blocking(&swarm_dir, &worker_id);
                                 let _ = tx.blocking_send(AppUpdate::WorkerConversation {
                                     workspace_name: ws_name,
                                     worker_id,

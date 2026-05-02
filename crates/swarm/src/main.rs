@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn resolve_prompt_trims_whitespace() {
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, "  trimmed prompt  \n").unwrap();
+        writeln!(tmp, "  trimmed prompt  ").unwrap();
         let path = tmp.path().to_str().unwrap().to_string();
 
         let result = resolve_prompt(None, Some(path)).unwrap();

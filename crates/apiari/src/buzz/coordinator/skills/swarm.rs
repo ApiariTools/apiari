@@ -3,7 +3,7 @@
 use super::SkillContext;
 
 pub fn build_prompt(ctx: &SkillContext) -> Option<String> {
-    if !ctx.has_swarm {
+    if !ctx.can_dispatch_workers {
         return None;
     }
 

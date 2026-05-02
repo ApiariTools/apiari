@@ -2,8 +2,8 @@
 //! dedup, prioritize, and JSONL read/write round-trip.
 
 use apiari_common::ipc::{JsonlReader, JsonlWriter};
-use hive::buzz::signal::{deduplicate, prioritize};
-use hive::signal::{Severity, Signal};
+use apiari_hive::buzz::signal::{deduplicate, prioritize};
+use apiari_hive::signal::{Severity, Signal};
 use tempfile::TempDir;
 
 fn make_signal(title: &str, severity: Severity, dedup_key: Option<&str>) -> Signal {

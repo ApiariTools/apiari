@@ -523,6 +523,34 @@ impl WorkspaceConfig {
             heartbeat_prompt: None,
         }]
     }
+
+    /// Resolve the swarm state path used by local worker features.
+    ///
+    /// When no explicit watcher path is configured, monorepo/local workflows
+    /// still use the conventional workspace-root `.swarm/state.json`.
+    pub fn resolved_swarm_state_path(&self) -> PathBuf {
+        let path = self
+            .watchers
+            .swarm
+            .as_ref()
+            .map(|s| s.state_path.clone())
+            .unwrap_or_else(|| self.root.join(".swarm/state.json"));
+
+        if path.is_absolute() {
+            path
+        } else {
+            self.root.join(path)
+        }
+    }
+
+    /// Resolve the swarm state directory that holds `state.json`, `agents/`,
+    /// and `wt/`.
+    pub fn resolved_swarm_dir(&self) -> PathBuf {
+        self.resolved_swarm_state_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.join(".swarm"))
+    }
 }
 
 /// Configuration for a signal hook — triggers coordinator follow-through when
@@ -1112,13 +1140,15 @@ pub fn build_skill_context(
         .map(|s| s.name.clone())
         .collect();
     let resolved_caps = config.capabilities.resolved(config.authority);
+    let has_swarm_runtime = config.resolved_swarm_dir().exists();
     crate::buzz::coordinator::skills::SkillContext {
         workspace_name: workspace_name.to_string(),
         workspace_root: config.root.clone(),
         config_path: workspaces_dir().join(format!("{workspace_name}.toml")),
         repos,
         has_sentry: config.watchers.sentry.is_some(),
-        has_swarm: config.watchers.swarm.is_some(),
+        has_swarm_runtime,
+        can_dispatch_workers: resolved_caps.dispatch_workers,
         has_review_queue: !review_queue_names.is_empty(),
         review_queue_names,
         has_linear: !linear_names.is_empty(),
@@ -1191,7 +1221,7 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                 .map(|s| crate::buzz::config::SwarmWatcherConfig {
                     enabled: true,
                     interval_secs: s.interval_secs,
-                    state_path: s.state_path.clone(),
+                    state_path: ws.resolved_swarm_state_path(),
                 }),
             email: ws
                 .watchers
@@ -1459,11 +1489,13 @@ provider = "codex"
         assert_eq!(config.root, PathBuf::from("/Users/josh/Developer/apiari"));
         assert_eq!(config.swarm.default_agent, "codex");
         let bees = config.resolved_bees();
-        assert_eq!(bees.len(), 2);
-        assert_eq!(bees[0].name, "Claude");
+        assert_eq!(bees.len(), 3);
+        assert_eq!(bees[0].name, "Bee");
         assert_eq!(bees[0].provider, "claude");
-        assert_eq!(bees[1].name, "Codex");
-        assert_eq!(bees[1].provider, "codex");
+        assert_eq!(bees[1].name, "Claude");
+        assert_eq!(bees[1].provider, "claude");
+        assert_eq!(bees[2].name, "Codex");
+        assert_eq!(bees[2].provider, "codex");
     }
 
     #[test]
@@ -1837,6 +1869,48 @@ max_session_turns = 0
         assert!(config.resolved_daemon_endpoints().is_empty());
     }
 
+    #[test]
+    fn test_resolved_swarm_state_path_defaults_to_workspace_root() {
+        let config: WorkspaceConfig = toml::from_str(r#"root = "/tmp/ws""#).unwrap();
+        assert_eq!(
+            config.resolved_swarm_state_path(),
+            PathBuf::from("/tmp/ws/.swarm/state.json")
+        );
+        assert_eq!(config.resolved_swarm_dir(), PathBuf::from("/tmp/ws/.swarm"));
+    }
+
+    #[test]
+    fn test_resolved_swarm_state_path_resolves_relative_override() {
+        let toml_str = r#"
+            root = "/tmp/ws"
+
+            [watchers.swarm]
+            state_path = ".swarm/custom-state.json"
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.resolved_swarm_state_path(),
+            PathBuf::from("/tmp/ws/.swarm/custom-state.json")
+        );
+        assert_eq!(config.resolved_swarm_dir(), PathBuf::from("/tmp/ws/.swarm"));
+    }
+
+    #[test]
+    fn test_resolved_swarm_state_path_keeps_absolute_override() {
+        let toml_str = r#"
+            root = "/tmp/ws"
+
+            [watchers.swarm]
+            state_path = "/var/tmp/swarm/state.json"
+        "#;
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.resolved_swarm_state_path(),
+            PathBuf::from("/var/tmp/swarm/state.json")
+        );
+        assert_eq!(config.resolved_swarm_dir(), PathBuf::from("/var/tmp/swarm"));
+    }
+
     /// Helper to build a minimal WorkspaceConfig with a GitHub watcher for repo resolution tests.
     fn ws_with_github(ws_repos: Vec<String>, gh_repos: Vec<String>) -> WorkspaceConfig {
         WorkspaceConfig {
@@ -1993,6 +2067,26 @@ max_session_turns = 0
         let gh = to_buzz_config(&ws).watchers.github.unwrap();
         // Nonexistent root means discover_repos returns empty
         assert!(gh.repos.is_empty());
+    }
+
+    #[test]
+    fn test_buzz_swarm_state_path_is_resolved_against_workspace_root() {
+        let config: WorkspaceConfig = toml::from_str(
+            r#"
+            root = "/tmp/ws"
+
+            [watchers.swarm]
+            state_path = ".swarm/custom-state.json"
+            interval_secs = 15
+            "#,
+        )
+        .unwrap();
+
+        let swarm = to_buzz_config(&config).watchers.swarm.unwrap();
+        assert_eq!(
+            swarm.state_path,
+            PathBuf::from("/tmp/ws/.swarm/custom-state.json")
+        );
     }
 
     #[test]

@@ -284,10 +284,10 @@ fn graph_to_view(graph: &WorkflowGraph) -> GraphView {
         .iter()
         .map(|(id, node)| {
             // Build human-readable description from node config
-            let description = node.action.as_ref().map(|a| {
-                let kind = format!("{:?}", a.kind).to_lowercase();
-                kind
-            });
+            let description = node
+                .action
+                .as_ref()
+                .map(|a| format!("{:?}", a.kind).to_lowercase());
 
             NodeView {
                 id: id.clone(),
@@ -815,6 +815,10 @@ fn repo_slug_to_local_path(root: &std::path::Path, repo: &str) -> std::path::Pat
     root.to_path_buf()
 }
 
+fn swarm_state_path(config: &crate::config::WorkspaceConfig) -> std::path::PathBuf {
+    config.resolved_swarm_state_path()
+}
+
 fn git_output(path: &std::path::Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(args)
@@ -835,6 +839,36 @@ fn is_git_clean(path: &std::path::Path) -> bool {
 
 fn current_git_branch(path: &std::path::Path) -> String {
     git_output(path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default()
+}
+
+fn build_repo_list_items(
+    config: &crate::config::WorkspaceConfig,
+    workspace_workers: &[WorkerView],
+) -> Vec<RepoListItem> {
+    crate::config::resolve_repos(config)
+        .into_iter()
+        .map(|repo| {
+            let local_path = repo_slug_to_local_path(&config.root, &repo);
+            let basename = local_path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(&repo).to_string());
+
+            RepoListItem {
+                name: basename.clone(),
+                path: local_path.display().to_string(),
+                has_swarm: local_path.join(".swarm").exists(),
+                is_clean: is_git_clean(&local_path),
+                branch: current_git_branch(&local_path),
+                workers: workspace_workers
+                    .iter()
+                    .filter(|worker| worker.branch.starts_with(&basename))
+                    .cloned()
+                    .collect(),
+            }
+        })
+        .collect()
 }
 
 // ── Bee config handlers ────────────────────────────────────────────────
@@ -871,30 +905,7 @@ async fn list_workspace_repos(Path(workspace): Path<String>) -> Json<Vec<RepoLis
         .filter(|worker| worker.workspace == workspace)
         .collect();
 
-    let repos = crate::config::resolve_repos(&ws.config)
-        .into_iter()
-        .map(|repo| {
-            let local_path = repo_slug_to_local_path(&ws.config.root, &repo);
-            let basename = local_path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(&repo).to_string());
-
-            RepoListItem {
-                name: basename.clone(),
-                path: local_path.display().to_string(),
-                has_swarm: local_path.join(".swarm").exists(),
-                is_clean: is_git_clean(&local_path),
-                branch: current_git_branch(&local_path),
-                workers: workspace_workers
-                    .iter()
-                    .filter(|worker| worker.branch.starts_with(&basename))
-                    .cloned()
-                    .collect(),
-            }
-        })
-        .collect();
+    let repos = build_repo_list_items(&ws.config, &workspace_workers);
 
     Json(repos)
 }
@@ -914,7 +925,10 @@ async fn get_workspace_conversations(
     };
 
     let actual_bot = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
-    let store = match crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), &workspace) {
+    let store = match crate::buzz::signal::store::SignalStore::open(
+        &crate::config::db_path(),
+        &workspace,
+    ) {
         Ok(store) => store,
         Err(_) => return Json(vec![]),
     };
@@ -951,18 +965,19 @@ async fn get_workspace_conversations(
         rows = rows.split_off(rows.len() - limit);
     }
 
-    Json(rows
-        .into_iter()
-        .map(|row| ConversationMessageView {
-            id: row.id,
-            workspace: workspace.clone(),
-            bot: bot.clone(),
-            role: row.role,
-            content: row.content,
-            attachments: None,
-            created_at: row.created_at,
-        })
-        .collect())
+    Json(
+        rows.into_iter()
+            .map(|row| ConversationMessageView {
+                id: row.id,
+                workspace: workspace.clone(),
+                bot: bot.clone(),
+                role: row.role,
+                content: row.content,
+                attachments: None,
+                created_at: row.created_at,
+            })
+            .collect(),
+    )
 }
 
 /// GET /api/workspaces/:workspace/workers — list workers for one workspace.
@@ -989,9 +1004,10 @@ async fn get_workspace_bot_status(
         });
     };
     let actual_bot = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot);
-    let status = crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), &workspace)
-        .ok()
-        .and_then(|store| store.get_bot_status(&actual_bot).ok().flatten());
+    let status =
+        crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), &workspace)
+            .ok()
+            .and_then(|store| store.get_bot_status(&actual_bot).ok().flatten());
 
     match status {
         Some(status) => Json(BotStatusView {
@@ -1008,7 +1024,9 @@ async fn get_workspace_bot_status(
 }
 
 /// GET /api/workspaces/:workspace/unread — unread message counts by bot.
-async fn get_workspace_unread(Path(_workspace): Path<String>) -> Json<serde_json::Map<String, serde_json::Value>> {
+async fn get_workspace_unread(
+    Path(_workspace): Path<String>,
+) -> Json<serde_json::Map<String, serde_json::Value>> {
     Json(serde_json::Map::new())
 }
 
@@ -1074,7 +1092,11 @@ async fn send_workspace_chat(
     let message = if let Some(attachments) = body.attachments
         && !attachments.is_empty()
     {
-        format!("{}\n\n[attachments: {} file(s)]", body.message, attachments.len())
+        format!(
+            "{}\n\n[attachments: {} file(s)]",
+            body.message,
+            attachments.len()
+        )
     } else {
         body.message
     };
@@ -1532,15 +1554,7 @@ async fn get_workers() -> Json<Vec<WorkerView>> {
     let workspaces = crate::config::discover_workspaces().unwrap_or_default();
 
     for ws in &workspaces {
-        let state_path = ws
-            .config
-            .watchers
-            .swarm
-            .as_ref()
-            .map(|s| s.state_path.clone());
-        let Some(path) = state_path else {
-            continue;
-        };
+        let path = swarm_state_path(&ws.config);
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -1672,15 +1686,7 @@ async fn get_worker_activity(
         None => return Json(vec![]),
     };
 
-    let state_path = ws
-        .config
-        .watchers
-        .swarm
-        .as_ref()
-        .map(|s| s.state_path.clone());
-    let Some(state_path) = state_path else {
-        return Json(vec![]);
-    };
+    let state_path = swarm_state_path(&ws.config);
     let state_dir = std::path::Path::new(&state_path)
         .parent()
         .unwrap_or(std::path::Path::new("."));
@@ -2413,8 +2419,14 @@ pub async fn start_http_server(
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/workspaces/{workspace}/bots", get(list_workspace_bots))
-        .route("/api/workspaces/{workspace}/repos", get(list_workspace_repos))
-        .route("/api/workspaces/{workspace}/workers", get(get_workspace_workers))
+        .route(
+            "/api/workspaces/{workspace}/repos",
+            get(list_workspace_repos),
+        )
+        .route(
+            "/api/workspaces/{workspace}/workers",
+            get(get_workspace_workers),
+        )
         .route(
             "/api/workspaces/{workspace}/conversations/{bot}",
             get(get_workspace_conversations),
@@ -2427,9 +2439,18 @@ pub async fn start_http_server(
             "/api/workspaces/{workspace}/bots/{bot}/cancel",
             post(cancel_workspace_bot),
         )
-        .route("/api/workspaces/{workspace}/unread", get(get_workspace_unread))
-        .route("/api/workspaces/{workspace}/seen/{bot}", post(mark_workspace_seen))
-        .route("/api/workspaces/{workspace}/followups", get(list_workspace_followups))
+        .route(
+            "/api/workspaces/{workspace}/unread",
+            get(get_workspace_unread),
+        )
+        .route(
+            "/api/workspaces/{workspace}/seen/{bot}",
+            post(mark_workspace_seen),
+        )
+        .route(
+            "/api/workspaces/{workspace}/followups",
+            get(list_workspace_followups),
+        )
         .route(
             "/api/workspaces/{workspace}/followups/{followup_id}",
             axum::routing::delete(cancel_workspace_followup),
@@ -2438,7 +2459,10 @@ pub async fn start_http_server(
             "/api/workspaces/{workspace}/research",
             get(list_workspace_research).post(start_workspace_research),
         )
-        .route("/api/workspaces/{workspace}/chat/{bot}", post(send_workspace_chat))
+        .route(
+            "/api/workspaces/{workspace}/chat/{bot}",
+            post(send_workspace_chat),
+        )
         .route("/api/usage", get(get_usage))
         .route("/api/chat", post(chat_handler))
         .route("/api/workflow/run", post(workflow_run_handler))
@@ -2583,4 +2607,144 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path, process::Command};
+
+    use super::*;
+
+    fn init_git_repo(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+    }
+
+    fn add_origin(path: &Path, origin: &str) {
+        Command::new("git")
+            .args(["remote", "add", "origin", origin])
+            .current_dir(path)
+            .status()
+            .unwrap();
+    }
+
+    fn test_workspace_config(
+        root: std::path::PathBuf,
+        repos: Vec<&str>,
+    ) -> crate::config::WorkspaceConfig {
+        crate::config::WorkspaceConfig {
+            config_version: None,
+            root,
+            repos: repos.into_iter().map(str::to_string).collect(),
+            authority: crate::config::WorkspaceAuthority::default(),
+            capabilities: crate::config::WorkspaceCapabilities::default(),
+            telegram: None,
+            coordinator: crate::config::CoordinatorConfig::default(),
+            bees: None,
+            watchers: crate::config::WatchersConfig::default(),
+            swarm: crate::config::SwarmConfig::default(),
+            orchestrator: Default::default(),
+            commands: vec![],
+            morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_endpoints: vec![],
+            shells: crate::config::ShellsConfig::default(),
+            schedule: None,
+            activity: crate::config::ActivityConfig::default(),
+        }
+    }
+
+    #[test]
+    fn repo_slug_to_local_path_prefers_matching_origin_over_workspace_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("apiari");
+        let common = root.join("common");
+
+        init_git_repo(&root);
+        add_origin(&root, "git@github.com:ApiariTools/apiari.git");
+
+        init_git_repo(&common);
+        add_origin(&common, "git@github.com:ApiariTools/apiari-common.git");
+
+        let resolved = repo_slug_to_local_path(&root, "ApiariTools/apiari-common");
+        assert_eq!(resolved, common);
+    }
+
+    #[test]
+    fn build_repo_list_items_uses_local_dir_name_without_duplicate_root_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("apiari");
+        let common = root.join("common");
+
+        init_git_repo(&root);
+        add_origin(&root, "git@github.com:ApiariTools/apiari.git");
+
+        init_git_repo(&common);
+        add_origin(&common, "git@github.com:ApiariTools/apiari-common.git");
+
+        let config = test_workspace_config(
+            root.clone(),
+            vec!["ApiariTools/apiari", "ApiariTools/apiari-common"],
+        );
+        let workers = vec![
+            WorkerView {
+                id: "worker-apiari".to_string(),
+                workspace: "ws".to_string(),
+                branch: "apiari/fix-http".to_string(),
+                agent: "claude".to_string(),
+                status: "running".to_string(),
+                pr_url: None,
+            },
+            WorkerView {
+                id: "worker-common".to_string(),
+                workspace: "ws".to_string(),
+                branch: "common/fix-sdk".to_string(),
+                agent: "gemini".to_string(),
+                status: "running".to_string(),
+                pr_url: None,
+            },
+        ];
+
+        let repos = build_repo_list_items(&config, &workers);
+        let names: Vec<_> = repos.iter().map(|repo| repo.name.as_str()).collect();
+
+        assert_eq!(names, vec!["apiari", "common"]);
+        assert_eq!(repos[0].path, root.display().to_string());
+        assert_eq!(repos[1].path, common.display().to_string());
+        assert_eq!(repos[0].workers.len(), 1);
+        assert_eq!(repos[0].workers[0].id, "worker-apiari");
+        assert_eq!(repos[1].workers.len(), 1);
+        assert_eq!(repos[1].workers[0].id, "worker-common");
+    }
+
+    #[test]
+    fn swarm_state_path_defaults_to_workspace_root_when_watcher_config_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("apiari");
+        let config = test_workspace_config(root.clone(), vec!["ApiariTools/apiari"]);
+
+        assert_eq!(swarm_state_path(&config), root.join(".swarm/state.json"));
+    }
+
+    #[test]
+    fn swarm_state_path_prefers_explicit_watcher_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("apiari");
+        let explicit = temp.path().join("custom/state.json");
+        let mut config = test_workspace_config(root, vec!["ApiariTools/apiari"]);
+        config.watchers.swarm = Some(crate::config::SwarmWatcherConfig {
+            state_path: explicit.clone(),
+            interval_secs: 30,
+            active_hours: None,
+        });
+
+        assert_eq!(swarm_state_path(&config), explicit);
+    }
 }

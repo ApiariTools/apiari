@@ -31,8 +31,10 @@ pub fn build_prompt(ctx: &SkillContext) -> String {
         prompt.push_str("- GitHub: ✗ no repos configured\n");
     }
 
-    if ctx.has_swarm {
+    if ctx.has_swarm_runtime {
         prompt.push_str("- Swarm: ✓ connected\n");
+    } else if ctx.can_dispatch_workers {
+        prompt.push_str("- Swarm: ✓ available for worker dispatch\n");
     } else {
         prompt.push_str("- Swarm: ✗ not configured\n");
     }
@@ -217,8 +219,10 @@ pub fn build_config_summary(ctx: &SkillContext) -> String {
         text.push_str("✗ GitHub — no repos configured\n");
     }
 
-    if ctx.has_swarm {
+    if ctx.has_swarm_runtime {
         text.push_str("✓ Swarm — connected\n");
+    } else if ctx.can_dispatch_workers {
+        text.push_str("✓ Swarm — available for worker dispatch\n");
     } else {
         text.push_str("✗ Swarm — not configured\n");
     }
@@ -278,7 +282,8 @@ mod tests {
             config_path: PathBuf::from("/home/user/.config/apiari/workspaces/myproject.toml"),
             repos: vec!["org/repo".to_string()],
             has_sentry: true,
-            has_swarm: true,
+            has_swarm_runtime: true,
+            can_dispatch_workers: true,
             has_review_queue: true,
             review_queue_names: vec!["Review Requested".to_string()],
             has_linear: true,
@@ -304,7 +309,8 @@ mod tests {
             config_path: PathBuf::from("/home/user/.config/apiari/workspaces/empty.toml"),
             repos: vec![],
             has_sentry: false,
-            has_swarm: false,
+            has_swarm_runtime: false,
+            can_dispatch_workers: false,
             has_review_queue: false,
             review_queue_names: vec![],
             has_linear: false,

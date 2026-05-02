@@ -46,7 +46,8 @@ pub struct SkillContext {
     pub config_path: PathBuf,
     pub repos: Vec<String>,
     pub has_sentry: bool,
-    pub has_swarm: bool,
+    pub has_swarm_runtime: bool,
+    pub can_dispatch_workers: bool,
     pub has_review_queue: bool,
     pub review_queue_names: Vec<String>,
     pub has_linear: bool,
@@ -333,7 +334,8 @@ mod tests {
             config_path: PathBuf::from("/home/user/.config/apiari/workspaces/myproject.toml"),
             repos: vec!["org/repo".to_string()],
             has_sentry: true,
-            has_swarm: true,
+            has_swarm_runtime: true,
+            can_dispatch_workers: true,
             has_review_queue: false,
             review_queue_names: vec![],
             has_linear: false,
@@ -378,7 +380,8 @@ mod tests {
     #[test]
     fn test_build_skills_prompt_no_swarm() {
         let mut ctx = test_ctx();
-        ctx.has_swarm = false;
+        ctx.has_swarm_runtime = false;
+        ctx.can_dispatch_workers = false;
         let prompt = build_skills_prompt(&ctx);
         assert!(!prompt.contains("## Swarm Workers"));
     }
@@ -396,7 +399,8 @@ mod tests {
         // Even with a minimal context (no watchers), the apiari system skill is included
         let mut ctx = test_ctx();
         ctx.has_sentry = false;
-        ctx.has_swarm = false;
+        ctx.has_swarm_runtime = false;
+        ctx.can_dispatch_workers = false;
         ctx.repos.clear();
         let prompt = build_skills_prompt(&ctx);
         assert!(prompt.contains("## Apiari System"));

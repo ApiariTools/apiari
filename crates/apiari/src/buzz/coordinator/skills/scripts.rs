@@ -3,9 +3,7 @@
 use super::SkillContext;
 
 pub fn build_prompt(ctx: &SkillContext) -> String {
-    let scripts_dir = dirs::home_dir()
-        .unwrap_or_else(|| ".".into())
-        .join(".config/apiari/scripts");
+    let scripts_dir = crate::config::config_dir().join("scripts");
 
     if !ctx.has_scripts {
         return format!(

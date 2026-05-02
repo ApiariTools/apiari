@@ -40,6 +40,7 @@ struct TrackedWorker {
 /// Watches swarm daemon for worker state changes.
 pub struct SwarmWatcher {
     work_dir: PathBuf,
+    state_path: PathBuf,
     tracked: HashMap<String, TrackedWorker>,
     initialized: bool,
     /// Buffered phase transitions from the subscription task.
@@ -48,9 +49,10 @@ pub struct SwarmWatcher {
 }
 
 impl SwarmWatcher {
-    pub fn new(work_dir: PathBuf) -> Self {
+    pub fn new(work_dir: PathBuf, state_path: PathBuf) -> Self {
         Self {
             work_dir,
+            state_path,
             tracked: HashMap::new(),
             initialized: false,
             events: Arc::new(Mutex::new(Vec::new())),
@@ -150,7 +152,7 @@ impl SwarmWatcher {
 
     /// Read `ready_branch` from `.swarm/state.json`.
     fn read_ready_branches(&self) -> HashMap<String, (String, String)> {
-        let raw = match std::fs::read_to_string(self.work_dir.join(".swarm/state.json")) {
+        let raw = match std::fs::read_to_string(&self.state_path) {
             Ok(s) => s,
             Err(_) => return HashMap::new(),
         };
@@ -584,7 +586,10 @@ mod tests {
 
     #[test]
     fn test_diff_new_worker_emits_spawned() {
-        let mut w = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        let mut w = SwarmWatcher::new(
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/.swarm/state.json"),
+        );
         w.initialized = true;
         let signals = w.diff_workers(&[make_worker("w1", WorkerPhase::Running, None)]);
         assert_eq!(signals.len(), 1);
@@ -593,7 +598,10 @@ mod tests {
 
     #[test]
     fn test_diff_pr_opened() {
-        let mut w = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        let mut w = SwarmWatcher::new(
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/.swarm/state.json"),
+        );
         w.initialized = true;
         w.tracked
             .insert("w1".into(), tracked(WorkerPhase::Running, false, None));
@@ -612,7 +620,10 @@ mod tests {
 
     #[test]
     fn test_diff_running_transition() {
-        let mut w = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        let mut w = SwarmWatcher::new(
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/.swarm/state.json"),
+        );
         w.initialized = true;
         w.tracked
             .insert("w1".into(), tracked(WorkerPhase::Waiting, false, None));
@@ -623,7 +634,10 @@ mod tests {
 
     #[test]
     fn test_diff_waiting_transition() {
-        let mut w = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        let mut w = SwarmWatcher::new(
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/.swarm/state.json"),
+        );
         w.initialized = true;
         w.tracked
             .insert("w1".into(), tracked(WorkerPhase::Running, false, None));
@@ -634,7 +648,10 @@ mod tests {
 
     #[test]
     fn test_diff_closed_worker() {
-        let mut w = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        let mut w = SwarmWatcher::new(
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/.swarm/state.json"),
+        );
         w.initialized = true;
         w.tracked
             .insert("w1".into(), tracked(WorkerPhase::Running, false, None));
@@ -655,7 +672,10 @@ mod tests {
 
     #[test]
     fn test_diff_no_change() {
-        let mut w = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        let mut w = SwarmWatcher::new(
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/.swarm/state.json"),
+        );
         w.initialized = true;
         w.tracked
             .insert("w1".into(), tracked(WorkerPhase::Running, false, None));
@@ -665,7 +685,10 @@ mod tests {
 
     #[test]
     fn test_reviewer_running_no_signal() {
-        let mut w = SwarmWatcher::new(PathBuf::from("/tmp/test"));
+        let mut w = SwarmWatcher::new(
+            PathBuf::from("/tmp/test"),
+            PathBuf::from("/tmp/test/.swarm/state.json"),
+        );
         w.initialized = true;
         w.tracked.insert(
             "r1".into(),
@@ -693,5 +716,33 @@ mod tests {
         let state: SwarmState = serde_json::from_str(json).unwrap();
         assert_eq!(state.worktrees.len(), 1);
         assert!(state.worktrees[0].pr.is_some());
+    }
+
+    #[test]
+    fn test_read_ready_branches_uses_explicit_state_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        let state_dir = temp.path().join("custom-swarm");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&state_dir).unwrap();
+        std::fs::write(
+            state_dir.join("state.json"),
+            r#"{
+                "worktrees": [{
+                    "id": "w1",
+                    "ready_branch": "common/fix-sdk",
+                    "repo_path": "/tmp/common"
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let watcher = SwarmWatcher::new(root, state_dir.join("state.json"));
+        let ready = watcher.read_ready_branches();
+
+        assert_eq!(
+            ready.get("w1"),
+            Some(&(String::from("common/fix-sdk"), String::from("/tmp/common")))
+        );
     }
 }

@@ -169,7 +169,7 @@ mod tests {
         let card = build_agent_card("w-1", "repo", "claude", "## Coding\nWrite code.");
         let json = serde_json::to_value(&card).expect("serialize");
         assert_eq!(json["name"], "w-1");
-        assert!(json["skills"].as_array().unwrap().len() > 0);
+        assert!(!json["skills"].as_array().unwrap().is_empty());
     }
 
     #[test]

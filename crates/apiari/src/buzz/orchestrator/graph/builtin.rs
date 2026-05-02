@@ -17,11 +17,11 @@ pub fn builtin_workflow() -> WorkflowGraph {
 
 /// Load a workflow graph from a YAML file, falling back to the builtin.
 pub fn load_workflow(path: Option<&Path>) -> color_eyre::Result<WorkflowGraph> {
-    if let Some(p) = path {
-        if p.exists() {
-            let yaml = std::fs::read_to_string(p)?;
-            return WorkflowGraph::from_yaml(&yaml);
-        }
+    if let Some(p) = path
+        && p.exists()
+    {
+        let yaml = std::fs::read_to_string(p)?;
+        return WorkflowGraph::from_yaml(&yaml);
     }
     Ok(builtin_workflow())
 }

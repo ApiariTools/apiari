@@ -535,7 +535,8 @@ impl Coordinator {
                 // prompt channel, so we inline a compact first-turn prompt.
                 let system_prompt = if self.session_id.is_none() {
                     let signals = store.get_open_signals().unwrap_or_default();
-                    let compact_context = compact_alt_provider_context(self.extra_context.as_deref());
+                    let compact_context =
+                        compact_alt_provider_context(self.extra_context.as_deref());
                     Some(prompt::build_system_prompt(
                         &signals,
                         &[],
@@ -738,7 +739,6 @@ impl Coordinator {
                         model: Some(self.model.clone()),
                         working_dir: self.working_dir.clone(),
                         yolo: true,
-                        ..Default::default()
                     },
                 )
                 .await?

@@ -1,6 +1,6 @@
 //! Integration tests for quest store CRUD lifecycle.
 
-use hive::quest::{Quest, QuestStatus, QuestStore, Task, TaskStatus, default_store_path};
+use apiari_hive::quest::{Quest, QuestStatus, QuestStore, Task, TaskStatus, default_store_path};
 use std::path::Path;
 use tempfile::TempDir;
 

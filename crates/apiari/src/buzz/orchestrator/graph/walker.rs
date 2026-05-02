@@ -1011,7 +1011,7 @@ edges:
         let mut cursor = GraphCursor::new("intake");
 
         // Auto-advance from intake to process
-        let outputs = walker.step(&mut cursor, &make_signal("any"), &task);
+        let _outputs = walker.step(&mut cursor, &make_signal("any"), &task);
         assert_eq!(cursor.current_node, "process");
 
         // Wrong signal — stays
@@ -1020,7 +1020,7 @@ edges:
         assert_eq!(cursor.current_node, "process");
 
         // Right signal — advances to done
-        let outputs = walker.step(&mut cursor, &make_signal("completed"), &task);
+        let _outputs = walker.step(&mut cursor, &make_signal("completed"), &task);
         assert_eq!(cursor.current_node, "done");
     }
 
@@ -1072,7 +1072,7 @@ edges:
         // Approve
         let sig =
             make_signal_with_meta("review_result", serde_json::json!({"decision": "approve"}));
-        let outputs = walker.step(&mut cursor, &sig, &task);
+        let _outputs = walker.step(&mut cursor, &sig, &task);
         assert_eq!(cursor.current_node, "approved");
 
         // Reset and reject
@@ -1249,7 +1249,7 @@ edges:
         assert_eq!(outputs.len(), 2); // action1 + wait1
 
         // Now signal "go" should chain: wait1→action2→end
-        let outputs = walker.step(&mut cursor, &make_signal("go"), &task);
+        let _outputs = walker.step(&mut cursor, &make_signal("go"), &task);
         assert_eq!(cursor.current_node, "end");
     }
 

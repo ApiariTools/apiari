@@ -4,7 +4,7 @@
 //! the global registry tracks workspaces correctly, and edge cases
 //! (missing files, idempotent calls) are handled gracefully.
 
-use hive::workspace::{
+use apiari_hive::workspace::{
     RegistryEntry, init_workspace, load_registry_at, load_workspace, register_workspace_at,
 };
 use std::path::Path;

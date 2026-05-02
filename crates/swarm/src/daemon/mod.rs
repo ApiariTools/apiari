@@ -1899,14 +1899,16 @@ mod tests {
         }
     }
 
-    /// Build channels needed for handle_request tests.
-    fn test_harness() -> (
+    type TestHarness = (
         mpsc::UnboundedReceiver<DaemonResponse>,
         mpsc::UnboundedSender<DaemonResponse>,
         HashMap<PathBuf, WorkspaceState>,
         broadcast::Sender<DaemonResponse>,
         mpsc::UnboundedSender<SupervisorEvent>,
-    ) {
+    );
+
+    /// Build channels needed for handle_request tests.
+    fn test_harness() -> TestHarness {
         let (resp_tx, resp_rx) = mpsc::unbounded_channel();
         let workspaces = HashMap::new();
         let (event_tx, _) = broadcast::channel(16);

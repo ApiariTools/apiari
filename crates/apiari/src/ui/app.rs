@@ -139,7 +139,8 @@ pub struct WatcherHealth {
 #[derive(Clone)]
 pub(super) struct WorkspaceRefreshInfo {
     pub(super) name: String,
-    pub(super) root: std::path::PathBuf,
+    pub(super) swarm_dir: std::path::PathBuf,
+    pub(super) swarm_state_path: std::path::PathBuf,
     pub(super) has_github_watcher: bool,
     pub(super) has_sentry_watcher: bool,
     pub(super) has_swarm_watcher: bool,
@@ -2405,8 +2406,7 @@ impl App {
         {
             let events_path = ws
                 .config
-                .root
-                .join(".swarm")
+                .resolved_swarm_dir()
                 .join("agents")
                 .join(&worker.id)
                 .join("events.jsonl");
@@ -3283,7 +3283,8 @@ impl App {
                     // New workers: queue create ops
                     for worker in &new_workers {
                         if !old_ids.contains(&worker.id) {
-                            let wt_path = ws.config.root.join(".swarm").join("wt").join(&worker.id);
+                            let wt_path =
+                                ws.config.resolved_swarm_dir().join("wt").join(&worker.id);
                             shell_ops.push(PendingShellOp::Create {
                                 tmux: tmux.clone(),
                                 name: worker.id.clone(),
@@ -3644,7 +3645,8 @@ impl App {
             .iter()
             .map(|ws| WorkspaceRefreshInfo {
                 name: ws.name.clone(),
-                root: ws.config.root.clone(),
+                swarm_dir: ws.config.resolved_swarm_dir(),
+                swarm_state_path: ws.config.resolved_swarm_state_path(),
                 has_github_watcher: ws.config.watchers.github.is_some(),
                 has_sentry_watcher: ws.config.watchers.sentry.is_some(),
                 has_swarm_watcher: ws.config.watchers.swarm.is_some(),
@@ -3912,9 +3914,8 @@ fn load_workers_from_state(state_path: &std::path::Path) -> Vec<WorkerInfo> {
 
 /// Read last activity from `.swarm/agents/<id>/events.jsonl`.
 /// Falls back to None if the file doesn't exist.
-fn load_last_activity(workspace_root: &Path, worktree_id: &str) -> Option<String> {
-    let events_path = workspace_root
-        .join(".swarm")
+fn load_last_activity(swarm_dir: &Path, worktree_id: &str) -> Option<String> {
+    let events_path = swarm_dir
         .join("agents")
         .join(worktree_id)
         .join("events.jsonl");
@@ -4039,10 +4040,9 @@ pub(super) fn load_all_workers_blocking(
     infos
         .iter()
         .map(|info| {
-            let state_path = info.root.join(".swarm/state.json");
-            let mut workers = load_workers_from_state(&state_path);
+            let mut workers = load_workers_from_state(&info.swarm_state_path);
             for worker in &mut workers {
-                worker.last_activity = load_last_activity(&info.root, &worker.id);
+                worker.last_activity = load_last_activity(&info.swarm_dir, &worker.id);
                 worker.activity = build_worker_activity(worker);
             }
             (info.name.clone(), workers)
@@ -4280,11 +4280,10 @@ pub(super) fn load_chat_history_blocking(
 
 /// Load worker conversation entries from events.jsonl (blocking).
 pub(super) fn load_worker_conversation_blocking(
-    root: &Path,
+    swarm_dir: &Path,
     worker_id: &str,
 ) -> Vec<ConversationEntry> {
-    let events_path = root
-        .join(".swarm")
+    let events_path = swarm_dir
         .join("agents")
         .join(worker_id)
         .join("events.jsonl");
@@ -4714,7 +4713,7 @@ mod tests {
         }
         if let ChatLine::Assistant(content, _, src) = &app.workspaces[0].chat_history[1] {
             assert_eq!(content, "hello from coordinator");
-            assert!(matches!(src, None));
+            assert!(src.is_none());
         } else {
             panic!("expected streaming assistant");
         }

@@ -370,9 +370,7 @@ impl Event {
                 }
                 content.text()
             }
-            Event::ToolResponse { content, .. } => {
-                content.text()
-            }
+            Event::ToolResponse { content, .. } => content.text(),
             Event::AgentEnd { data, .. } => data
                 .as_ref()
                 .and_then(|value| value.get("message"))
@@ -391,10 +389,7 @@ impl Event {
 impl MessageContent {
     pub fn text(&self) -> Option<String> {
         match self {
-            MessageContent::Text(text) => {
-                let text = text.trim();
-                (!text.is_empty()).then(|| text.to_owned())
-            }
+            MessageContent::Text(text) => (!text.is_empty()).then(|| text.to_owned()),
             MessageContent::Parts(parts) => {
                 let text = parts
                     .iter()
@@ -495,6 +490,13 @@ mod tests {
         let json = r#"{"type":"message","role":"assistant","content":"hello","delta":true}"#;
         let event: Event = serde_json::from_str(json).unwrap();
         assert_eq!(event.text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn test_deserialize_current_message_string_content_preserves_spacing() {
+        let json = r#"{"type":"message","role":"assistant","content":" world","delta":true}"#;
+        let event: Event = serde_json::from_str(json).unwrap();
+        assert_eq!(event.text().as_deref(), Some(" world"));
     }
 
     #[test]

@@ -337,8 +337,6 @@ async fn handle_test_connection(
                     Ok(_) => {
                         let resp = if line.contains("list_workers") {
                             r#"{"status":"workers","workers":[]}"#.to_string()
-                        } else if line.contains("ping") {
-                            r#"{"status":"ok"}"#.to_string()
                         } else {
                             r#"{"status":"ok"}"#.to_string()
                         };

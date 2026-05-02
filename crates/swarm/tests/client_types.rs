@@ -48,11 +48,15 @@ fn socket_path_helpers_are_accessible() {
 
 #[test]
 fn send_daemon_request_uses_nonexistent_path() {
-    // Use a unique temp dir that cannot have a real daemon socket,
-    // avoiding flakiness when a live daemon is running on the machine.
+    // Use a unique temp dir that cannot have a real local daemon socket.
+    // If a global daemon is running on this machine, fallback may succeed.
     let dir = tempfile::tempdir().unwrap();
     let result = send_daemon_request(dir.path(), &DaemonRequest::Ping);
-    assert!(result.is_err());
+    if global_socket_path().exists() {
+        assert!(result.is_ok());
+    } else {
+        assert!(result.is_err());
+    }
 }
 
 #[test]
@@ -72,6 +76,8 @@ fn worker_info_is_accessible() {
         restart_count: 0,
         created_at: None,
         agent_card: None,
+        role: None,
+        review_verdict: None,
     };
     let json = serde_json::to_string(&info).unwrap();
     assert!(json.contains("\"id\":\"test\""));

@@ -9,6 +9,15 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tracing::{debug, warn};
 
+fn strip_nuls(value: &str, field: &str) -> String {
+    if value.contains('\0') {
+        warn!(target: "codex_spawn", field, "stripping NUL byte(s) from spawn input");
+        value.replace('\0', "")
+    } else {
+        value.to_owned()
+    }
+}
+
 /// Read-only NDJSON transport wrapping a `codex` subprocess.
 ///
 /// Each line read from stdout is a single JSON object. There is no stdin
@@ -43,18 +52,28 @@ impl ReadOnlyTransport {
         let mut cmd = Command::new(cli_path);
 
         // Subcommand path (e.g. ["exec"] or ["exec", "resume"]).
-        cmd.args(subcommand_parts);
+        cmd.args(
+            subcommand_parts
+                .iter()
+                .map(|part| strip_nuls(part, "subcommand"))
+                .collect::<Vec<_>>(),
+        );
 
         // Always request JSON output.
         cmd.arg("--json");
         cmd.arg("--skip-git-repo-check");
 
         // Caller-supplied arguments (model, sandbox, etc.).
-        cmd.args(extra_args);
+        cmd.args(
+            extra_args
+                .iter()
+                .map(|arg| strip_nuls(arg, "arg"))
+                .collect::<Vec<_>>(),
+        );
 
         // Prompt as the final positional argument.
         if let Some(prompt) = prompt {
-            cmd.arg(prompt);
+            cmd.arg(strip_nuls(prompt, "prompt"));
         }
 
         // Clear the CLAUDECODE environment variable to allow the SDK to spawn
@@ -68,7 +87,7 @@ impl ReadOnlyTransport {
 
         // Environment variables.
         for (key, value) in env_vars {
-            cmd.env(key, value);
+            cmd.env(strip_nuls(key, "env_key"), strip_nuls(value, "env_value"));
         }
 
         // stdin is null — codex exec is unidirectional.
@@ -199,4 +218,15 @@ async fn drain_stderr(stderr: ChildStderr) -> String {
         }
     }
     accumulated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_nuls;
+
+    #[test]
+    fn strip_nuls_removes_embedded_nul_bytes() {
+        assert_eq!(strip_nuls("ab\0cd\0", "prompt"), "abcd");
+        assert_eq!(strip_nuls("clean", "prompt"), "clean");
+    }
 }

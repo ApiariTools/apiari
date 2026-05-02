@@ -6,7 +6,16 @@
 use std::process::Command;
 
 fn hive_bin() -> std::path::PathBuf {
-    env!("CARGO_BIN_EXE_hive").into()
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_hive") {
+        return path.into();
+    }
+    if let Some(path) = std::env::var_os("CARGO_BIN_EXE_apiari-hive") {
+        return path.into();
+    }
+
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest_dir
+        .join("../../target/debug/apiari-hive")
 }
 
 #[test]

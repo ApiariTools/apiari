@@ -1206,7 +1206,7 @@ mod tests {
     #[test]
     fn handle_agent_event_creates_conversation() {
         let mut app = DaemonTuiApp::new(PathBuf::from("/tmp"));
-        assert!(app.conversations.get("hive-1").is_none());
+        assert!(!app.conversations.contains_key("hive-1"));
 
         app.handle_agent_event(
             "hive-1",

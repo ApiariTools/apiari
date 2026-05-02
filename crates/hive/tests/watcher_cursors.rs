@@ -4,8 +4,8 @@
 //! `.buzz/state.json` using the `save_cursors` / `create_watchers` APIs.
 
 use apiari_common::state::{load_state, save_state};
-use hive::buzz::config::{BuzzConfig, GithubConfig, SentryConfig};
-use hive::buzz::watcher::{WatcherState, create_watchers, save_cursors};
+use apiari_hive::buzz::config::{BuzzConfig, GithubConfig, SentryConfig};
+use apiari_hive::buzz::watcher::{WatcherState, create_watchers, save_cursors};
 use tempfile::TempDir;
 
 // ---- save_cursors writes state file ----

@@ -3,9 +3,9 @@
 //! Each test sets up a temp workspace directory, writes `.hive/channel_state.json`
 //! as needed, then calls the routing functions and asserts the result.
 
+use apiari_hive::presence::{self, ChannelEntry, ChannelState};
+use apiari_hive::routing::{RoutingDecision, decide, route_for_workspace};
 use chrono::Utc;
-use hive::presence::{self, ChannelEntry, ChannelState};
-use hive::routing::{RoutingDecision, decide, route_for_workspace};
 
 /// Helper: write a channel state with the given channels to the temp workspace.
 fn write_channel_state(root: &std::path::Path, state: &ChannelState) {
@@ -152,7 +152,7 @@ fn route_ui_more_recent_than_telegram_agent_waiting_returns_ui_only() {
 
 #[test]
 fn ui_event_display_pr_opened() {
-    let event = hive::ui::inbox::UiEvent::PrOpened {
+    let event = apiari_hive::ui::inbox::UiEvent::PrOpened {
         worktree_id: "hive-1".into(),
         pr_url: "https://github.com/test/1".into(),
         pr_title: "Fix bug".into(),
@@ -164,7 +164,7 @@ fn ui_event_display_pr_opened() {
 
 #[test]
 fn ui_event_display_agent_stalled() {
-    let event = hive::ui::inbox::UiEvent::AgentStalled {
+    let event = apiari_hive::ui::inbox::UiEvent::AgentStalled {
         worktree_id: "hive-2".into(),
     };
     let display = event.display();
@@ -177,20 +177,20 @@ fn ui_event_push_and_poll_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 
-    hive::ui::inbox::push_event(
+    apiari_hive::ui::inbox::push_event(
         root,
-        &hive::ui::inbox::UiEvent::AgentCompleted {
+        &apiari_hive::ui::inbox::UiEvent::AgentCompleted {
             worktree_id: "hive-3".into(),
         },
     )
     .unwrap();
 
     let mut pos = 0u64;
-    let events = hive::ui::inbox::poll_events(root, &mut pos);
+    let events = apiari_hive::ui::inbox::poll_events(root, &mut pos);
     assert_eq!(events.len(), 1);
     assert!(pos > 0);
 
     // No new events after reading.
-    let events2 = hive::ui::inbox::poll_events(root, &mut pos);
+    let events2 = apiari_hive::ui::inbox::poll_events(root, &mut pos);
     assert!(events2.is_empty());
 }

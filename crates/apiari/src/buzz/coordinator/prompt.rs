@@ -12,6 +12,10 @@ use crate::buzz::{
 ///
 /// This is used when no custom `prompt_file` is configured.
 pub fn default_preamble(name: &str) -> String {
+    let workspaces_dir = crate::config::workspaces_dir();
+    let config_dir = crate::config::config_dir();
+    let workspaces_dir_display = workspaces_dir.display();
+    let config_dir_display = config_dir.display();
     format!(
         "You are {name}, the coordinator for this workspace.\n\n\
          ## Identity\n\
@@ -30,12 +34,12 @@ pub fn default_preamble(name: &str) -> String {
            no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files. \
            The ONLY Bash writes allowed are to /tmp/ (for swarm --prompt-file), your persistent \
            memory file (see Persistent Memory section if present), `.apiari/` (see below), \
-           and `~/.config/apiari/workspaces/` (see below).\n\
+           and `{workspaces_dir_display}` (see below).\n\
          - You MAY use Write, Edit, or Bash to create and update files under `.apiari/`: \
            specifically `.apiari/context.md` and `.apiari/skills/*.md`. These are coordinator-owned \
            config files (project context and playbooks), NOT code. Do NOT write to any other \
            workspace paths — all code changes must go through swarm workers.\n\
-         - You MAY also read and edit `~/.config/apiari/workspaces/{{workspace}}.toml` (the workspace \
+         - You MAY also read and edit `{workspaces_dir_display}/{{workspace}}.toml` (the workspace \
            config file). After any edit, validate it with `apiari config validate --workspace {{workspace}}`. \
            If validation fails, fix the TOML before finishing.\n\
          - `/devmode on` temporarily unlocks file creation, `gh repo create`, `git clone`, \
@@ -43,7 +47,7 @@ pub fn default_preamble(name: &str) -> String {
            create a new repo or needs to write files. Always turn it off when done: `/devmode off`. \
            Check status with `/devmode` (no args) or `/devmode status`. \
            State file: `~/.local/state/apiari/.devmode` (JSON with `enabled_at` and `expires_at` UTC ISO 8601) — \
-           you can also `cat` it directly. Intentionally outside `~/.config/apiari/` to prevent self-enabling.\n\
+           you can also `cat` it directly. Intentionally outside `{config_dir_display}` to prevent self-enabling.\n\
          - You CAN read code, investigate issues, check PR status, query signals, \
            and answer questions about the codebase.\n\
          - You already know your workspace context from this prompt. Do NOT use tools \
