@@ -5601,6 +5601,100 @@ mod tests {
         )));
     }
 
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_dispatch_due_followups_after_store_reopen_enqueues_follow_through_and_emits_event()
+     {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("signals.db");
+        let root = temp.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let past = (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+
+        {
+            let store = SignalStore::open(&db_path, "ws").unwrap();
+            store
+                .create_followup(
+                    "fu-restart",
+                    "Main",
+                    "Check CI status again",
+                    "2026-05-02T00:00:00Z",
+                    &past,
+                    "pending",
+                )
+                .unwrap();
+        }
+
+        let store = SignalStore::open(&db_path, "ws").unwrap();
+        let config: crate::config::WorkspaceConfig =
+            toml::from_str(&format!(r#"root = "{}""#, root.display())).unwrap();
+        let orchestrator = crate::buzz::orchestrator::Orchestrator::new(
+            &crate::buzz::orchestrator::OrchestratorConfig::default(),
+        );
+        let (coord_tx, mut coord_rx) = mpsc::unbounded_channel();
+        let (updates_tx, mut updates_rx) = broadcast::channel::<http::WsUpdate>(8);
+
+        let bee = super::BeeSlot {
+            name: "Bee".to_string(),
+            coord_tx,
+            coord_handle: None,
+            cancel_token: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            max_session_turns: 20,
+            coord_respawn_count: 0,
+            coord_last_respawn: None,
+            last_user_input: None,
+            last_nudge: None,
+            heartbeat_interval: None,
+            heartbeat_prompt: None,
+            last_heartbeat: None,
+        };
+        let mut bee_map = std::collections::HashMap::new();
+        bee_map.insert("Bee".to_string(), 0);
+
+        let mut slot = super::WorkspaceSlot {
+            name: "ws".to_string(),
+            config,
+            registry: crate::buzz::watcher::WatcherRegistry::new(),
+            bees: vec![bee],
+            bee_map,
+            store,
+            orchestrator,
+            morning_brief: None,
+            db_path,
+            web_updates_tx: Some(updates_tx),
+        };
+
+        super::dispatch_due_followups(&mut slot, &None, &std::collections::HashMap::new());
+
+        let job = coord_rx.recv().await.expect("followup job");
+        match job {
+            super::CoordinatorJob::SignalFollowThrough {
+                source,
+                action,
+                bee_name,
+                slot_name,
+                ..
+            } => {
+                assert_eq!(source, "followup");
+                assert_eq!(action.as_deref(), Some("Check CI status again"));
+                assert_eq!(bee_name, "Bee");
+                assert_eq!(slot_name, "ws");
+            }
+            _ => panic!("expected followup follow-through"),
+        }
+
+        let update = updates_rx.recv().await.expect("followup fired update");
+        assert!(matches!(
+            update,
+            http::WsUpdate::FollowupFired { id, bot, status, .. }
+                if id == "fu-restart" && bot == "Main" && status == "fired"
+        ));
+
+        let followup = slot.store.get_followup("fu-restart").unwrap().unwrap();
+        assert_eq!(followup.status, "fired");
+    }
+
     #[test]
     fn test_parse_followup_fires_at_supports_relative_and_absolute_times() {
         let now = chrono::Utc::now();

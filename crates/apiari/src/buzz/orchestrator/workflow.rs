@@ -265,6 +265,39 @@ mod tests {
     }
 
     #[test]
+    fn test_ai_review_happy_path_progresses_from_branch_ready_to_pr() {
+        let engine = WorkflowEngine::new(WorkflowConfig {
+            branch_ready_action: BranchReadyAction::AiReview,
+            max_review_cycles: 3,
+        });
+
+        assert_eq!(
+            engine.on_branch_ready("task-1", "feat/foo", "worker-1"),
+            WorkflowAction::DispatchReviewer {
+                task_id: "task-1".to_string(),
+                branch_name: "feat/foo".to_string(),
+                worker_id: "worker-1".to_string(),
+            }
+        );
+
+        assert_eq!(
+            engine.on_review_verdict("task-1", "feat/foo", "CHANGES_REQUESTED", "Fix tests", 1),
+            Some(WorkflowAction::DispatchRework {
+                task_id: "task-1".to_string(),
+                feedback: "Fix tests".to_string(),
+            })
+        );
+
+        assert_eq!(
+            engine.on_review_verdict("task-1", "feat/foo", "APPROVED", "", 2),
+            Some(WorkflowAction::CreatePr {
+                task_id: "task-1".to_string(),
+                branch_name: "feat/foo".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn test_max_review_cycles_forces_pr() {
         let engine = WorkflowEngine::new(WorkflowConfig {
             branch_ready_action: BranchReadyAction::AiReview,

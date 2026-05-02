@@ -4122,6 +4122,67 @@ model = "gpt-5.3-codex"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn unread_and_seen_endpoints_resume_correctly_after_store_reopen() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(
+                r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+
+[[bees]]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+"#,
+                root.display()
+            ),
+        );
+
+        {
+            let store =
+                crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), "apiari")
+                    .unwrap();
+            let main_scope =
+                crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
+            main_scope
+                .save_message("assistant", "first reply", Some("system"), None, None)
+                .unwrap();
+        }
+
+        let seen = mark_workspace_seen(Path(("apiari".to_string(), "Main".to_string())))
+            .await
+            .0;
+        assert_eq!(seen.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+        {
+            let store =
+                crate::buzz::signal::store::SignalStore::open(&crate::config::db_path(), "apiari")
+                    .unwrap();
+            assert!(store.get_bot_seen_message_id("Main").unwrap().is_some());
+            let main_scope =
+                crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
+            main_scope
+                .save_message("assistant", "second reply", Some("system"), None, None)
+                .unwrap();
+        }
+
+        let unread = get_workspace_unread(Path("apiari".to_string())).await.0;
+        assert_eq!(unread.get("Main").and_then(|v| v.as_u64()), Some(1));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn followups_endpoint_lists_and_cancels_persisted_followups() {
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();

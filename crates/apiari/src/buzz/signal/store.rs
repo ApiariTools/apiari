@@ -1136,6 +1136,28 @@ mod tests {
     }
 
     #[test]
+    fn test_seen_checkpoint_survives_reopen_and_can_advance() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            store.mark_bot_seen("Main", 7).unwrap();
+        }
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            assert_eq!(store.get_bot_seen_message_id("Main").unwrap(), Some(7));
+            store.mark_bot_seen("Main", 9).unwrap();
+        }
+
+        {
+            let store = SignalStore::open(&db_path, "test").unwrap();
+            assert_eq!(store.get_bot_seen_message_id("Main").unwrap(), Some(9));
+        }
+    }
+
+    #[test]
     fn test_resolve_missing_signals() {
         let store = test_store();
         store

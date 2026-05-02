@@ -747,4 +747,100 @@ describe("Worker lifecycle", () => {
       expect(screen.getByText("Waiting on review for PR #1")).toBeInTheDocument();
     });
   }, 10000);
+
+  it("keeps selected worker detail aligned through merge completion", async () => {
+    (api.getWorkers as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([
+        {
+          id: "common-sdk-fix",
+          branch: "common/fix-sdk",
+          status: "running",
+          agent: "codex",
+          pr_url: null,
+          pr_title: null,
+          description: "Repair shared repo detection",
+          elapsed_secs: 125,
+          dispatched_by: "Main",
+        },
+      ])
+      .mockResolvedValue([
+        {
+          id: "common-sdk-fix",
+          branch: "common/fix-sdk",
+          status: "completed",
+          agent: "codex",
+          pr_url: "https://example.com/pr/1",
+          pr_title: "Fix SDK mapping",
+          description: "Repair shared repo detection",
+          elapsed_secs: 140,
+          dispatched_by: "Main",
+          review_state: "merged",
+        },
+      ]);
+    (api.getRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        name: "common",
+        path: "/dev/common",
+        has_swarm: true,
+        is_clean: false,
+        branch: "main",
+        workers: [
+          {
+            id: "common-sdk-fix",
+            branch: "common/fix-sdk",
+            status: "running",
+            agent: "codex",
+            pr_url: null,
+            pr_title: null,
+            description: "Repair shared repo detection",
+            elapsed_secs: 125,
+            dispatched_by: "Main",
+          },
+        ],
+      },
+    ]);
+    (api.getWorkerDetail as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({
+        id: "common-sdk-fix",
+        branch: "common/fix-sdk",
+        status: "running",
+        agent: "codex",
+        pr_url: null,
+        pr_title: null,
+        description: "Repair shared repo detection",
+        elapsed_secs: 125,
+        dispatched_by: "Main",
+        prompt: "Investigate repo slug resolution",
+        output: "Working through daemon/http.rs",
+        conversation: [],
+      })
+      .mockResolvedValue({
+        id: "common-sdk-fix",
+        branch: "common/fix-sdk",
+        status: "completed",
+        agent: "codex",
+        pr_url: "https://example.com/pr/1",
+        pr_title: "Fix SDK mapping",
+        description: "Repair shared repo detection",
+        elapsed_secs: 140,
+        dispatched_by: "Main",
+        review_state: "merged",
+        prompt: "Investigate repo slug resolution",
+        output: "Merged into main",
+        conversation: [],
+      });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByText("common-sdk-fix")).toBeInTheDocument());
+    await user.click(screen.getByText("common-sdk-fix"));
+    await waitFor(() => expect(screen.getByText("Working through daemon/http.rs")).toBeInTheDocument());
+
+    await new Promise((resolve) => setTimeout(resolve, 5200));
+    await waitFor(() => {
+      expect(screen.getByText("Merged into main")).toBeInTheDocument();
+      expect(screen.getByText("completed · common/fix-sdk")).toBeInTheDocument();
+    });
+  }, 10000);
 });
