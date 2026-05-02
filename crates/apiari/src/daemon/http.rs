@@ -789,6 +789,29 @@ fn repo_slug_to_local_path(root: &std::path::Path, repo: &str) -> std::path::Pat
         return by_name;
     }
 
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !entry.file_type().is_ok_and(|ft| ft.is_dir()) || !path.join(".git").exists() {
+                continue;
+            }
+            let Some(origin_url) = git_output(&path, &["remote", "get-url", "origin"]) else {
+                continue;
+            };
+            let slug = if let Some(rest) = origin_url.strip_prefix("https://github.com/") {
+                rest
+            } else if let Some(rest) = origin_url.strip_prefix("git@github.com:") {
+                rest
+            } else {
+                continue;
+            };
+            let slug = slug.strip_suffix(".git").unwrap_or(slug);
+            if slug == repo {
+                return path;
+            }
+        }
+    }
+
     root.to_path_buf()
 }
 
