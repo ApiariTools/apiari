@@ -2678,6 +2678,121 @@ mod tests {
     }
 
     #[test]
+    fn display_bee_name_maps_default_bee_to_main() {
+        let bees = vec![crate::config::BeeConfig {
+            name: "Bee".to_string(),
+            provider: "claude".to_string(),
+            model: "sonnet".to_string(),
+            max_turns: 20,
+            prompt: None,
+            max_session_turns: 50,
+            signal_hooks: vec![],
+            topic_id: None,
+            heartbeat: None,
+            heartbeat_prompt: None,
+        }];
+
+        assert_eq!(display_bee_name(&bees, &bees[0]), "Main");
+    }
+
+    #[test]
+    fn resolve_bee_name_for_api_prefers_default_bee_for_main() {
+        let mut config = test_workspace_config(std::path::PathBuf::from("/tmp/apiari"), vec![]);
+        config.bees = Some(vec![
+            crate::config::BeeConfig {
+                name: "Bee".to_string(),
+                provider: "claude".to_string(),
+                model: "sonnet".to_string(),
+                max_turns: 20,
+                prompt: None,
+                max_session_turns: 50,
+                signal_hooks: vec![],
+                topic_id: None,
+                heartbeat: None,
+                heartbeat_prompt: None,
+            },
+            crate::config::BeeConfig {
+                name: "Codex".to_string(),
+                provider: "codex".to_string(),
+                model: "gpt-5.3-codex".to_string(),
+                max_turns: 20,
+                prompt: None,
+                max_session_turns: 50,
+                signal_hooks: vec![],
+                topic_id: None,
+                heartbeat: None,
+                heartbeat_prompt: None,
+            },
+        ]);
+
+        assert_eq!(resolve_bee_name_for_api(&config, "Main").as_deref(), Some("Bee"));
+        assert_eq!(
+            resolve_bee_name_for_api(&config, "Codex").as_deref(),
+            Some("Codex")
+        );
+    }
+
+    #[test]
+    fn resolve_bee_name_for_api_falls_back_to_first_bee_when_default_missing() {
+        let mut config = test_workspace_config(std::path::PathBuf::from("/tmp/apiari"), vec![]);
+        config.bees = Some(vec![crate::config::BeeConfig {
+            name: "Claude".to_string(),
+            provider: "claude".to_string(),
+            model: "sonnet".to_string(),
+            max_turns: 20,
+            prompt: None,
+            max_session_turns: 50,
+            signal_hooks: vec![],
+            topic_id: None,
+            heartbeat: None,
+            heartbeat_prompt: None,
+        }]);
+
+        assert_eq!(
+            resolve_bee_name_for_api(&config, "Main").as_deref(),
+            Some("Claude")
+        );
+    }
+
+    #[test]
+    fn bot_items_for_workspace_exposes_main_name_for_default_bee() {
+        let mut config = test_workspace_config(std::path::PathBuf::from("/tmp/apiari"), vec![]);
+        config.bees = Some(vec![
+            crate::config::BeeConfig {
+                name: "Bee".to_string(),
+                provider: "claude".to_string(),
+                model: "sonnet".to_string(),
+                max_turns: 20,
+                prompt: Some("Default coordinator".to_string()),
+                max_session_turns: 50,
+                signal_hooks: vec![],
+                topic_id: None,
+                heartbeat: None,
+                heartbeat_prompt: None,
+            },
+            crate::config::BeeConfig {
+                name: "Codex".to_string(),
+                provider: "codex".to_string(),
+                model: "gpt-5.3-codex".to_string(),
+                max_turns: 20,
+                prompt: Some("Code specialist".to_string()),
+                max_session_turns: 50,
+                signal_hooks: vec![],
+                topic_id: None,
+                heartbeat: None,
+                heartbeat_prompt: None,
+            },
+        ]);
+
+        let items = bot_items_for_workspace(&config);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name, "Main");
+        assert_eq!(items[0].provider.as_deref(), Some("claude"));
+        assert_eq!(items[1].name, "Codex");
+        assert_eq!(items[1].provider.as_deref(), Some("codex"));
+    }
+
+    #[test]
     fn build_repo_list_items_uses_local_dir_name_without_duplicate_root_repo() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("apiari");

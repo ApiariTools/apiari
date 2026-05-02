@@ -265,6 +265,135 @@ describe("WebSocket message dedup", () => {
     });
   });
 
+  it("does not duplicate an assistant reply when streaming status, message, and idle all arrive", async () => {
+    let wsCallback: (event: Record<string, unknown>) => void = () => {};
+    (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (event: Record<string, unknown>) => void) => {
+        wsCallback = cb;
+        return { close: vi.fn() };
+      },
+    );
+
+    await renderAndSelectBot("Main");
+
+    (api.getConversations as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { id: 1, workspace: "apiari", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
+      { id: 2, workspace: "apiari", bot: "Main", role: "assistant", content: "Hi! How can I help?", attachments: null, created_at: new Date().toISOString() },
+      { id: 3, workspace: "apiari", bot: "Main", role: "assistant", content: "streamed reply", attachments: null, created_at: new Date().toISOString() },
+    ]);
+
+    wsCallback({
+      type: "bot_status",
+      workspace: "apiari",
+      bot: "Main",
+      status: "streaming",
+      streaming_content: "streamed reply",
+      tool_name: null,
+    });
+    wsCallback({
+      type: "message",
+      id: 3,
+      workspace: "apiari",
+      bot: "Main",
+      role: "assistant",
+      content: "streamed reply",
+      created_at: new Date().toISOString(),
+    });
+    wsCallback({
+      type: "bot_status",
+      workspace: "apiari",
+      bot: "Main",
+      status: "idle",
+      streaming_content: "",
+      tool_name: null,
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("streamed reply")).toHaveLength(1);
+    });
+  });
+
+  it("ignores websocket message events for other workspaces", async () => {
+    let wsCallback: (event: Record<string, unknown>) => void = () => {};
+    (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (event: Record<string, unknown>) => void) => {
+        wsCallback = cb;
+        return { close: vi.fn() };
+      },
+    );
+
+    await renderAndSelectBot("Main");
+    (api.getConversations as ReturnType<typeof vi.fn>).mockClear();
+
+    wsCallback({
+      type: "message",
+      id: 99,
+      workspace: "mgm",
+      bot: "Main",
+      role: "assistant",
+      content: "ignore me",
+      created_at: new Date().toISOString(),
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+    expect(screen.queryByText("ignore me")).not.toBeInTheDocument();
+    expect(api.getConversations).not.toHaveBeenCalled();
+  });
+
+});
+
+describe("Realtime side panels", () => {
+  it("refreshes followups after a followup websocket event", async () => {
+    let wsCallback: (event: Record<string, unknown>) => void = () => {};
+    (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (event: Record<string, unknown>) => void) => {
+        wsCallback = cb;
+        return { close: vi.fn() };
+      },
+    );
+
+    await renderAndSelectBot("Main");
+    (api.getFollowups as ReturnType<typeof vi.fn>).mockClear();
+
+    wsCallback({
+      type: "followup_fired",
+      workspace: "apiari",
+      bot: "Main",
+    });
+
+    await waitFor(() => {
+      expect(api.getFollowups).toHaveBeenCalledWith("apiari", undefined);
+    });
+  });
+
+  it("refreshes research tasks and shows a system message when research completes", async () => {
+    let wsCallback: (event: Record<string, unknown>) => void = () => {};
+    (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
+      (cb: (event: Record<string, unknown>) => void) => {
+        wsCallback = cb;
+        return { close: vi.fn() };
+      },
+    );
+
+    await renderAndSelectBot("Main");
+    (api.getResearchTasks as ReturnType<typeof vi.fn>).mockClear();
+
+    wsCallback({
+      type: "research_update",
+      workspace: "apiari",
+      bot: "Main",
+      status: "complete",
+      topic: "monorepo cleanup",
+      output_file: "monorepo-cleanup.md",
+    });
+
+    await waitFor(() => {
+      expect(api.getResearchTasks).toHaveBeenCalledWith("apiari", undefined);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Research complete: monorepo cleanup → docs/monorepo-cleanup.md")).toBeInTheDocument();
+    });
+  });
 });
 
 describe("Research command", () => {

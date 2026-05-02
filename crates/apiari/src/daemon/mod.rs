@@ -5070,20 +5070,19 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn test_web_chat_flow_persists_messages_and_returns_bot_to_idle() {
+        let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
-        let _path_guard = {
-            let _env_guard = env_lock();
-            install_fake_gemini(
-                temp.path(),
-                &[
-                    r#"{"type":"init","session_id":"gemini-session-123"}"#,
-                    r#"{"type":"message","role":"assistant","content":"Hello","delta":true}"#,
-                    r#"{"type":"message","role":"assistant","content":" world","delta":true}"#,
-                    r#"{"type":"result","status":"success","stats":{"input_tokens":5,"output_tokens":2,"cached":0}}"#,
-                ],
-            )
-        };
+        let _path_guard = install_fake_gemini(
+            temp.path(),
+            &[
+                r#"{"type":"init","session_id":"gemini-session-123"}"#,
+                r#"{"type":"message","role":"assistant","content":"Hello","delta":true}"#,
+                r#"{"type":"message","role":"assistant","content":" world","delta":true}"#,
+                r#"{"type":"result","status":"success","stats":{"input_tokens":5,"output_tokens":2,"cached":0}}"#,
+            ],
+        );
 
         let db_path = temp.path().join("signals.db");
         let store = SignalStore::open(&db_path, "ws").unwrap();
@@ -5181,6 +5180,101 @@ mod tests {
             update,
             http::WsUpdate::BotStatus { bot, status, streaming_content, .. }
                 if bot == "Main" && status == "streaming" && streaming_content == "Hello world"
+        )));
+        assert!(ws_updates.iter().any(|update| matches!(
+            update,
+            http::WsUpdate::BotStatus { bot, status, streaming_content, .. }
+                if bot == "Main" && status == "idle" && streaming_content.is_empty()
+        )));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_web_chat_error_persists_assistant_error_and_returns_bot_to_idle() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _path_guard = install_fake_gemini(
+            temp.path(),
+            &[r#"{"type":"error","status":"UNAUTHENTICATED","message":"login required","fatal":true}"#],
+        );
+
+        let db_path = temp.path().join("signals.db");
+        let store = SignalStore::open(&db_path, "ws").unwrap();
+        let mut coordinator = crate::buzz::coordinator::Coordinator::new("gemini-2.5-flash", 20);
+        coordinator.set_provider("gemini".to_string());
+        coordinator.set_working_dir(temp.path().to_path_buf());
+
+        let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            super::run_coordinator_task(
+                coordinator,
+                store,
+                job_rx,
+                0,
+                crate::config::WorkspaceAuthority::default(),
+            )
+            .await;
+        });
+
+        let (resp_tx, mut resp_rx) = mpsc::unbounded_channel::<socket::DaemonResponse>();
+        let (updates_tx, mut updates_rx) = broadcast::channel::<http::WsUpdate>(32);
+
+        job_tx
+            .send(super::CoordinatorJob::TuiChat {
+                text: "hello".to_string(),
+                source: "web".to_string(),
+                broadcast_user_activity: true,
+                responder: resp_tx,
+                socket_server: None,
+                web_updates_tx: Some(updates_tx),
+                ws_name: "ws".to_string(),
+                bee_name: "Bee".to_string(),
+            })
+            .unwrap();
+        drop(job_tx);
+
+        let mut daemon_events = Vec::new();
+        while let Some(event) = resp_rx.recv().await {
+            let done = matches!(event, socket::DaemonResponse::Done { .. });
+            let errored = matches!(event, socket::DaemonResponse::Error { .. });
+            daemon_events.push(event);
+            if done || errored {
+                break;
+            }
+        }
+
+        let mut ws_updates = Vec::new();
+        while let Ok(update) =
+            tokio::time::timeout(std::time::Duration::from_millis(50), updates_rx.recv()).await
+        {
+            match update {
+                Ok(update) => ws_updates.push(update),
+                Err(_) => break,
+            }
+        }
+
+        task.await.unwrap();
+
+        let verify_store = SignalStore::open(&db_path, "ws").unwrap();
+        let status = verify_store.get_bot_status("Bee").unwrap().unwrap();
+        assert_eq!(status.status, "idle");
+
+        let conv = ConversationStore::new(verify_store.conn(), "ws/Bee");
+        let history = conv.load_history(10).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role, "user");
+        assert_eq!(history[0].content, "hello");
+        assert_eq!(history[1].role, "assistant");
+        assert!(history[1].content.contains("login required"));
+
+        assert!(daemon_events.iter().any(|event| matches!(
+            event,
+            socket::DaemonResponse::Error { text, .. } if text.contains("login required")
+        )));
+        assert!(ws_updates.iter().any(|update| matches!(
+            update,
+            http::WsUpdate::Message { bot, role, content, .. }
+                if bot == "Main" && role == "assistant" && content.contains("login required")
         )));
         assert!(ws_updates.iter().any(|update| matches!(
             update,
