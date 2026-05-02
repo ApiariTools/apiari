@@ -571,7 +571,7 @@ impl Coordinator {
                     ResumeOptions {
                         session_id: Some(sid.clone()),
                         model: Some(self.model.clone()),
-                        full_auto: true,
+                        dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
                     },
@@ -583,7 +583,7 @@ impl Coordinator {
                     prompt,
                     ExecOptions {
                         model: Some(self.model.clone()),
-                        full_auto: true,
+                        dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
                     },
@@ -668,6 +668,8 @@ impl Coordinator {
                         session_id: Some(sid.clone()),
                         model: Some(self.model.clone()),
                         working_dir: self.working_dir.clone(),
+                        yolo: true,
+                        ..Default::default()
                     },
                 )
                 .await?
@@ -678,6 +680,7 @@ impl Coordinator {
                     GeminiOptions {
                         model: Some(self.model.clone()),
                         working_dir: self.working_dir.clone(),
+                        yolo: true,
                         ..Default::default()
                     },
                 )
