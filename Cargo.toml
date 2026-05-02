@@ -8,6 +8,7 @@ members = [
     "crates/tui",
     "crates/claude-sdk",
     "crates/codex-sdk",
+    "crates/gemini-sdk",
 ]
 
 [workspace.package]
@@ -22,7 +23,7 @@ apiari-claude-sdk = { path = "crates/claude-sdk" }
 apiari-codex-sdk = { path = "crates/codex-sdk" }
 apiari-swarm = { path = "crates/swarm", default-features = false }
 apiari-tui = { path = "crates/tui" }
-apiari-gemini-sdk = "0.2.1"
+apiari-gemini-sdk = { path = "crates/gemini-sdk" }
 
 # Shared external dependencies
 chrono = { version = "0.4", features = ["serde"] }

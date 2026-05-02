@@ -186,8 +186,6 @@ dependencies = [
 [[package]]
 name = "apiari-gemini-sdk"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32f5e3fba551c96f937ef9149415de0cd8c1e318a6eb4f6208549c28ac8c4c03"
 dependencies = [
  "libc",
  "serde",
