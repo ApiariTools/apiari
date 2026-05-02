@@ -921,6 +921,12 @@ fn truncate_cmd(cmd: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::Path,
+        sync::{Mutex, OnceLock},
+    };
+
     use apiari_claude_sdk::{
         Event,
         types::{AssistantMessage, AssistantMessageContent, ContentBlock, ResultMessage},
@@ -931,6 +937,160 @@ mod tests {
 
     fn make_coordinator() -> Coordinator {
         Coordinator::new("sonnet", 20)
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct PathGuard {
+        old_path: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            match self.old_path.take() {
+                Some(path) => unsafe { std::env::set_var("PATH", path) },
+                None => unsafe { std::env::remove_var("PATH") },
+            }
+        }
+    }
+
+    fn install_fake_binary(dir: &Path, name: &str, body: &str) -> PathGuard {
+        let bin_dir = dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join(name);
+        fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![bin_dir];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        let joined = std::env::join_paths(paths).unwrap();
+        unsafe { std::env::set_var("PATH", joined) };
+
+        PathGuard { old_path }
+    }
+
+    fn install_fake_codex(dir: &Path, log_path: &Path) -> PathGuard {
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1\" = \"exec\" ] && [ \"$2\" = \"resume\" ]; then\n  printf '%s\\n' '{}'\n  printf '%s\\n' '{}'\n  printf '%s\\n' '{}'\nelse\n  printf '%s\\n' '{}'\n  printf '%s\\n' '{}'\n  printf '%s\\n' '{}'\nfi\n",
+            log_path.display(),
+            r#"{"type":"thread.started","thread_id":"codex-session-1"}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"Second reply. [FOLLOWUP: 1h | Check PR status again]"}}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":9,"cached_input_tokens":2}}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"thread.started","thread_id":"codex-session-1"}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"First reply."}}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":2,"cached_input_tokens":0}}"#.replace('\'', "'\"'\"'"),
+        );
+        install_fake_binary(dir, "codex", &body)
+    }
+
+    fn install_fake_gemini(dir: &Path, log_path: &Path) -> PathGuard {
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \" $* \" in\n  *' --resume gemini-session-1 '*)\n    printf '%s\\n' '{}'\n    printf '%s\\n' '{}'\n    printf '%s\\n' '{}'\n    ;;\n  *)\n    printf '%s\\n' '{}'\n    printf '%s\\n' '{}'\n    printf '%s\\n' '{}'\n    ;;\nesac\n",
+            log_path.display(),
+            r#"{"type":"init","session_id":"gemini-session-1"}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"message","role":"assistant","content":"Second reply. [FOLLOWUP: 1h | Check PR status again]","delta":true}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"result","status":"success","stats":{"input_tokens":7,"output_tokens":9,"cached":2}}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"init","session_id":"gemini-session-1"}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"message","role":"assistant","content":"First reply.","delta":true}"#.replace('\'', "'\"'\"'"),
+            r#"{"type":"result","status":"success","stats":{"input_tokens":5,"output_tokens":2,"cached":0}}"#.replace('\'', "'\"'\"'"),
+        );
+        install_fake_binary(dir, "gemini", &body)
+    }
+
+    #[derive(Debug, Clone)]
+    struct TurnContract {
+        response: String,
+        emitted_token: bool,
+        usage: UsageStats,
+        parsed_actions: Vec<crate::buzz::coordinator::actions::BeeAction>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct ProviderScenarioContract {
+        first_turn: TurnContract,
+        second_turn: TurnContract,
+        session_token: SessionToken,
+    }
+
+    async fn run_mock_provider_contract(
+        provider: &str,
+        shim_dir: &Path,
+        log_path: &Path,
+    ) -> ProviderScenarioContract {
+        let _path_guard = match provider {
+            "codex" => install_fake_codex(shim_dir, log_path),
+            "gemini" => install_fake_gemini(shim_dir, log_path),
+            other => panic!("unsupported provider for mocked contract: {other}"),
+        };
+
+        let store = SignalStore::open_memory("ws").unwrap();
+        let mut coord = Coordinator::new(
+            if provider == "gemini" {
+                "gemini-2.5-flash"
+            } else {
+                "gpt-5.3-codex"
+            },
+            20,
+        );
+        coord.set_provider(provider.to_string());
+        coord.set_name("Main".to_string());
+        coord.set_extra_context(
+            "## Workspace\nTest workspace\n\n## Available Playbooks\n- none\n".to_string(),
+        );
+
+        let bundle = coord.prepare_dispatch(&store).unwrap();
+        let mut first_events = Vec::new();
+        let first_response = coord
+            .dispatch_message("Reply briefly.", bundle, |event| first_events.push(event))
+            .await
+            .unwrap();
+
+        let bundle = coord.prepare_dispatch(&store).unwrap();
+        let mut second_events = Vec::new();
+        let second_response = coord
+            .dispatch_message("Schedule a follow-up if needed.", bundle, |event| {
+                second_events.push(event)
+            })
+            .await
+            .unwrap();
+
+        let session_token = coord.session_token().cloned().expect("session token");
+
+        fn to_turn_contract(response: String, events: Vec<CoordinatorEvent>) -> TurnContract {
+            let emitted_token = events
+                .iter()
+                .any(|event| matches!(event, CoordinatorEvent::Token(_)));
+            let usage = events
+                .iter()
+                .find_map(|event| match event {
+                    CoordinatorEvent::Usage(stats) => Some(stats.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let parsed_actions = crate::buzz::coordinator::actions::parse_actions(&response);
+            TurnContract {
+                response,
+                emitted_token,
+                usage,
+                parsed_actions,
+            }
+        }
+
+        ProviderScenarioContract {
+            first_turn: to_turn_contract(first_response, first_events),
+            second_turn: to_turn_contract(second_response, second_events),
+            session_token,
+        }
     }
 
     fn make_result_event(session_id: &str, is_error: bool, result_text: Option<&str>) -> Event {
@@ -1337,5 +1497,169 @@ mod tests {
         assert_eq!(stats.output_tokens, 0);
         assert_eq!(stats.cache_read_tokens, 0);
         assert_eq!(stats.total_cost_usd, None);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_mocked_alt_provider_contracts_stay_in_parity() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let codex_log = temp.path().join("codex.log");
+        let gemini_log = temp.path().join("gemini.log");
+
+        let codex = run_mock_provider_contract("codex", temp.path(), &codex_log).await;
+        let gemini = run_mock_provider_contract("gemini", temp.path(), &gemini_log).await;
+
+        let expected = ProviderScenarioContract {
+            first_turn: TurnContract {
+                response: "First reply.".to_string(),
+                emitted_token: true,
+                usage: UsageStats {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                    cache_read_tokens: 0,
+                    total_cost_usd: None,
+                },
+                parsed_actions: vec![],
+            },
+            second_turn: TurnContract {
+                response: "Second reply. [FOLLOWUP: 1h | Check PR status again]".to_string(),
+                emitted_token: true,
+                usage: UsageStats {
+                    input_tokens: 7,
+                    output_tokens: 9,
+                    cache_read_tokens: 2,
+                    total_cost_usd: None,
+                },
+                parsed_actions: vec![crate::buzz::coordinator::actions::BeeAction::Followup {
+                    when: "1h".to_string(),
+                    action: "Check PR status again".to_string(),
+                }],
+            },
+            session_token: SessionToken {
+                provider: "codex".to_string(),
+                token: "codex-session-1".to_string(),
+            },
+        };
+
+        fn assert_turn(actual: &TurnContract, expected: &TurnContract) {
+            assert_eq!(actual.response, expected.response);
+            assert_eq!(actual.emitted_token, expected.emitted_token);
+            assert_eq!(actual.usage.input_tokens, expected.usage.input_tokens);
+            assert_eq!(actual.usage.output_tokens, expected.usage.output_tokens);
+            assert_eq!(
+                actual.usage.cache_read_tokens,
+                expected.usage.cache_read_tokens
+            );
+            assert_eq!(actual.usage.total_cost_usd, expected.usage.total_cost_usd);
+            assert_eq!(actual.parsed_actions, expected.parsed_actions);
+        }
+
+        assert_turn(&codex.first_turn, &expected.first_turn);
+        assert_turn(&codex.second_turn, &expected.second_turn);
+        assert_eq!(codex.session_token.provider, expected.session_token.provider);
+        assert_eq!(codex.session_token.token, expected.session_token.token);
+
+        assert_turn(&gemini.first_turn, &expected.first_turn);
+        assert_turn(&gemini.second_turn, &expected.second_turn);
+        assert_eq!(gemini.session_token.provider, "gemini");
+        assert_eq!(gemini.session_token.token, "gemini-session-1");
+
+        let codex_invocations = fs::read_to_string(&codex_log).unwrap();
+        assert!(codex_invocations.lines().count() >= 2);
+        assert!(codex_invocations.contains("codex-session-1"));
+
+        let gemini_invocations = fs::read_to_string(&gemini_log).unwrap();
+        assert!(
+            gemini_invocations
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .contains("--yolo")
+        );
+        assert!(gemini_invocations.lines().count() >= 2);
+        assert!(gemini_invocations.contains("gemini-session-1"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_mocked_alt_provider_error_contracts_match() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _path_guard = install_fake_binary(
+            temp.path(),
+            "codex",
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"turn.failed\",\"error\":{\"message\":\"provider auth failed\"}}'\n",
+        );
+        let _gemini_guard = install_fake_binary(
+            temp.path(),
+            "gemini",
+            "#!/bin/sh\nprintf '%s\\n' '{\"type\":\"error\",\"message\":\"provider auth failed\",\"fatal\":true}'\n",
+        );
+
+        async fn run_error(provider: &str) -> String {
+            let store = SignalStore::open_memory("ws").unwrap();
+            let mut coord = Coordinator::new("test-model", 20);
+            coord.set_provider(provider.to_string());
+            let bundle = coord.prepare_dispatch(&store).unwrap();
+            let err = coord
+                .dispatch_message("Reply briefly.", bundle, |_| {})
+                .await
+                .expect_err("provider should fail");
+            assert!(coord.session_token().is_none());
+            err.to_string()
+        }
+
+        let codex_err = run_error("codex").await;
+        let gemini_err = run_error("gemini").await;
+        assert!(codex_err.contains("provider auth failed"));
+        assert!(gemini_err.contains("provider auth failed"));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_real_provider_smoke_contract_opt_in() {
+        if std::env::var("APIARI_REAL_PROVIDER_SMOKE").ok().as_deref() != Some("1") {
+            return;
+        }
+
+        let providers = std::env::var("APIARI_REAL_PROVIDER_SMOKE_PROVIDERS")
+            .unwrap_or_else(|_| "claude,codex,gemini".to_string());
+        let store = SignalStore::open_memory("ws").unwrap();
+
+        for provider in providers
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !Coordinator::is_available(provider).await {
+                continue;
+            }
+
+            let mut coord = Coordinator::new(
+                if provider == "gemini" {
+                    "gemini-2.5-flash"
+                } else if provider == "codex" {
+                    "gpt-5.3-codex"
+                } else {
+                    "sonnet"
+                },
+                10,
+            );
+            coord.set_provider(provider.to_string());
+            let bundle = coord.prepare_dispatch(&store).unwrap();
+            let response = coord
+                .dispatch_message("Reply with OK and nothing else.", bundle, |_| {})
+                .await
+                .unwrap();
+            let normalized = response
+                .trim()
+                .trim_matches(|c: char| c == '.' || c.is_whitespace());
+            assert!(
+                normalized.eq_ignore_ascii_case("ok")
+                    || normalized.to_ascii_lowercase().contains("ok"),
+                "provider {provider} returned unexpected smoke response: {response}"
+            );
+        }
     }
 }
