@@ -44,6 +44,10 @@ pub struct ExecOptions {
 
     /// Additional environment variables to set.
     pub env_vars: Vec<(String, String)>,
+
+    /// Skip all confirmation prompts and execute without sandboxing.
+    /// Maps to `--dangerously-bypass-approvals-and-sandbox`.
+    pub dangerously_bypass_sandbox: bool,
 }
 
 /// Options for resuming a previous `codex exec` session.
@@ -66,6 +70,10 @@ pub struct ResumeOptions {
 
     /// Additional environment variables to set.
     pub env_vars: Vec<(String, String)>,
+
+    /// Skip all confirmation prompts and execute without sandboxing.
+    /// Maps to `--dangerously-bypass-approvals-and-sandbox`.
+    pub dangerously_bypass_sandbox: bool,
 }
 
 /// Sandbox modes controlling file system access.
@@ -150,6 +158,9 @@ impl ExecOptions {
         for image in &self.images {
             args.extend(["--image".to_owned(), image.display().to_string()]);
         }
+        if self.dangerously_bypass_sandbox {
+            args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+        }
 
         args
     }
@@ -171,6 +182,9 @@ impl ResumeOptions {
         }
         if self.full_auto {
             args.push("--full-auto".to_owned());
+        }
+        if self.dangerously_bypass_sandbox {
+            args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
         }
 
         args

@@ -22,7 +22,7 @@ apiari-claude-sdk = { path = "crates/claude-sdk" }
 apiari-codex-sdk = { path = "crates/codex-sdk" }
 apiari-swarm = { path = "crates/swarm", default-features = false }
 apiari-tui = { path = "crates/tui" }
-apiari-gemini-sdk = "0.2.0"
+apiari-gemini-sdk = "0.2.1"
 
 # Shared external dependencies
 chrono = { version = "0.4", features = ["serde"] }

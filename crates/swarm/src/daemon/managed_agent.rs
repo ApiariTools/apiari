@@ -316,7 +316,7 @@ impl CodexManagedAgent {
                     &opts.prompt,
                     apiari_codex_sdk::ResumeOptions {
                         session_id: Some(session_id.clone()),
-                        full_auto: true,
+                        dangerously_bypass_sandbox: true,
                         working_dir: Some(opts.working_dir.clone()),
                         ..Default::default()
                     },
@@ -327,7 +327,7 @@ impl CodexManagedAgent {
                 .exec(
                     &opts.prompt,
                     apiari_codex_sdk::ExecOptions {
-                        full_auto: true,
+                        dangerously_bypass_sandbox: true,
                         working_dir: Some(opts.working_dir.clone()),
                         ..Default::default()
                     },
@@ -397,7 +397,7 @@ impl ManagedAgent for CodexManagedAgent {
                 message,
                 apiari_codex_sdk::ResumeOptions {
                     session_id: self.thread_id.clone(),
-                    full_auto: true,
+                    dangerously_bypass_sandbox: true,
                     working_dir: Some(self.working_dir.clone()),
                     ..Default::default()
                 },
@@ -535,6 +535,7 @@ impl GeminiManagedAgent {
                     apiari_gemini_sdk::SessionOptions {
                         session_id: Some(session_id.clone()),
                         working_dir: Some(opts.working_dir.clone()),
+                        yolo: true,
                         ..Default::default()
                     },
                 )
@@ -545,6 +546,7 @@ impl GeminiManagedAgent {
                     &opts.prompt,
                     apiari_gemini_sdk::GeminiOptions {
                         working_dir: Some(opts.working_dir.clone()),
+                        yolo: true,
                         ..Default::default()
                     },
                 )
