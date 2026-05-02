@@ -18,7 +18,7 @@ export function DocsPanel({ workspace, remote }: Props) {
   const [savedContent, setSavedContent] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedRef = useRef<string | null>(null);
 
   const edited = content !== savedContent;
@@ -65,7 +65,7 @@ export function DocsPanel({ workspace, remote }: Props) {
         setSavedContent(doc.content || "");
       });
     },
-    [workspace],
+    [workspace, remote],
   );
 
   const handleSave = useCallback(async () => {

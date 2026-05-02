@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Mic, Square, Paperclip, ArrowUp, Loader2 } from "lucide-react";
 import type { MicVAD } from "@ricky0123/vad-web";
 import { cleanTranscription, matchConfirmation, float32ToWav } from "../voice";
@@ -197,7 +197,9 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
           resetVoiceSendTimer();
           break;
       }
-    } catch {}
+      } catch {
+        return;
+      }
     confirmingRef.current = false;
     setConfirming(false);
   }
@@ -244,7 +246,9 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
           }
         }
       }
-    } catch {}
+    } catch {
+      return;
+    }
     finally {
       pendingTranscriptions.current--;
       if (!isListeningRef.current && pendingTranscriptions.current === 0) {
@@ -321,7 +325,7 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
           }
         },
         onSpeechStart: () => {},
-      });
+      } as Parameters<typeof MicVAD.new>[0]);
 
       vadRef.current = vad;
 

@@ -1,7 +1,7 @@
 /// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { copyFileSync, existsSync } from 'fs'
+import { copyFileSync, existsSync, readFileSync } from 'fs'
 import { resolve } from 'path'
 
 // Copy VAD + ONNX runtime files to the output so they're served as static assets
@@ -42,7 +42,7 @@ function copyVadAssets(): Plugin {
                 mjs: 'application/javascript',
               }
               res.setHeader('Content-Type', types[ext || ''] || 'application/octet-stream')
-              res.end(require('fs').readFileSync(srcPath))
+              res.end(readFileSync(srcPath))
               return
             }
           }

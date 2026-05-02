@@ -80,8 +80,26 @@ describe("ReposPanel", () => {
 
   it("shows research tasks when provided", () => {
     const tasks: ResearchTask[] = [
-      { id: "r1", topic: "auth patterns", status: "running" },
-      { id: "r2", topic: "caching strategies", status: "complete", output_file: "caching.md" },
+      {
+        id: "r1",
+        workspace: "apiari",
+        topic: "auth patterns",
+        status: "running",
+        error: null,
+        started_at: "2026-05-02T10:00:00Z",
+        completed_at: null,
+        output_file: null,
+      },
+      {
+        id: "r2",
+        workspace: "apiari",
+        topic: "caching strategies",
+        status: "complete",
+        error: null,
+        started_at: "2026-05-02T10:00:00Z",
+        completed_at: "2026-05-02T10:05:00Z",
+        output_file: "caching.md",
+      },
     ];
     render(<ReposPanel {...defaultProps} researchTasks={tasks} />);
     expect(screen.getByText("Research")).toBeInTheDocument();

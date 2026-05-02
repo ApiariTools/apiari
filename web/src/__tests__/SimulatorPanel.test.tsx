@@ -6,9 +6,9 @@ import { SimulatorPanel } from "../components/SimulatorPanel";
 beforeEach(() => {
   vi.restoreAllMocks();
   // Mock fetch for simulator status
-  global.fetch = vi.fn().mockResolvedValue({
+  globalThis.fetch = vi.fn().mockResolvedValue({
     json: () => Promise.resolve({ booted: false, device: null, udid: null }),
-  });
+  }) as typeof fetch;
 });
 
 describe("SimulatorPanel", () => {
@@ -27,7 +27,7 @@ describe("SimulatorPanel", () => {
   });
 
   it("shows device name when booted", async () => {
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       json: () =>
         Promise.resolve({
           booted: true,

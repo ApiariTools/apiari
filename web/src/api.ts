@@ -118,7 +118,9 @@ export function connectWebSocket(
       try {
         const event = JSON.parse(e.data);
         onEvent(event);
-      } catch {}
+      } catch {
+        return;
+      }
     };
     ws.onclose = () => {
       ws = null;
@@ -141,7 +143,7 @@ export function connectWebSocket(
         reconnectTimer = null;
       }
       ws?.close();
-    }
+    },
   };
 }
 

@@ -165,7 +165,9 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
       voiceSourceRef.current = source;
       source.onended = () => { voiceSourceRef.current = null; onEnd?.(); };
       source.start();
-    } catch { onEnd?.(); }
+    } catch {
+      onEnd?.();
+    }
   }
 
   async function playVoiceChain(sentences: string[], idx: number, msgId: number) {
@@ -215,7 +217,11 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
     readyQueueRef.current = [];
     // Stop voice chain playback
     if (voiceSourceRef.current) {
-      try { voiceSourceRef.current.stop(); } catch {}
+      try {
+        voiceSourceRef.current.stop();
+      } catch {
+        // Source may already be stopped by the browser.
+      }
       voiceSourceRef.current = null;
     }
     speechSynthesis.cancel();
@@ -369,13 +375,13 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
     | { kind: "followup"; followup: Followup };
 
   const { timeline, pendingFollowups } = useMemo(() => {
-    const now = Date.now();
+    const now = new Date();
     // Treat pending followups whose fires_at has elapsed as effectively fired
     const inlineFollowups = (followups ?? []).filter(
-      (f) => f.status === "fired" || (f.status === "pending" && new Date(f.fires_at).getTime() <= now),
+      (f) => f.status === "fired" || (f.status === "pending" && new Date(f.fires_at) <= now),
     );
     const pending = (followups ?? []).filter(
-      (f) => f.status === "pending" && new Date(f.fires_at).getTime() > now,
+      (f) => f.status === "pending" && new Date(f.fires_at) > now,
     );
 
     const items: TimelineItem[] = [

@@ -26,9 +26,9 @@ const mockStartThinkingCue = vi.fn(() => vi.fn());
 const mockPlaySentCue = vi.fn();
 const mockPlaySpeakingCue = vi.fn();
 vi.mock("../soundCues", () => ({
-  playSentCue: (...args: unknown[]) => mockPlaySentCue(...args),
-  startThinkingCue: (...args: unknown[]) => mockStartThinkingCue(...args),
-  playSpeakingCue: (...args: unknown[]) => mockPlaySpeakingCue(...args),
+  playSentCue: () => mockPlaySentCue(),
+  startThinkingCue: () => mockStartThinkingCue(),
+  playSpeakingCue: () => mockPlaySpeakingCue(),
   setSharedAudioContext: vi.fn(),
 }));
 

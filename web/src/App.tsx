@@ -92,8 +92,10 @@ export default function App() {
   const loadingRef = useRef(false);
   const tabHiddenRef = useRef(document.hidden);
   const remoteRef = useRef(remote);
+  const messagesRef = useRef<Message[]>([]);
   const streamingContentRef = useRef("");
   useEffect(() => { remoteRef.current = remote; }, [remote]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { streamingContentRef.current = streamingContent; }, [streamingContent]);
 
   const appendLocalMessage = useCallback((role: string, content: string) => {
@@ -114,8 +116,18 @@ export default function App() {
   const finalizeStreamingAssistant = useCallback(() => {
     const content = streamingContentRef.current.trim();
     if (!content) return;
+    const lastMessage = messagesRef.current[messagesRef.current.length - 1];
+    if (
+      lastMessage
+      && lastMessage.workspace === workspace
+      && lastMessage.bot === bot
+      && lastMessage.role === "assistant"
+      && lastMessage.content === content
+    ) {
+      return;
+    }
     appendLocalMessage("assistant", content);
-  }, [appendLocalMessage]);
+  }, [appendLocalMessage, workspace, bot]);
 
   // Track mobile state
   useEffect(() => {
@@ -201,8 +213,14 @@ export default function App() {
         // Refresh unread counts
         if (workspace) api.getUnread(workspace, remote).then(setUnread);
         if (isCurrentWs && event.bot === bot) {
-          const eventMessage = event as Message;
+          const eventMessage = event as unknown as Message;
           if (typeof eventMessage.id === "number") {
+            if (
+              eventMessage.role === "assistant"
+              && eventMessage.content === streamingContentRef.current.trim()
+            ) {
+              setStreamingContent("");
+            }
             lastMsgId.current = Math.max(lastMsgId.current, eventMessage.id);
             setMessages((prev) => mergeMessages(prev, {
               id: eventMessage.id,
@@ -378,13 +396,13 @@ export default function App() {
     Promise.allSettled(
       others.map((ws) =>
         api.getBots(ws.name, ws.remote).then((bots) =>
-          bots.map((b) => ({ workspace: ws.name, bot: b, remote: ws.remote }))
+          bots.map((b) => ({ workspace: ws.name, bot: b, remote: ws.remote ?? undefined }))
         )
       )
     ).then((results) => {
       if (!cancelled) {
         const fulfilled = results
-          .filter((r): r is PromiseFulfilledResult<CrossWorkspaceBot[]> => r.status === "fulfilled")
+          .filter((r): r is PromiseFulfilledResult<Array<{ workspace: string; bot: Bot; remote: string | undefined }>> => r.status === "fulfilled")
           .flatMap((r) => r.value);
         setOtherWorkspaceBots(fulfilled);
       }
