@@ -1,5 +1,6 @@
 import { ArrowRight, BellRing, BookOpen, Bot, FolderGit2, Sparkles, Wrench } from "lucide-react";
 import type { Bot as BotType, Followup, Repo, ResearchTask, Worker } from "../types";
+import type { WorkspaceMode } from "../consoleConfig";
 import styles from "./OverviewPanel.module.css";
 
 interface Props {
@@ -10,9 +11,10 @@ interface Props {
   followups: Followup[];
   researchTasks: ResearchTask[];
   unread: Record<string, number>;
+  primaryBot: string;
   onSelectBot: (name: string) => void;
   onSelectWorker: (id: string) => void;
-  onOpenMode: (mode: "chat" | "workers" | "repos" | "docs") => void;
+  onOpenMode: (mode: WorkspaceMode) => void;
 }
 
 function statusLabel(workers: Worker[]) {
@@ -32,6 +34,7 @@ export function OverviewPanel({
   followups,
   researchTasks,
   unread,
+  primaryBot,
   onSelectBot,
   onSelectWorker,
   onOpenMode,
@@ -52,8 +55,8 @@ export function OverviewPanel({
           </p>
         </div>
         <div className={styles.heroActions}>
-          <button className={styles.primaryAction} onClick={() => onSelectBot("Main")}>
-            Open Main chat
+          <button className={styles.primaryAction} onClick={() => onSelectBot(primaryBot)}>
+            Open {primaryBot} chat
           </button>
           <button className={styles.secondaryAction} onClick={() => onOpenMode("workers")}>
             Review workers

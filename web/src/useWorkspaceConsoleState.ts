@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
+import {
+  getDefaultWorkspaceSelection,
+  getOrderedWorkspaceModes,
+  isWorkspaceMode,
+  resolveWorkspaceConsoleProfile,
+  type WorkspaceMode,
+} from "./consoleConfig";
 import type {
   Bot,
   CrossWorkspaceBot,
@@ -12,7 +19,6 @@ import type {
   Workspace,
 } from "./types";
 import { initWakeLock } from "./wakeLock";
-import type { WorkspaceMode } from "./components/WorkspaceNav";
 
 export interface Route {
   workspace: string;
@@ -27,13 +33,7 @@ export function parseHash(): Route {
   const workspace = parts[0] || "";
   const mode = parts[1];
 
-  if (
-    mode === "chat"
-    || mode === "workers"
-    || mode === "repos"
-    || mode === "docs"
-    || mode === "overview"
-  ) {
+  if (isWorkspaceMode(mode)) {
     return {
       workspace,
       mode,
@@ -138,6 +138,11 @@ export function useWorkspaceConsoleState() {
   useEffect(() => { streamingContentRef.current = streamingContent; }, [streamingContent]);
   useEffect(() => { loadingRef.current = loading; }, [loading]);
 
+  const consoleProfile = useMemo(
+    () => resolveWorkspaceConsoleProfile(workspace, remote),
+    [workspace, remote],
+  );
+
   const appendLocalMessage = useCallback((role: string, content: string) => {
     const tempId = nextTempId.current--;
     const message: Message = {
@@ -196,8 +201,9 @@ export function useWorkspaceConsoleState() {
     });
 
     if (window.innerWidth <= 768 && !initial.bot) {
-      setMode("chat");
-      setBot("Main");
+      const defaults = getDefaultWorkspaceSelection(resolveWorkspaceConsoleProfile(), true);
+      setMode(defaults.mode);
+      setBot(defaults.bot);
     }
   }, [initial.bot, workspace]);
 
@@ -500,10 +506,12 @@ export function useWorkspaceConsoleState() {
   }, []);
 
   const handleSelectWorkspace = useCallback((name: string, wsRemote?: string) => {
+    const nextProfile = resolveWorkspaceConsoleProfile(name, wsRemote);
+    const defaults = getDefaultWorkspaceSelection(nextProfile, isMobile);
     setWorkspace(name);
     setRemote(wsRemote);
-    setMode(isMobile ? "chat" : "overview");
-    setBot(isMobile ? "Main" : "");
+    setMode(defaults.mode);
+    setBot(defaults.bot);
     setWorkerId(null);
     setLoading(false);
     setLoadingStatus(undefined);
@@ -545,9 +553,9 @@ export function useWorkspaceConsoleState() {
       setWorkerId(null);
     }
     if (nextMode === "chat" && !bot) {
-      setBot("Main");
+      setBot(consoleProfile.defaultMobileBot);
     }
-  }, [bot]);
+  }, [bot, consoleProfile.defaultMobileBot]);
 
   useEffect(() => {
     if (!workspace || !workerId) return;
@@ -619,6 +627,7 @@ export function useWorkspaceConsoleState() {
     : null;
   const pendingFollowupCount = followups.filter((followup) => followup.status === "pending").length;
   const workspaceVoice = workspaces.find((ws) => ws.name === workspace && ws.remote === remote);
+  const visibleModes = getOrderedWorkspaceModes(consoleProfile.navModeOrder);
 
   return {
     workspaces,
@@ -647,6 +656,8 @@ export function useWorkspaceConsoleState() {
     followups,
     isMobile,
     usage,
+    consoleProfile,
+    visibleModes,
     selectedBot,
     selectedWorker,
     pendingFollowupCount,

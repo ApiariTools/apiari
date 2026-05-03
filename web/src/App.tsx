@@ -127,6 +127,7 @@ export default function App() {
         followups={state.followups}
         researchTasks={state.researchTasks}
         unread={state.unread}
+        primaryBot={state.consoleProfile.overviewPrimaryBot}
         onSelectBot={state.handleSelectBot}
         onSelectWorker={state.handleSelectWorker}
         onOpenMode={state.handleSelectMode}
@@ -151,6 +152,7 @@ export default function App() {
           <div className="drawer-backdrop" onClick={() => state.setMenuOpen(false)} />
         )}
         <WorkspaceNav
+          modes={state.visibleModes}
           activeMode={state.mode}
           onSelectMode={state.handleSelectMode}
           bots={state.bots}
@@ -164,7 +166,7 @@ export default function App() {
         />
         <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
           {mainContent}
-          {state.mode === "chat" && (
+          {state.mode === "chat" && state.consoleProfile.showChatRepoRail && (
             <ReposPanel
               repos={state.reposWithFreshWorkers}
               researchTasks={state.researchTasks}

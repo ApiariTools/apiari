@@ -1,17 +1,15 @@
-import type { ComponentType } from "react";
-import { Bot, FileText, LayoutGrid, MessageSquare, Package, Wrench } from "lucide-react";
+import { Bot } from "lucide-react";
 import type { Bot as BotType } from "../types";
+import type { WorkspaceMode, WorkspaceModeDefinition } from "../consoleConfig";
 import styles from "./WorkspaceNav.module.css";
 
-export type WorkspaceMode = "overview" | "chat" | "workers" | "repos" | "docs";
-
 interface ModeItem {
-  id: WorkspaceMode;
-  label: string;
+  mode: WorkspaceModeDefinition;
   count?: number | null;
 }
 
 interface Props {
+  modes: WorkspaceModeDefinition[];
   activeMode: WorkspaceMode;
   onSelectMode: (mode: WorkspaceMode) => void;
   bots: BotType[];
@@ -23,14 +21,6 @@ interface Props {
   pendingFollowupCount: number;
   mobileOpen?: boolean;
 }
-
-const MODE_ICONS = {
-  overview: LayoutGrid,
-  chat: MessageSquare,
-  workers: Wrench,
-  repos: Package,
-  docs: FileText,
-} satisfies Record<WorkspaceMode, ComponentType<{ size?: number; className?: string }>>;
 
 const BOT_COLORS: Record<string, string> = {
   Main: "var(--accent)",
@@ -45,6 +35,7 @@ function botColor(bot: BotType): string {
 }
 
 export function WorkspaceNav({
+  modes,
   activeMode,
   onSelectMode,
   bots,
@@ -56,20 +47,21 @@ export function WorkspaceNav({
   pendingFollowupCount,
   mobileOpen,
 }: Props) {
-  const modes: ModeItem[] = [
-    { id: "overview", label: "Overview", count: pendingFollowupCount > 0 ? pendingFollowupCount : null },
-    { id: "chat", label: "Chat", count: null },
-    { id: "workers", label: "Workers", count: workerCount || null },
-    { id: "repos", label: "Repos", count: repoCount || null },
-    { id: "docs", label: "Docs", count: null },
-  ];
+  const items: ModeItem[] = modes.map((mode) => ({
+    mode,
+    count:
+      mode.id === "overview" ? (pendingFollowupCount > 0 ? pendingFollowupCount : null)
+        : mode.id === "workers" ? (workerCount || null)
+          : mode.id === "repos" ? (repoCount || null)
+            : null,
+  }));
 
   return (
     <aside className={`${styles.panel} ${mobileOpen ? styles.mobileOpen : ""}`}>
       <div className={styles.sectionLabel}>Workspace</div>
       <div className={styles.modeList}>
-        {modes.map((mode) => {
-          const Icon = MODE_ICONS[mode.id];
+        {items.map(({ mode, count }) => {
+          const Icon = mode.icon;
           return (
             <button
               key={mode.id}
@@ -80,7 +72,7 @@ export function WorkspaceNav({
                 <Icon size={16} className={styles.modeIcon} />
                 <span>{mode.label}</span>
               </span>
-              {mode.count ? <span className={styles.modeBadge}>{mode.count}</span> : null}
+              {count ? <span className={styles.modeBadge}>{count}</span> : null}
             </button>
           );
         })}
