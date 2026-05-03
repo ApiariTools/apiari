@@ -55,6 +55,17 @@ function copyVadAssets(): Plugin {
 
 export default defineConfig({
   plugins: [react(), copyVadAssets()],
+  build: {
+    chunkSizeWarningLimit: 1100,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('@git-diff-view/')) return 'git-diff-vendor'
+          if (id.includes('react-markdown') || id.includes('remark-gfm')) return 'markdown-vendor'
+        },
+      },
+    },
+  },
   server: {
     allowedHosts: true,
     proxy: {

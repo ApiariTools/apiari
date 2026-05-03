@@ -476,7 +476,7 @@ async function bootApp(page: Page, fixture: AppFixture) {
   await installMockWebSocket(page);
   await wireMockApi(page, fixture);
   await page.goto("/");
-  await page.getByRole("button", { name: "Main" }).click();
+  await page.getByLabel("Open bot Main").click();
 }
 
 test.describe("apiari web", () => {
@@ -497,7 +497,7 @@ test.describe("apiari web", () => {
     await bootApp(page, defaultFixture());
 
     await page.getByRole("button", { name: "mgm" }).click();
-    await page.getByRole("button", { name: "Main" }).click();
+    await page.getByLabel("Open bot Main").click();
 
     await expect(page.getByText("MGM workspace is ready.")).toBeVisible();
     await expect(page.getByPlaceholder("Message Main...")).toBeVisible();
@@ -513,9 +513,9 @@ test.describe("apiari web", () => {
     await page.getByText("common-sdk-fix").click();
 
     await expect(page.getByText("Working through daemon/http.rs")).toBeVisible();
-    await page.getByRole("button", { name: "Task" }).click();
+    await page.getByRole("button", { name: "Task" }).last().click();
     await expect(page.getByText("Investigate repo slug resolution")).toBeVisible();
-    await page.getByRole("button", { name: "Chat" }).click();
+    await page.getByRole("button", { name: "Chat" }).last().click();
     await expect(page.getByPlaceholder("Message worker...")).toBeVisible();
   });
 

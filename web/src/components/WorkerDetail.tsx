@@ -1,13 +1,14 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { Suspense, lazy, useState, useRef, useEffect } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { DiffView as GitDiffView, DiffModeEnum } from "@git-diff-view/react";
-import { DiffFile, getLang } from "@git-diff-view/core";
-import "@git-diff-view/react/styles/diff-view-pure.css";
 import type { Worker, WorkerDetail as WorkerDetailData } from "../types";
 import * as api from "../api";
 import { ChatInput } from "./ChatInput";
 import styles from "./WorkerDetail.module.css";
+
+const WorkerDiffPanel = lazy(() =>
+  import("./WorkerDiffPanel").then((module) => ({ default: module.WorkerDiffPanel })),
+);
 
 interface Props {
   worker: Worker;
@@ -22,71 +23,6 @@ function branchName(branch: string): string {
 }
 
 type InfoTab = "output" | "task" | "diff" | "chat";
-
-/** Split a multi-file unified diff into per-file sections */
-function splitDiffByFile(raw: string): { fileName: string; content: string }[] {
-  const files: { fileName: string; content: string }[] = [];
-  const parts = raw.split(/^(?=diff --git )/m);
-  for (const part of parts) {
-    if (!part.trim()) continue;
-    const headerMatch = part.match(/^diff --git a\/.+ b\/(.+)/);
-    const fileName = headerMatch?.[1] ?? "unknown";
-    files.push({ fileName, content: part });
-  }
-  return files;
-}
-
-function FileDiffView({ fileName, content }: { fileName: string; content: string }) {
-  const [collapsed, setCollapsed] = useState(false);
-  const diffFile = useMemo(() => {
-    const lang = getLang(fileName);
-    const instance = DiffFile.createInstance({
-      oldFile: { fileName, fileLang: lang },
-      newFile: { fileName, fileLang: lang },
-      hunks: [content],
-    });
-    instance.initTheme("dark");
-    instance.init();
-    instance.buildUnifiedDiffLines();
-    return instance;
-  }, [fileName, content]);
-
-  return (
-    <div className={styles.diffFileSection}>
-      <button
-        className={styles.diffFileName}
-        onClick={() => setCollapsed((c) => !c)}
-        aria-expanded={!collapsed}
-      >
-        <span className={`${styles.chevron} ${collapsed ? styles.chevronCollapsed : ""}`}>&#9660;</span>
-        {fileName}
-      </button>
-      {!collapsed && (
-        <div className={styles.diffContent}>
-          <GitDiffView
-            diffFile={diffFile}
-            diffViewMode={DiffModeEnum.Unified}
-            diffViewTheme="dark"
-            diffViewHighlight
-            diffViewFontSize={12}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DiffViewer({ diff }: { diff: string }) {
-  const files = useMemo(() => splitDiffByFile(diff), [diff]);
-  if (files.length === 0) return <div className={styles.empty}>Empty diff</div>;
-  return (
-    <div>
-      {files.map((f, i) => (
-        <FileDiffView key={`${f.fileName}-${i}`} fileName={f.fileName} content={f.content} />
-      ))}
-    </div>
-  );
-}
 
 function formatTime(iso: string): string {
   const normalized = iso.includes("Z") || iso.includes("+") || iso.includes("-", 10) ? iso : iso + "Z";
@@ -283,7 +219,9 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack }: Prop
             diffContent === undefined ? (
               <div className={styles.empty}>Loading diff...</div>
             ) : diffContent ? (
-              <DiffViewer diff={diffContent} />
+              <Suspense fallback={<div className={styles.empty}>Loading diff...</div>}>
+                <WorkerDiffPanel diff={diffContent} />
+              </Suspense>
             ) : (
               <div className={styles.empty}>No diff available</div>
             )

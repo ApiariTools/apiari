@@ -1,0 +1,142 @@
+.panel {
+  width: 260px;
+  min-width: 260px;
+  border-right: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(245, 197, 66, 0.08), transparent 24%),
+    var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 14px 14px;
+  overflow-y: auto;
+}
+
+.mobileOpen {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 100;
+  box-shadow: 18px 0 40px rgba(0, 0, 0, 0.35);
+}
+
+.sectionLabel {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.sectionDivider {
+  height: 1px;
+  background: linear-gradient(90deg, var(--border), transparent);
+  margin: 6px 0 2px;
+}
+
+.modeList,
+.botList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modeBtn,
+.botBtn {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  text-align: left;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.modeBtn:hover,
+.botBtn:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--border);
+}
+
+.active {
+  background: linear-gradient(180deg, rgba(245, 197, 66, 0.16), rgba(245, 197, 66, 0.08));
+  border-color: rgba(245, 197, 66, 0.28);
+  color: var(--text-strong);
+}
+
+.modeLeft,
+.botLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.modeIcon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.modeBadge,
+.botBadge {
+  min-width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.botDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.botMeta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.botName {
+  color: inherit;
+}
+
+.botRole {
+  color: var(--text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tip {
+  margin-top: auto;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.4;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+@media (max-width: 768px) {
+  .panel {
+    width: 280px;
+    min-width: 280px;
+  }
+}

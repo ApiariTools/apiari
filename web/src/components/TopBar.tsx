@@ -53,12 +53,14 @@ export function TopBar({ workspaces, active, activeRemote, onSelect, onMenuToggl
       <div className={styles.tabScroll}>
         {workspaces.map((ws) => {
           const isActive = ws.name === active && ws.remote === activeRemote;
+          const label = ws.remote ? `Open workspace ${ws.name} (${ws.remote})` : `Open workspace ${ws.name}`;
           return (
             <button
               key={`${ws.remote || "local"}/${ws.name}`}
               ref={(el) => setActiveRef(el, isActive)}
               className={`${styles.tab} ${isActive ? styles.active : ""}`}
               onClick={() => onSelect(ws.name, ws.remote)}
+              aria-label={label}
             >
               {ws.name}
               {ws.remote && <span className={styles.remoteBadge}>{ws.remote}</span>}

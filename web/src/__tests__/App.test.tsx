@@ -12,11 +12,23 @@ beforeEach(() => {
   window.location.hash = "";
 });
 
+function workspaceTab(name: string) {
+  return screen.getByRole("button", { name: `Open workspace ${name}` });
+}
+
+function remoteWorkspaceTab(name: string, remote: string) {
+  return screen.getByRole("button", { name: `Open workspace ${name} (${remote})` });
+}
+
+function botButton(name: string) {
+  return screen.getByLabelText(`Open bot ${name}`);
+}
+
 async function renderAndSelectBot(name = "Main") {
   const user = userEvent.setup();
   render(<App />);
-  await waitFor(() => expect(screen.getByText(name)).toBeInTheDocument());
-  await user.click(screen.getByText(name));
+  await waitFor(() => expect(botButton(name)).toBeInTheDocument());
+  await user.click(botButton(name));
   return user;
 }
 
@@ -24,8 +36,8 @@ describe("App", () => {
   it("renders workspace tabs", async () => {
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("apiari")).toBeInTheDocument();
-      expect(screen.getByText("mgm")).toBeInTheDocument();
+      expect(workspaceTab("apiari")).toBeInTheDocument();
+      expect(workspaceTab("mgm")).toBeInTheDocument();
     });
   });
 
@@ -54,7 +66,7 @@ describe("App", () => {
   it("shows unread badge", async () => {
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("2")).toBeInTheDocument();
+      expect(screen.getAllByText("2").length).toBeGreaterThan(0);
     });
   });
 
@@ -72,10 +84,10 @@ describe("App", () => {
 
   it("calls markSeen on bot select", async () => {
     render(<App />);
-    await waitFor(() => expect(screen.getByText("Main")).toBeInTheDocument());
+    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
     expect(api.markSeen).not.toHaveBeenCalled();
     const user = userEvent.setup();
-    await user.click(screen.getByText("Main"));
+    await user.click(botButton("Main"));
     await waitFor(() => {
       expect(api.markSeen).toHaveBeenCalledWith("apiari", "Main", undefined);
     });
@@ -93,8 +105,8 @@ describe("Bot switching", () => {
   it("calls getConversations with new bot", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() => expect(screen.getByText("Customer")).toBeInTheDocument());
-    await user.click(screen.getByText("Customer"));
+    await waitFor(() => expect(botButton("Customer")).toBeInTheDocument());
+    await user.click(botButton("Customer"));
     await waitFor(() => {
       const mock = api.getConversations as ReturnType<typeof vi.fn>;
       expect(mock.mock.calls.some((c: string[]) => c[1] === "Customer")).toBe(true);
@@ -117,15 +129,15 @@ describe("Polling cancellation on bot switch", () => {
 
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() => expect(screen.getByText("Main")).toBeInTheDocument());
+    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
 
     // Select Main bot — triggers initial load, getBotStatus gets stalePromise
-    await user.click(screen.getByText("Main"));
+    await user.click(botButton("Main"));
     await waitFor(() => expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument());
 
     // Switch to Customer bot before the delayed Main response resolves
     // This triggers cleanup (cancelled=true) on Main's initial load effect
-    await user.click(screen.getByText("Customer"));
+    await user.click(botButton("Customer"));
     await waitFor(() => expect(screen.getByPlaceholderText(/Message Customer/)).toBeInTheDocument());
 
     // Now resolve the stale status from the old Main bot context
@@ -143,8 +155,8 @@ describe("Workspace switching", () => {
   it("calls getBots with new workspace", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() => expect(screen.getByText("mgm")).toBeInTheDocument());
-    await user.click(screen.getByText("mgm"));
+    await waitFor(() => expect(workspaceTab("mgm")).toBeInTheDocument());
+    await user.click(workspaceTab("mgm"));
     await waitFor(() => {
       const mock = api.getBots as ReturnType<typeof vi.fn>;
       expect(mock.mock.calls.some((c: string[]) => c[0] === "mgm")).toBe(true);
@@ -156,8 +168,8 @@ describe("Workspace switching", () => {
     window.dispatchEvent(new Event("resize"));
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() => expect(screen.getByText("mgm")).toBeInTheDocument());
-    await user.click(screen.getByText("mgm"));
+    await waitFor(() => expect(workspaceTab("mgm")).toBeInTheDocument());
+    await user.click(workspaceTab("mgm"));
     await waitFor(() => {
       expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument();
     });
@@ -165,15 +177,15 @@ describe("Workspace switching", () => {
   });
 
   it("passes remote workspace routing through API calls", async () => {
-    (api.getWorkspaces as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+    (api.getWorkspaces as ReturnType<typeof vi.fn>).mockResolvedValue([
       { name: "apiari" },
       { name: "apiari", remote: "staging" },
     ]);
     const user = userEvent.setup();
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText("staging")).toBeInTheDocument());
-    await user.click(screen.getByText("staging").closest("button")!);
+    await waitFor(() => expect(remoteWorkspaceTab("apiari", "staging")).toBeInTheDocument());
+    await user.click(remoteWorkspaceTab("apiari", "staging"));
 
     await waitFor(() => {
       expect(api.getBots).toHaveBeenCalledWith("apiari", "staging");
@@ -359,7 +371,7 @@ describe("WebSocket message dedup", () => {
   });
 
   it("ignores websocket events for the same workspace when the remote does not match", async () => {
-    (api.getWorkspaces as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+    (api.getWorkspaces as ReturnType<typeof vi.fn>).mockResolvedValue([
       { name: "apiari" },
       { name: "apiari", remote: "staging" },
     ]);
@@ -373,10 +385,10 @@ describe("WebSocket message dedup", () => {
 
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() => expect(screen.getByText("staging")).toBeInTheDocument());
-    await user.click(screen.getByText("staging").closest("button")!);
-    await waitFor(() => expect(screen.getByText("Main")).toBeInTheDocument());
-    await user.click(screen.getByText("Main"));
+    await waitFor(() => expect(remoteWorkspaceTab("apiari", "staging")).toBeInTheDocument());
+    await user.click(remoteWorkspaceTab("apiari", "staging"));
+    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
+    await user.click(botButton("Main"));
     await waitFor(() => expect(api.getConversations).toHaveBeenCalledWith("apiari", "Main", 30, "staging"));
     (api.getConversations as ReturnType<typeof vi.fn>).mockClear();
 

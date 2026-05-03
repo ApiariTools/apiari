@@ -1,0 +1,236 @@
+.page {
+  flex: 1;
+  overflow: auto;
+  padding: 28px;
+  background:
+    radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 22%),
+    var(--bg);
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-end;
+  margin-bottom: 24px;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  font-size: 11px;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.title {
+  color: var(--text-strong);
+  font-size: 40px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+
+.summary {
+  max-width: 700px;
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.heroActions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.primaryAction,
+.secondaryAction,
+.metricCard,
+.actionRow {
+  cursor: pointer;
+}
+
+.primaryAction,
+.secondaryAction {
+  border-radius: 999px;
+  padding: 11px 16px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-strong);
+}
+
+.primaryAction {
+  background: var(--accent);
+  color: #18140a;
+  border-color: transparent;
+  font-weight: 700;
+}
+
+.metricGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.metricCard {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text);
+  text-align: left;
+}
+
+.metricLabel {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--text-faint);
+}
+
+.metricValue {
+  font-size: 28px;
+  color: var(--text-strong);
+}
+
+.metricMeta {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 18px;
+  background: rgba(17, 17, 17, 0.72);
+  backdrop-filter: blur(8px);
+  min-height: 220px;
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.cardTitle {
+  color: var(--text-strong);
+  font-size: 18px;
+}
+
+.cardSubtitle {
+  margin-top: 4px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.cardIcon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.listRow,
+.actionRow {
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.rowTitle {
+  color: var(--text-strong);
+}
+
+.rowMeta {
+  color: var(--text-faint);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.rowRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-faint);
+}
+
+.badge,
+.healthBadge {
+  border-radius: 999px;
+  padding: 4px 9px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+
+.badge {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.healthBadge.clean {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.healthBadge.modified {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.empty {
+  color: var(--text-faint);
+  padding: 22px 4px 4px;
+}
+
+@media (max-width: 1100px) {
+  .metricGrid,
+  .columns {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 18px;
+  }
+
+  .hero,
+  .heroActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .title {
+    font-size: 30px;
+  }
+
+  .metricGrid,
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
