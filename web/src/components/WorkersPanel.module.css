@@ -114,7 +114,13 @@
     z-index: 99;
   }
   .panel {
-    display: none;
+    width: 100%;
+    border-left: none;
+    padding-bottom: 88px;
+  }
+
+  .mobileOpen {
+    display: flex;
     position: fixed;
     right: 0;
     top: 48px;
@@ -123,9 +129,5 @@
     background: var(--bg);
     width: 280px;
     border-left: 1px solid var(--border);
-  }
-
-  .mobileOpen {
-    display: flex;
   }
 }

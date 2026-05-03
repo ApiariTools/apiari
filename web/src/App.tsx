@@ -6,6 +6,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { ReposPanel } from "./components/ReposPanel";
 import { WorkersPanel } from "./components/WorkersPanel";
 import { OverviewPanel } from "./components/OverviewPanel";
+import { MobileModeBar } from "./components/MobileModeBar";
 import { WorkspaceLayoutDialog } from "./components/WorkspaceLayoutDialog";
 import { useWorkspaceConsoleState } from "./useWorkspaceConsoleState";
 
@@ -37,6 +38,12 @@ function PanelFallback() {
 
 export default function App() {
   const state = useWorkspaceConsoleState();
+  const mobileBadgeCounts = {
+    overview: state.pendingFollowupCount || null,
+    workers: state.workers.length || null,
+    repos: state.repos.length || null,
+  };
+  const showChatRepoRail = !state.isMobile && state.consoleProfile.showChatRepoRail;
 
   let mainContent;
   if (state.mode === "docs") {
@@ -57,20 +64,24 @@ export default function App() {
         />
       </Suspense>
     ) : (
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+      state.isMobile ? (
         <WorkersPanel workers={state.workers} onSelectWorker={state.handleSelectWorker} />
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "var(--text-faint)",
-          }}
-        >
-          Select a worker to inspect its live state.
+      ) : (
+        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+          <WorkersPanel workers={state.workers} onSelectWorker={state.handleSelectWorker} />
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--text-faint)",
+            }}
+          >
+            Select a worker to inspect its live state.
+          </div>
         </div>
-      </div>
+      )
     );
   } else if (state.mode === "repos") {
     mainContent = (
@@ -152,26 +163,44 @@ export default function App() {
         {state.menuOpen && (
           <div className="drawer-backdrop" onClick={() => state.setMenuOpen(false)} />
         )}
-        <WorkspaceNav
-          modes={state.visibleModes}
-          activeMode={state.mode}
-          onSelectMode={state.handleSelectMode}
-          bots={state.bots}
-          activeBot={state.mode === "chat" ? state.bot : null}
-          onSelectBot={state.handleSelectBot}
-          workerCount={state.workers.length}
-          repoCount={state.repos.length}
-          pendingFollowupCount={state.pendingFollowupCount}
-          mobileOpen={state.menuOpen}
-          unread={state.unread}
-        />
-        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {(!state.isMobile || state.menuOpen) && (
+          <WorkspaceNav
+            modes={state.visibleModes}
+            activeMode={state.mode}
+            onSelectMode={state.handleSelectMode}
+            bots={state.bots}
+            activeBot={state.mode === "chat" ? state.bot : null}
+            onSelectBot={state.handleSelectBot}
+            workerCount={state.workers.length}
+            repoCount={state.repos.length}
+            pendingFollowupCount={state.pendingFollowupCount}
+            mobileOpen={state.menuOpen}
+            unread={state.unread}
+          />
+        )}
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            paddingBottom: state.isMobile ? 88 : 0,
+          }}
+        >
           {mainContent}
-          {state.mode === "chat" && state.consoleProfile.showChatRepoRail && (
+          {state.mode === "chat" && showChatRepoRail && (
             <ReposPanel
               repos={state.reposWithFreshWorkers}
               researchTasks={state.researchTasks}
               onSelectWorker={state.handleSelectWorker}
+            />
+          )}
+          {state.isMobile && !state.workerId && (
+            <MobileModeBar
+              modes={state.visibleModes}
+              activeMode={state.mode}
+              onSelectMode={state.handleSelectMode}
+              badgeCounts={mobileBadgeCounts}
             />
           )}
         </div>

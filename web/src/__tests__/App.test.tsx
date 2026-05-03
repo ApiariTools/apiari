@@ -235,6 +235,26 @@ describe("Mobile auto-select", () => {
     });
     Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
   });
+
+  it("uses the bottom mode bar to switch into repos on mobile", async () => {
+    window.location.hash = "";
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("No repos found")).not.toBeInTheDocument();
+
+    const mobileNav = screen.getByRole("navigation", { name: "Mobile workspace modes" });
+    expect(mobileNav).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Open Repos" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("No repos found")).toBeInTheDocument();
+    });
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+  });
 });
 
 describe("WebSocket message dedup", () => {

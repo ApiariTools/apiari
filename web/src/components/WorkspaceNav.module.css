@@ -136,7 +136,21 @@
 
 @media (max-width: 768px) {
   .panel {
-    width: 280px;
-    min-width: 280px;
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 100;
+    width: min(320px, 86vw);
+    min-width: min(320px, 86vw);
+    transform: translateX(-105%);
+    transition: transform 160ms ease;
+    box-shadow: 18px 0 40px rgba(0, 0, 0, 0.35);
+  }
+
+  .mobileOpen {
+    transform: translateX(0);
+  }
+
+  .tip {
+    margin-top: 8px;
   }
 }

@@ -136,7 +136,27 @@
 }
 
 @media (max-width: 768px) {
+  .bar {
+    padding: 0 10px;
+    gap: 2px;
+  }
+
   .hamburger {
     display: flex;
+  }
+
+  .logo {
+    margin-right: 12px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+  }
+
+  .tab {
+    padding: 12px 12px;
+    font-size: 14px;
+  }
+
+  .usageDots {
+    display: none;
   }
 }

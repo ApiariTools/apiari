@@ -192,6 +192,26 @@
 }
 
 @media (max-width: 760px) {
+  .overlay {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .dialog {
+    width: 100%;
+    max-height: 88vh;
+    border-radius: 22px 22px 0 0;
+    border-bottom: 0;
+  }
+
+  .header {
+    padding: 18px 18px 10px;
+  }
+
+  .content {
+    padding: 10px 18px calc(18px + env(safe-area-inset-bottom, 0px));
+  }
+
   .grid {
     grid-template-columns: 1fr;
   }

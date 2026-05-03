@@ -529,4 +529,20 @@ test.describe("apiari web", () => {
     await expect(page.getByText("Current system layout.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Switch to preview" })).toBeVisible();
   });
+
+  test("uses the mobile mode bar for single-column navigation", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installMockWebSocket(page);
+    await wireMockApi(page, defaultFixture());
+    await page.goto("/");
+
+    await expect(page.getByRole("navigation", { name: "Mobile workspace modes" })).toBeVisible();
+    await expect(page.getByPlaceholder("Message Main...")).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Repos" }).click();
+    await expect(page.getByText("common", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Workers" }).click();
+    await expect(page.getByText("common-sdk-fix")).toBeVisible();
+  });
 });

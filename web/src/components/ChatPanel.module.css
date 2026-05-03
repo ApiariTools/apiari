@@ -105,11 +105,34 @@
 }
 
 @media (max-width: 768px) {
+  .header {
+    padding: 12px 14px;
+    align-items: flex-start;
+  }
+
+  .headerName {
+    font-size: 16px;
+  }
+
   .workersBtn {
     display: block;
   }
+
+  .headerActions {
+    gap: 6px;
+  }
+
   .headerDescription {
     font-size: 11px;
+  }
+
+  .messages {
+    padding: 14px 14px 20px;
+  }
+
+  .text {
+    font-size: 15px;
+    line-height: 1.58;
   }
 }
 
