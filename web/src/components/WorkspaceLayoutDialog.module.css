@@ -1,0 +1,212 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 10, 18, 0.58);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 24px;
+}
+
+.dialog {
+  width: min(720px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 190, 92, 0.12), transparent 30%),
+    linear-gradient(180deg, rgba(17, 21, 32, 0.98), rgba(9, 11, 18, 0.98));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
+  color: var(--text);
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 12px;
+}
+
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.title {
+  margin: 0;
+  font-size: 24px;
+}
+
+.subtitle {
+  margin: 8px 0 0;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+.close {
+  border: 0;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 20px;
+}
+
+.content {
+  padding: 12px 24px 24px;
+  display: grid;
+  gap: 20px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.field,
+.section {
+  display: grid;
+  gap: 10px;
+}
+
+.label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--text-faint);
+  line-height: 1.45;
+}
+
+.select,
+.input {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.toggle input {
+  width: 18px;
+  height: 18px;
+}
+
+.modeList {
+  display: grid;
+  gap: 10px;
+}
+
+.modeRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.modeInfo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modeButtons {
+  display: flex;
+  gap: 8px;
+}
+
+.moveBtn {
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.moveBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.footerActions {
+  display: flex;
+  gap: 10px;
+}
+
+.secondary,
+.primary {
+  border: 0;
+  border-radius: 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.secondary {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text);
+}
+
+.primary {
+  background: linear-gradient(135deg, #ffcf6d, #ff9966);
+  color: #1f1300;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .footerActions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .footerActions button {
+    flex: 1;
+  }
+}

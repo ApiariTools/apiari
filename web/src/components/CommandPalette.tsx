@@ -18,6 +18,7 @@ interface Props {
   otherWorkspaceBots: CrossWorkspaceBot[];
   onSelectWorkspaceBot: (workspace: string, botName: string, remote?: string) => void;
   onStartResearch?: () => void;
+  onOpenWorkspaceLayout?: () => void;
   unread?: Record<string, number>;
   otherWorkspaceUnreads?: Record<string, Record<string, number>>;
 }
@@ -37,6 +38,7 @@ export function CommandPalette({
   otherWorkspaceBots,
   onSelectWorkspaceBot,
   onStartResearch,
+  onOpenWorkspaceLayout,
   unread = {},
   otherWorkspaceUnreads = {},
 }: Props) {
@@ -138,17 +140,30 @@ export function CommandPalette({
             })}
           </Command.Group>
         )}
-        {onStartResearch && (
+        {(onStartResearch || onOpenWorkspaceLayout) && (
           <Command.Group heading="Actions">
-            <Command.Item
-              value="start research"
-              onSelect={() => {
-                onStartResearch();
-                onOpenChange(false);
-              }}
-            >
-              Start Research...
-            </Command.Item>
+            {onStartResearch && (
+              <Command.Item
+                value="start research"
+                onSelect={() => {
+                  onStartResearch();
+                  onOpenChange(false);
+                }}
+              >
+                Start Research...
+              </Command.Item>
+            )}
+            {onOpenWorkspaceLayout && (
+              <Command.Item
+                value="workspace layout"
+                onSelect={() => {
+                  onOpenWorkspaceLayout();
+                  onOpenChange(false);
+                }}
+              >
+                Customize Workspace Layout...
+              </Command.Item>
+            )}
           </Command.Group>
         )}
         <Command.Group heading="Workers">

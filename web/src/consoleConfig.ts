@@ -72,6 +72,24 @@ function readStoredWorkspaceConsoleProfile(workspace?: string, remote?: string):
   }
 }
 
+function readStoredWorkspaceConsoleProfiles(): Record<string, Partial<WorkspaceConsoleProfile>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(CONSOLE_PROFILE_STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, Partial<WorkspaceConsoleProfile>>;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredWorkspaceConsoleProfiles(
+  profiles: Record<string, Partial<WorkspaceConsoleProfile>>,
+) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(CONSOLE_PROFILE_STORAGE_KEY, JSON.stringify(profiles));
+}
+
 export function resolveWorkspaceConsoleProfile(workspace?: string, remote?: string): WorkspaceConsoleProfile {
   const profile: WorkspaceConsoleProfile = {
     ...DEFAULT_WORKSPACE_CONSOLE_PROFILE,
@@ -95,4 +113,24 @@ export function getDefaultWorkspaceSelection(profile: WorkspaceConsoleProfile, i
     mode: isMobile ? profile.defaultMobileMode : profile.defaultDesktopMode,
     bot: isMobile && profile.defaultMobileMode === "chat" ? profile.defaultMobileBot : "",
   };
+}
+
+export function saveWorkspaceConsoleProfileOverride(
+  workspace: string,
+  remote: string | undefined,
+  profile: Partial<WorkspaceConsoleProfile>,
+) {
+  const key = storageKeyForWorkspace(workspace, remote);
+  if (!key) return;
+  const profiles = readStoredWorkspaceConsoleProfiles();
+  profiles[key] = profile;
+  writeStoredWorkspaceConsoleProfiles(profiles);
+}
+
+export function clearWorkspaceConsoleProfileOverride(workspace: string, remote?: string) {
+  const key = storageKeyForWorkspace(workspace, remote);
+  if (!key) return;
+  const profiles = readStoredWorkspaceConsoleProfiles();
+  delete profiles[key];
+  writeStoredWorkspaceConsoleProfiles(profiles);
 }

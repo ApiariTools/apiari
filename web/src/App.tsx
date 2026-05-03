@@ -6,6 +6,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { ReposPanel } from "./components/ReposPanel";
 import { WorkersPanel } from "./components/WorkersPanel";
 import { OverviewPanel } from "./components/OverviewPanel";
+import { WorkspaceLayoutDialog } from "./components/WorkspaceLayoutDialog";
 import { useWorkspaceConsoleState } from "./useWorkspaceConsoleState";
 
 const WorkerDetail = lazy(() =>
@@ -198,6 +199,16 @@ export default function App() {
         unread={state.unread}
         otherWorkspaceUnreads={state.otherWorkspaceUnreads}
         onStartResearch={() => state.handleStartResearch()}
+        onOpenWorkspaceLayout={() => state.setLayoutDialogOpen(true)}
+      />
+      <WorkspaceLayoutDialog
+        open={state.layoutDialogOpen}
+        workspace={state.workspace}
+        remote={state.remote}
+        bots={state.bots}
+        profile={state.consoleProfile}
+        onClose={() => state.setLayoutDialogOpen(false)}
+        onProfileSaved={state.applyConsoleProfile}
       />
     </>
   );

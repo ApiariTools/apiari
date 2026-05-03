@@ -10,6 +10,7 @@ import * as api from "../api";
 beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = "";
+  window.localStorage.clear();
 });
 
 function workspaceTab(name: string) {
@@ -97,6 +98,35 @@ describe("App", () => {
     render(<App />);
     await waitFor(() => {
       expect(api.connectWebSocket).toHaveBeenCalled();
+    });
+  });
+
+  it("opens workspace layout settings and applies a saved layout change", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
+    await user.click(botButton("Main"));
+    await waitFor(() => {
+      expect(screen.getByText("No repos found")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open command palette" }));
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    });
+    await user.click(screen.getByText("Customize Workspace Layout..."));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "Workspace layout settings" })).toBeInTheDocument();
+    });
+    const repoRailToggle = screen.getByLabelText("Show repo rail during chat");
+    expect(repoRailToggle).toBeChecked();
+    await user.click(repoRailToggle);
+    await user.click(screen.getByRole("button", { name: "Save layout" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("No repos found")).not.toBeInTheDocument();
     });
   });
 });

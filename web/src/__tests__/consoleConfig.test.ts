@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  clearWorkspaceConsoleProfileOverride,
   DEFAULT_WORKSPACE_CONSOLE_PROFILE,
   getDefaultWorkspaceSelection,
   getOrderedWorkspaceModes,
   resolveWorkspaceConsoleProfile,
+  saveWorkspaceConsoleProfileOverride,
 } from "../consoleConfig";
 
 describe("consoleConfig", () => {
@@ -42,5 +44,23 @@ describe("consoleConfig", () => {
       navModeOrder: ["repos", "workers", "chat", "overview", "docs"],
       showChatRepoRail: false,
     });
+  });
+
+  it("saves and clears workspace overrides through helpers", () => {
+    saveWorkspaceConsoleProfileOverride("apiari", undefined, {
+      defaultDesktopMode: "workers",
+      overviewPrimaryBot: "Customer",
+    });
+
+    expect(resolveWorkspaceConsoleProfile("apiari")).toMatchObject({
+      defaultDesktopMode: "workers",
+      overviewPrimaryBot: "Customer",
+    });
+
+    clearWorkspaceConsoleProfileOverride("apiari");
+
+    expect(resolveWorkspaceConsoleProfile("apiari")).toMatchObject(
+      DEFAULT_WORKSPACE_CONSOLE_PROFILE,
+    );
   });
 });

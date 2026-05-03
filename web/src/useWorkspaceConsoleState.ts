@@ -5,6 +5,7 @@ import {
   getOrderedWorkspaceModes,
   isWorkspaceMode,
   resolveWorkspaceConsoleProfile,
+  type WorkspaceConsoleProfile,
   type WorkspaceMode,
 } from "./consoleConfig";
 import type {
@@ -121,7 +122,9 @@ export function useWorkspaceConsoleState() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [simulatorOpen, setSimulatorOpen] = useState(false);
+  const [layoutDialogOpen, setLayoutDialogOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const [consoleProfileVersion, setConsoleProfileVersion] = useState(0);
   const [otherWorkspaceBots, setOtherWorkspaceBots] = useState<CrossWorkspaceBot[]>([]);
   const [otherWorkspaceUnreads, setOtherWorkspaceUnreads] = useState<Record<string, Record<string, number>>>({});
 
@@ -140,7 +143,7 @@ export function useWorkspaceConsoleState() {
 
   const consoleProfile = useMemo(
     () => resolveWorkspaceConsoleProfile(workspace, remote),
-    [workspace, remote],
+    [workspace, remote, consoleProfileVersion],
   );
 
   const appendLocalMessage = useCallback((role: string, content: string) => {
@@ -628,6 +631,11 @@ export function useWorkspaceConsoleState() {
   const pendingFollowupCount = followups.filter((followup) => followup.status === "pending").length;
   const workspaceVoice = workspaces.find((ws) => ws.name === workspace && ws.remote === remote);
   const visibleModes = getOrderedWorkspaceModes(consoleProfile.navModeOrder);
+  const applyConsoleProfile = useCallback((nextProfile: WorkspaceConsoleProfile) => {
+    setConsoleProfileVersion((value) => value + 1);
+    const nextMode = nextProfile.navModeOrder.includes(mode) ? mode : nextProfile.defaultDesktopMode;
+    setMode(nextMode);
+  }, [mode]);
 
   return {
     workspaces,
@@ -650,6 +658,7 @@ export function useWorkspaceConsoleState() {
     paletteOpen,
     menuOpen,
     simulatorOpen,
+    layoutDialogOpen,
     otherWorkspaceBots,
     otherWorkspaceUnreads,
     researchTasks,
@@ -666,6 +675,7 @@ export function useWorkspaceConsoleState() {
     setPaletteOpen,
     setMenuOpen,
     setSimulatorOpen,
+    setLayoutDialogOpen,
     handleSelectWorkspace,
     handleSelectWorkspaceBot,
     handleSelectBot,
@@ -674,6 +684,7 @@ export function useWorkspaceConsoleState() {
     handleBackFromWorker,
     handleSend,
     handleStartResearch,
+    applyConsoleProfile,
     refreshFollowups: () => api.getFollowups(workspace, remote).then(setFollowups),
     cancelActiveBot: loading ? () => api.cancelBot(workspace, bot, remote) : undefined,
   };
