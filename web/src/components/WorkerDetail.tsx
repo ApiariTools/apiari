@@ -130,6 +130,7 @@ export function WorkerDetail({
   const executionNote = detail?.execution_note ?? worker.execution_note;
   const readyBranch = detail?.ready_branch ?? worker.ready_branch;
   const hasUncommittedChanges = detail?.has_uncommitted_changes ?? worker.has_uncommitted_changes;
+  const taskPacket = detail?.task_packet ?? null;
   const branchLabel = branchName(worker.branch);
   const locationLabel = taskRepo ? `repo ${taskRepo}` : branchLabel;
 
@@ -364,6 +365,7 @@ export function WorkerDetail({
                 <p><strong>Ready branch:</strong> not signalled</p>
               ) : null}
               {executionNote && <p><strong>Note:</strong> {executionNote}</p>}
+              {taskPacket?.worker_mode && <p><strong>Worker kind:</strong> {taskPacket.worker_mode}</p>}
               {detail?.prompt ? (
                 <>
                   {(taskTitle || taskStage || taskRepo) && <p><strong>Worker prompt</strong></p>}
@@ -371,6 +373,30 @@ export function WorkerDetail({
                 </>
               ) : !(taskTitle || taskStage || taskRepo) ? (
                 <div className={styles.empty}>No task context</div>
+              ) : null}
+              {taskPacket?.task_md ? (
+                <>
+                  <p><strong>Inherited task</strong></p>
+                  <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.task_md}</Markdown>
+                </>
+              ) : null}
+              {taskPacket?.context_md ? (
+                <>
+                  <p><strong>Inherited context</strong></p>
+                  <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.context_md}</Markdown>
+                </>
+              ) : null}
+              {taskPacket?.plan_md ? (
+                <>
+                  <p><strong>Execution plan</strong></p>
+                  <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.plan_md}</Markdown>
+                </>
+              ) : null}
+              {taskPacket?.progress_md ? (
+                <>
+                  <p><strong>Worker notes</strong></p>
+                  <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.progress_md}</Markdown>
+                </>
               ) : null}
             </div>
           )}

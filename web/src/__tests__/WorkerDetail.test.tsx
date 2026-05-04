@@ -36,6 +36,13 @@ const detail: WorkerDetailData = {
   ...worker,
   prompt: "Do the thing",
   output: "Done",
+  task_packet: {
+    worker_mode: "implementation",
+    task_md: "# Task\n\nTighten the mobile cards.",
+    context_md: "# Context\n\n- Prior worker drifted into the wrong panel.",
+    plan_md: "# Plan\n\n1. Find the right panel.\n2. Make the change.",
+    progress_md: "Checked two likely surfaces before editing.",
+  },
   conversation: [
     { role: "user", content: "hello", timestamp: "2025-01-15T13:42:00Z" },
     { role: "assistant", content: "hi there", timestamp: "2025-01-15T13:43:00Z" },
@@ -159,6 +166,12 @@ describe("WorkerDetail", () => {
     expect(screen.getByText(/Uncommitted diff present/)).toBeInTheDocument();
     expect(screen.getByText(/Ready branch:/)).toBeInTheDocument();
     expect(screen.getByText(/not signalled/)).toBeInTheDocument();
+    expect(screen.getByText(/Worker kind:/)).toBeInTheDocument();
+    expect(screen.getByText(/implementation/)).toBeInTheDocument();
+    expect(screen.getByText(/Inherited task/)).toBeInTheDocument();
+    expect(screen.getByText(/Inherited context/)).toBeInTheDocument();
+    expect(screen.getByText(/Execution plan/)).toBeInTheDocument();
+    expect(screen.getByText(/Worker notes/)).toBeInTheDocument();
   });
 
   it("shows action feedback after promoting a worker", async () => {

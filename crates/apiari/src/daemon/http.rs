@@ -815,11 +815,27 @@ struct WorkerDetailView {
     prompt: Option<String>,
     output: Option<String>,
     conversation: Vec<WorkerConversationMessageView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_packet: Option<WorkerTaskPacketView>,
 }
 
 #[derive(Debug, Serialize)]
 struct WorkerDiffView {
     diff: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkerTaskPacketView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worker_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_md: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_md: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_md: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress_md: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1456,12 +1472,17 @@ async fn get_workspace_worker_detail(
     let prompt = worker
         .as_ref()
         .and_then(|worker| (!worker.prompt.trim().is_empty()).then(|| worker.prompt.clone()));
+    let task_packet = worker
+        .as_ref()
+        .and_then(|worker| worker.worktree_path.as_ref())
+        .and_then(|path| read_worker_task_packet(path));
 
     Ok(Json(WorkerDetailView {
         worker: worker_view,
         prompt,
         output,
         conversation,
+        task_packet,
     }))
 }
 
@@ -2932,6 +2953,40 @@ fn worker_output_from_conversation(
         .rev()
         .find(|entry| entry.role == "assistant")
         .map(|entry| entry.content.clone())
+}
+
+fn read_worker_task_packet(worktree_path: &std::path::Path) -> Option<WorkerTaskPacketView> {
+    let task_dir = worktree_path.join(".task");
+    if !task_dir.exists() {
+        return None;
+    }
+
+    let read_optional = |name: &str| std::fs::read_to_string(task_dir.join(name)).ok();
+    let task_md = read_optional("TASK.md");
+    let context_md = read_optional("CONTEXT.md");
+    let plan_md = read_optional("PLAN.md");
+    let progress_md = read_optional("PROGRESS.md");
+    let worker_mode = task_md.as_ref().and_then(|content| {
+        content.lines().find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("- `")
+                .and_then(|value| value.strip_suffix('`'))
+                .map(str::to_string)
+        })
+    });
+
+    if task_md.is_none() && context_md.is_none() && plan_md.is_none() && progress_md.is_none() {
+        return None;
+    }
+
+    Some(WorkerTaskPacketView {
+        worker_mode,
+        task_md,
+        context_md,
+        plan_md,
+        progress_md,
+    })
 }
 
 /// GET /api/workers — all swarm workers across all workspaces.
@@ -5080,6 +5135,7 @@ state_path = "{}"
                         "agent_kind": "codex",
                         "phase": "running",
                         "prompt": "Investigate repo slug resolution",
+                        "worktree_path": root.join(".swarm/wt/common-sdk-fix"),
                         "summary": "Working through daemon/http.rs",
                         "pr": {
                             "url": "https://example.com/pr/1",
@@ -5116,6 +5172,19 @@ state_path = "{}"
         )
         .unwrap();
 
+        let worktree_dir = root.join(".swarm/wt/common-sdk-fix/.task");
+        fs::create_dir_all(&worktree_dir).unwrap();
+        fs::write(
+            worktree_dir.join("TASK.md"),
+            "# Task\n\nExample\n\n## Worker Mode\n- `implementation`\n",
+        )
+        .unwrap();
+        fs::write(
+            worktree_dir.join("CONTEXT.md"),
+            "# Context\n\n- Repository: `apiari`\n",
+        )
+        .unwrap();
+
         let detail =
             get_workspace_worker_detail(Path(("apiari".to_string(), "common-sdk-fix".to_string())))
                 .await
@@ -5135,6 +5204,13 @@ state_path = "{}"
         assert_eq!(detail.conversation.len(), 2);
         assert_eq!(detail.conversation[0].role, "user");
         assert_eq!(detail.conversation[1].role, "assistant");
+        assert_eq!(
+            detail
+                .task_packet
+                .as_ref()
+                .and_then(|packet| packet.worker_mode.as_deref()),
+            Some("implementation")
+        );
     }
 
     #[tokio::test]

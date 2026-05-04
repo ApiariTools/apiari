@@ -237,34 +237,22 @@ fn anti_goals_from_prompt(prompt: &str) -> Vec<String> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerMode {
-    Patch,
-    Feature,
-    Investigate,
+    Implementation,
+    Investigator,
 }
 
 impl WorkerMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Patch => "patch",
-            Self::Feature => "feature",
-            Self::Investigate => "investigate",
+            Self::Implementation => "implementation",
+            Self::Investigator => "investigator",
         }
     }
 }
 
-fn prompt_has_explicit_file_target(prompt: &str) -> bool {
-    let lower = prompt.to_ascii_lowercase();
-    [
-        ".tsx", ".ts", ".jsx", ".js", ".rs", ".css", ".scss", ".md", ".swift", ".kt", ".py", "/",
-        "\\",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
 pub fn infer_worker_mode(prompt: &str) -> WorkerMode {
     let lower = prompt.to_ascii_lowercase();
-    let investigate_terms = [
+    let investigator_terms = [
         "why ",
         "why is",
         "investigate",
@@ -279,22 +267,14 @@ pub fn infer_worker_mode(prompt: &str) -> WorkerMode {
         "look into",
         "explain",
     ];
-    if investigate_terms
+    if investigator_terms
         .iter()
         .any(|needle| lower.contains(needle))
     {
-        return WorkerMode::Investigate;
+        return WorkerMode::Investigator;
     }
 
-    if prompt_has_explicit_file_target(prompt)
-        || lower.contains("only edit ")
-        || lower.contains("only change ")
-        || lower.contains("exact file")
-    {
-        return WorkerMode::Patch;
-    }
-
-    WorkerMode::Feature
+    WorkerMode::Implementation
 }
 
 pub fn build_worker_task_dir(repo: &str, prompt: &str) -> TaskDirPayload {
@@ -319,25 +299,17 @@ pub fn build_worker_task_dir_with_mode(
     };
 
     let (task_scope, acceptance_criteria, context_extra, plan_text) = match mode {
-        WorkerMode::Patch => (
+        WorkerMode::Implementation => (
             format!(
-                "- Work only in repo `{repo}`.\n- Treat this as a targeted patch task.\n- Implement exactly the request below.\n"
+                "- Work only in repo `{repo}`.\n- Treat this as an implementation subagent task.\n- Implement the request below using reasonable inference within the requested product area.\n"
             ),
-            "- The requested change is implemented and stays narrowly scoped.\n- The worker does not edit adjacent panels/components unless the target clearly requires it.\n- If the target is ambiguous, the worker stops and records that instead of guessing.\n".to_string(),
-            "- This is a patch worker: prefer exact target files over broad exploration.\n- If multiple similarly named panels exist, verify the right one before changing code.\n".to_string(),
-            "# Plan\n\n1. Identify the exact component/style files that correspond to the requested target.\n2. Make the smallest scoped change that satisfies the request.\n3. Verify the relevant checks if local toolchain is available.\n4. Commit the change on the swarm branch and output `BRANCH_READY: <branch-name>` when done.\n".to_string(),
-        ),
-        WorkerMode::Feature => (
-            format!(
-                "- Work only in repo `{repo}`.\n- Treat this as a bounded feature worker task.\n- You may infer the most likely target surface from the repo, but stay within the requested product area.\n"
-            ),
-            "- The requested change is implemented in the best-matching target surface.\n- The worker may inspect nearby candidate files before editing.\n- The worker records its reasoning in `.task/PROGRESS.md` if it had to choose among multiple likely targets.\n- The worker still avoids unrelated panels and broad refactors.\n".to_string(),
-            "- This is a feature worker: infer within the bounded product surface instead of waiting for exact file paths.\n- If there are multiple likely targets, inspect candidates and choose the best-supported one.\n- If the ambiguity is fundamental, stop and explain exactly what additional pointer is needed.\n".to_string(),
+            "- The requested change is implemented in the best-matching target surface.\n- The worker may inspect nearby candidate files before editing.\n- The worker records reasoning in `.task/PROGRESS.md` if it had to choose among multiple likely targets.\n- The worker avoids unrelated panels and broad refactors.\n".to_string(),
+            "- This is a normal implementation worker: act like a subagent with bounded autonomy.\n- Use the parent request, anti-goals, and repo contents to choose the best-supported target surface.\n- If there are multiple likely targets, inspect candidates and choose the best-supported one.\n- If the ambiguity is fundamental, stop and explain exactly what additional pointer is needed.\n".to_string(),
             "# Plan\n\n1. Identify the most likely code surface for the request by examining candidate components/styles in the relevant product area.\n2. Choose the best-supported target, noting the reasoning in `.task/PROGRESS.md` if multiple candidates were considered.\n3. Implement the smallest cohesive change that satisfies the request.\n4. Verify the relevant checks if local toolchain is available.\n5. Commit the change on the swarm branch and output `BRANCH_READY: <branch-name>` when done.\n".to_string(),
         ),
-        WorkerMode::Investigate => (
+        WorkerMode::Investigator => (
             format!(
-                "- Work only in repo `{repo}`.\n- Treat this as an investigation task first.\n- Explore the codebase and runtime clues needed to answer the request before changing code.\n"
+                "- Work only in repo `{repo}`.\n- Treat this as an investigator subagent task.\n- Explore the codebase and runtime clues needed to answer the request before changing code.\n"
             ),
             "- The worker explains findings clearly.\n- The worker only makes code changes if the evidence strongly supports a specific fix.\n- If no safe change is clear, it returns findings and next steps instead of guessing.\n".to_string(),
             "- This is an investigator worker: broad inference is allowed, but unsupported code edits are not.\n- Prefer diagnosis, candidate causes, and exact file pointers before patching.\n".to_string(),
@@ -396,7 +368,13 @@ mod tests {
                 .unwrap()
                 .contains("Repository: `apiari`")
         );
-        assert!(task_dir.task_md.as_ref().unwrap().contains("`feature`"));
+        assert!(
+            task_dir
+                .task_md
+                .as_ref()
+                .unwrap()
+                .contains("`implementation`")
+        );
         assert!(
             task_dir
                 .plan_md
@@ -424,18 +402,18 @@ mod tests {
     #[test]
     fn infer_worker_mode_distinguishes_patch_feature_and_investigate() {
         assert_eq!(
-            infer_worker_mode(
-                "Edit web/src/components/OverviewPanel.module.css to tighten spacing."
-            ),
-            WorkerMode::Patch
+            infer_worker_mode("Make the mobile overview cards more compact on phones."),
+            WorkerMode::Implementation
         );
         assert_eq!(
-            infer_worker_mode("Make the mobile overview cards more compact on phones."),
-            WorkerMode::Feature
+            infer_worker_mode(
+                "Make the mobile overview cards more compact on phones. Only edit the actual overview panel component/styles."
+            ),
+            WorkerMode::Implementation
         );
         assert_eq!(
             infer_worker_mode("Investigate why repeated PRs are being created for the same issue."),
-            WorkerMode::Investigate
+            WorkerMode::Investigator
         );
     }
 }
