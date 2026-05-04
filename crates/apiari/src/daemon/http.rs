@@ -1712,8 +1712,14 @@ async fn redispatch_workspace_worker(
     };
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws.config.root.clone());
+    let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir(&repo, &prompt);
     let replacement_id = swarm
-        .create_worker(&repo, &prompt, &ws.config.swarm.default_agent)
+        .create_worker_with_task_dir(
+            &repo,
+            &prompt,
+            &ws.config.swarm.default_agent,
+            Some(task_dir),
+        )
         .await
         .map_err(|e| {
             (

@@ -1778,7 +1778,8 @@ fn has_matching_open_task(
                 if task.source.as_deref() != Some(source) {
                     return false;
                 }
-                let metadata_match = metadata_fingerprint(&task.metadata).is_some_and(|value| value == fingerprint);
+                let metadata_match =
+                    metadata_fingerprint(&task.metadata).is_some_and(|value| value == fingerprint);
                 metadata_match || normalize_issue_fingerprint(&task.title) == fingerprint
             })
         })
@@ -1945,7 +1946,9 @@ fn execute_bee_actions(
                             "pending",
                         ) {
                             Ok(()) => {
-                                info!("[{slot_name}] action: scheduled followup {id} for {fires_at}");
+                                info!(
+                                    "[{slot_name}] action: scheduled followup {id} for {fires_at}"
+                                );
                                 send_web_followup_created(
                                     web_updates_tx,
                                     slot_name,
@@ -1958,7 +1961,9 @@ fn execute_bee_actions(
                             Err(e) => warn!("[{slot_name}] action: failed to create followup: {e}"),
                         }
                     }
-                    Err(e) => warn!("[{slot_name}] action: failed to inspect pending followups: {e}"),
+                    Err(e) => {
+                        warn!("[{slot_name}] action: failed to inspect pending followups: {e}")
+                    }
                 }
             }
             BeeAction::Canvas { content } => {
@@ -5468,8 +5473,9 @@ async fn try_direct_dispatch_for_dispatch_only(
     };
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
+    let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir(&repo, text);
     let worker_id = swarm
-        .create_worker(&repo, text, &ws_config.swarm.default_agent)
+        .create_worker_with_task_dir(&repo, text, &ws_config.swarm.default_agent, Some(task_dir))
         .await?;
 
     Ok(DirectDispatchDecision::Dispatched {
@@ -6597,7 +6603,10 @@ mod tests {
 
         let followups = store.list_followups().unwrap();
         assert_eq!(followups.len(), 1);
-        assert_eq!(followups[0].action, "Check if worker backend-ab5b opened a PR");
+        assert_eq!(
+            followups[0].action,
+            "Check if worker backend-ab5b opened a PR"
+        );
     }
 
     #[test]
