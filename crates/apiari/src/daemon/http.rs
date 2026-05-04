@@ -2631,6 +2631,7 @@ fn load_swarm_state(config: &crate::config::WorkspaceConfig) -> Option<SwarmStat
 
 fn worker_status_for_state(worker: &SwarmWorktreeState) -> String {
     if worker.phase.as_deref() == Some("running")
+        && worker.agent_session_status.as_deref() != Some("running")
         && worker.ready_branch.is_none()
         && worker.session_id.is_none()
         && worker.agent_pid.is_none()
@@ -2657,6 +2658,7 @@ fn worker_execution_note(worker: &SwarmWorktreeState) -> Option<String> {
         return Some(note);
     }
     if worker.phase.as_deref() == Some("running")
+        && worker.agent_session_status.as_deref() != Some("running")
         && worker.ready_branch.is_none()
         && worker.session_id.is_none()
         && worker.agent_pid.is_none()
@@ -4949,6 +4951,7 @@ state_path = "{}"
                         "branch": "swarm/example",
                         "agent_kind": "codex",
                         "phase": "running",
+                        "agent_session_status": "stopped",
                         "prompt": "tighten cards",
                         "repo_path": root,
                         "worktree_path": worktree
@@ -4965,6 +4968,78 @@ state_path = "{}"
         assert_eq!(
             workers[0].execution_note.as_deref(),
             Some("Uncommitted diff, no ready branch, and no active session.")
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_workers_keeps_actively_running_workers_out_of_stalled() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        let swarm_dir = root.join(".swarm");
+        let worktree = root.join(".swarm/wt/apiari-87e2");
+        fs::create_dir_all(&worktree).unwrap();
+
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        fs::write(worktree.join("card.css"), "before\n").unwrap();
+        Command::new("git")
+            .args(["add", "card.css"])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Apiari Tests",
+                "-c",
+                "user.email=tests@apiari.dev",
+                "commit",
+                "-m",
+                "init",
+                "-q",
+            ])
+            .current_dir(&worktree)
+            .status()
+            .unwrap();
+        fs::write(worktree.join("card.css"), "after\n").unwrap();
+
+        fs::create_dir_all(&swarm_dir).unwrap();
+        write_swarm_state(
+            &swarm_dir.join("state.json"),
+            &serde_json::json!({
+                "worktrees": [
+                    {
+                        "id": "apiari-87e2",
+                        "branch": "swarm/example",
+                        "agent_kind": "codex",
+                        "phase": "running",
+                        "agent_session_status": "running",
+                        "prompt": "tighten cards",
+                        "repo_path": root,
+                        "worktree_path": worktree
+                    }
+                ]
+            }),
+        );
+
+        let workers = get_workspace_workers(Path("apiari".to_string())).await.0;
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].status, "running");
+        assert_eq!(
+            workers[0].execution_note.as_deref(),
+            Some("Uncommitted diff present; worker has not marked a ready branch yet.")
         );
     }
 
