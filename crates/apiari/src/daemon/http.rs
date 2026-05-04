@@ -1417,14 +1417,29 @@ async fn get_workspace_worker_detail(
     Path((workspace, worker_id)): Path<(String, String)>,
 ) -> Result<Json<WorkerDetailView>, StatusCode> {
     let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
-    let worker = find_worker_state(&ws.config, &worker_id).ok_or(StatusCode::NOT_FOUND)?;
-    let worker_view = worker_view_from_state(&workspace, &worker);
+    let task = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        .ok()
+        .and_then(|store| store.find_task_by_worker(&workspace, &worker_id).ok())
+        .flatten();
+    let worker = find_worker_state(&ws.config, &worker_id);
+    let worker_view = if let Some(worker) = worker.as_ref() {
+        worker_view_from_state(&workspace, worker)
+    } else if let Some(task) = task.as_ref() {
+        worker_view_from_task(&workspace, task).ok_or(StatusCode::NOT_FOUND)?
+    } else {
+        return Err(StatusCode::NOT_FOUND);
+    };
     let conversation = worker_conversation_messages(&ws.config.resolved_swarm_dir(), &worker_id);
-    let output = worker_output_from_conversation(&conversation).or_else(|| worker.summary.clone());
+    let output = worker.as_ref().and_then(|worker| {
+        worker_output_from_conversation(&conversation).or_else(|| worker.summary.clone())
+    });
+    let prompt = worker
+        .as_ref()
+        .and_then(|worker| (!worker.prompt.trim().is_empty()).then(|| worker.prompt.clone()));
 
     Ok(Json(WorkerDetailView {
         worker: worker_view,
-        prompt: (!worker.prompt.trim().is_empty()).then_some(worker.prompt),
+        prompt,
         output,
         conversation,
     }))
@@ -2214,6 +2229,14 @@ struct WorkerView {
     branch: String,
     agent: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_stage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_repo: Option<String>,
     pr_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pr_title: Option<String>,
@@ -2236,6 +2259,10 @@ struct WorkerView {
 }
 
 struct WorkerTaskOverlay {
+    task_id: String,
+    task_title: String,
+    task_stage: String,
+    task_repo: Option<String>,
     pr_url: Option<String>,
     pr_title: Option<String>,
     status: Option<String>,
@@ -2304,6 +2331,10 @@ fn worker_task_overlay(workspace: &str, worker_id: &str) -> Option<WorkerTaskOve
         .find_task_by_worker(workspace, worker_id)
         .ok()??;
 
+    Some(worker_task_overlay_from_task(task))
+}
+
+fn worker_task_overlay_from_task(task: crate::buzz::task::Task) -> WorkerTaskOverlay {
     let status = match task.stage {
         crate::buzz::task::TaskStage::HumanReview => Some("waiting".to_string()),
         crate::buzz::task::TaskStage::Merged | crate::buzz::task::TaskStage::Dismissed => {
@@ -2312,11 +2343,15 @@ fn worker_task_overlay(workspace: &str, worker_id: &str) -> Option<WorkerTaskOve
         _ => None,
     };
 
-    Some(WorkerTaskOverlay {
+    WorkerTaskOverlay {
+        task_id: task.id,
+        task_title: task.title.clone(),
+        task_stage: task.stage.as_str().to_string(),
+        task_repo: task.repo.clone(),
         pr_url: task.pr_url,
         pr_title: Some(task.title),
         status,
-    })
+    }
 }
 
 fn elapsed_secs(created_at: Option<chrono::DateTime<chrono::Local>>) -> Option<i64> {
@@ -2328,8 +2363,54 @@ fn elapsed_secs(created_at: Option<chrono::DateTime<chrono::Local>>) -> Option<i
     })
 }
 
+fn worker_status_for_task(task: &crate::buzz::task::Task) -> String {
+    match task.stage {
+        crate::buzz::task::TaskStage::Triage => "queued".to_string(),
+        crate::buzz::task::TaskStage::InProgress | crate::buzz::task::TaskStage::InAiReview => {
+            "running".to_string()
+        }
+        crate::buzz::task::TaskStage::HumanReview => "waiting".to_string(),
+        crate::buzz::task::TaskStage::Merged | crate::buzz::task::TaskStage::Dismissed => {
+            "completed".to_string()
+        }
+    }
+}
+
+fn worker_view_from_task(workspace: &str, task: &crate::buzz::task::Task) -> Option<WorkerView> {
+    let worker_id = task.worker_id.as_ref()?.clone();
+    Some(WorkerView {
+        id: worker_id,
+        workspace: workspace.to_string(),
+        branch: task
+            .repo
+            .as_ref()
+            .map(|repo| format!("task/{repo}"))
+            .unwrap_or_else(|| "task/lifecycle".to_string()),
+        agent: "system".to_string(),
+        status: worker_status_for_task(task),
+        task_id: Some(task.id.clone()),
+        task_title: Some(task.title.clone()),
+        task_stage: Some(task.stage.as_str().to_string()),
+        task_repo: task.repo.clone(),
+        pr_url: task.pr_url.clone(),
+        pr_title: Some(task.title.clone()),
+        description: Some(task.title.clone()),
+        elapsed_secs: elapsed_secs(Some(task.created_at.with_timezone(&chrono::Local))),
+        dispatched_by: None,
+        review_state: None,
+        ci_status: None,
+        total_comments: None,
+        open_comments: None,
+        resolved_comments: None,
+    })
+}
+
 fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> WorkerView {
     let overlay = worker_task_overlay(workspace, &worker.id);
+    let overlay_task_id = overlay.as_ref().map(|task| task.task_id.clone());
+    let overlay_task_title = overlay.as_ref().map(|task| task.task_title.clone());
+    let overlay_task_stage = overlay.as_ref().map(|task| task.task_stage.clone());
+    let overlay_task_repo = overlay.as_ref().and_then(|task| task.task_repo.clone());
     let overlay_pr_url = overlay.as_ref().and_then(|task| task.pr_url.clone());
     let overlay_pr_title = overlay.as_ref().and_then(|task| task.pr_title.clone());
     let overlay_status = overlay.as_ref().and_then(|task| task.status.clone());
@@ -2344,6 +2425,10 @@ fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> Worke
             worker.agent_kind.clone()
         },
         status: overlay_status.unwrap_or_else(|| worker_status_for_state(worker)),
+        task_id: overlay_task_id,
+        task_title: overlay_task_title,
+        task_stage: overlay_task_stage,
+        task_repo: overlay_task_repo,
         pr_url: worker
             .pr
             .as_ref()
@@ -2370,7 +2455,7 @@ fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> Worke
 }
 
 fn load_worker_views(workspace: &str, config: &crate::config::WorkspaceConfig) -> Vec<WorkerView> {
-    load_swarm_state(config)
+    let mut workers: Vec<WorkerView> = load_swarm_state(config)
         .map(|state| {
             state
                 .worktrees
@@ -2378,7 +2463,31 @@ fn load_worker_views(workspace: &str, config: &crate::config::WorkspaceConfig) -
                 .map(|worker| worker_view_from_state(workspace, worker))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    let existing_ids: std::collections::HashSet<String> =
+        workers.iter().map(|worker| worker.id.clone()).collect();
+
+    if let Ok(store) = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        && let Ok(tasks) = store.get_all_tasks(workspace)
+    {
+        for task in tasks {
+            let Some(worker_id) = task.worker_id.as_ref() else {
+                continue;
+            };
+            if existing_ids.contains(worker_id) {
+                continue;
+            }
+            if task.stage.is_terminal() && task.pr_url.is_none() {
+                continue;
+            }
+            if let Some(worker) = worker_view_from_task(workspace, &task) {
+                workers.push(worker);
+            }
+        }
+    }
+
+    workers
 }
 
 fn find_worker_state(
@@ -3971,6 +4080,10 @@ mod tests {
                 branch: "apiari/fix-http".to_string(),
                 agent: "claude".to_string(),
                 status: "running".to_string(),
+                task_id: None,
+                task_title: None,
+                task_stage: None,
+                task_repo: None,
                 pr_url: None,
                 pr_title: None,
                 description: None,
@@ -3988,6 +4101,10 @@ mod tests {
                 branch: "common/fix-sdk".to_string(),
                 agent: "gemini".to_string(),
                 status: "running".to_string(),
+                task_id: None,
+                task_title: None,
+                task_stage: None,
+                task_repo: None,
                 pr_url: None,
                 pr_title: None,
                 description: None,
@@ -4342,6 +4459,56 @@ state_path = "{}"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_workers_surfaces_task_owned_lifecycle_fields() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        let store = crate::buzz::task::store::TaskStore::open(&crate::config::db_path()).unwrap();
+        let task = crate::buzz::task::Task {
+            id: "task-1".to_string(),
+            workspace: "apiari".to_string(),
+            title: "Tighten mobile overview cards".to_string(),
+            stage: crate::buzz::task::TaskStage::HumanReview,
+            source: Some("manual".to_string()),
+            source_url: None,
+            worker_id: Some("apiari-7a04".to_string()),
+            pr_url: Some("https://example.com/pr/7".to_string()),
+            pr_number: Some(7),
+            repo: Some("apiari".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            resolved_at: None,
+            metadata: serde_json::json!({}),
+        };
+        store.create_task(&task).unwrap();
+
+        let workers = get_workspace_workers(Path("apiari".to_string())).await.0;
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].id, "apiari-7a04");
+        assert_eq!(workers[0].status, "waiting");
+        assert_eq!(workers[0].task_id.as_deref(), Some("task-1"));
+        assert_eq!(
+            workers[0].task_title.as_deref(),
+            Some("Tighten mobile overview cards")
+        );
+        assert_eq!(workers[0].task_stage.as_deref(), Some("Human Review"));
+        assert_eq!(workers[0].task_repo.as_deref(), Some("apiari"));
+        assert_eq!(
+            workers[0].pr_url.as_deref(),
+            Some("https://example.com/pr/7")
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn get_workspace_worker_detail_returns_prompt_output_and_conversation() {
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
@@ -4420,6 +4587,58 @@ state_path = "{}"
         assert_eq!(detail.conversation.len(), 2);
         assert_eq!(detail.conversation[0].role, "user");
         assert_eq!(detail.conversation[1].role, "assistant");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_worker_detail_falls_back_to_task_when_swarm_state_is_gone() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        let store = crate::buzz::task::store::TaskStore::open(&crate::config::db_path()).unwrap();
+        let task = crate::buzz::task::Task {
+            id: "task-2".to_string(),
+            workspace: "apiari".to_string(),
+            title: "Review mobile worker lifecycle".to_string(),
+            stage: crate::buzz::task::TaskStage::HumanReview,
+            source: Some("manual".to_string()),
+            source_url: None,
+            worker_id: Some("apiari-7a04".to_string()),
+            pr_url: Some("https://example.com/pr/8".to_string()),
+            pr_number: Some(8),
+            repo: Some("apiari".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            resolved_at: None,
+            metadata: serde_json::json!({}),
+        };
+        store.create_task(&task).unwrap();
+
+        let detail =
+            get_workspace_worker_detail(Path(("apiari".to_string(), "apiari-7a04".to_string())))
+                .await
+                .expect("task-backed worker detail should resolve")
+                .0;
+
+        assert_eq!(detail.worker.id, "apiari-7a04");
+        assert_eq!(detail.worker.status, "waiting");
+        assert_eq!(detail.worker.task_stage.as_deref(), Some("Human Review"));
+        assert_eq!(
+            detail.worker.task_title.as_deref(),
+            Some("Review mobile worker lifecycle")
+        );
+        assert_eq!(detail.worker.task_repo.as_deref(), Some("apiari"));
+        assert_eq!(detail.prompt, None);
+        assert_eq!(detail.output, None);
+        assert!(detail.conversation.is_empty());
     }
 
     #[tokio::test]

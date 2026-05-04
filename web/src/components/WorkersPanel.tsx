@@ -55,9 +55,19 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
             </span>
           </div>
           <div className={styles.desc}>
-            {w.description || branchName(w.branch)}
+            {w.task_title || w.description || branchName(w.branch)}
           </div>
           <div className={styles.tags}>
+            {w.task_stage && (
+              <span className={styles.tag}>
+                {w.task_stage}
+              </span>
+            )}
+            {w.task_repo && (
+              <span className={`${styles.tag} ${styles.tagBot}`}>
+                repo: {w.task_repo}
+              </span>
+            )}
             {w.pr_url && (
               <a
                 href={w.pr_url}

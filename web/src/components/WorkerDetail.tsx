@@ -69,6 +69,12 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
     }
   }
 
+  const taskTitle = detail?.task_title ?? worker.task_title;
+  const taskStage = detail?.task_stage ?? worker.task_stage;
+  const taskRepo = detail?.task_repo ?? worker.task_repo;
+  const branchLabel = branchName(worker.branch);
+  const locationLabel = taskRepo ? `repo ${taskRepo}` : branchLabel;
+
   function renderChat() {
     return (
       <>
@@ -131,7 +137,7 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
                         : "var(--text-faint)",
                 }}
               />
-              {worker.status} &middot; {branchName(worker.branch)}
+              {worker.status} &middot; {locationLabel}
             </div>
           </div>
           <div className={styles.headerActions}>
@@ -167,10 +173,20 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
                  worker.ci_status === "FAILURE" ? "CI failing" :
                  "CI pending"}
               </span>
-            )}
-            {worker.open_comments != null && worker.open_comments > 0 && (
-              <span className={styles.commentCount}>
-                {worker.open_comments} open / {worker.resolved_comments ?? 0} resolved comments
+          )}
+          {taskStage && (
+            <span className={styles.reviewBadge} data-state="pending">
+              {taskStage}
+            </span>
+          )}
+          {taskRepo && (
+            <span className={styles.commentCount}>
+              repo {taskRepo}
+            </span>
+          )}
+          {worker.open_comments != null && worker.open_comments > 0 && (
+            <span className={styles.commentCount}>
+              {worker.open_comments} open / {worker.resolved_comments ?? 0} resolved comments
               </span>
             )}
           </div>
@@ -216,13 +232,19 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
             )
           )}
           {infoTab === "task" && (
-            detail?.prompt ? (
-              <div className={styles.prose}>
-                <Markdown remarkPlugins={[remarkGfm]}>{detail.prompt}</Markdown>
-              </div>
-            ) : (
-              <div className={styles.empty}>No task prompt</div>
-            )
+            <div className={styles.prose}>
+              {taskTitle && <p><strong>Task:</strong> {taskTitle}</p>}
+              {taskStage && <p><strong>Lifecycle:</strong> {taskStage}</p>}
+              {taskRepo && <p><strong>Repo:</strong> {taskRepo}</p>}
+              {detail?.prompt ? (
+                <>
+                  {(taskTitle || taskStage || taskRepo) && <p><strong>Worker prompt</strong></p>}
+                  <Markdown remarkPlugins={[remarkGfm]}>{detail.prompt}</Markdown>
+                </>
+              ) : !(taskTitle || taskStage || taskRepo) ? (
+                <div className={styles.empty}>No task context</div>
+              ) : null}
+            </div>
           )}
           {infoTab === "diff" && (
             diffContent === undefined ? (

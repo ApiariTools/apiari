@@ -20,6 +20,10 @@ export interface Worker {
   branch: string;
   status: string;
   agent: string;
+  task_id?: string | null;
+  task_title?: string | null;
+  task_stage?: string | null;
+  task_repo?: string | null;
   pr_url: string | null;
   pr_title: string | null;
   description: string | null;
