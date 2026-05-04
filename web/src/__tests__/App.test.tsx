@@ -7,9 +7,11 @@ vi.mock("../api");
 
 import App from "../App";
 import * as api from "../api";
+import { __resetChatCacheForTests } from "../hooks/useChatModeState";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  __resetChatCacheForTests();
   window.location.hash = "";
   window.localStorage.clear();
   Object.defineProperty(window, "innerWidth", { value: 1440, writable: true });
@@ -199,6 +201,80 @@ describe("Bot switching", () => {
       const mock = api.getConversations as ReturnType<typeof vi.fn>;
       expect(mock.mock.calls.some((c: string[]) => c[1] === "Customer")).toBe(true);
     });
+  });
+
+  it("renders the selected bot conversation instead of reusing the previous bot thread", async () => {
+    const user = userEvent.setup();
+    (api.getConversations as ReturnType<typeof vi.fn>).mockImplementation(
+      (_workspace: string, botName: string) => {
+        if (botName === "Customer") {
+          return Promise.resolve([
+            {
+              id: 101,
+              workspace: "apiari",
+              bot: "Customer",
+              role: "user",
+              content: "customer issue",
+              attachments: null,
+              created_at: new Date("2026-05-04T10:00:00Z").toISOString(),
+            },
+            {
+              id: 102,
+              workspace: "apiari",
+              bot: "Customer",
+              role: "assistant",
+              content: "customer response",
+              attachments: null,
+              created_at: new Date("2026-05-04T10:00:01Z").toISOString(),
+            },
+          ]);
+        }
+
+        return Promise.resolve([
+          {
+            id: 1,
+            workspace: "apiari",
+            bot: "Main",
+            role: "user",
+            content: "main issue",
+            attachments: null,
+            created_at: new Date("2026-05-04T09:00:00Z").toISOString(),
+          },
+          {
+            id: 2,
+            workspace: "apiari",
+            bot: "Main",
+            role: "assistant",
+            content: "main response",
+            attachments: null,
+            created_at: new Date("2026-05-04T09:00:01Z").toISOString(),
+          },
+        ]);
+      },
+    );
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Open Main chat" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("main issue")).toBeInTheDocument();
+      expect(screen.getByText("main response")).toBeInTheDocument();
+    });
+
+    await user.click(botButton("Customer"));
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Message Customer/)).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("customer issue")).toBeInTheDocument();
+      expect(screen.getByText("customer response")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("main issue")).not.toBeInTheDocument();
+    expect(screen.queryByText("main response")).not.toBeInTheDocument();
   });
 });
 

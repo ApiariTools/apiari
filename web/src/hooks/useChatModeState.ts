@@ -15,6 +15,10 @@ interface CachedChatState {
 
 const chatCache = new Map<string, CachedChatState>();
 
+export function __resetChatCacheForTests() {
+  chatCache.clear();
+}
+
 function mergeMessages(prev: Message[], incoming: Message): Message[] {
   const withoutMatchingTemps = incoming.id >= 0
     ? prev.filter((msg) => !(msg.id < 0
@@ -86,6 +90,11 @@ export function useChatModeState({
   useEffect(() => { cacheKeyRef.current = chatCacheKey(workspace, remote, bot); }, [workspace, remote, bot]);
   useEffect(() => {
     if (!workspace || !bot) return;
+    const messagesMatchCurrentChat = messages.every((message) =>
+      message.workspace === workspace && message.bot === bot);
+    if (!messagesMatchCurrentChat) {
+      return;
+    }
     if (messagesLoading && messages.length === 0 && !hasOlderHistory && !chatCache.has(cacheKeyRef.current)) {
       return;
     }
