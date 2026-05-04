@@ -193,6 +193,9 @@ pub struct WorktreeState {
     /// Branch name signalled ready by the worker (via `BRANCH_READY: <name>`).
     #[serde(default)]
     pub ready_branch: Option<String>,
+    /// Explicit execution failure/note surfaced by the worker harness.
+    #[serde(default)]
+    pub failure_note: Option<String>,
 }
 
 fn default_status() -> String {
@@ -264,6 +267,7 @@ mod tests {
             review_pr: None,
             review_verdict: None,
             ready_branch: None,
+            failure_note: None,
         }
     }
 

@@ -98,6 +98,8 @@ struct ManagedWorker {
     review_verdict: Option<crate::core::state::ReviewVerdict>,
     /// Branch name signalled ready by the worker (via `BRANCH_READY: <name>`).
     ready_branch: Option<String>,
+    /// Explicit execution failure/note surfaced by the harness.
+    failure_note: Option<String>,
 }
 
 impl ManagedWorker {
@@ -157,6 +159,7 @@ impl ManagedWorker {
             review_pr: self.review_pr,
             review_verdict: self.review_verdict.clone(),
             ready_branch: self.ready_branch.clone(),
+            failure_note: self.failure_note.clone(),
         }
     }
 }
@@ -316,6 +319,7 @@ async fn register_workspace(
                         accumulated_text: String::new(),
                         review_verdict: wt.review_verdict.clone(),
                         ready_branch: wt.ready_branch.clone(),
+                        failure_note: wt.failure_note.clone(),
                     },
                 );
             }
@@ -466,6 +470,7 @@ pub(crate) async fn run_daemon(
                                     accumulated_text: String::new(),
                                     review_verdict: wt.review_verdict.clone(),
                                     ready_branch: wt.ready_branch.clone(),
+                                    failure_note: wt.failure_note.clone(),
                                 },
                             );
                         }
@@ -590,6 +595,15 @@ pub(crate) async fn run_daemon(
                         for ws in workspaces.values_mut() {
                             if let Some(worker) = ws.workers.get_mut(&worktree_id) {
                                 let old_phase = worker.phase.clone();
+                                let mut phase = phase;
+                                if phase == WorkerPhase::Completed
+                                    && let Some(note) = validate_completed_worker(worker)
+                                {
+                                    worker.failure_note = Some(note);
+                                    phase = WorkerPhase::Failed;
+                                } else if phase != WorkerPhase::Failed {
+                                    worker.failure_note = None;
+                                }
                                 worker.phase = phase.clone();
                                 if let Some(sid) = session_id {
                                     worker.session_id = Some(sid);
@@ -1322,6 +1336,13 @@ async fn handle_request(
                 }
             }
 
+            let preflight_failure = worker_preflight_failure(&prompt, &worktree_path);
+            let initial_phase = if preflight_failure.is_some() {
+                WorkerPhase::Failed
+            } else {
+                WorkerPhase::Starting
+            };
+
             // Register the worker
             let worker = ManagedWorker {
                 id: worktree_id.clone(),
@@ -1330,7 +1351,7 @@ async fn handle_request(
                 kind: kind.clone(),
                 repo_path: repo_path.clone(),
                 worktree_path: worktree_path.clone(),
-                phase: WorkerPhase::Starting,
+                phase: initial_phase.clone(),
                 session_id: None,
                 restart_count: 0,
                 pr: None,
@@ -1351,25 +1372,28 @@ async fn handle_request(
                 accumulated_text: String::new(),
                 review_verdict: None,
                 ready_branch: None,
+                failure_note: preflight_failure.clone(),
             };
 
             ws.workers.insert(worktree_id.clone(), worker);
             *state_dirty = true;
 
             // Spawn the agent in a background task
-            let msg_tx = spawn_worker_agent(
-                worktree_id.clone(),
-                kind.clone(),
-                effective_prompt,
-                worktree_path.clone(),
-                work_dir.clone(),
-                None, // new worker, no session to resume
-                0,
-                event_tx.clone(),
-                supervisor_tx.clone(),
-            );
-            if let Some(w) = ws.workers.get_mut(&worktree_id) {
-                w.message_tx = Some(msg_tx);
+            if preflight_failure.is_none() {
+                let msg_tx = spawn_worker_agent(
+                    worktree_id.clone(),
+                    kind.clone(),
+                    effective_prompt,
+                    worktree_path.clone(),
+                    work_dir.clone(),
+                    None, // new worker, no session to resume
+                    0,
+                    event_tx.clone(),
+                    supervisor_tx.clone(),
+                );
+                if let Some(w) = ws.workers.get_mut(&worktree_id) {
+                    w.message_tx = Some(msg_tx);
+                }
             }
 
             // Emit creation event
@@ -1384,8 +1408,29 @@ async fn handle_request(
                 },
             );
 
+            if let Some(ref note) = preflight_failure {
+                let _ = ipc::emit_event(
+                    &work_dir,
+                    &ipc::SwarmEvent::PhaseChanged {
+                        worktree: worktree_id.clone(),
+                        from: WorkerPhase::Creating,
+                        to: WorkerPhase::Failed,
+                        timestamp: Local::now(),
+                    },
+                );
+                let _ = event_tx.send(DaemonResponse::StateChanged {
+                    worktree_id: worktree_id.clone(),
+                    phase: WorkerPhase::Failed,
+                });
+                tracing::warn!(worker_id = %worktree_id, reason = %note, "Worker preflight failed");
+            }
+
             let _ = resp_tx.send(DaemonResponse::Ok {
-                data: Some(serde_json::json!({ "worktree_id": worktree_id })),
+                data: Some(serde_json::json!({
+                    "worktree_id": worktree_id,
+                    "phase": initial_phase,
+                    "error": preflight_failure,
+                })),
             });
         }
 
@@ -1638,6 +1683,68 @@ fn resolve_repo(repos: &[PathBuf], repo_name: Option<&str>) -> Result<PathBuf> {
     }
 }
 
+fn prompt_likely_needs_web_toolchain(prompt: &str, worktree_path: &Path) -> bool {
+    if !worktree_path.join("web").join("package.json").exists() {
+        return false;
+    }
+
+    let prompt = prompt.to_ascii_lowercase();
+    [
+        "mobile", "ui", "frontend", "css", "layout", "panel", "cards", "button", "header", "chat",
+        "docs", "workers", "repos", "overview",
+    ]
+    .iter()
+    .any(|needle| prompt.contains(needle))
+}
+
+fn worker_preflight_failure(prompt: &str, worktree_path: &Path) -> Option<String> {
+    if let Err(e) = git::ensure_worktree_metadata_writable(worktree_path) {
+        return Some(format!(
+            "Worker preflight failed: git worktree metadata is not writable, so commit/push handoff cannot complete ({e})."
+        ));
+    }
+
+    if prompt_likely_needs_web_toolchain(prompt, worktree_path)
+        && !worktree_path
+            .join("web")
+            .join("node_modules")
+            .join(".bin")
+            .join("tsc")
+            .exists()
+    {
+        return Some(
+            "Worker preflight failed: frontend toolchain is missing in this worktree (`web/node_modules/.bin/tsc` not found), so web verification cannot run."
+                .to_string(),
+        );
+    }
+
+    None
+}
+
+fn validate_completed_worker(worker: &ManagedWorker) -> Option<String> {
+    if worker.role.as_deref() == Some("reviewer") {
+        return None;
+    }
+
+    if worker.ready_branch.is_some() || worker.pr.is_some() {
+        return None;
+    }
+
+    match git::has_uncommitted_changes(&worker.worktree_path) {
+        Ok(true) => Some(
+            "Worker exited with uncommitted changes and no ready branch. Execution did not reach a committable handoff."
+                .to_string(),
+        ),
+        Ok(false) => Some(
+            "Worker exited without marking a ready branch or linking a PR. No completion handoff was recorded."
+                .to_string(),
+        ),
+        Err(e) => Some(format!(
+            "Worker exited without a ready branch, and git status could not be inspected ({e})."
+        )),
+    }
+}
+
 /// Find a worker by ID across all workspaces. Returns (workspace_path, &mut worker).
 fn find_worker_workspace_mut<'a>(
     workspaces: &'a mut HashMap<PathBuf, WorkspaceState>,
@@ -1882,6 +1989,26 @@ fn apply_pr_poll_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    fn init_git_repo(path: &Path) {
+        Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+    }
 
     /// Build a ManagedWorker with sensible defaults for testing.
     fn test_worker(id: &str) -> ManagedWorker {
@@ -1904,6 +2031,7 @@ mod tests {
             accumulated_text: String::new(),
             review_verdict: None,
             ready_branch: None,
+            failure_note: None,
         }
     }
 
@@ -2423,8 +2551,53 @@ mod tests {
             accumulated_text: String::new(),
             review_verdict: None,
             ready_branch: Some("feature/real-branch".to_string()),
+            failure_note: None,
         };
 
         assert_eq!(branch_for_pr_lookup(&worker), "feature/real-branch");
+    }
+
+    #[test]
+    fn worker_preflight_failure_detects_missing_frontend_toolchain() {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        fs::create_dir_all(temp.path().join("web")).unwrap();
+        fs::write(temp.path().join("web/package.json"), "{}").unwrap();
+
+        let note = worker_preflight_failure(
+            "Make the mobile overview cards more compact on phones",
+            temp.path(),
+        )
+        .unwrap();
+
+        assert!(note.contains("frontend toolchain is missing"));
+        assert!(note.contains("tsc"));
+    }
+
+    #[test]
+    fn validate_completed_worker_requires_ready_branch_for_dirty_diff() {
+        let temp = tempfile::tempdir().unwrap();
+        init_git_repo(temp.path());
+        fs::write(temp.path().join("README.md"), "hello\n").unwrap();
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        fs::write(temp.path().join("README.md"), "hello\nworld\n").unwrap();
+
+        let mut worker = test_worker("dirty-worker");
+        worker.repo_path = temp.path().to_path_buf();
+        worker.worktree_path = temp.path().to_path_buf();
+        worker.phase = WorkerPhase::Completed;
+
+        let note = validate_completed_worker(&worker).unwrap();
+        assert!(note.contains("uncommitted changes"));
+        assert!(note.contains("no ready branch"));
     }
 }

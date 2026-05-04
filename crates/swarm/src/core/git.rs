@@ -29,6 +29,26 @@ pub fn repo_root(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(root))
 }
 
+/// Get the git metadata directory for a repo or linked worktree.
+pub fn git_dir(path: &Path) -> Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(path)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(eyre!("not a git repo: {}", path.display()));
+    }
+
+    let git_dir = String::from_utf8(output.stdout)?.trim().to_string();
+    let git_dir_path = PathBuf::from(git_dir);
+    Ok(if git_dir_path.is_absolute() {
+        git_dir_path
+    } else {
+        path.join(git_dir_path)
+    })
+}
+
 /// Get the current branch name.
 pub fn current_branch(path: &Path) -> Result<String> {
     let output = Command::new("git")
@@ -37,6 +57,46 @@ pub fn current_branch(path: &Path) -> Result<String> {
         .output()?;
 
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+/// Check whether the worktree git metadata directory is writable.
+///
+/// This catches environments where the worktree itself is writable but the
+/// parent repo's `.git/worktrees/<id>/` metadata path is not, which prevents
+/// commit/push handoff from succeeding.
+pub fn ensure_worktree_metadata_writable(worktree_path: &Path) -> Result<()> {
+    let git_dir = git_dir(worktree_path)?;
+    let probe = git_dir.join(format!(
+        ".apiari-write-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    std::fs::write(&probe, b"probe").map_err(|e| {
+        eyre!(
+            "cannot write worktree metadata in {}: {e}",
+            git_dir.display()
+        )
+    })?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
+/// Check whether the worktree has uncommitted changes.
+pub fn has_uncommitted_changes(path: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(path)
+        .output()?;
+
+    if !output.status.success() {
+        return Err(eyre!("git status failed in {}", path.display()));
+    }
+
+    Ok(!String::from_utf8(output.stdout)?.trim().is_empty())
 }
 
 /// Get the short SHA of HEAD.

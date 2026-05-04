@@ -1490,7 +1490,10 @@ fn default_true() -> bool {
     true
 }
 
-fn worker_repo_name(worker: &SwarmWorktreeState, fallback_root: &std::path::Path) -> Option<String> {
+fn worker_repo_name(
+    worker: &SwarmWorktreeState,
+    fallback_root: &std::path::Path,
+) -> Option<String> {
     worker
         .repo_path
         .as_ref()
@@ -2604,6 +2607,8 @@ struct SwarmWorktreeState {
     session_id: Option<String>,
     #[serde(default)]
     ready_branch: Option<String>,
+    #[serde(default)]
+    failure_note: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2646,6 +2651,11 @@ fn worker_status_for_state(worker: &SwarmWorktreeState) -> String {
 }
 
 fn worker_execution_note(worker: &SwarmWorktreeState) -> Option<String> {
+    if let Some(note) = worker.failure_note.clone()
+        && !note.trim().is_empty()
+    {
+        return Some(note);
+    }
     if worker.phase.as_deref() == Some("running")
         && worker.ready_branch.is_none()
         && worker.session_id.is_none()
@@ -2655,7 +2665,9 @@ fn worker_execution_note(worker: &SwarmWorktreeState) -> Option<String> {
         return Some("Uncommitted diff, no ready branch, and no active session.".to_string());
     }
     if worker.ready_branch.is_none() && worker_has_uncommitted_changes(worker) {
-        return Some("Uncommitted diff present; worker has not marked a ready branch yet.".to_string());
+        return Some(
+            "Uncommitted diff present; worker has not marked a ready branch yet.".to_string(),
+        );
     }
     None
 }
@@ -3892,7 +3904,10 @@ pub async fn start_http_server(
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/workspaces/{workspace}/bots", get(list_workspace_bots))
-        .route("/api/workspaces/{workspace}/tasks", get(list_workspace_tasks))
+        .route(
+            "/api/workspaces/{workspace}/tasks",
+            get(list_workspace_tasks),
+        )
         .route(
             "/api/workspaces/{workspace}/repos",
             get(list_workspace_repos),
