@@ -335,4 +335,64 @@ describe("ChatPanel", () => {
     expect(mockPlaySentCue).not.toHaveBeenCalled();
     expect(mockStartThinkingCue).not.toHaveBeenCalled();
   });
+
+  it("uses auto scrolling for streaming updates to avoid jumpy smooth restarts", async () => {
+    const scrollTo = vi.fn();
+    Element.prototype.scrollTo = scrollTo;
+
+    const { rerender } = render(
+      <ChatPanel
+        {...defaultProps}
+        loading
+        streamingContent="Streaming..."
+        loadingStatus="Thinking..."
+      />,
+    );
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+
+    scrollTo.mockClear();
+    rerender(
+      <ChatPanel
+        {...defaultProps}
+        loading
+        streamingContent="Streaming more..."
+        loadingStatus="Still thinking..."
+      />,
+    );
+
+    await waitFor(() => {
+      expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: "auto" }));
+    });
+  });
+
+  it("keeps smooth scrolling for discrete message additions", async () => {
+    const scrollTo = vi.fn();
+    Element.prototype.scrollTo = scrollTo;
+
+    const { rerender } = render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => expect(scrollTo).toHaveBeenCalled());
+
+    scrollTo.mockClear();
+    rerender(
+      <ChatPanel
+        {...defaultProps}
+        messages={[
+          ...mockMessages,
+          {
+            id: 3,
+            workspace: "test",
+            bot: "Main",
+            role: "assistant",
+            content: "Another reply",
+            attachments: null,
+            created_at: new Date().toISOString(),
+          },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: "smooth" }));
+    });
+  });
 });

@@ -10,6 +10,7 @@ class MockResizeObserver {
 
 // jsdom doesn't implement scrollIntoView
 Element.prototype.scrollIntoView = () => {};
+Element.prototype.scrollTo = () => {};
 
 // Mock WebSocket
 class MockWebSocket {

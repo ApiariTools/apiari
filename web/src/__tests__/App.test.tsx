@@ -540,7 +540,18 @@ describe("Mobile auto-select", () => {
 });
 
 describe("WebSocket message dedup", () => {
-  it("fetches conversations on WS message event instead of appending directly", async () => {
+  beforeEach(() => {
+    (api.getWorkspaces as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: "apiari" },
+      { name: "mgm" },
+    ]);
+    (api.getConversations as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 1, workspace: "apiari", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
+      { id: 2, workspace: "apiari", bot: "Main", role: "assistant", content: "Hi! How can I help?", attachments: null, created_at: new Date().toISOString() },
+    ]);
+  });
+
+  it("appends websocket messages directly without refetching", async () => {
     // Capture the WS callback so we can simulate events
     let wsCallback: (event: Record<string, unknown>) => void = () => {};
     (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
@@ -560,14 +571,6 @@ describe("WebSocket message dedup", () => {
     // Clear call counts from initial load
     (api.getConversations as ReturnType<typeof vi.fn>).mockClear();
 
-    // Return a new message set to simulate a new message in DB
-    const updatedMsgs = [
-      { id: 1, workspace: "apiari", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
-      { id: 2, workspace: "apiari", bot: "Main", role: "assistant", content: "Hi! How can I help?", attachments: null, created_at: new Date().toISOString() },
-      { id: 3, workspace: "apiari", bot: "Main", role: "user", content: "new message", attachments: null, created_at: new Date().toISOString() },
-    ];
-    (api.getConversations as ReturnType<typeof vi.fn>).mockResolvedValueOnce(updatedMsgs);
-
     // Simulate a WS message event for the active bot
     wsCallback({
       type: "message",
@@ -579,20 +582,16 @@ describe("WebSocket message dedup", () => {
       created_at: new Date().toISOString(),
     });
 
-    // Should trigger getConversations fetch (not a direct append)
-    await waitFor(() => {
-      expect(api.getConversations).toHaveBeenCalledWith("apiari", "Main", 100, undefined);
-    });
-
-    // The new message should appear exactly once
     await waitFor(() => {
       expect(screen.getByText("new message")).toBeInTheDocument();
     });
+
+    expect(api.getConversations).not.toHaveBeenCalled();
     const matches = screen.getAllByText("new message");
     expect(matches).toHaveLength(1);
   });
 
-  it("keeps websocket message visible even if the immediate refetch is stale", async () => {
+  it("keeps websocket message visible without requiring a follow-up refetch", async () => {
     let wsCallback: (event: Record<string, unknown>) => void = () => {};
     (api.connectWebSocket as ReturnType<typeof vi.fn>).mockImplementation(
       (cb: (event: Record<string, unknown>) => void) => {
@@ -607,10 +606,7 @@ describe("WebSocket message dedup", () => {
       expect(screen.getByText("hello")).toBeInTheDocument();
     });
 
-    (api.getConversations as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      { id: 1, workspace: "apiari", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
-      { id: 2, workspace: "apiari", bot: "Main", role: "assistant", content: "Hi! How can I help?", attachments: null, created_at: new Date().toISOString() },
-    ]);
+    (api.getConversations as ReturnType<typeof vi.fn>).mockClear();
 
     wsCallback({
       type: "message",
@@ -625,6 +621,7 @@ describe("WebSocket message dedup", () => {
     await waitFor(() => {
       expect(screen.getByText("fresh websocket reply")).toBeInTheDocument();
     });
+    expect(api.getConversations).not.toHaveBeenCalled();
   });
 
   it("does not duplicate an assistant reply when streaming status, message, and idle all arrive", async () => {

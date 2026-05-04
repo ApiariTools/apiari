@@ -73,7 +73,6 @@ export function ChatPanel({
   onSelectBot,
   compactHeader = false,
 }: Props) {
-  const bottomRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
@@ -86,6 +85,13 @@ export function ChatPanel({
   const isNearBottomRef = useRef(true);
   const restoringOlderHistoryRef = useRef(false);
   const loadingOlderRequestRef = useRef(false);
+  const prevScrollStateRef = useRef({
+    timelineLength: 0,
+    pendingFollowups: 0,
+    loading: false,
+    streamingContent: "",
+    loadingStatus: undefined as string | undefined,
+  });
 
   // ── Voice state: listening / processing / speaking ──
   const voiceState: VoiceState = !voiceMode
@@ -172,16 +178,6 @@ export function ChatPanel({
   const sentenceQueueRef = useRef<string[]>([]);
   const readyQueueRef = useRef<Howl[]>([]);
   const playingMsgRef = useRef<number | null>(null);
-
-  // ── Auto-scroll ──
-  useLayoutEffect(() => {
-    if (restoringOlderHistoryRef.current) return;
-    if (!isNearBottomRef.current) return;
-    requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: messages.length > 0 ? "smooth" : "auto" });
-    });
-    setShowScrollBtn(false);
-  }, [messages, followups, streamingContent, loading, loadingStatus]);
 
   // ── Voice mode: auto-read bot responses via Howler's unlocked AudioContext ──
   // We use Howler.ctx directly (unlocked by the greeting tap) to play decoded
@@ -371,11 +367,17 @@ export function ChatPanel({
       voiceModeRef.current = true;
       setVoiceMode(true);
       setTriggerRecord((n) => n + 1);
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+      setTimeout(() => scrollToBottom("smooth"), 100);
     }
   }
 
   // ── Helpers ──
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior) => {
+    const container = messagesRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+  }, []);
 
   async function handleMessagesScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
@@ -415,10 +417,10 @@ export function ChatPanel({
     }
   }
 
-  function scrollToBottom() {
+  function handleScrollToBottom() {
     isNearBottomRef.current = true;
     setShowScrollBtn(false);
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    scrollToBottom("smooth");
   }
 
   function formatTime(iso: string): string {
@@ -471,6 +473,55 @@ export function ChatPanel({
 
     return { timeline: items, pendingFollowups: pending };
   }, [messages, followups]);
+
+  // ── Auto-scroll ──
+  useLayoutEffect(() => {
+    const prev = prevScrollStateRef.current;
+
+    if (restoringOlderHistoryRef.current || !isNearBottomRef.current) {
+      prevScrollStateRef.current = {
+        timelineLength: timeline.length,
+        pendingFollowups: pendingFollowups.length,
+        loading,
+        streamingContent: streamingContent ?? "",
+        loadingStatus,
+      };
+      return;
+    }
+
+    const hasExistingTimeline = prev.timelineLength > 0;
+    const timelineGrew = timeline.length > prev.timelineLength;
+    const pendingGrew = pendingFollowups.length > prev.pendingFollowups;
+    const startedLoading = loading && !prev.loading;
+    const onlyStreamingChanged =
+      !timelineGrew
+      && !pendingGrew
+      && loading === prev.loading
+      && (
+        (streamingContent ?? "") !== prev.streamingContent
+        || loadingStatus !== prev.loadingStatus
+      );
+
+    const behavior: ScrollBehavior =
+      !hasExistingTimeline || onlyStreamingChanged
+        ? "auto"
+        : timelineGrew || pendingGrew || startedLoading
+          ? "smooth"
+          : "auto";
+
+    const frame = requestAnimationFrame(() => {
+      scrollToBottom(behavior);
+    });
+    setShowScrollBtn(false);
+    prevScrollStateRef.current = {
+      timelineLength: timeline.length,
+      pendingFollowups: pendingFollowups.length,
+      loading,
+      streamingContent: streamingContent ?? "",
+      loadingStatus,
+    };
+    return () => cancelAnimationFrame(frame);
+  }, [timeline.length, pendingFollowups.length, loading, loadingStatus, scrollToBottom, streamingContent]);
 
   // ── Render ──
 
@@ -613,14 +664,14 @@ export function ChatPanel({
             onCancelled={() => onFollowupCancelled?.()}
           />
         ))}
-        <div ref={bottomRef} style={{ paddingBottom: voiceMode ? 100 : 0 }} />
+        <div style={{ paddingBottom: voiceMode ? 100 : 0 }} />
       </div>
       {followups && followups.some((f) => f.status === "pending") && showScrollBtn && (
         <FollowupIndicator followup={followups.find((f) => f.status === "pending")!} />
       )}
       <button
         className={`${styles.scrollToBottom} ${showScrollBtn ? styles.scrollToBottomVisible : ""}`}
-        onClick={scrollToBottom}
+        onClick={handleScrollToBottom}
         aria-label="Scroll to bottom"
         tabIndex={showScrollBtn ? 0 : -1}
         aria-hidden={!showScrollBtn}
