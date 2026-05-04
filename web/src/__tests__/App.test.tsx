@@ -162,6 +162,18 @@ describe("App", () => {
     });
   });
 
+  it("shows the effective bot config on the diagnostics page", async () => {
+    window.location.hash = "#/apiari/diagnostics/Main";
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Effective bot config" })).toBeInTheDocument();
+      expect(screen.getByText(/effective policy: autonomous/i)).toBeInTheDocument();
+      expect(screen.getByText(/resolved bee: Bee/i)).toBeInTheDocument();
+      expect(screen.getByText(/workspace authority: autonomous/i)).toBeInTheDocument();
+    });
+  });
+
   it("does not render the chat repo rail on tablet-width layouts", async () => {
     Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
     window.dispatchEvent(new Event("resize"));

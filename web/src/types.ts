@@ -137,10 +137,27 @@ export interface BotTurnDecision {
   created_at: string;
 }
 
+export interface BotEffectiveConfig {
+  api_name: string;
+  resolved_bee_name: string;
+  workspace_authority: string;
+  configured_execution_policy: string;
+  effective_execution_policy: string;
+  provider: string;
+  model: string;
+  role: string | null;
+  color: string | null;
+  max_turns: number;
+  max_session_turns: number;
+  heartbeat: string | null;
+  signal_sources: string[];
+}
+
 export interface BotDebugData {
   workspace: string;
   bot: string;
   provider: string | null;
+  effective_config: BotEffectiveConfig | null;
   status: {
     status: string;
     streaming_content: string;

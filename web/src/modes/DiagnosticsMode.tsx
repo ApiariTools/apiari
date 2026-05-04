@@ -141,6 +141,60 @@ export function DiagnosticsMode({ workspace, bot, remote }: Props) {
           <>
             <section className={styles.section}>
               <div className={styles.sectionHeader}>
+                <h2>Effective bot config</h2>
+              </div>
+              {!debugData.effective_config ? (
+                <EmptyState
+                  title="No effective config available"
+                  body="The daemon could not resolve this bot to a loaded bee config."
+                />
+              ) : (
+                <article className={styles.card}>
+                  <div className={styles.cardTop}>
+                    <strong>{debugData.effective_config.api_name}</strong>
+                    <StatusBadge tone="neutral">
+                      effective policy: {debugData.effective_config.effective_execution_policy}
+                    </StatusBadge>
+                  </div>
+                  <div className={styles.cardBody}>
+                    <div className={styles.inlineMeta}>
+                      <span>resolved bee: {debugData.effective_config.resolved_bee_name}</span>
+                      <span>workspace authority: {debugData.effective_config.workspace_authority}</span>
+                    </div>
+                    <div className={styles.inlineMeta}>
+                      <span>provider: {debugData.effective_config.provider}</span>
+                      <span>model: {debugData.effective_config.model}</span>
+                    </div>
+                    <div className={styles.inlineMeta}>
+                      <span>configured policy: {debugData.effective_config.configured_execution_policy}</span>
+                      <span>max turns: {debugData.effective_config.max_turns}</span>
+                      <span>max session turns: {debugData.effective_config.max_session_turns}</span>
+                    </div>
+                    {debugData.effective_config.heartbeat ? (
+                      <div className={styles.inlineMeta}>
+                        <span>heartbeat: {debugData.effective_config.heartbeat}</span>
+                      </div>
+                    ) : null}
+                    {debugData.effective_config.role || debugData.effective_config.color ? (
+                      <div className={styles.inlineMeta}>
+                        {debugData.effective_config.role ? <span>role: {debugData.effective_config.role}</span> : null}
+                        {debugData.effective_config.color ? <span>color: {debugData.effective_config.color}</span> : null}
+                      </div>
+                    ) : null}
+                    <div className={styles.inlineMeta}>
+                      <span>
+                        signal hooks: {debugData.effective_config.signal_sources.length > 0
+                          ? debugData.effective_config.signal_sources.join(", ")
+                          : "none"}
+                      </span>
+                    </div>
+                  </div>
+                </article>
+              )}
+            </section>
+
+            <section className={styles.section}>
+              <div className={styles.sectionHeader}>
                 <h2>Provider capabilities</h2>
               </div>
               {remote ? (

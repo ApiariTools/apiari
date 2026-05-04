@@ -753,10 +753,28 @@ struct ProviderCapabilityView {
 }
 
 #[derive(Debug, Serialize)]
+struct BotEffectiveConfigView {
+    api_name: String,
+    resolved_bee_name: String,
+    workspace_authority: String,
+    configured_execution_policy: String,
+    effective_execution_policy: String,
+    provider: String,
+    model: String,
+    role: Option<String>,
+    color: Option<String>,
+    max_turns: u32,
+    max_session_turns: u32,
+    heartbeat: Option<String>,
+    signal_sources: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct BotDebugView {
     workspace: String,
     bot: String,
     provider: Option<String>,
+    effective_config: Option<BotEffectiveConfigView>,
     status: Option<BotStatusView>,
     recent_failures: Vec<BotTurnFailureView>,
     recent_decisions: Vec<BotTurnDecisionView>,
@@ -1066,6 +1084,35 @@ fn resolve_bee_name_for_api(
         .map(|bee| bee.name)
 }
 
+fn bot_description_for_ui(bee: &crate::config::BeeConfig) -> Option<String> {
+    bee.role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            bee.prompt.as_deref().and_then(|prompt| {
+                prompt
+                    .split("\n\n")
+                    .map(str::trim)
+                    .find(|section| {
+                        !section.is_empty()
+                            && !section.starts_with("Role:")
+                            && !section.starts_with("Color:")
+                    })
+                    .map(|section| {
+                        let compact = section.split_whitespace().collect::<Vec<_>>().join(" ");
+                        if compact.len() > 160 {
+                            format!("{}…", compact[..160].trim_end())
+                        } else {
+                            compact
+                        }
+                    })
+                    .filter(|section| !section.is_empty())
+            })
+        })
+}
+
 fn bot_items_for_workspace(config: &crate::config::WorkspaceConfig) -> Vec<BotListItem> {
     let bees = config.resolved_bees();
     bees.iter()
@@ -1073,7 +1120,7 @@ fn bot_items_for_workspace(config: &crate::config::WorkspaceConfig) -> Vec<BotLi
             name: display_bee_name(&bees, bee),
             color: bee.color.clone(),
             role: bee.role.clone(),
-            description: bee.prompt.clone(),
+            description: bot_description_for_ui(bee),
             provider: Some(bee.provider.clone()),
             model: (!bee.model.trim().is_empty()).then(|| bee.model.clone()),
             watch: bee
@@ -1100,6 +1147,21 @@ fn conversation_scopes_for_bot(
         scopes.push(format!("{workspace}/{bot}"));
     }
     scopes
+}
+
+fn authority_label(authority: crate::config::WorkspaceAuthority) -> &'static str {
+    match authority {
+        crate::config::WorkspaceAuthority::Observe => "observe",
+        crate::config::WorkspaceAuthority::Autonomous => "autonomous",
+    }
+}
+
+fn execution_policy_label(policy: crate::config::BeeExecutionPolicy) -> &'static str {
+    match policy {
+        crate::config::BeeExecutionPolicy::Observe => "observe",
+        crate::config::BeeExecutionPolicy::DispatchOnly => "dispatch_only",
+        crate::config::BeeExecutionPolicy::Autonomous => "autonomous",
+    }
 }
 
 fn latest_message_id_for_scopes(conn: &rusqlite::Connection, scopes: &[String]) -> Option<i64> {
@@ -2677,13 +2739,44 @@ async fn get_workspace_bot_debug(
         .unwrap_or(20)
         .min(100);
 
-    let provider = load_workspace_by_name(&workspace).and_then(|ws| {
+    let loaded_workspace = load_workspace_by_name(&workspace);
+    let provider = loaded_workspace.as_ref().and_then(|ws| {
         let resolved = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
         ws.config
             .resolved_bees()
             .into_iter()
             .find(|bee| bee.name == resolved)
             .map(|bee| bee.provider)
+    });
+    let effective_config = loaded_workspace.as_ref().and_then(|ws| {
+        let resolved_name = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
+        ws.config
+            .resolved_bees()
+            .into_iter()
+            .find(|bee| bee.name == resolved_name)
+            .map(|bee| BotEffectiveConfigView {
+                api_name: bot.clone(),
+                resolved_bee_name: resolved_name,
+                workspace_authority: authority_label(ws.config.authority).to_string(),
+                configured_execution_policy: execution_policy_label(bee.execution_policy)
+                    .to_string(),
+                effective_execution_policy: execution_policy_label(
+                    bee.execution_policy.resolved(ws.config.authority),
+                )
+                .to_string(),
+                provider: bee.provider,
+                model: bee.model,
+                role: bee.role,
+                color: bee.color,
+                max_turns: bee.max_turns,
+                max_session_turns: bee.max_session_turns,
+                heartbeat: bee.heartbeat,
+                signal_sources: bee
+                    .signal_hooks
+                    .into_iter()
+                    .map(|hook| hook.source)
+                    .collect(),
+            })
     });
 
     let store = match crate::buzz::signal::store::SignalStore::open(
@@ -2696,6 +2789,7 @@ async fn get_workspace_bot_debug(
                 workspace,
                 bot,
                 provider,
+                effective_config,
                 status: None,
                 recent_failures: vec![],
                 recent_decisions: vec![],
@@ -2756,6 +2850,7 @@ async fn get_workspace_bot_debug(
         workspace,
         bot,
         provider,
+        effective_config,
         status,
         recent_failures,
         recent_decisions,
@@ -3781,10 +3876,39 @@ mod tests {
         assert_eq!(items[0].name, "Main");
         assert_eq!(items[0].role.as_deref(), Some("Coordinator"));
         assert_eq!(items[0].color.as_deref(), Some("#f5c542"));
+        assert_eq!(items[0].description.as_deref(), Some("Coordinator"));
         assert_eq!(items[0].provider.as_deref(), Some("claude"));
         assert_eq!(items[1].name, "Codex");
         assert_eq!(items[1].role.as_deref(), Some("Code specialist"));
+        assert_eq!(items[1].description.as_deref(), Some("Code specialist"));
         assert_eq!(items[1].provider.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn bot_description_for_ui_strips_role_and_color_metadata_from_prompt() {
+        let bee = crate::config::BeeConfig {
+            name: "Workspace".to_string(),
+            role: None,
+            color: Some("#d97706".to_string()),
+            execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
+            provider: "claude".to_string(),
+            model: "sonnet".to_string(),
+            max_turns: 20,
+            prompt: Some(
+                "Role: Workspace assistant\n\nColor: #d97706\n\nProactively notify the user about important events."
+                    .to_string(),
+            ),
+            max_session_turns: 50,
+            signal_hooks: vec![],
+            topic_id: None,
+            heartbeat: None,
+            heartbeat_prompt: None,
+        };
+
+        assert_eq!(
+            bot_description_for_ui(&bee).as_deref(),
+            Some("Proactively notify the user about important events.")
+        );
     }
 
     #[test]
