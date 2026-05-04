@@ -401,7 +401,13 @@ async fn run_coordinator_task(
                     )
                     .await
                     {
-                        Ok(Some(response_text)) => {
+                        Ok(DirectDispatchDecision::Dispatched { response_text }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_matched",
+                                &response_text,
+                            );
                             typing_cancel.cancel();
 
                             {
@@ -450,8 +456,46 @@ async fn run_coordinator_task(
                             }
                             continue;
                         }
-                        Ok(None) => {}
+                        Ok(DirectDispatchDecision::NeedsRepoSelection { response_text }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_skipped_repo_ambiguous",
+                                &response_text,
+                            );
+                            typing_cancel.cancel();
+                            let msg = OutboundMessage {
+                                chat_id,
+                                text: response_text.clone(),
+                                buttons: vec![],
+                                topic_id,
+                            };
+                            let _ = channel.send_message(&msg).await;
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity(
+                                    "telegram",
+                                    &slot_name,
+                                    "assistant_message",
+                                    &response_text,
+                                );
+                            }
+                            continue;
+                        }
+                        Ok(DirectDispatchDecision::Skipped(reason)) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_skipped",
+                                reason,
+                            );
+                        }
                         Err(e) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_failed",
+                                &e.to_string(),
+                            );
                             typing_cancel.cancel();
                             let msg = OutboundMessage {
                                 chat_id,
@@ -684,7 +728,13 @@ async fn run_coordinator_task(
                     )
                     .await
                     {
-                        Ok(Some(response_text)) => {
+                        Ok(DirectDispatchDecision::Dispatched { response_text }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_matched",
+                                &response_text,
+                            );
                             let assistant_created_at = chrono::Utc::now().to_rfc3339();
                             let assistant_message_id = {
                                 let conv = ConversationStore::new(store.conn(), &conv_scope);
@@ -737,8 +787,80 @@ async fn run_coordinator_task(
                             });
                             continue;
                         }
-                        Ok(None) => {}
+                        Ok(DirectDispatchDecision::NeedsRepoSelection { response_text }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_skipped_repo_ambiguous",
+                                &response_text,
+                            );
+                            let assistant_created_at = chrono::Utc::now().to_rfc3339();
+                            let assistant_message_id = {
+                                let conv = ConversationStore::new(store.conn(), &conv_scope);
+                                match conv.save_message(
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    Some("system"),
+                                    Some(coordinator.provider()),
+                                    None,
+                                ) {
+                                    Ok(id) => Some(id),
+                                    Err(e) => {
+                                        warn!(
+                                            "[{ws_name}] failed to save repo-selection response: {e}"
+                                        );
+                                        None
+                                    }
+                                }
+                            };
+                            if let Err(e) = store.set_bot_status(&bee_name, "idle", "", None) {
+                                warn!("[{ws_name}] failed to clear bot status: {e}");
+                            }
+                            if let Some(id) = assistant_message_id {
+                                send_web_message_update(
+                                    &web_updates_tx,
+                                    id,
+                                    &ws_name,
+                                    &bee_name,
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    &assistant_created_at,
+                                );
+                            }
+                            send_web_bot_status(
+                                &web_updates_tx,
+                                &ws_name,
+                                &bee_name,
+                                "idle",
+                                "",
+                                None,
+                            );
+                            let _ = responder.send(socket::DaemonResponse::Token {
+                                workspace: ws_name.clone(),
+                                text: response_text,
+                            });
+                            let _ = responder.send(socket::DaemonResponse::Done {
+                                workspace: ws_name.clone(),
+                            });
+                            continue;
+                        }
+                        Ok(DirectDispatchDecision::Skipped(reason)) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_skipped",
+                                reason,
+                            );
+                        }
                         Err(e) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_failed",
+                                &e.to_string(),
+                            );
                             let err_text = e.to_string();
                             if let Err(log_err) = store.log_bot_turn_failure(
                                 &bee_name,
@@ -4785,6 +4907,12 @@ fn looks_like_implementation_request(text: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+enum DirectDispatchDecision {
+    Skipped(&'static str),
+    Dispatched { response_text: String },
+    NeedsRepoSelection { response_text: String },
+}
+
 fn resolve_auto_dispatch_repo(
     workspace_name: &str,
     ws_config: &WorkspaceConfig,
@@ -4824,16 +4952,22 @@ async fn try_direct_dispatch_for_dispatch_only(
     bee_name: &str,
     text: &str,
     has_attachments: bool,
-) -> Result<Option<String>> {
-    if has_attachments || !looks_like_implementation_request(text) {
-        return Ok(None);
+) -> Result<DirectDispatchDecision> {
+    if has_attachments {
+        return Ok(DirectDispatchDecision::Skipped("attachments_present"));
+    }
+    if !looks_like_implementation_request(text) {
+        return Ok(DirectDispatchDecision::Skipped(
+            "non_implementation_request",
+        ));
     }
 
     let Some(repo) = resolve_auto_dispatch_repo(workspace_name, ws_config)? else {
-        return Ok(Some(
-            "This looks like an implementation request, but I could not choose a repo automatically. Tell me which repo to dispatch to."
-                .to_string(),
-        ));
+        return Ok(DirectDispatchDecision::NeedsRepoSelection {
+            response_text:
+                "This looks like an implementation request, but I could not choose a repo automatically. Tell me which repo to dispatch to."
+                    .to_string(),
+        });
     };
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
@@ -4841,10 +4975,12 @@ async fn try_direct_dispatch_for_dispatch_only(
         .create_worker(&repo, text, &ws_config.swarm.default_agent)
         .await?;
 
-    Ok(Some(format!(
-        "Dispatched worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}.",
-        ws_config.swarm.default_agent
-    )))
+    Ok(DirectDispatchDecision::Dispatched {
+        response_text: format!(
+            "Dispatched worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}.",
+            ws_config.swarm.default_agent
+        ),
+    })
 }
 
 /// Handle a TUI slash command. Returns `(handled, inject_context)` where

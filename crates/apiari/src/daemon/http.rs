@@ -733,6 +733,16 @@ struct BotTurnFailureView {
 }
 
 #[derive(Debug, Serialize)]
+struct BotTurnDecisionView {
+    id: i64,
+    bot: String,
+    provider: Option<String>,
+    decision_type: String,
+    detail: String,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
 struct ProviderCapabilityView {
     name: String,
     installed: bool,
@@ -749,6 +759,7 @@ struct BotDebugView {
     provider: Option<String>,
     status: Option<BotStatusView>,
     recent_failures: Vec<BotTurnFailureView>,
+    recent_decisions: Vec<BotTurnDecisionView>,
     recent_messages: Vec<ConversationMessageView>,
 }
 
@@ -2687,6 +2698,7 @@ async fn get_workspace_bot_debug(
                 provider,
                 status: None,
                 recent_failures: vec![],
+                recent_decisions: vec![],
                 recent_messages: vec![],
             });
         }
@@ -2716,6 +2728,20 @@ async fn get_workspace_bot_debug(
         })
         .collect();
 
+    let recent_decisions = store
+        .list_bot_turn_decisions(&bot, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|decision| BotTurnDecisionView {
+            id: decision.id,
+            bot: decision.bot,
+            provider: decision.provider,
+            decision_type: decision.decision_type,
+            detail: decision.detail,
+            created_at: decision.created_at,
+        })
+        .collect();
+
     let recent_messages = get_workspace_conversations(
         Path((workspace.clone(), bot.clone())),
         axum::extract::Query(std::collections::HashMap::from([(
@@ -2732,6 +2758,7 @@ async fn get_workspace_bot_debug(
         provider,
         status,
         recent_failures,
+        recent_decisions,
         recent_messages,
     })
 }

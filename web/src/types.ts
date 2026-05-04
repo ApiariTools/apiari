@@ -128,6 +128,15 @@ export interface BotTurnFailure {
   created_at: string;
 }
 
+export interface BotTurnDecision {
+  id: number;
+  bot: string;
+  provider: string | null;
+  decision_type: string;
+  detail: string;
+  created_at: string;
+}
+
 export interface BotDebugData {
   workspace: string;
   bot: string;
@@ -138,5 +147,6 @@ export interface BotDebugData {
     tool_name: string | null;
   } | null;
   recent_failures: BotTurnFailure[];
+  recent_decisions: BotTurnDecision[];
   recent_messages: Message[];
 }

@@ -39,6 +39,16 @@ pub struct BotTurnFailureRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct BotTurnDecisionRecord {
+    pub id: i64,
+    pub bot: String,
+    pub provider: Option<String>,
+    pub decision_type: String,
+    pub detail: String,
+    pub created_at: String,
+}
+
 /// SQLite signal store, scoped to a workspace.
 pub struct SignalStore {
     conn: Connection,
@@ -173,6 +183,18 @@ impl SignalStore {
             );
             CREATE INDEX IF NOT EXISTS idx_bot_turn_failures_workspace_bot
                 ON bot_turn_failures(workspace, bot, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS bot_turn_decisions (
+                id INTEGER PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                bot TEXT NOT NULL,
+                provider TEXT,
+                decision_type TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_bot_turn_decisions_workspace_bot
+                ON bot_turn_decisions(workspace, bot, created_at DESC);
             ",
         )?;
 
@@ -601,6 +623,50 @@ impl SignalStore {
                     provider: row.get(2)?,
                     source: row.get(3)?,
                     error_text: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    pub fn log_bot_turn_decision(
+        &self,
+        bot: &str,
+        provider: Option<&str>,
+        decision_type: &str,
+        detail: &str,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO bot_turn_decisions (workspace, bot, provider, decision_type, detail)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![self.workspace, bot, provider, decision_type, detail],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn list_bot_turn_decisions(
+        &self,
+        bot: &str,
+        limit: usize,
+    ) -> Result<Vec<BotTurnDecisionRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, bot, provider, decision_type, detail, created_at
+             FROM bot_turn_decisions
+             WHERE workspace = ?1 AND bot = ?2
+             ORDER BY id DESC
+             LIMIT ?3",
+        )?;
+
+        let records = stmt
+            .query_map(params![self.workspace, bot, limit as i64], |row| {
+                Ok(BotTurnDecisionRecord {
+                    id: row.get(0)?,
+                    bot: row.get(1)?,
+                    provider: row.get(2)?,
+                    decision_type: row.get(3)?,
+                    detail: row.get(4)?,
                     created_at: row.get(5)?,
                 })
             })?
@@ -1642,5 +1708,33 @@ mod tests {
         assert_eq!(failures[0].provider.as_deref(), Some("codex"));
         assert!(!failures[0].source.is_empty());
         assert!(!failures[0].error_text.is_empty());
+    }
+
+    #[test]
+    fn test_log_and_list_bot_turn_decisions() {
+        let store = test_store();
+        let _ = store
+            .log_bot_turn_decision(
+                "Codex",
+                Some("codex"),
+                "dispatch_skipped_non_implementation",
+                "message looked like a question, not a code-change request",
+            )
+            .unwrap();
+        let _ = store
+            .log_bot_turn_decision(
+                "Codex",
+                Some("codex"),
+                "dispatch_matched",
+                "dispatched worker worker-123 to repo apiari",
+            )
+            .unwrap();
+
+        let decisions = store.list_bot_turn_decisions("Codex", 10).unwrap();
+        assert_eq!(decisions.len(), 2);
+        assert_eq!(decisions[0].bot, "Codex");
+        assert_eq!(decisions[0].provider.as_deref(), Some("codex"));
+        assert!(!decisions[0].decision_type.is_empty());
+        assert!(!decisions[0].detail.is_empty());
     }
 }

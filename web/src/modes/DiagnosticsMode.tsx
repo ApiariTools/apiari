@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
-import type { BotDebugData, ProviderCapability } from "../types";
+import type { BotDebugData, BotTurnDecision, ProviderCapability } from "../types";
 import { EmptyState } from "../primitives/EmptyState";
 import { ModeScaffold } from "../primitives/ModeScaffold";
 import { PageHeader } from "../primitives/PageHeader";
@@ -27,6 +27,13 @@ function formatTime(value: string) {
 function capabilityTone(capability: ProviderCapability) {
   if (!capability.installed) return "danger" as const;
   if (capability.approval_flag_supported === false) return "accent" as const;
+  return "neutral" as const;
+}
+
+function decisionTone(decision: BotTurnDecision) {
+  if (decision.decision_type === "dispatch_matched") return "success" as const;
+  if (decision.decision_type === "dispatch_failed") return "danger" as const;
+  if (decision.decision_type.includes("repo_ambiguous")) return "accent" as const;
   return "neutral" as const;
 }
 
@@ -168,6 +175,38 @@ export function DiagnosticsMode({ workspace, bot, remote }: Props) {
                             ))}
                           </ul>
                         ) : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className={styles.section}>
+              <div className={styles.sectionHeader}>
+                <h2>Recent routing decisions</h2>
+              </div>
+              {debugData.recent_decisions.length === 0 ? (
+                <EmptyState
+                  title="No recent routing decisions"
+                  body="This bot has not recorded any recent dispatch matched/skipped decisions yet."
+                />
+              ) : (
+                <div className={styles.cardList}>
+                  {debugData.recent_decisions.map((decision) => (
+                    <article key={decision.id} className={styles.card}>
+                      <div className={styles.cardTop}>
+                        <strong>{decision.decision_type}</strong>
+                        <StatusBadge tone={decisionTone(decision)}>
+                          {decision.decision_type}
+                        </StatusBadge>
+                      </div>
+                      <div className={styles.cardBody}>
+                        <div className={styles.inlineMeta}>
+                          {decision.provider ? <span>provider: {decision.provider}</span> : null}
+                          <span>{formatTime(decision.created_at)}</span>
+                        </div>
+                        <pre className={styles.messageBlock}>{decision.detail}</pre>
                       </div>
                     </article>
                   ))}
