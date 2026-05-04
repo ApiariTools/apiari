@@ -38,7 +38,7 @@ export function parseHash(): Route {
     return {
       workspace,
       mode,
-      bot: mode === "chat" || mode === "diagnostics" ? parts[2] || "" : "",
+      bot: mode === "chat" || mode === "diagnostics" ? decodeURIComponent(parts[2] || "") || "" : "",
       workerId: mode === "workers" && parts[2] === "worker" ? parts[3] || null : null,
       docName: mode === "docs" ? decodeURIComponent(parts[2] || "") || null : null,
     };
@@ -47,7 +47,7 @@ export function parseHash(): Route {
   return {
     workspace,
     mode: parts[2] === "worker" ? "workers" : parts[1] ? "chat" : "overview",
-    bot: parts[1] || "",
+    bot: decodeURIComponent(parts[1] || "") || "",
     workerId: parts[2] === "worker" ? parts[3] || null : null,
     docName: null,
   };
@@ -57,7 +57,7 @@ function buildHash(route: Route): string {
   if (!route.workspace) return "";
   switch (route.mode) {
     case "chat":
-      return route.bot ? `#/${route.workspace}/chat/${route.bot}` : `#/${route.workspace}/chat`;
+      return route.bot ? `#/${route.workspace}/chat/${encodeURIComponent(route.bot)}` : `#/${route.workspace}/chat`;
     case "workers":
       return route.workerId
         ? `#/${route.workspace}/workers/worker/${route.workerId}`
@@ -72,7 +72,7 @@ function buildHash(route: Route): string {
       return `#/${route.workspace}/signals`;
     case "diagnostics":
       return route.bot
-        ? `#/${route.workspace}/diagnostics/${route.bot}`
+        ? `#/${route.workspace}/diagnostics/${encodeURIComponent(route.bot)}`
         : `#/${route.workspace}/diagnostics`;
     default:
       return `#/${route.workspace}`;

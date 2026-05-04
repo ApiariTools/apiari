@@ -27,6 +27,10 @@ function wsPath(workspace: string, remote?: string): string {
   return `/workspaces/${workspace}`;
 }
 
+function encodePathSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
 export function getWorkspaces(): Promise<Workspace[]> {
   return get("/workspaces");
 }
@@ -50,7 +54,7 @@ export function getConversations(
   remote?: string,
 ): Promise<Message[]> {
   const params = limit ? `?limit=${limit}` : "";
-  return get(`${wsPath(workspace, remote)}/conversations/${bot}${params}`);
+  return get(`${wsPath(workspace, remote)}/conversations/${encodePathSegment(bot)}${params}`);
 }
 
 export function getWorkerDetail(
@@ -89,7 +93,7 @@ export function getBotStatus(
   bot: string,
   remote?: string,
 ): Promise<BotStatus> {
-  return get(`${wsPath(workspace, remote)}/bots/${bot}/status`);
+  return get(`${wsPath(workspace, remote)}/bots/${encodePathSegment(bot)}/status`);
 }
 
 export async function cancelBot(
@@ -97,7 +101,7 @@ export async function cancelBot(
   bot: string,
   remote?: string,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/bots/${bot}/cancel`, {
+  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/bots/${encodePathSegment(bot)}/cancel`, {
     method: "POST",
   });
   return res.json();
@@ -108,7 +112,7 @@ export function getUnread(workspace: string, remote?: string): Promise<Record<st
 }
 
 export async function markSeen(workspace: string, bot: string, remote?: string): Promise<void> {
-  await fetch(`${BASE}${wsPath(workspace, remote)}/seen/${bot}`, { method: "POST" });
+  await fetch(`${BASE}${wsPath(workspace, remote)}/seen/${encodePathSegment(bot)}`, { method: "POST" });
 }
 
 export interface ManagedWebSocket {
@@ -267,7 +271,7 @@ export function getBotDebugData(
   limit = 20,
   remote?: string,
 ): Promise<BotDebugData> {
-  return get(`${wsPath(workspace, remote)}/bots/${encodeURIComponent(bot)}/debug?limit=${limit}`);
+  return get(`${wsPath(workspace, remote)}/bots/${encodePathSegment(bot)}/debug?limit=${limit}`);
 }
 
 export async function startResearch(
@@ -296,7 +300,7 @@ export async function sendMessage(
   attachments?: Array<{ name: string; type: string; dataUrl: string }>,
   remote?: string,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/chat/${bot}`, {
+  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/chat/${encodePathSegment(bot)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, attachments }),

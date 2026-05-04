@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, Loader2, Square, Volume2, AudioLines } from "lucide-react";
@@ -174,12 +174,14 @@ export function ChatPanel({
   const playingMsgRef = useRef<number | null>(null);
 
   // ── Auto-scroll ──
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (restoringOlderHistoryRef.current) return;
     if (!isNearBottomRef.current) return;
-    bottomRef.current?.scrollIntoView({ behavior: messages.length > 0 ? "smooth" : "auto" });
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: messages.length > 0 ? "smooth" : "auto" });
+    });
     setShowScrollBtn(false);
-  }, [messages.length, loading, loadingStatus]);
+  }, [messages, followups, streamingContent, loading, loadingStatus]);
 
   // ── Voice mode: auto-read bot responses via Howler's unlocked AudioContext ──
   // We use Howler.ctx directly (unlocked by the greeting tap) to play decoded
@@ -414,6 +416,8 @@ export function ChatPanel({
   }
 
   function scrollToBottom() {
+    isNearBottomRef.current = true;
+    setShowScrollBtn(false);
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }
 
