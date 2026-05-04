@@ -9,10 +9,12 @@ pub mod http;
 pub mod morning_brief;
 pub mod socket;
 
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs, path::PathBuf, process::Stdio, sync::Arc};
 
 use color_eyre::eyre::{Result, WrapErr};
-use tokio::sync::mpsc;
+use serde::Deserialize;
+use tokio::time::{Duration, timeout};
+use tokio::{io::AsyncWriteExt, process::Command, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -401,12 +403,15 @@ async fn run_coordinator_task(
                     )
                     .await
                     {
-                        Ok(DirectDispatchDecision::Dispatched { response_text }) => {
+                        Ok(DirectDispatchDecision::Dispatched {
+                            response_text,
+                            detail,
+                        }) => {
                             let _ = store.log_bot_turn_decision(
                                 &bee_name,
                                 Some(coordinator.provider()),
                                 "dispatch_matched",
-                                &response_text,
+                                &detail,
                             );
                             typing_cancel.cancel();
 
@@ -456,12 +461,15 @@ async fn run_coordinator_task(
                             }
                             continue;
                         }
-                        Ok(DirectDispatchDecision::NeedsRepoSelection { response_text }) => {
+                        Ok(DirectDispatchDecision::NeedsRepoSelection {
+                            response_text,
+                            detail,
+                        }) => {
                             let _ = store.log_bot_turn_decision(
                                 &bee_name,
                                 Some(coordinator.provider()),
                                 "dispatch_skipped_repo_ambiguous",
-                                &response_text,
+                                &detail,
                             );
                             typing_cancel.cancel();
                             let msg = OutboundMessage {
@@ -486,7 +494,7 @@ async fn run_coordinator_task(
                                 &bee_name,
                                 Some(coordinator.provider()),
                                 "dispatch_skipped",
-                                reason,
+                                &reason,
                             );
                         }
                         Err(e) => {
@@ -728,12 +736,15 @@ async fn run_coordinator_task(
                     )
                     .await
                     {
-                        Ok(DirectDispatchDecision::Dispatched { response_text }) => {
+                        Ok(DirectDispatchDecision::Dispatched {
+                            response_text,
+                            detail,
+                        }) => {
                             let _ = store.log_bot_turn_decision(
                                 &bee_name,
                                 Some(coordinator.provider()),
                                 "dispatch_matched",
-                                &response_text,
+                                &detail,
                             );
                             let assistant_created_at = chrono::Utc::now().to_rfc3339();
                             let assistant_message_id = {
@@ -787,12 +798,15 @@ async fn run_coordinator_task(
                             });
                             continue;
                         }
-                        Ok(DirectDispatchDecision::NeedsRepoSelection { response_text }) => {
+                        Ok(DirectDispatchDecision::NeedsRepoSelection {
+                            response_text,
+                            detail,
+                        }) => {
                             let _ = store.log_bot_turn_decision(
                                 &bee_name,
                                 Some(coordinator.provider()),
                                 "dispatch_skipped_repo_ambiguous",
-                                &response_text,
+                                &detail,
                             );
                             let assistant_created_at = chrono::Utc::now().to_rfc3339();
                             let assistant_message_id = {
@@ -851,7 +865,7 @@ async fn run_coordinator_task(
                                 &bee_name,
                                 Some(coordinator.provider()),
                                 "dispatch_skipped",
-                                reason,
+                                &reason,
                             );
                         }
                         Err(e) => {
@@ -4923,7 +4937,14 @@ fn looks_like_non_implementation_request(text: &str) -> bool {
     .any(|needle| lower.starts_with(needle))
 }
 
-fn looks_like_implementation_request(text: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DispatchIntentMatch {
+    Implementation,
+    Conversational,
+    Ambiguous,
+}
+
+fn classify_dispatch_intent(text: &str) -> DispatchIntentMatch {
     let lower = text.to_ascii_lowercase();
 
     let explicit_positive = [
@@ -4956,14 +4977,14 @@ fn looks_like_implementation_request(text: &str) -> bool {
     .any(|needle| lower.contains(needle));
 
     if explicit_positive {
-        return true;
+        return DispatchIntentMatch::Implementation;
     }
 
     if looks_like_non_implementation_request(text) {
-        return false;
+        return DispatchIntentMatch::Conversational;
     }
 
-    [
+    let ambiguous_ui_bug_signal = [
         " too ",
         " doesn't ",
         " doesnt ",
@@ -4995,13 +5016,94 @@ fn looks_like_implementation_request(text: &str) -> bool {
         " ui ",
     ]
     .iter()
-    .any(|needle| lower.contains(needle))
+    .any(|needle| lower.contains(needle));
+
+    if ambiguous_ui_bug_signal {
+        DispatchIntentMatch::Ambiguous
+    } else {
+        DispatchIntentMatch::Conversational
+    }
+}
+
+#[allow(dead_code)]
+fn looks_like_implementation_request(text: &str) -> bool {
+    matches!(
+        classify_dispatch_intent(text),
+        DispatchIntentMatch::Implementation | DispatchIntentMatch::Ambiguous
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct AppleLocalRouterDecision {
+    action: String,
+    confidence: Option<f64>,
+    reason: String,
+}
+
+fn apple_router_script_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/apple_dispatch_router.swift")
+}
+
+#[cfg(target_os = "macos")]
+async fn classify_with_local_apple_router(text: &str) -> Result<Option<AppleLocalRouterDecision>> {
+    let script = apple_router_script_path();
+    if !script.exists() {
+        return Ok(None);
+    }
+
+    let mut child = Command::new("swift")
+        .arg(&script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .wrap_err("failed to start Apple local router helper")?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(text.as_bytes())
+            .await
+            .wrap_err("failed to write Apple local router input")?;
+    }
+
+    let output = timeout(Duration::from_secs(8), child.wait_with_output())
+        .await
+        .wrap_err("Apple local router timed out")?
+        .wrap_err("Apple local router process failed")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            warn!("Apple local router unavailable: {stderr}");
+        }
+        return Ok(None);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Ok(None);
+    }
+
+    let decision: AppleLocalRouterDecision = serde_json::from_str(&stdout)
+        .wrap_err_with(|| format!("failed to parse Apple local router JSON: {stdout}"))?;
+    Ok(Some(decision))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn classify_with_local_apple_router(_text: &str) -> Result<Option<AppleLocalRouterDecision>> {
+    Ok(None)
 }
 
 enum DirectDispatchDecision {
-    Skipped(&'static str),
-    Dispatched { response_text: String },
-    NeedsRepoSelection { response_text: String },
+    Skipped(String),
+    Dispatched {
+        response_text: String,
+        detail: String,
+    },
+    NeedsRepoSelection {
+        response_text: String,
+        detail: String,
+    },
 }
 
 fn resolve_auto_dispatch_repo(
@@ -5045,16 +5147,49 @@ async fn try_direct_dispatch_for_dispatch_only(
     has_attachments: bool,
 ) -> Result<DirectDispatchDecision> {
     if has_attachments {
-        return Ok(DirectDispatchDecision::Skipped("attachments_present"));
-    }
-    if !looks_like_implementation_request(text) {
         return Ok(DirectDispatchDecision::Skipped(
-            "non_implementation_request",
+            "attachments_present".to_string(),
         ));
     }
 
+    let decision_detail = match classify_dispatch_intent(text) {
+        DispatchIntentMatch::Implementation => "heuristic_match".to_string(),
+        DispatchIntentMatch::Conversational => {
+            return Ok(DirectDispatchDecision::Skipped(
+                "non_implementation_request".to_string(),
+            ));
+        }
+        DispatchIntentMatch::Ambiguous => {
+            if let Some(local) = classify_with_local_apple_router(text).await? {
+                let detail = format!(
+                    "apple_local_router action={} confidence={} reason={}",
+                    local.action,
+                    local
+                        .confidence
+                        .map(|value| format!("{value:.2}"))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    local.reason.trim()
+                );
+                match local.action.as_str() {
+                    "dispatch_worker" => detail,
+                    "reply_normally" => return Ok(DirectDispatchDecision::Skipped(detail)),
+                    other => {
+                        return Ok(DirectDispatchDecision::Skipped(format!(
+                            "apple_local_router_unknown_action action={other}"
+                        )));
+                    }
+                }
+            } else {
+                return Ok(DirectDispatchDecision::Skipped(
+                    "ambiguous_without_local_router".to_string(),
+                ));
+            }
+        }
+    };
+
     let Some(repo) = resolve_auto_dispatch_repo(workspace_name, ws_config)? else {
         return Ok(DirectDispatchDecision::NeedsRepoSelection {
+            detail: format!("{decision_detail}; repo_resolution=ambiguous"),
             response_text:
                 "This looks like an implementation request, but I could not choose a repo automatically. Tell me which repo to dispatch to."
                     .to_string(),
@@ -5067,6 +5202,10 @@ async fn try_direct_dispatch_for_dispatch_only(
         .await?;
 
     Ok(DirectDispatchDecision::Dispatched {
+        detail: format!(
+            "{decision_detail}; repo={repo}; agent={}",
+            ws_config.swarm.default_agent
+        ),
         response_text: format!(
             "Dispatched worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}.",
             ws_config.swarm.default_agent
