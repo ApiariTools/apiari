@@ -29,7 +29,8 @@ impl SwarmClient {
 
     /// Create a new worker. Returns the worktree ID.
     pub async fn create_worker(&self, repo: &str, prompt: &str, agent: &str) -> Result<String> {
-        self.create_worker_with_task_dir(repo, prompt, agent, None).await
+        self.create_worker_with_task_dir(repo, prompt, agent, None)
+            .await
     }
 
     /// Create a new worker with seeded `.task/` artifacts.
@@ -226,9 +227,7 @@ fn anti_goals_from_prompt(prompt: &str) -> Vec<String> {
     for line in prompt.lines() {
         let trimmed = line.trim();
         let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("do not ")
-            || lower.starts_with("don't ")
-            || lower.starts_with("only ")
+        if lower.starts_with("do not ") || lower.starts_with("don't ") || lower.starts_with("only ")
         {
             anti_goals.push(trimmed.to_string());
         }
@@ -236,7 +235,77 @@ fn anti_goals_from_prompt(prompt: &str) -> Vec<String> {
     anti_goals
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerMode {
+    Patch,
+    Feature,
+    Investigate,
+}
+
+impl WorkerMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Patch => "patch",
+            Self::Feature => "feature",
+            Self::Investigate => "investigate",
+        }
+    }
+}
+
+fn prompt_has_explicit_file_target(prompt: &str) -> bool {
+    let lower = prompt.to_ascii_lowercase();
+    [
+        ".tsx", ".ts", ".jsx", ".js", ".rs", ".css", ".scss", ".md", ".swift", ".kt", ".py", "/",
+        "\\",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+pub fn infer_worker_mode(prompt: &str) -> WorkerMode {
+    let lower = prompt.to_ascii_lowercase();
+    let investigate_terms = [
+        "why ",
+        "why is",
+        "investigate",
+        "diagnose",
+        "debug",
+        "trace",
+        "root cause",
+        "figure out",
+        "what is happening",
+        "analyze",
+        "review",
+        "look into",
+        "explain",
+    ];
+    if investigate_terms
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return WorkerMode::Investigate;
+    }
+
+    if prompt_has_explicit_file_target(prompt)
+        || lower.contains("only edit ")
+        || lower.contains("only change ")
+        || lower.contains("exact file")
+    {
+        return WorkerMode::Patch;
+    }
+
+    WorkerMode::Feature
+}
+
 pub fn build_worker_task_dir(repo: &str, prompt: &str) -> TaskDirPayload {
+    build_worker_task_dir_with_mode(repo, prompt, infer_worker_mode(prompt))
+}
+
+pub fn build_worker_task_dir_with_mode(
+    repo: &str,
+    prompt: &str,
+    mode: WorkerMode,
+) -> TaskDirPayload {
     let anti_goals = anti_goals_from_prompt(prompt);
     let anti_goals_md = if anti_goals.is_empty() {
         "- Do not modify unrelated files or adjacent panels just because they look similar.\n- If you cannot identify the exact target confidently, stop and say so in `.swarm/output.md` instead of guessing.\n".to_string()
@@ -249,19 +318,49 @@ pub fn build_worker_task_dir(repo: &str, prompt: &str) -> TaskDirPayload {
             + "\n"
     };
 
-    TaskDirPayload {
-        task_md: Some(format!(
-            "# Task\n\n{}\n\n## Scope\n- Work only in repo `{repo}`.\n- Implement exactly the request below.\n\n## Request\n{}\n\n## Acceptance Criteria\n- The requested change is implemented and stays narrowly scoped.\n- The worker does not edit adjacent panels/components unless the target clearly requires it.\n- If the target is ambiguous, the worker stops and records that instead of guessing.\n\n## Anti-Goals\n{}",
-            worker_title(prompt),
-            prompt.trim(),
-            anti_goals_md
-        )),
-        context_md: Some(format!(
-            "# Context\n\n- Repository: `{repo}`\n- Source of truth is the current repo contents, not guessed product language.\n- Prefer identifying the exact target component or stylesheet before editing.\n- If multiple similarly named panels exist, verify the right one before changing code.\n"
-        )),
-        plan_md: Some(
+    let (task_scope, acceptance_criteria, context_extra, plan_text) = match mode {
+        WorkerMode::Patch => (
+            format!(
+                "- Work only in repo `{repo}`.\n- Treat this as a targeted patch task.\n- Implement exactly the request below.\n"
+            ),
+            "- The requested change is implemented and stays narrowly scoped.\n- The worker does not edit adjacent panels/components unless the target clearly requires it.\n- If the target is ambiguous, the worker stops and records that instead of guessing.\n".to_string(),
+            "- This is a patch worker: prefer exact target files over broad exploration.\n- If multiple similarly named panels exist, verify the right one before changing code.\n".to_string(),
             "# Plan\n\n1. Identify the exact component/style files that correspond to the requested target.\n2. Make the smallest scoped change that satisfies the request.\n3. Verify the relevant checks if local toolchain is available.\n4. Commit the change on the swarm branch and output `BRANCH_READY: <branch-name>` when done.\n".to_string(),
         ),
+        WorkerMode::Feature => (
+            format!(
+                "- Work only in repo `{repo}`.\n- Treat this as a bounded feature worker task.\n- You may infer the most likely target surface from the repo, but stay within the requested product area.\n"
+            ),
+            "- The requested change is implemented in the best-matching target surface.\n- The worker may inspect nearby candidate files before editing.\n- The worker records its reasoning in `.task/PROGRESS.md` if it had to choose among multiple likely targets.\n- The worker still avoids unrelated panels and broad refactors.\n".to_string(),
+            "- This is a feature worker: infer within the bounded product surface instead of waiting for exact file paths.\n- If there are multiple likely targets, inspect candidates and choose the best-supported one.\n- If the ambiguity is fundamental, stop and explain exactly what additional pointer is needed.\n".to_string(),
+            "# Plan\n\n1. Identify the most likely code surface for the request by examining candidate components/styles in the relevant product area.\n2. Choose the best-supported target, noting the reasoning in `.task/PROGRESS.md` if multiple candidates were considered.\n3. Implement the smallest cohesive change that satisfies the request.\n4. Verify the relevant checks if local toolchain is available.\n5. Commit the change on the swarm branch and output `BRANCH_READY: <branch-name>` when done.\n".to_string(),
+        ),
+        WorkerMode::Investigate => (
+            format!(
+                "- Work only in repo `{repo}`.\n- Treat this as an investigation task first.\n- Explore the codebase and runtime clues needed to answer the request before changing code.\n"
+            ),
+            "- The worker explains findings clearly.\n- The worker only makes code changes if the evidence strongly supports a specific fix.\n- If no safe change is clear, it returns findings and next steps instead of guessing.\n".to_string(),
+            "- This is an investigator worker: broad inference is allowed, but unsupported code edits are not.\n- Prefer diagnosis, candidate causes, and exact file pointers before patching.\n".to_string(),
+            "# Plan\n\n1. Explore the relevant code paths, logs, and nearby files to understand the problem.\n2. Write findings and candidate causes in `.task/PROGRESS.md`.\n3. If a concrete safe fix is clear, implement it narrowly and verify it.\n4. If no safe fix is clear, stop with a precise summary and recommended next step.\n5. If you do implement a fix, commit the change on the swarm branch and output `BRANCH_READY: <branch-name>` when done.\n".to_string(),
+        ),
+    };
+
+    TaskDirPayload {
+        task_md: Some(format!(
+            "# Task\n\n{}\n\n## Worker Mode\n- `{}`\n\n## Scope\n{}\n## Request\n{}\n\n## Acceptance Criteria\n{}\n## Anti-Goals\n{}",
+            worker_title(prompt),
+            mode.as_str(),
+            task_scope,
+            prompt.trim(),
+            acceptance_criteria,
+            anti_goals_md,
+        )),
+        context_md: Some(format!(
+            "# Context\n\n- Repository: `{repo}`\n- Worker mode: `{}`\n- Source of truth is the current repo contents, not guessed product language.\n{}\n",
+            mode.as_str(),
+            context_extra,
+        )),
+        plan_md: Some(plan_text),
     }
 }
 
@@ -276,10 +375,35 @@ mod tests {
             "Make the mobile overview cards more compact on phones.",
         );
 
-        assert!(task_dir.task_md.as_ref().unwrap().contains("repo `apiari`"));
-        assert!(task_dir.task_md.as_ref().unwrap().contains("mobile overview cards"));
-        assert!(task_dir.context_md.as_ref().unwrap().contains("Repository: `apiari`"));
-        assert!(task_dir.plan_md.as_ref().unwrap().contains("Identify the exact component"));
+        assert!(
+            task_dir
+                .task_md
+                .as_ref()
+                .unwrap()
+                .contains("Work only in repo `apiari`")
+        );
+        assert!(
+            task_dir
+                .task_md
+                .as_ref()
+                .unwrap()
+                .contains("mobile overview cards")
+        );
+        assert!(
+            task_dir
+                .context_md
+                .as_ref()
+                .unwrap()
+                .contains("Repository: `apiari`")
+        );
+        assert!(task_dir.task_md.as_ref().unwrap().contains("`feature`"));
+        assert!(
+            task_dir
+                .plan_md
+                .as_ref()
+                .unwrap()
+                .contains("most likely code surface")
+        );
     }
 
     #[test]
@@ -290,6 +414,28 @@ mod tests {
         );
 
         let task_md = task_dir.task_md.unwrap();
-        assert!(task_md.contains("Do not change BotNav, ReposPanel, WorkersPanel, chat, docs, or routing."));
+        assert!(
+            task_md.contains(
+                "Do not change BotNav, ReposPanel, WorkersPanel, chat, docs, or routing."
+            )
+        );
+    }
+
+    #[test]
+    fn infer_worker_mode_distinguishes_patch_feature_and_investigate() {
+        assert_eq!(
+            infer_worker_mode(
+                "Edit web/src/components/OverviewPanel.module.css to tighten spacing."
+            ),
+            WorkerMode::Patch
+        );
+        assert_eq!(
+            infer_worker_mode("Make the mobile overview cards more compact on phones."),
+            WorkerMode::Feature
+        );
+        assert_eq!(
+            infer_worker_mode("Investigate why repeated PRs are being created for the same issue."),
+            WorkerMode::Investigate
+        );
     }
 }

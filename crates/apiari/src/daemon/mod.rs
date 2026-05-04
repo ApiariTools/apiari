@@ -5473,18 +5473,25 @@ async fn try_direct_dispatch_for_dispatch_only(
     };
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
-    let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir(&repo, text);
+    let worker_mode = crate::buzz::coordinator::swarm_client::infer_worker_mode(text);
+    let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir_with_mode(
+        &repo,
+        text,
+        worker_mode,
+    );
     let worker_id = swarm
         .create_worker_with_task_dir(&repo, text, &ws_config.swarm.default_agent, Some(task_dir))
         .await?;
 
     Ok(DirectDispatchDecision::Dispatched {
         detail: format!(
-            "{decision_detail}; repo={repo}; agent={}",
-            ws_config.swarm.default_agent
+            "{decision_detail}; repo={repo}; agent={}; worker_mode={}",
+            ws_config.swarm.default_agent,
+            worker_mode.as_str()
         ),
         response_text: format!(
-            "Dispatched worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}.",
+            "Dispatched {} worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}.",
+            worker_mode.as_str(),
             ws_config.swarm.default_agent
         ),
     })

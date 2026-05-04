@@ -1712,7 +1712,12 @@ async fn redispatch_workspace_worker(
     };
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws.config.root.clone());
-    let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir(&repo, &prompt);
+    let worker_mode = crate::buzz::coordinator::swarm_client::infer_worker_mode(&prompt);
+    let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir_with_mode(
+        &repo,
+        &prompt,
+        worker_mode,
+    );
     let replacement_id = swarm
         .create_worker_with_task_dir(
             &repo,
@@ -1744,7 +1749,8 @@ async fn redispatch_workspace_worker(
         worker_id: Some(replacement_id.clone()),
         pr_url: None,
         detail: format!(
-            "Spawned replacement worker `{replacement_id}` in repo `{repo}`. Original worktree was left intact."
+            "Spawned replacement {} worker `{replacement_id}` in repo `{repo}`. Original worktree was left intact.",
+            worker_mode.as_str()
         ),
     }))
 }
