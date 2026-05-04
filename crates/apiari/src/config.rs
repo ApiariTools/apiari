@@ -320,7 +320,7 @@ pub struct WorkspaceConfig {
     pub orchestrator: crate::buzz::orchestrator::OrchestratorConfig,
 
     /// Swarm agent configuration.
-    #[serde(default)]
+    #[serde(default, alias = "dispatch")]
     pub swarm: SwarmConfig,
 
     /// Custom slash commands.
@@ -893,6 +893,8 @@ pub struct Workspace {
 struct HiveWorkspaceFile {
     workspace: HiveWorkspaceSection,
     #[serde(default)]
+    dispatch: Option<HiveDispatchSection>,
+    #[serde(default)]
     bots: Vec<HiveBotConfig>,
 }
 
@@ -911,6 +913,12 @@ struct HiveWorkspaceSection {
     description: Option<String>,
     #[serde(default)]
     default_agent: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct HiveDispatchSection {
+    #[serde(default)]
+    default_dispatch_repo: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1020,6 +1028,10 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
                 .default_agent
                 .clone()
                 .unwrap_or_else(default_swarm_agent),
+            default_dispatch_repo: value
+                .dispatch
+                .as_ref()
+                .and_then(|dispatch| dispatch.default_dispatch_repo.clone()),
         },
         commands: vec![],
         morning_brief: None,
@@ -1569,12 +1581,17 @@ pub struct SwarmConfig {
     /// When "auto", selects an available agent automatically based on the environment.
     #[serde(default = "default_swarm_agent")]
     pub default_agent: String,
+    /// Default repo name to dispatch implementation work into when a workspace
+    /// intentionally contains multiple repos.
+    #[serde(default)]
+    pub default_dispatch_repo: Option<String>,
 }
 
 impl Default for SwarmConfig {
     fn default() -> Self {
         Self {
             default_agent: default_swarm_agent(),
+            default_dispatch_repo: None,
         }
     }
 }
@@ -1726,6 +1743,9 @@ root = "/Users/josh/Developer/apiari"
 name = "apiari"
 default_agent = "codex"
 
+[dispatch]
+default_dispatch_repo = "apiari"
+
 [[bots]]
 name = "Claude"
 provider = "claude"
@@ -1742,6 +1762,7 @@ execution_policy = "dispatch_only"
 
         assert_eq!(config.root, PathBuf::from("/Users/josh/Developer/apiari"));
         assert_eq!(config.swarm.default_agent, "codex");
+        assert_eq!(config.swarm.default_dispatch_repo.as_deref(), Some("apiari"));
         let bees = config.resolved_bees();
         assert_eq!(bees.len(), 3);
         assert_eq!(bees[0].name, "Bee");

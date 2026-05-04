@@ -5120,6 +5120,14 @@ fn resolve_auto_dispatch_repo(
         return Ok(Some(apiari_swarm::core::git::repo_name(&repos[0])));
     }
 
+    if let Some(default_repo) = ws_config.swarm.default_dispatch_repo.as_deref()
+        && let Some(repo) = repos
+            .iter()
+            .find(|repo| apiari_swarm::core::git::repo_name(repo) == default_repo)
+    {
+        return Ok(Some(apiari_swarm::core::git::repo_name(repo)));
+    }
+
     if let Some(repo) = repos
         .iter()
         .find(|repo| apiari_swarm::core::git::repo_name(repo) == workspace_name)
@@ -6181,6 +6189,40 @@ mod tests {
             toml::from_str(&format!("root = \"{}\"\n", workspace_root.display())).unwrap();
 
         let repo = super::resolve_auto_dispatch_repo("apiari", &ws_config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo, "apiari");
+    }
+
+    #[test]
+    fn test_resolve_auto_dispatch_repo_prefers_explicit_default_dispatch_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+
+        let apiari_repo = workspace_root.join("apiari");
+        std::fs::create_dir_all(&apiari_repo).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&apiari_repo)
+            .output()
+            .unwrap();
+
+        let swarm_repo = workspace_root.join("swarm");
+        std::fs::create_dir_all(&swarm_repo).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&swarm_repo)
+            .output()
+            .unwrap();
+
+        let ws_config: crate::config::WorkspaceConfig = toml::from_str(&format!(
+            "root = \"{}\"\n\n[dispatch]\ndefault_dispatch_repo = \"apiari\"\n",
+            workspace_root.display()
+        ))
+        .unwrap();
+
+        let repo = super::resolve_auto_dispatch_repo("workspace", &ws_config)
             .unwrap()
             .unwrap();
         assert_eq!(repo, "apiari");
