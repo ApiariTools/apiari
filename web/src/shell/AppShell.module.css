@@ -1,0 +1,26 @@
+.root {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.mainMobilePadded {
+  padding-bottom: 0;
+}
+
+@media (max-width: 1200px) and (min-width: 769px) {
+  .root {
+    background:
+      radial-gradient(circle at top right, rgba(245, 197, 66, 0.04), transparent 24%),
+      var(--bg);
+  }
+}

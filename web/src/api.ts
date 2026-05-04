@@ -1,4 +1,4 @@
-import type { Workspace, Bot, Worker, WorkerDetail, Message, Repo, Doc, ResearchTask, Followup } from "./types";
+import type { Workspace, Bot, Worker, WorkerDetail, Message, Repo, Doc, ResearchTask, Followup, Signal } from "./types";
 
 const BASE = "/api";
 
@@ -234,6 +234,16 @@ export function getResearchTasks(workspace: string, remote?: string): Promise<Re
   return get(`${wsPath(workspace, remote)}/research`);
 }
 
+export function getSignals(
+  workspace: string,
+  options?: { history?: boolean; limit?: number },
+): Promise<Signal[]> {
+  const params = new URLSearchParams({ workspace });
+  if (options?.history) params.set("history", "true");
+  if (options?.limit) params.set("limit", String(options.limit));
+  return get(`/signals?${params.toString()}`);
+}
+
 export async function startResearch(
   workspace: string,
   topic: string,
@@ -265,5 +275,10 @@ export async function sendMessage(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, attachments }),
   });
-  return res.json();
+  if (!res.ok) throw new Error(`POST chat/${bot}: ${res.status}`);
+  const data = await res.json();
+  if (!data.ok) {
+    throw new Error(data.error ?? `POST chat/${bot} failed`);
+  }
+  return data;
 }

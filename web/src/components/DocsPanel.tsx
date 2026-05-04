@@ -1,25 +1,38 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { FileText, Plus, Trash2, Eye, Edit3, Save } from "lucide-react";
+import { FileText, Plus, Trash2, Eye, Edit3, Save, ArrowLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Doc } from "../types";
 import * as api from "../api";
+import { DocumentSurface } from "../primitives/DocumentSurface";
 import styles from "./DocsPanel.module.css";
 
 interface Props {
   workspace: string;
   remote?: string;
+  initialSelectedDocName?: string | null;
+  onSelectedDocNameChange?: (name: string | null) => void;
+  openListByDefaultOnMobile?: boolean;
 }
 
-export function DocsPanel({ workspace, remote }: Props) {
+export function DocsPanel({
+  workspace,
+  remote,
+  initialSelectedDocName = null,
+  onSelectedDocNameChange,
+  openListByDefaultOnMobile = false,
+}: Props) {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
+  const [showDocList, setShowDocList] = useState(window.innerWidth > 768);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selectedRef = useRef<string | null>(null);
+  const loadedDocRef = useRef<string | null>(null);
 
   const edited = content !== savedContent;
 
@@ -28,12 +41,24 @@ export function DocsPanel({ workspace, remote }: Props) {
   }, [workspace, remote]);
 
   useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth <= 768;
+      setIsMobile(mobile);
+      setShowDocList((current) => (mobile ? (selected ? current : true) : true));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [selected]);
+
+  useEffect(() => {
     loadDocs();
-    setSelected(null);
-    selectedRef.current = null;
+    setSelected(initialSelectedDocName);
+    selectedRef.current = initialSelectedDocName;
+    loadedDocRef.current = null;
     setContent("");
     setSavedContent("");
-  }, [workspace, loadDocs]);
+    setShowDocList(true);
+  }, [workspace, initialSelectedDocName, loadDocs]);
 
   useEffect(() => {
     let inflight = false;
@@ -57,16 +82,36 @@ export function DocsPanel({ workspace, remote }: Props) {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       setSelected(filename);
       selectedRef.current = filename;
+      onSelectedDocNameChange?.(filename);
       setPreview(false);
+      if (window.innerWidth <= 768) {
+        setShowDocList(false);
+      }
       api.getDoc(workspace, filename, remote).then((doc) => {
         // Guard against out-of-order responses
         if (selectedRef.current !== filename) return;
+        loadedDocRef.current = filename;
         setContent(doc.content || "");
         setSavedContent(doc.content || "");
       });
     },
-    [workspace, remote],
+    [workspace, remote, onSelectedDocNameChange],
   );
+
+  useEffect(() => {
+    if (docs.length === 0) return;
+    if (isMobile && openListByDefaultOnMobile && !initialSelectedDocName && !selected) {
+      setShowDocList(true);
+      return;
+    }
+    if (selected && docs.some((doc) => doc.name === selected) && loadedDocRef.current === selected) return;
+    const preferred = initialSelectedDocName && docs.some((doc) => doc.name === initialSelectedDocName)
+      ? initialSelectedDocName
+      : selected && docs.some((doc) => doc.name === selected)
+        ? selected
+        : docs[0].name;
+    selectDoc(preferred);
+  }, [docs, initialSelectedDocName, selected, selectDoc]);
 
   const handleSave = useCallback(async () => {
     if (!selected) return;
@@ -86,10 +131,12 @@ export function DocsPanel({ workspace, remote }: Props) {
     await api.deleteDoc(workspace, selected, remote);
     setSelected(null);
     selectedRef.current = null;
+    loadedDocRef.current = null;
+    onSelectedDocNameChange?.(null);
     setContent("");
     setSavedContent("");
     loadDocs();
-  }, [workspace, selected, loadDocs]);
+  }, [workspace, selected, loadDocs, onSelectedDocNameChange, remote]);
 
   const handleNew = useCallback(() => {
     let name = window.prompt("New document filename:");
@@ -100,6 +147,10 @@ export function DocsPanel({ workspace, remote }: Props) {
       selectDoc(name);
     });
   }, [workspace, loadDocs, selectDoc]);
+
+  const openDocList = useCallback(() => {
+    setShowDocList(true);
+  }, []);
 
   const handleContentChange = useCallback(
     (value: string) => {
@@ -121,29 +172,40 @@ export function DocsPanel({ workspace, remote }: Props) {
   );
 
   return (
-    <div className={styles.container}>
-      <div className={styles.sidebar}>
-        <div className={styles.sidebarHeader}>
-          <span className={styles.sidebarTitle}>Docs</span>
-          <button className={styles.newBtn} onClick={handleNew}>
-            <Plus size={14} />
-            New
-          </button>
-        </div>
-        {docs.map((doc) => (
-          <button
-            key={doc.name}
-            className={`${styles.docItem} ${selected === doc.name ? styles.docItemActive : ""}`}
-            onClick={() => selectDoc(doc.name)}
-          >
-            <FileText size={14} className={styles.docIcon} />
-            <span className={styles.docName}>{doc.title}</span>
-          </button>
-        ))}
-      </div>
-      {selected ? (
+    <DocumentSurface
+      sidebar={(!isMobile || showDocList) ? (
+        <>
+          <div className={styles.sidebarHeader}>
+            <span className={styles.sidebarTitle}>Docs</span>
+            <button className={styles.newBtn} onClick={handleNew}>
+              <Plus size={14} />
+              New
+            </button>
+          </div>
+          {docs.map((doc) => (
+            <button
+              key={doc.name}
+              className={`${styles.docItem} ${selected === doc.name ? styles.docItemActive : ""}`}
+              onClick={() => selectDoc(doc.name)}
+            >
+              <FileText size={14} className={styles.docIcon} />
+              <span className={styles.docName}>{doc.title}</span>
+            </button>
+          ))}
+        </>
+      ) : null}
+      editor={selected && (!isMobile || !showDocList) ? (
         <div className={styles.editor}>
           <div className={styles.toolbar}>
+            {isMobile && !showDocList && (
+              <button
+                className={styles.toolBtn}
+                onClick={openDocList}
+                aria-label="Back to document list"
+              >
+                <ArrowLeft size={16} />
+              </button>
+            )}
             <span className={styles.toolbarTitle}>{selected}</span>
             {edited && <span className={styles.editedBadge}>Edited</span>}
             <button
@@ -180,9 +242,9 @@ export function DocsPanel({ workspace, remote }: Props) {
             />
           )}
         </div>
-      ) : (
+      ) : !isMobile ? (
         <div className={styles.empty}>Select a doc or create a new one</div>
-      )}
-    </div>
+      ) : null}
+    />
   );
 }

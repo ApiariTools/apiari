@@ -115,6 +115,7 @@ impl SignalStore {
                 workspace   TEXT NOT NULL,
                 role        TEXT NOT NULL,
                 content     TEXT NOT NULL,
+                attachments TEXT,
                 source      TEXT,
                 provider    TEXT,
                 session_id  TEXT,
@@ -163,6 +164,10 @@ impl SignalStore {
             (
                 "ALTER TABLE signals ADD COLUMN snoozed_until TEXT;",
                 "snoozed_until",
+            ),
+            (
+                "ALTER TABLE conversations ADD COLUMN attachments TEXT;",
+                "attachments",
             ),
         ] {
             if let Err(e) = self.conn.execute_batch(sql) {
@@ -264,6 +269,44 @@ impl SignalStore {
 
         let records = stmt
             .query_map(params![self.workspace, now], |row| {
+                Ok(SignalRecord {
+                    id: row.get(0)?,
+                    source: row.get(1)?,
+                    external_id: row.get(2)?,
+                    title: row.get(3)?,
+                    body: row.get(4)?,
+                    severity: Severity::from_str_loose(&row.get::<_, String>(5)?),
+                    status: SignalStatus::from_str_loose(&row.get::<_, String>(6)?),
+                    url: row.get(7)?,
+                    created_at: parse_datetime(&row.get::<_, String>(8)?),
+                    updated_at: parse_datetime(&row.get::<_, String>(9)?),
+                    resolved_at: row
+                        .get::<_, Option<String>>(10)?
+                        .map(|s| parse_datetime(&s)),
+                    metadata: row.get(11)?,
+                    snoozed_until: row
+                        .get::<_, Option<String>>(12)?
+                        .map(|s| parse_datetime(&s)),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    /// Get recent signal history for this workspace, including resolved and snoozed rows.
+    pub fn get_signal_history(&self, limit: usize) -> Result<Vec<SignalRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, source, external_id, title, body, severity, status,
+                    url, created_at, updated_at, resolved_at, metadata, snoozed_until
+             FROM signals
+             WHERE workspace = ?1
+             ORDER BY updated_at DESC, created_at DESC
+             LIMIT ?2",
+        )?;
+
+        let records = stmt
+            .query_map(params![self.workspace, limit as i64], |row| {
                 Ok(SignalRecord {
                     id: row.get(0)?,
                     source: row.get(1)?,

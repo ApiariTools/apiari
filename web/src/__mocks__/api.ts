@@ -6,8 +6,24 @@ export const getWorkspaces = vi.fn().mockResolvedValue([
 ]);
 
 export const getBots = vi.fn().mockResolvedValue([
-  { name: "Main", color: "#f5c542", role: "Assistant", watch: [] },
-  { name: "Customer", color: "#e85555", role: "Customer bot", watch: ["sentry"] },
+  {
+    name: "Main",
+    color: "#f5c542",
+    role: "Coordinator",
+    description: "General workspace coordinator for planning, execution, and follow-through.",
+    provider: "claude",
+    model: "sonnet",
+    watch: [],
+  },
+  {
+    name: "Customer",
+    color: "#e85555",
+    role: "Customer bot",
+    description: "Tracks product issues and customer-facing followups across the workspace.",
+    provider: "codex",
+    model: "gpt-5.5",
+    watch: ["sentry"],
+  },
 ]);
 
 export const getWorkers = vi.fn().mockResolvedValue([]);
@@ -48,4 +64,5 @@ export const getFollowups = vi.fn().mockResolvedValue([]);
 export const cancelFollowup = vi.fn().mockResolvedValue({ ok: true });
 export const getResearchTasks = vi.fn().mockResolvedValue([]);
 export const startResearch = vi.fn().mockResolvedValue({ id: "research-1", topic: "test", status: "running" });
+export const getSignals = vi.fn().mockResolvedValue([]);
 export const connectWebSocket = vi.fn().mockReturnValue({ close: vi.fn() });

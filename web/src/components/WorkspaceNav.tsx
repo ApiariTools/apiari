@@ -1,5 +1,4 @@
-import { Bot } from "lucide-react";
-import type { Bot as BotType } from "../types";
+import type { Workspace } from "../types";
 import type { WorkspaceMode, WorkspaceModeDefinition } from "../consoleConfig";
 import styles from "./WorkspaceNav.module.css";
 
@@ -9,39 +8,27 @@ interface ModeItem {
 }
 
 interface Props {
+  workspaces: Workspace[];
+  activeWorkspace: string;
+  activeRemote?: string;
+  onSelectWorkspace: (name: string, remote?: string) => void;
   modes: WorkspaceModeDefinition[];
   activeMode: WorkspaceMode;
   onSelectMode: (mode: WorkspaceMode) => void;
-  bots: BotType[];
-  activeBot: string | null;
-  onSelectBot: (name: string) => void;
-  unread?: Record<string, number>;
   workerCount: number;
   repoCount: number;
   pendingFollowupCount: number;
   mobileOpen?: boolean;
 }
 
-const BOT_COLORS: Record<string, string> = {
-  Main: "var(--accent)",
-  Customer: "var(--red)",
-  Performance: "var(--green)",
-  Social: "var(--blue)",
-  Product: "var(--purple)",
-};
-
-function botColor(bot: BotType): string {
-  return bot.color || BOT_COLORS[bot.name] || "var(--text-faint)";
-}
-
 export function WorkspaceNav({
+  workspaces,
+  activeWorkspace,
+  activeRemote,
+  onSelectWorkspace,
   modes,
   activeMode,
   onSelectMode,
-  bots,
-  activeBot,
-  onSelectBot,
-  unread,
   workerCount,
   repoCount,
   pendingFollowupCount,
@@ -59,6 +46,24 @@ export function WorkspaceNav({
   return (
     <aside className={`${styles.panel} ${mobileOpen ? styles.mobileOpen : ""}`}>
       <div className={styles.sectionLabel}>Workspace</div>
+      <div className={styles.workspaceList}>
+        {workspaces.map((workspace) => {
+          const isActive = workspace.name === activeWorkspace && workspace.remote === activeRemote;
+          return (
+            <button
+              key={`${workspace.remote || "local"}/${workspace.name}`}
+              className={`${styles.workspaceBtn} ${isActive ? styles.activeWorkspace : ""}`}
+              onClick={() => onSelectWorkspace(workspace.name, workspace.remote)}
+              aria-label={workspace.remote ? `Open workspace ${workspace.name} (${workspace.remote})` : `Open workspace ${workspace.name}`}
+            >
+              <span className={styles.workspaceName}>{workspace.name}</span>
+              {workspace.remote ? <span className={styles.workspaceRemote}>{workspace.remote}</span> : null}
+            </button>
+          );
+        })}
+      </div>
+      <div className={styles.sectionDivider} />
+      <div className={styles.sectionLabel}>Modes</div>
       <div className={styles.modeList}>
         {items.map(({ mode, count }) => {
           const Icon = mode.icon;
@@ -78,35 +83,8 @@ export function WorkspaceNav({
         })}
       </div>
 
-      <div className={styles.sectionDivider} />
-      <div className={styles.sectionLabel}>Bots</div>
-      <div className={styles.botList}>
-        {bots.map((bot) => {
-          const count = unread?.[bot.name] || 0;
-          const isActive = activeMode === "chat" && activeBot === bot.name;
-          return (
-            <button
-              key={bot.name}
-              className={`${styles.botBtn} ${isActive ? styles.active : ""}`}
-              onClick={() => onSelectBot(bot.name)}
-              aria-label={`Open bot ${bot.name}`}
-            >
-              <span className={styles.botLeft}>
-                <span className={styles.botDot} style={{ background: botColor(bot) }} />
-                <span className={styles.botMeta}>
-                  <span className={styles.botName}>{bot.name}</span>
-                  {bot.role ? <span className={styles.botRole}>{bot.role}</span> : null}
-                </span>
-              </span>
-              {count > 0 && !isActive ? <span className={styles.botBadge}>{count}</span> : null}
-            </button>
-          );
-        })}
-      </div>
-
       <div className={styles.tip}>
-        <Bot size={14} />
-        <span>Chat stays first-class, but workspace state leads the UI.</span>
+        <span>Modes are global. Bot selection happens inside Chat.</span>
       </div>
     </aside>
   );

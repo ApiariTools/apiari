@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
-import { FileText, LayoutGrid, MessageSquare, Package, Wrench } from "lucide-react";
+import { FileText, LayoutGrid, MessageSquare, Package, Radar, Wrench } from "lucide-react";
 
-export type WorkspaceMode = "overview" | "chat" | "workers" | "repos" | "docs";
+export type WorkspaceMode = "overview" | "chat" | "workers" | "repos" | "docs" | "signals";
 
 export interface WorkspaceModeDefinition {
   id: WorkspaceMode;
@@ -32,6 +32,7 @@ export const WORKSPACE_MODE_DEFINITIONS: Record<WorkspaceMode, WorkspaceModeDefi
   workers: { id: "workers", label: "Workers", icon: Wrench },
   repos: { id: "repos", label: "Repos", icon: Package },
   docs: { id: "docs", label: "Docs", icon: FileText },
+  signals: { id: "signals", label: "Signals", icon: Radar },
 };
 
 export const DEFAULT_WORKSPACE_CONSOLE_PROFILE: WorkspaceConsoleProfile = {
@@ -111,7 +112,7 @@ export function resolveWorkspaceConsoleProfile(workspace?: string, remote?: stri
 export function getDefaultWorkspaceSelection(profile: WorkspaceConsoleProfile, isMobile: boolean) {
   return {
     mode: isMobile ? profile.defaultMobileMode : profile.defaultDesktopMode,
-    bot: isMobile && profile.defaultMobileMode === "chat" ? profile.defaultMobileBot : "",
+    bot: "",
   };
 }
 

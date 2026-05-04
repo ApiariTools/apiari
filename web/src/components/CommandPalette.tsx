@@ -19,6 +19,7 @@ interface Props {
   onSelectWorkspaceBot: (workspace: string, botName: string, remote?: string) => void;
   onStartResearch?: () => void;
   onOpenWorkspaceLayout?: () => void;
+  onOpenSignals?: () => void;
   unread?: Record<string, number>;
   otherWorkspaceUnreads?: Record<string, Record<string, number>>;
 }
@@ -39,6 +40,7 @@ export function CommandPalette({
   onSelectWorkspaceBot,
   onStartResearch,
   onOpenWorkspaceLayout,
+  onOpenSignals,
   unread = {},
   otherWorkspaceUnreads = {},
 }: Props) {
@@ -140,7 +142,7 @@ export function CommandPalette({
             })}
           </Command.Group>
         )}
-        {(onStartResearch || onOpenWorkspaceLayout) && (
+        {(onStartResearch || onOpenWorkspaceLayout || onOpenSignals) && (
           <Command.Group heading="Actions">
             {onStartResearch && (
               <Command.Item
@@ -162,6 +164,17 @@ export function CommandPalette({
                 }}
               >
                 Customize Workspace Layout...
+              </Command.Item>
+            )}
+            {onOpenSignals && (
+              <Command.Item
+                value="signals debug"
+                onSelect={() => {
+                  onOpenSignals();
+                  onOpenChange(false);
+                }}
+              >
+                Open Signals Debug
               </Command.Item>
             )}
           </Command.Group>

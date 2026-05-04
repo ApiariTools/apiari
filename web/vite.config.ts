@@ -67,7 +67,12 @@ export default defineConfig({
     },
   },
   server: {
+    host: true,
     allowedHosts: true,
+    watch: {
+      usePolling: true,
+      interval: 120,
+    },
     proxy: {
       '/api': 'http://localhost:4200',
       '/ws': {

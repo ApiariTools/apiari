@@ -9,12 +9,13 @@ pub mod http;
 pub mod morning_brief;
 pub mod socket;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use color_eyre::eyre::{Result, WrapErr};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::{
     buzz::{
@@ -117,6 +118,8 @@ enum CoordinatorJob {
     /// Handle a TUI chat message with streaming tokens.
     TuiChat {
         text: String,
+        attachments_json: Option<String>,
+        image_paths: Vec<PathBuf>,
         source: String,
         broadcast_user_activity: bool,
         responder: mpsc::UnboundedSender<socket::DaemonResponse>,
@@ -201,6 +204,7 @@ fn send_web_message_update(
     bee_name: &str,
     role: &str,
     content: &str,
+    attachments: Option<String>,
     created_at: &str,
 ) {
     if let Some(tx) = web_updates_tx {
@@ -210,9 +214,51 @@ fn send_web_message_update(
             bot: web_bee_name(bee_name),
             role: role.to_string(),
             content: content.to_string(),
+            attachments,
             created_at: created_at.to_string(),
         });
     }
+}
+
+fn data_url_extension(content_type: &str) -> &'static str {
+    match content_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        _ => "bin",
+    }
+}
+
+fn materialize_web_images(attachments: &[http::WebChatAttachment]) -> Vec<PathBuf> {
+    use base64::Engine as _;
+
+    let mut paths = Vec::new();
+    for attachment in attachments {
+        let content_type = attachment.content_type.trim();
+        if !content_type.starts_with("image/") {
+            continue;
+        }
+        let Some((meta, encoded)) = attachment.data_url.split_once(',') else {
+            continue;
+        };
+        if !meta.starts_with("data:") || !meta.contains(";base64") {
+            continue;
+        }
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            continue;
+        };
+        let path = std::env::temp_dir().join(format!(
+            "apiari-upload-{}-{}.{}",
+            std::process::id(),
+            Uuid::new_v4(),
+            data_url_extension(content_type)
+        ));
+        if fs::write(&path, bytes).is_ok() {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 fn send_web_bot_status(
@@ -360,7 +406,7 @@ async fn run_coordinator_task(
                 let mut alerts: Vec<String> = Vec::new();
 
                 let result = coordinator
-                    .dispatch_message(&text, bundle, |event| match event {
+                    .dispatch_message(&text, bundle, &[], |event| match event {
                         CoordinatorEvent::BashAudit {
                             command,
                             matched_pattern,
@@ -398,7 +444,9 @@ async fn run_coordinator_task(
                 {
                     let conv_scope = conversation_scope(&slot_name, &bee_name);
                     let conv = ConversationStore::new(store.conn(), &conv_scope);
-                    if let Err(e) = conv.save_message("user", &text, Some("telegram"), None, None) {
+                    if let Err(e) =
+                        conv.save_message("user", &text, None, Some("telegram"), None, None)
+                    {
                         warn!("[{slot_name}] failed to save user message: {e}");
                     }
                     if let Ok(ref response) = result
@@ -409,6 +457,7 @@ async fn run_coordinator_task(
                         if let Err(e) = conv.save_message(
                             "assistant",
                             response,
+                            None,
                             Some("system"),
                             provider,
                             session_id,
@@ -499,6 +548,8 @@ async fn run_coordinator_task(
 
             CoordinatorJob::TuiChat {
                 text,
+                attachments_json,
+                image_paths,
                 source,
                 broadcast_user_activity,
                 responder,
@@ -511,7 +562,14 @@ async fn run_coordinator_task(
                 let user_created_at = chrono::Utc::now().to_rfc3339();
                 let user_message_id = {
                     let conv = ConversationStore::new(store.conn(), &conv_scope);
-                    match conv.save_message("user", &text, Some(&source), None, None) {
+                    match conv.save_message(
+                        "user",
+                        &text,
+                        attachments_json.as_deref(),
+                        Some(&source),
+                        None,
+                        None,
+                    ) {
                         Ok(id) => Some(id),
                         Err(e) => {
                             warn!("[{ws_name}] failed to save user message: {e}");
@@ -532,6 +590,7 @@ async fn run_coordinator_task(
                                 &bee_name,
                                 "user",
                                 &text,
+                                attachments_json.clone(),
                                 &user_created_at,
                             );
                         }
@@ -552,6 +611,7 @@ async fn run_coordinator_task(
                             match conv.save_message(
                                 "assistant",
                                 &err_text,
+                                None,
                                 Some("system"),
                                 None,
                                 None,
@@ -576,6 +636,7 @@ async fn run_coordinator_task(
                                 &bee_name,
                                 "assistant",
                                 &err_text,
+                                None,
                                 &err_created_at,
                             );
                         }
@@ -596,6 +657,14 @@ async fn run_coordinator_task(
                 } else {
                     text.clone()
                 };
+                let dispatch_text = if image_paths.is_empty() {
+                    dispatch_text
+                } else {
+                    format!(
+                        "{dispatch_text}\n\n[attachments: {} image file(s)]",
+                        image_paths.len()
+                    )
+                };
 
                 let name_for_cb = ws_name.clone();
                 let model_for_cb = coordinator.model().to_string();
@@ -608,7 +677,7 @@ async fn run_coordinator_task(
                 *cancel_token.lock().unwrap() = Some(turn_cancel.clone());
 
                 let result = tokio::select! {
-                    res = coordinator.dispatch_message(&dispatch_text, bundle, |event| match event {
+                    res = coordinator.dispatch_message(&dispatch_text, bundle, &image_paths, |event| match event {
                         CoordinatorEvent::Token(t) => {
                             streaming_content.push_str(&t);
                             if let Ok(status_store) =
@@ -688,6 +757,9 @@ async fn run_coordinator_task(
                     _ = turn_cancel.cancelled() => Err(color_eyre::eyre::eyre!("cancelled")),
                 };
                 *cancel_token.lock().unwrap() = None;
+                for path in &image_paths {
+                    let _ = fs::remove_file(path);
+                }
 
                 match result {
                     Ok(response) => {
@@ -706,6 +778,7 @@ async fn run_coordinator_task(
                                 match conv.save_message(
                                     "assistant",
                                     &response,
+                                    None,
                                     Some("system"),
                                     provider,
                                     session_id,
@@ -725,6 +798,7 @@ async fn run_coordinator_task(
                                     &bee_name,
                                     "assistant",
                                     &response,
+                                    None,
                                     &assistant_created_at,
                                 );
                             }
@@ -799,6 +873,7 @@ async fn run_coordinator_task(
                             match conv.save_message(
                                 "assistant",
                                 &err_text,
+                                None,
                                 Some("system"),
                                 None,
                                 None,
@@ -821,6 +896,7 @@ async fn run_coordinator_task(
                                 &bee_name,
                                 "assistant",
                                 &err_text,
+                                None,
                                 &err_created_at,
                             );
                         }
@@ -905,7 +981,7 @@ async fn run_coordinator_task(
                     let bundle = coordinator.prepare_dispatch(&store);
                     if let Ok(bundle) = bundle {
                         match coordinator
-                            .dispatch_message(summary_prompt, bundle, |_| {})
+                            .dispatch_message(summary_prompt, bundle, &[], |_| {})
                             .await
                         {
                             Ok(summary) => {
@@ -1108,7 +1184,7 @@ async fn run_coordinator_task(
                 let name_for_cb = slot_name.clone();
                 let source_for_cb = source.clone();
                 match coordinator
-                    .dispatch_message(&notification, bundle, |event| match event {
+                    .dispatch_message(&notification, bundle, &[], |event| match event {
                         CoordinatorEvent::BashAudit {
                             command,
                             matched_pattern,
@@ -2280,8 +2356,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                         let bee_name = slot.bees.get(bee_idx)
                             .map(|b| b.name.clone())
                             .unwrap_or_default();
+                        let image_paths = materialize_web_images(&chat_req.attachments);
                         let job = CoordinatorJob::TuiChat {
                             text: chat_req.text,
+                            attachments_json: chat_req.attachments_json,
+                            image_paths,
                             source: "web".to_string(),
                             broadcast_user_activity: true,
                             responder: resp_tx,
@@ -3542,6 +3621,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                             let ws_name_for_err = ws_name.clone();
                             let job = CoordinatorJob::TuiChat {
                                 text: user_text,
+                                attachments_json: None,
+                                image_paths: vec![],
                                 source: "tui".to_string(),
                                 broadcast_user_activity: false,
                                 responder: client_req.responder.clone(),
@@ -5335,6 +5416,8 @@ mod tests {
         job_tx
             .send(super::CoordinatorJob::TuiChat {
                 text: "hello".to_string(),
+                attachments_json: None,
+                image_paths: vec![],
                 source: "web".to_string(),
                 broadcast_user_activity: true,
                 responder: resp_tx,
@@ -5453,6 +5536,8 @@ mod tests {
         job_tx
             .send(super::CoordinatorJob::TuiChat {
                 text: "hello".to_string(),
+                attachments_json: None,
+                image_paths: vec![],
                 source: "web".to_string(),
                 broadcast_user_activity: true,
                 responder: resp_tx,
@@ -5554,6 +5639,8 @@ mod tests {
         job_tx
             .send(super::CoordinatorJob::TuiChat {
                 text: "remind me later".to_string(),
+                attachments_json: None,
+                image_paths: vec![],
                 source: "web".to_string(),
                 broadcast_user_activity: true,
                 responder: resp_tx,

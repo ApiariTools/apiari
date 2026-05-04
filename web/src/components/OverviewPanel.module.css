@@ -1,139 +1,151 @@
 .page {
   flex: 1;
   overflow: auto;
-  padding: 28px;
+  padding: var(--space-7);
   background:
-    radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 22%),
+    radial-gradient(circle at top right, rgba(217, 168, 74, 0.05), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.012), transparent 18%),
     var(--bg);
 }
 
 .hero {
   display: flex;
   justify-content: space-between;
-  gap: 24px;
-  align-items: flex-end;
-  margin-bottom: 24px;
+  gap: var(--space-6);
+  align-items: flex-start;
+  margin-bottom: var(--space-6);
 }
 
 .eyebrow {
   text-transform: uppercase;
-  letter-spacing: 0.16em;
-  font-size: 11px;
-  color: var(--accent);
-  margin-bottom: 10px;
+  letter-spacing: 0.18em;
+  font-size: var(--font-size-micro);
+  color: var(--accent-strong);
+  margin-bottom: var(--space-2);
+  font-weight: 700;
 }
 
 .title {
   color: var(--text-strong);
-  font-size: 40px;
-  line-height: 1;
-  margin-bottom: 10px;
+  font-size: var(--font-size-display);
+  line-height: 0.96;
+  margin-bottom: var(--space-2);
+  letter-spacing: -0.03em;
 }
 
 .summary {
   max-width: 700px;
-  color: var(--text);
-  line-height: 1.55;
+  color: var(--text-dim);
+  line-height: var(--line-height-body);
+  font-size: 15px;
 }
 
 .heroActions {
   display: flex;
-  gap: 10px;
+  gap: var(--space-3);
   flex-shrink: 0;
 }
 
 .primaryAction,
 .secondaryAction,
-.metricCard,
-.actionRow {
+.metricCard {
   cursor: pointer;
 }
 
 .primaryAction,
 .secondaryAction {
   border-radius: 999px;
-  padding: 11px 16px;
+  padding: 11px 18px;
   border: 1px solid var(--border);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.02);
   color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .primaryAction {
   background: var(--accent);
   color: #18140a;
   border-color: transparent;
-  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
 .metricGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
 }
 
 .metricCard {
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
-  padding: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--shell-surface);
+  padding: 18px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   color: var(--text);
   text-align: left;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .metricLabel {
   text-transform: uppercase;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  color: var(--text-faint);
+  font-size: var(--font-size-micro);
+  letter-spacing: 0.16em;
+  color: var(--text-dim);
+  font-weight: 700;
 }
 
 .metricValue {
-  font-size: 28px;
+  font-size: 34px;
+  line-height: 0.95;
   color: var(--text-strong);
 }
 
 .metricMeta {
-  font-size: 13px;
-  color: var(--text);
+  font-size: var(--font-size-meta);
+  line-height: var(--line-height-meta);
+  color: var(--text-faint);
 }
 
 .columns {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
 }
 
 .card {
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 18px;
-  background: rgba(17, 17, 17, 0.72);
-  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  background: var(--shell-surface);
   min-height: 220px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
 }
 
 .cardHeader {
   display: flex;
   justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 14px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
 .cardTitle {
   color: var(--text-strong);
-  font-size: 18px;
+  font-size: 22px;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
 }
 
 .cardSubtitle {
-  margin-top: 4px;
+  margin-top: 6px;
   color: var(--text-faint);
-  font-size: 13px;
+  font-size: var(--font-size-meta);
+  line-height: var(--line-height-meta);
+  max-width: 32ch;
 }
 
 .cardIcon {
@@ -147,64 +159,10 @@
   gap: 10px;
 }
 
-.listRow,
-.actionRow {
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.02);
-  padding: 12px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  color: inherit;
-  text-align: left;
-  width: 100%;
-}
-
-.rowTitle {
-  color: var(--text-strong);
-}
-
-.rowMeta {
-  color: var(--text-faint);
-  font-size: 13px;
-  margin-top: 4px;
-}
-
-.rowRight {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-faint);
-}
-
-.badge,
-.healthBadge {
-  border-radius: 999px;
-  padding: 4px 9px;
-  font-size: 12px;
-  border: 1px solid var(--border);
-}
-
-.badge {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.healthBadge.clean {
-  color: var(--green);
-  background: var(--green-soft);
-}
-
-.healthBadge.modified {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
 .empty {
   color: var(--text-faint);
-  padding: 22px 4px 4px;
+  padding: 14px 2px 2px;
+  line-height: var(--line-height-body);
 }
 
 @media (max-width: 1100px) {
@@ -216,7 +174,7 @@
 
 @media (max-width: 768px) {
   .page {
-    padding: 18px;
+    padding: var(--space-4) var(--mobile-gutter) calc(var(--mobile-bar-height) + var(--space-4));
   }
 
   .hero,
@@ -225,12 +183,96 @@
     align-items: stretch;
   }
 
+  .hero {
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+
+  .eyebrow {
+    font-size: var(--font-size-tiny);
+    margin-bottom: var(--space-2);
+  }
+
   .title {
-    font-size: 30px;
+    font-size: 28px;
+    line-height: 0.98;
+    margin-bottom: 6px;
+  }
+
+  .summary {
+    font-size: var(--font-size-body);
+    line-height: var(--line-height-body);
+  }
+
+  .heroActions {
+    gap: var(--space-2);
+  }
+
+  .primaryAction,
+  .secondaryAction {
+    width: 100%;
+    justify-content: center;
   }
 
   .metricGrid,
   .columns {
     grid-template-columns: 1fr;
+  }
+
+  .metricGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+
+  .metricCard,
+  .card,
+  .listRow,
+  .actionRow {
+    border-radius: 16px;
+  }
+
+  .metricCard {
+    aspect-ratio: 1 / 1;
+    min-height: 0;
+    padding: var(--space-3);
+    gap: var(--space-1);
+    justify-content: space-between;
+  }
+
+  .metricValue {
+    font-size: 24px;
+    line-height: 1;
+  }
+
+  .metricMeta {
+    font-size: var(--font-size-meta);
+    line-height: var(--line-height-meta);
+  }
+
+  .card {
+    padding: var(--space-4);
+    min-height: 0;
+  }
+
+  .cardHeader {
+    margin-bottom: var(--space-3);
+  }
+
+  .cardTitle {
+    font-size: 20px;
+  }
+
+  .list {
+    gap: var(--space-2);
+  }
+
+  .listRow,
+  .actionRow {
+    padding: 11px 12px;
+    align-items: flex-start;
+  }
+
+  .rowRight {
+    padding-top: 2px;
   }
 }

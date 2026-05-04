@@ -25,6 +25,7 @@ pub struct ConversationRow {
     pub workspace: String,
     pub role: String,
     pub content: String,
+    pub attachments: Option<String>,
     pub source: Option<String>,
     pub provider: Option<String>,
     pub session_id: Option<String>,
@@ -52,6 +53,7 @@ impl<'a> ConversationStore<'a> {
         &self,
         role: &str,
         content: &str,
+        attachments: Option<&str>,
         source: Option<&str>,
         provider: Option<&str>,
         session_id: Option<&str>,
@@ -61,14 +63,23 @@ impl<'a> ConversationStore<'a> {
             let (workspace, bot) = split_scope(&self.workspace);
             self.conn.execute(
                 "INSERT INTO conversations (workspace, bot, role, content, attachments, created_at)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
-                params![workspace, bot, role, content, now],
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![workspace, bot, role, content, attachments, now],
             )?;
         } else {
             self.conn.execute(
-                "INSERT INTO conversations (workspace, role, content, source, provider, session_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![&self.workspace, role, content, source, provider, session_id, now],
+                "INSERT INTO conversations (workspace, role, content, attachments, source, provider, session_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    &self.workspace,
+                    role,
+                    content,
+                    attachments,
+                    source,
+                    provider,
+                    session_id,
+                    now
+                ],
             )?;
         }
         Ok(self.conn.last_insert_rowid())
@@ -79,7 +90,7 @@ impl<'a> ConversationStore<'a> {
         let mut rows: Vec<ConversationRow> = if self.is_legacy_schema()? {
             let (workspace, bot) = split_scope(&self.workspace);
             let mut stmt = self.conn.prepare(
-                "SELECT id, workspace, role, content, NULL as source, NULL as provider, NULL as session_id, created_at
+                "SELECT id, workspace, role, content, attachments, NULL as source, NULL as provider, NULL as session_id, created_at
                  FROM conversations
                  WHERE workspace = ?1 AND bot = ?2
                  ORDER BY created_at DESC, id DESC
@@ -91,16 +102,17 @@ impl<'a> ConversationStore<'a> {
                     workspace: row.get(1)?,
                     role: row.get(2)?,
                     content: row.get(3)?,
-                    source: row.get(4)?,
-                    provider: row.get(5)?,
-                    session_id: row.get(6)?,
-                    created_at: row.get(7)?,
+                    attachments: row.get(4)?,
+                    source: row.get(5)?,
+                    provider: row.get(6)?,
+                    session_id: row.get(7)?,
+                    created_at: row.get(8)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, workspace, role, content, source, provider, session_id, created_at
+                "SELECT id, workspace, role, content, attachments, source, provider, session_id, created_at
                  FROM conversations
                  WHERE workspace = ?1
                  ORDER BY created_at DESC, id DESC
@@ -112,10 +124,11 @@ impl<'a> ConversationStore<'a> {
                     workspace: row.get(1)?,
                     role: row.get(2)?,
                     content: row.get(3)?,
-                    source: row.get(4)?,
-                    provider: row.get(5)?,
-                    session_id: row.get(6)?,
-                    created_at: row.get(7)?,
+                    attachments: row.get(4)?,
+                    source: row.get(5)?,
+                    provider: row.get(6)?,
+                    session_id: row.get(7)?,
+                    created_at: row.get(8)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -183,6 +196,7 @@ mod tests {
                 workspace   TEXT NOT NULL,
                 role        TEXT NOT NULL,
                 content     TEXT NOT NULL,
+                attachments TEXT,
                 source      TEXT,
                 provider    TEXT,
                 session_id  TEXT,
@@ -201,12 +215,13 @@ mod tests {
         let store = ConversationStore::new(&conn, "test");
 
         store
-            .save_message("user", "hello", Some("telegram"), None, None)
+            .save_message("user", "hello", None, Some("telegram"), None, None)
             .unwrap();
         store
             .save_message(
                 "assistant",
                 "hi there",
+                None,
                 Some("system"),
                 Some("claude"),
                 Some("sess-123"),
@@ -231,13 +246,20 @@ mod tests {
         assert!(store.last_session().unwrap().is_none());
 
         store
-            .save_message("user", "msg1", None, None, None)
+            .save_message("user", "msg1", None, None, None, None)
             .unwrap();
         // Still no session (user messages have no provider)
         assert!(store.last_session().unwrap().is_none());
 
         store
-            .save_message("assistant", "resp1", None, Some("claude"), Some("sess-abc"))
+            .save_message(
+                "assistant",
+                "resp1",
+                None,
+                None,
+                Some("claude"),
+                Some("sess-abc"),
+            )
             .unwrap();
         let token = store.last_session().unwrap().unwrap();
         assert_eq!(token.provider, "claude");
@@ -245,7 +267,14 @@ mod tests {
 
         // Newer session replaces
         store
-            .save_message("assistant", "resp2", None, Some("claude"), Some("sess-xyz"))
+            .save_message(
+                "assistant",
+                "resp2",
+                None,
+                None,
+                Some("claude"),
+                Some("sess-xyz"),
+            )
             .unwrap();
         let token = store.last_session().unwrap().unwrap();
         assert_eq!(token.token, "sess-xyz");
@@ -258,10 +287,10 @@ mod tests {
         let store_b = ConversationStore::new(&conn, "ws-b");
 
         store_a
-            .save_message("user", "from A", None, None, None)
+            .save_message("user", "from A", None, None, None, None)
             .unwrap();
         store_b
-            .save_message("user", "from B", None, None, None)
+            .save_message("user", "from B", None, None, None, None)
             .unwrap();
 
         let a_history = store_a.load_history(10).unwrap();
@@ -280,7 +309,7 @@ mod tests {
 
         for i in 0..10 {
             store
-                .save_message("user", &format!("msg {i}"), None, None, None)
+                .save_message("user", &format!("msg {i}"), None, None, None, None)
                 .unwrap();
         }
 
@@ -288,5 +317,32 @@ mod tests {
         assert_eq!(recent.len(), 3);
         // Should be the last 3 messages, in chronological order
         assert!(recent[2].content.contains("msg 9"));
+    }
+
+    #[test]
+    fn test_save_and_load_attachments() {
+        let conn = test_conn();
+        let store = ConversationStore::new(&conn, "test");
+
+        store
+            .save_message(
+                "user",
+                "see image",
+                Some(r#"[{"name":"cat.png","type":"image/png","dataUrl":"data:image/png;base64,abc"}]"#),
+                Some("web"),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let history = store.load_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(
+            history[0]
+                .attachments
+                .as_deref()
+                .unwrap_or_default()
+                .contains("cat.png")
+        );
     }
 }

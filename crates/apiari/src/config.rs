@@ -444,6 +444,12 @@ impl Default for CoordinatorConfig {
 pub struct BeeConfig {
     /// Display name for this Bee (e.g. "CodeBee", "CustomerBee").
     pub name: String,
+    /// Short role label for UI and summaries.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Optional accent color for UI surfaces.
+    #[serde(default)]
+    pub color: Option<String>,
     /// LLM provider: "claude", "codex", or "gemini".
     #[serde(default = "default_provider")]
     pub provider: String,
@@ -512,6 +518,8 @@ impl WorkspaceConfig {
         let c = &self.coordinator;
         vec![BeeConfig {
             name: c.name.clone(),
+            role: None,
+            color: None,
             provider: c.provider.clone(),
             model: c.model.clone(),
             max_turns: c.max_turns,
@@ -849,6 +857,12 @@ struct HiveWorkspaceFile {
     bots: Vec<HiveBotConfig>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceFileFormat {
+    Current,
+    HiveCompat,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct HiveWorkspaceSection {
     root: PathBuf,
@@ -867,68 +881,119 @@ struct HiveBotConfig {
     provider: String,
     #[serde(default = "default_model")]
     model: String,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    prompt_file: Option<String>,
+    #[serde(default)]
+    watch: Vec<String>,
+    #[serde(default)]
+    services: Vec<String>,
+    #[serde(default)]
+    schedule: Option<String>,
+    #[serde(default)]
+    schedule_hours: Option<u64>,
+    #[serde(default)]
+    proactive_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyServicesFile {
+    #[serde(default)]
+    sentry: Option<LegacySentryServiceConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyHiveWorkspaceYaml {
+    #[serde(default)]
+    buzz: Option<LegacyHiveBuzzConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyHiveBuzzConfig {
+    #[serde(default)]
+    sentry: Option<LegacySentryServiceConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacySentryServiceConfig {
+    org: String,
+    project: String,
+    token: String,
+}
+
+fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
+    let bees = (!value.bots.is_empty()).then(|| {
+        let root = value.workspace.root.clone();
+        let mut bees = vec![BeeConfig {
+            name: default_coordinator_name(),
+            role: None,
+            color: None,
+            provider: default_provider(),
+            model: default_model(),
+            max_turns: default_max_turns(),
+            prompt: None,
+            max_session_turns: default_max_session_turns(),
+            signal_hooks: vec![],
+            topic_id: None,
+            heartbeat: None,
+            heartbeat_prompt: None,
+        }];
+
+        bees.extend(value.bots.iter().map(|bot| BeeConfig {
+            model: legacy_bot_model(&bot.provider, &bot.model),
+            name: bot.name.clone(),
+            role: bot.role.clone(),
+            color: bot.color.clone(),
+            provider: bot.provider.clone(),
+            max_turns: default_max_turns(),
+            prompt: hive_bot_prompt(&root, bot),
+            max_session_turns: default_max_session_turns(),
+            signal_hooks: hive_bot_signal_hooks(bot),
+            topic_id: None,
+            heartbeat: hive_bot_heartbeat(bot),
+            heartbeat_prompt: bot.proactive_prompt.clone(),
+        }));
+
+        bees
+    });
+
+    WorkspaceConfig {
+        config_version: None,
+        root: value.workspace.root.clone(),
+        repos: vec![],
+        authority: WorkspaceAuthority::default(),
+        capabilities: WorkspaceCapabilities::default(),
+        telegram: None,
+        coordinator: CoordinatorConfig::default(),
+        bees,
+        watchers: WatchersConfig::default(),
+        orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
+        swarm: SwarmConfig {
+            default_agent: value
+                .workspace
+                .default_agent
+                .clone()
+                .unwrap_or_else(default_swarm_agent),
+        },
+        commands: vec![],
+        morning_brief: None,
+        daemon_tcp_port: None,
+        daemon_tcp_bind: None,
+        daemon_host: None,
+        daemon_port: None,
+        daemon_endpoints: vec![],
+        shells: ShellsConfig::default(),
+        schedule: None,
+        activity: ActivityConfig::default(),
+    }
 }
 
 impl From<HiveWorkspaceFile> for WorkspaceConfig {
     fn from(value: HiveWorkspaceFile) -> Self {
-        let bees = (!value.bots.is_empty()).then(|| {
-            let mut bees = vec![BeeConfig {
-                name: default_coordinator_name(),
-                provider: default_provider(),
-                model: default_model(),
-                max_turns: default_max_turns(),
-                prompt: None,
-                max_session_turns: default_max_session_turns(),
-                signal_hooks: vec![],
-                topic_id: None,
-                heartbeat: None,
-                heartbeat_prompt: None,
-            }];
-
-            bees.extend(value.bots.into_iter().map(|bot| BeeConfig {
-                model: legacy_bot_model(&bot.provider, &bot.model),
-                name: bot.name,
-                provider: bot.provider,
-                max_turns: default_max_turns(),
-                prompt: None,
-                max_session_turns: default_max_session_turns(),
-                signal_hooks: vec![],
-                topic_id: None,
-                heartbeat: None,
-                heartbeat_prompt: None,
-            }));
-
-            bees
-        });
-
-        Self {
-            config_version: None,
-            root: value.workspace.root,
-            repos: vec![],
-            authority: WorkspaceAuthority::default(),
-            capabilities: WorkspaceCapabilities::default(),
-            telegram: None,
-            coordinator: CoordinatorConfig::default(),
-            bees,
-            watchers: WatchersConfig::default(),
-            orchestrator: crate::buzz::orchestrator::OrchestratorConfig::default(),
-            swarm: SwarmConfig {
-                default_agent: value
-                    .workspace
-                    .default_agent
-                    .unwrap_or_else(default_swarm_agent),
-            },
-            commands: vec![],
-            morning_brief: None,
-            daemon_tcp_port: None,
-            daemon_tcp_bind: None,
-            daemon_host: None,
-            daemon_port: None,
-            daemon_endpoints: vec![],
-            shells: ShellsConfig::default(),
-            schedule: None,
-            activity: ActivityConfig::default(),
-        }
+        hive_workspace_to_current(&value)
     }
 }
 
@@ -942,7 +1007,141 @@ pub fn load_workspace(path: &Path) -> Result<WorkspaceConfig> {
 
     let hive_config: HiveWorkspaceFile = toml::from_str(&contents)
         .wrap_err_with(|| format!("failed to parse {}", path.display()))?;
-    Ok(hive_config.into())
+    let mut config = hive_workspace_to_current(&hive_config);
+    hydrate_legacy_service_watchers(&mut config, &hive_config);
+    Ok(config)
+}
+
+fn hive_bot_signal_hooks(bot: &HiveBotConfig) -> Vec<SignalHookConfig> {
+    bot.watch
+        .iter()
+        .map(|source| SignalHookConfig {
+            source: source.clone(),
+            prompt: String::new(),
+            action: None,
+            ttl_secs: default_hook_ttl(),
+            skills: vec![],
+        })
+        .collect()
+}
+
+fn hive_bot_heartbeat(bot: &HiveBotConfig) -> Option<String> {
+    if let Some(hours) = bot.schedule_hours {
+        return Some(format!("{hours}h"));
+    }
+
+    let schedule = bot.schedule.as_deref()?.trim();
+    parse_simple_hive_schedule(schedule)
+}
+
+fn parse_simple_hive_schedule(schedule: &str) -> Option<String> {
+    if let Some(rest) = schedule.strip_prefix("*/")
+        && let Some((mins, tail)) = rest.split_once(' ')
+        && tail == "* * * *"
+        && let Ok(mins) = mins.parse::<u64>()
+    {
+        return Some(format!("{mins}m"));
+    }
+
+    if let Some(rest) = schedule.strip_prefix("0 */")
+        && let Some((hours, tail)) = rest.split_once(' ')
+        && tail == "* * *"
+        && let Ok(hours) = hours.parse::<u64>()
+    {
+        return Some(format!("{hours}h"));
+    }
+
+    None
+}
+
+fn hive_bot_prompt(root: &Path, bot: &HiveBotConfig) -> Option<String> {
+    let file_contents = bot
+        .prompt_file
+        .as_deref()
+        .map(|path| root.join(path))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    match (bot.role.as_deref(), bot.color.as_deref(), file_contents) {
+        (None, None, None) => None,
+        (role, color, body) => {
+            let mut sections = Vec::new();
+            if let Some(role) = role
+                && !role.trim().is_empty()
+            {
+                sections.push(format!("Role: {}", role.trim()));
+            }
+            if let Some(color) = color
+                && !color.trim().is_empty()
+            {
+                sections.push(format!("Color: {}", color.trim()));
+            }
+            if let Some(body) = body {
+                sections.push(body);
+            }
+            Some(sections.join("\n\n"))
+        }
+    }
+}
+
+pub fn detect_workspace_file_format(path: &Path) -> Result<WorkspaceFileFormat> {
+    let contents = std::fs::read_to_string(path)
+        .wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    detect_workspace_file_format_from_str(&contents)
+        .wrap_err_with(|| format!("failed to parse {}", path.display()))
+}
+
+fn detect_workspace_file_format_from_str(contents: &str) -> Result<WorkspaceFileFormat> {
+    if toml::from_str::<WorkspaceConfig>(contents).is_ok() {
+        return Ok(WorkspaceFileFormat::Current);
+    }
+    if toml::from_str::<HiveWorkspaceFile>(contents).is_ok() {
+        return Ok(WorkspaceFileFormat::HiveCompat);
+    }
+    color_eyre::eyre::bail!("workspace config does not match current or Hive-compatible schema");
+}
+
+fn hive_workspace_references_service(hive_config: &HiveWorkspaceFile, service: &str) -> bool {
+    hive_config.bots.iter().any(|bot| {
+        bot.watch.iter().any(|s| s == service) || bot.services.iter().any(|s| s == service)
+    })
+}
+
+fn hydrate_legacy_service_watchers(config: &mut WorkspaceConfig, hive_config: &HiveWorkspaceFile) {
+    if config.watchers.sentry.is_none() && hive_workspace_references_service(hive_config, "sentry")
+    {
+        if let Some(sentry) = load_legacy_sentry_credentials(&config.root) {
+            config.watchers.sentry = Some(SentryWatcherConfig {
+                org: sentry.org,
+                project: sentry.project,
+                token: sentry.token,
+                interval_secs: default_watcher_interval(),
+                active_hours: None,
+            });
+        }
+    }
+}
+
+fn load_legacy_sentry_credentials(root: &Path) -> Option<LegacySentryServiceConfig> {
+    let services_path = root.join(".apiari/services.toml");
+    if let Ok(contents) = std::fs::read_to_string(&services_path)
+        && let Ok(services) = toml::from_str::<LegacyServicesFile>(&contents)
+        && let Some(sentry) = services.sentry
+    {
+        return Some(sentry);
+    }
+
+    let hive_workspace_path = root.join(".hive/workspace.yaml");
+    if let Ok(contents) = std::fs::read_to_string(&hive_workspace_path)
+        && let Ok(workspace) = serde_yaml::from_str::<LegacyHiveWorkspaceYaml>(&contents)
+        && let Some(buzz) = workspace.buzz
+        && let Some(sentry) = buzz.sentry
+    {
+        return Some(sentry);
+    }
+
+    None
 }
 
 /// Discover all workspace configs from `~/.config/apiari/workspaces/*.toml`.
@@ -1499,6 +1698,55 @@ provider = "codex"
     }
 
     #[test]
+    fn test_load_workspace_preserves_hive_bot_behavior_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("mgm");
+        std::fs::create_dir_all(root.join(".apiari/bots")).unwrap();
+        std::fs::write(
+            root.join(".apiari/bots/triage.md"),
+            "# Triage\n\nFocus on new issues and decide what to do.",
+        )
+        .unwrap();
+
+        let config_path = temp.path().join("mgm.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r##"
+[workspace]
+root = "{}"
+
+[[bots]]
+name = "Triage"
+role = "Detect, triage, and fix Sentry issues"
+color = "#f59e0b"
+prompt_file = ".apiari/bots/triage.md"
+watch = ["sentry"]
+schedule = "*/30 * * * *"
+proactive_prompt = "Check for new issues."
+"##,
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        let config = load_workspace(&config_path).unwrap();
+        let bees = config.resolved_bees();
+        let triage = bees.iter().find(|bee| bee.name == "Triage").unwrap();
+        assert_eq!(triage.heartbeat.as_deref(), Some("30m"));
+        assert_eq!(
+            triage.heartbeat_prompt.as_deref(),
+            Some("Check for new issues.")
+        );
+        assert_eq!(triage.signal_hooks.len(), 1);
+        assert_eq!(triage.signal_hooks[0].source, "sentry");
+        let prompt = triage.prompt.as_deref().unwrap();
+        assert!(prompt.contains("Role: Detect, triage, and fix Sentry issues"));
+        assert!(prompt.contains("Color: #f59e0b"));
+        assert!(prompt.contains("Focus on new issues and decide what to do."));
+    }
+
+    #[test]
     fn test_max_session_turns_explicit() {
         let toml_str = r#"
 root = "/tmp/test"
@@ -1713,6 +1961,91 @@ max_session_turns = 0
         assert_eq!(config.daemon_tcp_port, Some(7474));
         assert_eq!(config.daemon_host.as_deref(), Some("myserver.ts.net"));
         assert_eq!(config.daemon_port, Some(7474));
+    }
+
+    #[test]
+    fn test_load_workspace_hive_sentry_watcher_from_services_toml() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("mgm");
+        std::fs::create_dir_all(root.join(".apiari")).unwrap();
+        std::fs::write(
+            root.join(".apiari/services.toml"),
+            r#"
+[sentry]
+org = "josh-holtz"
+project = "mostly-good-metrics"
+token = "sntryu_test"
+"#,
+        )
+        .unwrap();
+
+        let config_path = temp.path().join("mgm.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[workspace]
+root = "{}"
+
+[[bots]]
+name = "Triage"
+watch = ["sentry"]
+services = ["sentry"]
+"#,
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        let config = load_workspace(&config_path).unwrap();
+        let sentry = config.watchers.sentry.expect("expected sentry watcher");
+        assert_eq!(sentry.org, "josh-holtz");
+        assert_eq!(sentry.project, "mostly-good-metrics");
+        assert_eq!(sentry.token, "sntryu_test");
+    }
+
+    #[test]
+    fn test_load_workspace_hive_sentry_watcher_from_legacy_hive_workspace_yaml() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("mgm");
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        std::fs::write(
+            root.join(".hive/workspace.yaml"),
+            r#"
+name: mgm
+repos:
+  - backend
+buzz:
+  sentry:
+    token: "sntryu_legacy"
+    org: "josh-holtz"
+    project: "mostly-good-metrics"
+"#,
+        )
+        .unwrap();
+
+        let config_path = temp.path().join("mgm.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"
+[workspace]
+root = "{}"
+
+[[bots]]
+name = "Triage"
+watch = ["sentry"]
+"#,
+                root.display()
+            ),
+        )
+        .unwrap();
+
+        let config = load_workspace(&config_path).unwrap();
+        let sentry = config.watchers.sentry.expect("expected sentry watcher");
+        assert_eq!(sentry.org, "josh-holtz");
+        assert_eq!(sentry.project, "mostly-good-metrics");
+        assert_eq!(sentry.token, "sntryu_legacy");
     }
 
     #[test]
@@ -2359,6 +2692,8 @@ name = "Bee"
     fn default_bee() -> BeeConfig {
         BeeConfig {
             name: "TestBee".into(),
+            role: None,
+            color: None,
             provider: "claude".into(),
             model: "sonnet".into(),
             max_turns: 20,

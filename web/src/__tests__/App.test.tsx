@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -11,14 +12,20 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.location.hash = "";
   window.localStorage.clear();
+  Object.defineProperty(window, "innerWidth", { value: 1440, writable: true });
+  window.dispatchEvent(new Event("resize"));
 });
 
 function workspaceTab(name: string) {
-  return screen.getByRole("button", { name: `Open workspace ${name}` });
+  return screen.getAllByRole("button", { name: `Open workspace ${name}` })[0];
 }
 
 function remoteWorkspaceTab(name: string, remote: string) {
-  return screen.getByRole("button", { name: `Open workspace ${name} (${remote})` });
+  return screen.getAllByRole("button", { name: `Open workspace ${name} (${remote})` })[0];
+}
+
+function workerTitle(name: string) {
+  return screen.getAllByText(name)[0];
 }
 
 function botButton(name: string) {
@@ -28,8 +35,12 @@ function botButton(name: string) {
 async function renderAndSelectBot(name = "Main") {
   const user = userEvent.setup();
   render(<App />);
-  await waitFor(() => expect(botButton(name)).toBeInTheDocument());
-  await user.click(botButton(name));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
+  await user.click(screen.getByRole("button", { name: "Open Main chat" }));
+  if (name !== "Main") {
+    await waitFor(() => expect(botButton(name)).toBeInTheDocument());
+    await user.click(botButton(name));
+  }
   return user;
 }
 
@@ -85,10 +96,10 @@ describe("App", () => {
 
   it("calls markSeen on bot select", async () => {
     render(<App />);
-    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
     expect(api.markSeen).not.toHaveBeenCalled();
     const user = userEvent.setup();
-    await user.click(botButton("Main"));
+    await user.click(screen.getByRole("button", { name: "Open Main chat" }));
     await waitFor(() => {
       expect(api.markSeen).toHaveBeenCalledWith("apiari", "Main", undefined);
     });
@@ -105,8 +116,8 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
-    await user.click(botButton("Main"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Open Main chat" }));
     await waitFor(() => {
       expect(screen.getByText("No repos found")).toBeInTheDocument();
     });
@@ -129,12 +140,59 @@ describe("App", () => {
       expect(screen.queryByText("No repos found")).not.toBeInTheDocument();
     });
   });
+
+  it("opens the hidden signals debug page from the command palette", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Open command palette" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Open Signals Debug"));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Signals" })).toBeInTheDocument();
+      expect(screen.getByText("Debug surface")).toBeInTheDocument();
+    });
+  });
+
+  it("does not render the chat repo rail on tablet-width layouts", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+    window.dispatchEvent(new Event("resize"));
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Open Main chat" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("No repos found")).not.toBeInTheDocument();
+    });
+  });
+
+  it("uses the workspace drawer instead of a pinned left rail on tablet-width layouts", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+    window.dispatchEvent(new Event("resize"));
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Open workspace drawer" })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Workspace")).not.toBeInTheDocument();
+  });
 });
 
 describe("Bot switching", () => {
   it("calls getConversations with new bot", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Open Main chat" }));
     await waitFor(() => expect(botButton("Customer")).toBeInTheDocument());
     await user.click(botButton("Customer"));
     await waitFor(() => {
@@ -159,10 +217,10 @@ describe("Polling cancellation on bot switch", () => {
 
     const user = userEvent.setup();
     render(<App />);
-    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
 
     // Select Main bot — triggers initial load, getBotStatus gets stalePromise
-    await user.click(botButton("Main"));
+    await user.click(screen.getByRole("button", { name: "Open Main chat" }));
     await waitFor(() => expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument());
 
     // Switch to Customer bot before the delayed Main response resolves
@@ -193,7 +251,7 @@ describe("Workspace switching", () => {
     });
   });
 
-  it("auto-selects Main bot on mobile when switching workspaces", async () => {
+  it("shows the bot chooser on mobile when switching workspaces", async () => {
     Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
     window.dispatchEvent(new Event("resize"));
     const user = userEvent.setup();
@@ -201,7 +259,7 @@ describe("Workspace switching", () => {
     await waitFor(() => expect(workspaceTab("mgm")).toBeInTheDocument());
     await user.click(workspaceTab("mgm"));
     await waitFor(() => {
-      expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument();
+      expect(screen.getByText("Choose a bot")).toBeInTheDocument();
     });
     Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
   });
@@ -225,35 +283,259 @@ describe("Workspace switching", () => {
   });
 });
 
+describe("Mode architecture", () => {
+  it("opens the workers mode and loads worker detail in the inspector", async () => {
+    (api.getWorkers as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "common-sdk-fix",
+        branch: "swarm/common/fix-sdk",
+        status: "running",
+        agent: "codex",
+        pr_url: "https://example.com/pr/1",
+        pr_title: "Fix SDK mapping",
+        description: "Repair shared repo detection",
+        elapsed_secs: 125,
+        dispatched_by: "Main",
+      },
+    ]);
+    (api.getWorkerDetail as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      id: "common-sdk-fix",
+      branch: "swarm/common/fix-sdk",
+      status: "running",
+      agent: "codex",
+      pr_url: "https://example.com/pr/1",
+      pr_title: "Fix SDK mapping",
+      description: "Repair shared repo detection",
+      elapsed_secs: 125,
+      dispatched_by: "Main",
+      prompt: "Investigate repo slug resolution",
+      output: "Working through daemon/http.rs",
+      conversation: [],
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(api.getWorkers).toHaveBeenCalled());
+    const workspaceRail = screen.getByText("Workspace").closest("aside");
+    expect(workspaceRail).not.toBeNull();
+    await user.click(within(workspaceRail as HTMLElement).getAllByRole("button", { name: /^Workers/ })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Repair shared repo detection")).toBeInTheDocument();
+    });
+
+    await user.click(workerTitle("common-sdk-fix"));
+
+    await waitFor(() => {
+      expect(api.getWorkerDetail).toHaveBeenCalledWith("apiari", "common-sdk-fix", undefined);
+      expect(screen.getByText("Working through daemon/http.rs")).toBeInTheDocument();
+    });
+  });
+});
+
 describe("Mobile auto-select", () => {
-  it("auto-selects Main bot on mobile initial load without bot in hash", async () => {
+  it("shows the bot chooser on mobile initial load without a bot in the hash", async () => {
     window.location.hash = "";
     Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument();
+      expect(screen.getByText("Choose a bot")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Open bot Customer" }).length).toBeGreaterThan(0);
+      expect(screen.getAllByRole("button", { name: "Open bot Main" }).length).toBeGreaterThan(0);
+      expect(screen.getByText("Start here")).toBeInTheDocument();
+      expect(screen.getAllByText("2 unread").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Last note").length).toBeGreaterThan(0);
     });
     Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
   });
 
-  it("uses the bottom mode bar to switch into repos on mobile", async () => {
+  it("features the most recently active bot even when another bot has unread", async () => {
+    window.location.hash = "";
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    window.dispatchEvent(new Event("resize"));
+
+    const newer = new Date("2026-05-03T15:00:00Z").toISOString();
+    const older = new Date("2026-05-03T13:00:00Z").toISOString();
+    (api.getConversations as ReturnType<typeof vi.fn>).mockImplementation((_workspace: string, botName: string, limit?: number) => {
+      if (limit === 3) {
+        if (botName === "Main") {
+          return Promise.resolve([
+            { id: 9, workspace: "apiari", bot: "Main", role: "assistant", content: "things are fine", attachments: null, created_at: older },
+            { id: 10, workspace: "apiari", bot: "Main", role: "user", content: "sentry errors happened in checkout", attachments: null, created_at: newer },
+            { id: 11, workspace: "apiari", bot: "Main", role: "assistant", content: "recent triage update", attachments: null, created_at: newer },
+          ]);
+        }
+        if (botName === "Customer") {
+          return Promise.resolve([
+            { id: 7, workspace: "apiari", bot: "Customer", role: "assistant", content: "older unread reply", attachments: null, created_at: older },
+          ]);
+        }
+      }
+      return Promise.resolve([
+        { id: 1, workspace: "apiari", bot: botName, role: "assistant", content: "hello", attachments: null, created_at: older },
+      ]);
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Start here")).toBeInTheDocument();
+      expect(screen.getByText("Open Main")).toBeInTheDocument();
+      expect(screen.getByText("sentry errors happened in checkout")).toBeInTheDocument();
+    });
+
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  it("preserves the overview route on mobile when the hash already targets a workspace", async () => {
+    window.location.hash = "#/apiari";
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Continue")).toBeInTheDocument();
+      expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    });
+    expect(screen.queryByPlaceholderText(/Message Main/)).not.toBeInTheDocument();
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+  });
+
+  it("uses the bottom mode bar to switch into workers on mobile", async () => {
     window.location.hash = "";
     Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument();
+      expect(screen.getByText("Choose a bot")).toBeInTheDocument();
     });
-    expect(screen.queryByText("No repos found")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Workers" })).not.toBeInTheDocument();
 
     const mobileNav = screen.getByRole("navigation", { name: "Mobile workspace modes" });
     expect(mobileNav).toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole("button", { name: "Open Repos" }));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Open Workers" }));
 
     await waitFor(() => {
-      expect(screen.getByText("No repos found")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Workers" })).toBeInTheDocument();
     });
     Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+  });
+
+  it("restores the last chat subroute when returning to chat on mobile", async () => {
+    window.location.hash = "";
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    window.dispatchEvent(new Event("resize"));
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Choose a bot")).toBeInTheDocument();
+    });
+
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Open bot Customer" }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole("button", { name: "Open bot Customer" })[0]);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Customer").length).toBeGreaterThan(0);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open Workers" }));
+    await waitFor(() => {
+      expect(screen.getByText("Execution")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open Chat" }));
+    await waitFor(() => {
+      expect(screen.getAllByText("Customer").length).toBeGreaterThan(0);
+    });
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  it("double-tapping the active mobile chat tab resets chat to the bot chooser", async () => {
+    window.location.hash = "";
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    window.dispatchEvent(new Event("resize"));
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Choose a bot")).toBeInTheDocument();
+    });
+
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Open bot Customer" }).length).toBeGreaterThan(0));
+    await user.click(screen.getAllByRole("button", { name: "Open bot Customer" })[0]);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Customer").length).toBeGreaterThan(0);
+    });
+
+    const chatTab = screen.getByRole("button", { name: "Open Chat" });
+    await user.click(chatTab);
+    await user.click(chatTab);
+
+    await waitFor(() => {
+      expect(screen.getByText("Choose a bot")).toBeInTheDocument();
+    });
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  it("returns to the docs list root when leaving and returning to the docs tab on mobile", async () => {
+    window.location.hash = "";
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    window.dispatchEvent(new Event("resize"));
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Open Docs" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open Docs" }));
+    await waitFor(() => expect(screen.getByText("Setup Guide")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Back to document list" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Setup Guide"));
+
+    await waitFor(() => {
+      expect(api.getDoc).toHaveBeenCalledWith("apiari", "setup.md", undefined);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open Workers" }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Workers" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open Docs" }));
+    await waitFor(() => {
+      expect(screen.getByText("Setup Guide")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Delete setup.md" })).not.toBeInTheDocument();
+    });
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+    window.dispatchEvent(new Event("resize"));
+  });
+
+  it("hides the mobile mode bar while the workspace drawer is open", async () => {
+    window.location.hash = "";
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    window.dispatchEvent(new Event("resize"));
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("navigation", { name: "Mobile workspace modes" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open workspace drawer" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("navigation", { name: "Mobile workspace modes" })).not.toBeInTheDocument();
+    });
+    Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+    window.dispatchEvent(new Event("resize"));
   });
 });
 
@@ -299,7 +581,7 @@ describe("WebSocket message dedup", () => {
 
     // Should trigger getConversations fetch (not a direct append)
     await waitFor(() => {
-      expect(api.getConversations).toHaveBeenCalledWith("apiari", "Main", 30, undefined);
+      expect(api.getConversations).toHaveBeenCalledWith("apiari", "Main", 100, undefined);
     });
 
     // The new message should appear exactly once
@@ -437,9 +719,9 @@ describe("WebSocket message dedup", () => {
     render(<App />);
     await waitFor(() => expect(remoteWorkspaceTab("apiari", "staging")).toBeInTheDocument());
     await user.click(remoteWorkspaceTab("apiari", "staging"));
-    await waitFor(() => expect(botButton("Main")).toBeInTheDocument());
-    await user.click(botButton("Main"));
-    await waitFor(() => expect(api.getConversations).toHaveBeenCalledWith("apiari", "Main", 30, "staging"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open Main chat" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Open Main chat" }));
+    await waitFor(() => expect(api.getConversations).toHaveBeenCalledWith("apiari", "Main", 100, "staging"));
     (api.getConversations as ReturnType<typeof vi.fn>).mockClear();
 
     wsCallback({
@@ -619,10 +901,10 @@ describe("Worker lifecycle", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText("common-sdk-fix")).toBeInTheDocument();
+      expect(workerTitle("common-sdk-fix")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByText("common-sdk-fix"));
+    await user.click(workerTitle("common-sdk-fix"));
 
     await waitFor(() => {
       expect(api.getWorkerDetail).toHaveBeenCalledWith("apiari", "common-sdk-fix", undefined);
@@ -701,9 +983,9 @@ describe("Worker lifecycle", () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(screen.getByText("common-sdk-fix")).toBeInTheDocument();
+      expect(workerTitle("common-sdk-fix")).toBeInTheDocument();
     });
-    await user.click(screen.getByText("common-sdk-fix"));
+    await user.click(workerTitle("common-sdk-fix"));
 
     await waitFor(() => {
       expect(screen.getByText("running · common/fix-sdk")).toBeInTheDocument();
@@ -800,8 +1082,8 @@ describe("Worker lifecycle", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText("common-sdk-fix")).toBeInTheDocument());
-    await user.click(screen.getByText("common-sdk-fix"));
+    await waitFor(() => expect(workerTitle("common-sdk-fix")).toBeInTheDocument());
+    await user.click(workerTitle("common-sdk-fix"));
     await waitFor(() => expect(screen.getByText("Working through daemon/http.rs")).toBeInTheDocument());
 
     await new Promise((resolve) => setTimeout(resolve, 5200));
@@ -895,8 +1177,8 @@ describe("Worker lifecycle", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await waitFor(() => expect(screen.getByText("common-sdk-fix")).toBeInTheDocument());
-    await user.click(screen.getByText("common-sdk-fix"));
+    await waitFor(() => expect(workerTitle("common-sdk-fix")).toBeInTheDocument());
+    await user.click(workerTitle("common-sdk-fix"));
     await waitFor(() => expect(screen.getByText("Working through daemon/http.rs")).toBeInTheDocument());
 
     await new Promise((resolve) => setTimeout(resolve, 5200));

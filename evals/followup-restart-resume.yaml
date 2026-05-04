@@ -1,0 +1,22 @@
+name: followup-restart-resume
+surface: store + daemon
+purpose: Ensure followups remain durable and fire correctly after reopen or restart.
+setup:
+  - followup is created from a bot turn or persisted directly
+  - bot status and seen state exist in the same store
+trigger:
+  - persist followup
+  - reopen store or restart daemon
+  - advance time so followup becomes due
+expected:
+  persistence:
+    - followup remains pending after reopen
+    - seen checkpoints survive reopen
+    - bot status survives reopen
+  firing:
+    - due followup transitions to fired
+    - follow-through work is enqueued
+    - websocket followup event is emitted when applicable
+coverage_now:
+  - crates/apiari/src/buzz/signal/store.rs reopen tests
+  - crates/apiari/src/daemon/mod.rs followup dispatch tests

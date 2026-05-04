@@ -1,5 +1,5 @@
 .inputArea {
-  padding: 12px 20px 32px;
+  padding: var(--space-3) var(--space-5) 32px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   position: relative;
@@ -8,13 +8,13 @@
 .inputRow {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .attachBtn {
   background: none;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   padding: 0;
   font-size: 18px;
@@ -34,7 +34,7 @@
 .actionBtn {
   background: none;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   color: var(--text-faint);
   padding: 0;
   width: 44px;
@@ -115,7 +115,7 @@
 .voiceBarLabel {
   position: absolute;
   right: 12px;
-  font-size: 12px;
+  font-size: var(--font-size-meta);
   color: var(--text-faint);
   font-style: italic;
 }
@@ -137,8 +137,8 @@
   left: 20px;
   width: calc(100% - 40px);
   margin-bottom: 48px;
-  padding: 8px 12px;
-  font-size: 13px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-meta);
   color: var(--text-faint);
   font-style: italic;
   background: var(--bg-card);
@@ -151,7 +151,7 @@
 
 .countdown {
   display: inline-block;
-  margin-left: 8px;
+  margin-left: var(--space-2);
   width: 24px;
   height: 24px;
   line-height: 24px;
@@ -160,7 +160,7 @@
   background: var(--accent);
   color: var(--bg);
   font-weight: 700;
-  font-size: 13px;
+  font-size: var(--font-size-meta);
   font-style: normal;
   animation: countdown-fade 1s ease-in-out;
   vertical-align: middle;
@@ -173,8 +173,8 @@
 
 .confirmPrompt {
   display: block;
-  margin-top: 8px;
-  padding: 6px 12px;
+  margin-top: var(--space-2);
+  padding: 6px var(--space-3);
   background: var(--accent);
   color: var(--bg);
   font-weight: 700;
@@ -196,22 +196,22 @@
 }
 
 .transcribeStatus {
-  font-size: 12px;
+  font-size: var(--font-size-meta);
   color: var(--text-faint);
-  margin-top: 4px;
+  margin-top: var(--space-1);
   font-style: italic;
 }
 
 .transcribeError {
-  font-size: 12px;
+  font-size: var(--font-size-meta);
   color: #e53e3e;
   margin-top: 4px;
 }
 
 .queueIndicator {
-  font-size: 12px;
+  font-size: var(--font-size-meta);
   color: var(--accent);
-  margin-top: 4px;
+  margin-top: var(--space-1);
   font-style: italic;
 }
 
@@ -219,8 +219,8 @@
   flex: 1;
   background: none;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
   color: var(--text-strong);
   font-size: 16px;
   outline: none;
@@ -247,8 +247,8 @@
 
 .attachmentPreview {
   display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -269,7 +269,7 @@
 
 .attachmentName {
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: var(--font-size-meta);
   color: var(--text-faint);
   max-width: 120px;
   overflow: hidden;
@@ -292,4 +292,76 @@
   align-items: center;
   justify-content: center;
   line-height: 1;
+}
+
+@media (max-width: 768px) {
+  .inputArea {
+    padding: var(--space-2) var(--mobile-gutter) calc(env(safe-area-inset-bottom, 0px) + 10px);
+    background: rgba(13, 15, 18, 0.92);
+  }
+
+  .inputRow {
+    gap: var(--space-2);
+  }
+
+  .attachBtn,
+  .actionBtn {
+    width: 38px;
+    border-radius: var(--radius-sm);
+  }
+
+  .inputField {
+    min-height: 40px;
+    max-height: 120px;
+    padding: 10px var(--space-3);
+    font-size: 15px;
+    line-height: 1.35;
+    border-radius: var(--radius-sm);
+  }
+
+  .attachmentPreview {
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+
+  .attachmentThumb {
+    height: 40px;
+    max-width: 64px;
+  }
+
+  .attachmentName {
+    max-width: 88px;
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+
+  .voiceBar {
+    left: var(--mobile-gutter);
+    width: calc(100% - (var(--mobile-gutter) * 2));
+    height: 34px;
+  }
+
+  .voiceBarLabel {
+    font-size: 11px;
+  }
+
+  .partialText {
+    left: var(--mobile-gutter);
+    width: calc(100% - (var(--mobile-gutter) * 2));
+    margin-bottom: 42px;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .confirmPrompt {
+    margin-top: 6px;
+    padding: 5px 10px;
+    font-size: 13px;
+  }
+
+  .transcribeStatus,
+  .transcribeError,
+  .queueIndicator {
+    font-size: 11px;
+  }
 }

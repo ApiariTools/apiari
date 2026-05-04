@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from "react";
-import { Search, Smartphone } from "lucide-react";
+import { ChevronDown, Search, Smartphone } from "lucide-react";
 import type { Workspace } from "../types";
 import type { UsageData } from "../api";
 import styles from "./TopBar.module.css";
@@ -8,6 +8,7 @@ interface Props {
   workspaces: Workspace[];
   active: string;
   activeRemote?: string;
+  isMobile?: boolean;
   onSelect: (name: string, remote?: string) => void;
   onMenuToggle?: () => void;
   onOpenPalette?: () => void;
@@ -31,7 +32,17 @@ function dotTitle(p: { name: string; status: string; usage_percent: number | nul
   return t;
 }
 
-export function TopBar({ workspaces, active, activeRemote, onSelect, onMenuToggle, onOpenPalette, onToggleSimulator, usage }: Props) {
+export function TopBar({
+  workspaces,
+  active,
+  activeRemote,
+  isMobile,
+  onSelect,
+  onMenuToggle,
+  onOpenPalette,
+  onToggleSimulator,
+  usage,
+}: Props) {
   const showDots = usage?.installed && usage.providers.length > 0;
 
   const activeTabRef = useRef<HTMLButtonElement>(null);
@@ -46,10 +57,22 @@ export function TopBar({ workspaces, active, activeRemote, onSelect, onMenuToggl
 
   return (
     <div className={styles.bar}>
-      <button className={styles.hamburger} onClick={onMenuToggle}>
+      <button className={styles.hamburger} onClick={onMenuToggle} aria-label="Open workspace drawer">
         <span /><span /><span />
       </button>
       <div className={styles.logo}>hive</div>
+      <button
+        type="button"
+        className={styles.mobileWorkspace}
+        onClick={onMenuToggle}
+        aria-label={`Open workspace ${activeRemote ? `${active} (${activeRemote})` : active}`}
+      >
+        <span className={styles.mobileWorkspaceValue}>
+          {active}
+          {activeRemote ? <span className={styles.mobileRemoteBadge}>{activeRemote}</span> : null}
+          <ChevronDown size={14} className={styles.mobileWorkspaceChevron} />
+        </span>
+      </button>
       <div className={styles.tabScroll}>
         {workspaces.map((ws) => {
           const isActive = ws.name === active && ws.remote === activeRemote;
@@ -83,13 +106,15 @@ export function TopBar({ workspaces, active, activeRemote, onSelect, onMenuToggl
         </div>
       )}
 
-      <button
-        className={styles.searchBtn}
-        onClick={() => onToggleSimulator?.()}
-        aria-label="Toggle simulator"
-      >
-        <Smartphone size={16} />
-      </button>
+      {!isMobile ? (
+        <button
+          className={styles.searchBtn}
+          onClick={() => onToggleSimulator?.()}
+          aria-label="Toggle simulator"
+        >
+          <Smartphone size={16} />
+        </button>
+      ) : null}
       <button
         className={styles.searchBtn}
         onClick={() => onOpenPalette?.()}

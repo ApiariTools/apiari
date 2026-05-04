@@ -62,6 +62,9 @@ pub struct ResumeOptions {
     /// Model to use for the resumed session.
     pub model: Option<String>,
 
+    /// Image file paths to include as context.
+    pub images: Vec<PathBuf>,
+
     /// Enable fully autonomous mode.
     pub full_auto: bool,
 
@@ -179,6 +182,9 @@ impl ResumeOptions {
         }
         if let Some(ref model) = self.model {
             args.extend(["-m".to_owned(), model.clone()]);
+        }
+        for image in &self.images {
+            args.extend(["--image".to_owned(), image.display().to_string()]);
         }
         if self.full_auto {
             args.push("--full-auto".to_owned());

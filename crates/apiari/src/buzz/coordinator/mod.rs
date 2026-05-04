@@ -594,6 +594,7 @@ impl Coordinator {
         &mut self,
         message: &str,
         bundle: DispatchBundle,
+        image_paths: &[PathBuf],
         on_event: F,
     ) -> Result<String>
     where
@@ -611,7 +612,7 @@ impl Coordinator {
                     message.to_string()
                 };
                 match self.provider.as_str() {
-                    "codex" => self.run_codex(&prompt, on_event).await,
+                    "codex" => self.run_codex(&prompt, image_paths, on_event).await,
                     "gemini" => self.run_gemini(&prompt, on_event).await,
                     _ => unreachable!(),
                 }
@@ -620,7 +621,12 @@ impl Coordinator {
     }
 
     /// Run a turn against the Codex CLI.
-    async fn run_codex<F>(&mut self, prompt: &str, mut on_event: F) -> Result<String>
+    async fn run_codex<F>(
+        &mut self,
+        prompt: &str,
+        image_paths: &[PathBuf],
+        mut on_event: F,
+    ) -> Result<String>
     where
         F: FnMut(CoordinatorEvent),
     {
@@ -641,6 +647,7 @@ impl Coordinator {
                     ResumeOptions {
                         session_id: Some(sid.clone()),
                         model: model.clone(),
+                        images: image_paths.to_vec(),
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
@@ -653,6 +660,7 @@ impl Coordinator {
                     prompt,
                     ExecOptions {
                         model,
+                        images: image_paths.to_vec(),
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
@@ -1051,14 +1059,16 @@ mod tests {
         let bundle = coord.prepare_dispatch(&store).unwrap();
         let mut first_events = Vec::new();
         let first_response = coord
-            .dispatch_message("Reply briefly.", bundle, |event| first_events.push(event))
+            .dispatch_message("Reply briefly.", bundle, &[], |event| {
+                first_events.push(event)
+            })
             .await
             .unwrap();
 
         let bundle = coord.prepare_dispatch(&store).unwrap();
         let mut second_events = Vec::new();
         let second_response = coord
-            .dispatch_message("Schedule a follow-up if needed.", bundle, |event| {
+            .dispatch_message("Schedule a follow-up if needed.", bundle, &[], |event| {
                 second_events.push(event)
             })
             .await
@@ -1606,7 +1616,7 @@ mod tests {
             coord.set_provider(provider.to_string());
             let bundle = coord.prepare_dispatch(&store).unwrap();
             let err = coord
-                .dispatch_message("Reply briefly.", bundle, |_| {})
+                .dispatch_message("Reply briefly.", bundle, &[], |_| {})
                 .await
                 .expect_err("provider should fail");
             assert!(coord.session_token().is_none());
@@ -1652,7 +1662,7 @@ mod tests {
             coord.set_provider(provider.to_string());
             let first_bundle = coord.prepare_dispatch(&store).unwrap();
             let first_response = coord
-                .dispatch_message("Reply with OK and nothing else.", first_bundle, |_| {})
+                .dispatch_message("Reply with OK and nothing else.", first_bundle, &[], |_| {})
                 .await
                 .unwrap();
             let normalized = first_response
@@ -1674,6 +1684,7 @@ mod tests {
                 .dispatch_message(
                     "Respond with exactly one follow-up marker and no prose: [FOLLOWUP: 1h | Check CI status again]",
                     second_bundle,
+                    &[],
                     |_| {},
                 )
                 .await

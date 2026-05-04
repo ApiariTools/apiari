@@ -133,6 +133,18 @@ npx tsc --noEmit   # type check
 npx vitest run     # tests
 ```
 
+## Documentation
+
+- [Getting Started](docs/getting-started.md)
+- [Testing Doctrine](docs/testing.md)
+- [Architecture](docs/architecture.md)
+- [UI Architecture](docs/ui-architecture.md)
+- [Design System](docs/design-system.md)
+- [UI Primitives](docs/ui-primitives.md)
+- [UI Component Map](docs/ui-component-map.md)
+- [Web Contract](docs/web-contract.md)
+- [Scenario Evals](evals/README.md)
+
 ## Architecture
 
 Rust axum daemon serves the API and a bundled React SPA. SQLite (WAL mode) stores conversations, sessions, bot status, and unread tracking. A WebSocket endpoint pushes real-time updates to the frontend.

@@ -503,6 +503,24 @@ test.describe("apiari web", () => {
     await expect(page.getByPlaceholder("Message Main...")).toBeVisible();
   });
 
+  test("shows an obvious mobile workspace switcher and lets you switch workspaces from the drawer", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installMockWebSocket(page);
+    await wireMockApi(page, defaultFixture());
+    await page.goto("/");
+
+    await expect(page.getByRole("button", { name: "Open workspace apiari" })).toBeVisible();
+    await page.getByRole("button", { name: "Open workspace apiari" }).click();
+    await expect(page.getByRole("button", { name: "Open workspace mgm" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Open workspace mgm" }).click();
+    await expect(page.getByRole("button", { name: "Open workspace mgm" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Chat" }).click();
+    await page.getByRole("button", { name: "Open bot Main" }).click();
+    await expect(page.getByText("MGM workspace is ready.")).toBeVisible();
+  });
+
   test("renders repo and worker state and opens worker detail from the sidebar", async ({ page }) => {
     await bootApp(page, defaultFixture());
 
@@ -519,6 +537,21 @@ test.describe("apiari web", () => {
     await expect(page.getByPlaceholder("Message worker...")).toBeVisible();
   });
 
+  test("opens the dedicated workers mode and keeps inspector content visible", async ({ page }) => {
+    await bootApp(page, defaultFixture());
+
+    await page.getByRole("button", { name: /^Workers/ }).first().click();
+    await expect(page.getByText("Execution")).toBeVisible();
+    await expect(page.getByText("Repair shared repo detection")).toBeVisible();
+
+    await page.getByText("common-sdk-fix").click();
+    await expect(page.getByText("Working through daemon/http.rs")).toBeVisible();
+    await expect(page.getByText("Investigate repo slug resolution")).not.toBeVisible();
+
+    await page.getByRole("button", { name: "Task" }).last().click();
+    await expect(page.getByText("Investigate repo slug resolution")).toBeVisible();
+  });
+
   test("opens docs and loads document content", async ({ page }) => {
     await bootApp(page, defaultFixture());
 
@@ -530,6 +563,44 @@ test.describe("apiari web", () => {
     await expect(page.getByRole("button", { name: "Switch to preview" })).toBeVisible();
   });
 
+  test("opens docs to the document list root on mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await installMockWebSocket(page);
+    await wireMockApi(page, defaultFixture());
+    await page.goto("/");
+
+    await page.getByRole("button", { name: "Open Docs" }).click();
+    await expect(page.getByText("Architecture")).toBeVisible();
+    await expect(page.getByText("Setup Guide")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Back to document list" })).not.toBeVisible();
+
+    await page.getByText("Setup Guide").click();
+    await expect(page.getByRole("button", { name: "Back to document list" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Delete setup-guide.md" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Workers" }).click();
+    await expect(page.getByText("common-sdk-fix")).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Docs" }).click();
+    await expect(page.getByText("Architecture")).toBeVisible();
+    await expect(page.getByText("Setup Guide")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Back to document list" })).not.toBeVisible();
+  });
+
+  test("keeps desktop docs behavior with a selected document visible", async ({ page }) => {
+    await bootApp(page, defaultFixture());
+
+    await page.getByRole("button", { name: "Docs" }).click();
+    await page.getByText("Setup Guide").click();
+    await expect(page.getByRole("button", { name: "Delete setup-guide.md" })).toBeVisible();
+
+    await page.getByRole("button", { name: /^Workers/ }).first().click();
+    await expect(page.getByText("Repair shared repo detection")).toBeVisible();
+
+    await page.getByRole("button", { name: "Docs" }).click();
+    await expect(page.getByRole("button", { name: "Delete setup-guide.md" })).toBeVisible();
+  });
+
   test("uses the mobile mode bar for single-column navigation", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await installMockWebSocket(page);
@@ -537,12 +608,12 @@ test.describe("apiari web", () => {
     await page.goto("/");
 
     await expect(page.getByRole("navigation", { name: "Mobile workspace modes" })).toBeVisible();
-    await expect(page.getByPlaceholder("Message Main...")).toBeVisible();
-
-    await page.getByRole("button", { name: "Open Repos" }).click();
-    await expect(page.getByText("common", { exact: true })).toBeVisible();
+    await expect(page.getByText("Continue a conversation")).toBeVisible();
 
     await page.getByRole("button", { name: "Open Workers" }).click();
     await expect(page.getByText("common-sdk-fix")).toBeVisible();
+
+    await page.getByRole("button", { name: "Open Chat" }).click();
+    await expect(page.getByRole("button", { name: "Open bot Main" })).toBeVisible();
   });
 });

@@ -1,0 +1,26 @@
+name: chat-main-compat
+surface: daemon + web
+purpose: Keep the default chat path stable across legacy and current coordinator naming.
+setup:
+  - workspace has a primary coordinator
+  - legacy state may refer to that coordinator as Bee
+trigger:
+  - open workspace chat for Main
+  - send a user message
+expected:
+  status_flow:
+    - thinking
+    - streaming
+    - idle
+  compatibility:
+    - Main resolves to the primary coordinator
+    - legacy Bee-scoped conversation history remains visible from Main
+  persistence:
+    - user message is stored
+    - assistant message or provider error is stored
+  transport:
+    - websocket emits message and bot_status events
+coverage_now:
+  - crates/apiari/src/daemon/http.rs tests
+  - crates/apiari/src/daemon/mod.rs web chat tests
+  - web/src/__tests__/App.test.tsx

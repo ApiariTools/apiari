@@ -96,3 +96,16 @@ export interface ResearchTask {
   completed_at: string | null;
   output_file: string | null;
 }
+
+export interface Signal {
+  id: number;
+  workspace: string;
+  source: string;
+  title: string;
+  severity: string;
+  status: string;
+  url: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at: string | null;
+}

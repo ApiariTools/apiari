@@ -1,31 +1,16 @@
-.panel {
-  width: 320px;
-  border-left: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  overflow-y: auto;
-  padding: 20px 0;
-}
-
-.title {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  padding: 0 20px 16px;
-}
-
 .card {
-  padding: 16px 20px;
-  border-top: 1px solid var(--border);
+  padding: 16px 18px;
+  margin: 0 14px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 18px;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.1s, border-color 0.1s, transform 0.1s;
+  background: var(--shell-surface);
 }
 
 .card:hover {
-  background: var(--bg-card);
+  border-color: rgba(245, 197, 66, 0.24);
+  transform: translateY(-1px);
 }
 
 .top {
@@ -101,33 +86,9 @@
   }
 }
 
-.backdrop {
-  display: none;
-}
-
 @media (max-width: 768px) {
-  .backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 99;
-  }
-  .panel {
-    width: 100%;
-    border-left: none;
-    padding-bottom: 88px;
-  }
-
-  .mobileOpen {
-    display: flex;
-    position: fixed;
-    right: 0;
-    top: 48px;
-    bottom: 0;
-    z-index: 100;
-    background: var(--bg);
-    width: 280px;
-    border-left: 1px solid var(--border);
+  .card {
+    margin: 0 var(--mobile-gutter) 10px;
+    padding: 15px 15px 14px;
   }
 }

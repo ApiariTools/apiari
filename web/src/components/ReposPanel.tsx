@@ -1,5 +1,8 @@
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import type { Repo, ResearchTask } from "../types";
+import { EmptyState } from "../primitives/EmptyState";
+import { StatusBadge } from "../primitives/StatusBadge";
+import { ToolPanel } from "../primitives/ToolPanel";
 import styles from "./ReposPanel.module.css";
 
 interface Props {
@@ -16,12 +19,12 @@ function branchName(branch: string): string {
 
 export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, onClose }: Props) {
   return (
-    <>
-      {mobileOpen && (
-        <div className={styles.backdrop} onClick={onClose} />
-      )}
-      <div className={`${styles.panel} ${mobileOpen ? styles.mobileOpen : ""}`}>
-        <div className={styles.title}>Repos</div>
+    <ToolPanel
+      title="Workspace repos"
+      subtitle="Branch health, active workers, and research outputs tied to the workspace."
+      mobileOpen={mobileOpen}
+      onClose={onClose}
+    >
         {repos.map((repo) => (
           <div key={repo.path} className={styles.repoRow}>
             <div className={styles.repoHeader}>
@@ -32,7 +35,7 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
               <span className={styles.repoName}>{repo.name}</span>
               <span className={styles.repoBranch}>{repo.branch}</span>
               {!repo.is_clean && (
-                <span className={styles.dirtyBadge}>modified</span>
+                <StatusBadge tone="accent">modified</StatusBadge>
               )}
             </div>
             {repo.workers.length > 0 && (
@@ -59,7 +62,7 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
                       <span className={styles.agentBadge} data-agent={w.agent.split(/[- ]/)[0].toLowerCase()}>
                         {w.agent}
                       </span>
-                      {w.pr_url && <span className={styles.prBadge}>PR</span>}
+                      {w.pr_url && <StatusBadge tone="accent">PR</StatusBadge>}
                       {w.review_state && (
                         <span className={styles.reviewBadge} data-state={w.review_state.toLowerCase()}>
                           {w.review_state === "APPROVED" ? "Approved" :
@@ -86,9 +89,14 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
           </div>
         ))}
         {repos.length === 0 && (
-          <div className={styles.empty}>No repos found</div>
+          <EmptyState
+            title="No repos found"
+            body="This workspace is not exposing any repositories yet."
+          />
         )}
-        <div className={styles.title} style={{ marginTop: 16 }}>Research</div>
+        <div className={styles.sectionDivider} />
+        <div className={styles.sectionTitle}>Research outputs</div>
+        <div className={styles.sectionSubtitle}>Long-running research tasks attached to this workspace.</div>
         {researchTasks && researchTasks.length > 0 ? (
           researchTasks.map((task) => (
             <div key={task.id} className={styles.repoRow}>
@@ -110,7 +118,6 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
         ) : (
           <div className={styles.emptyHint}>Use /research &lt;topic&gt; to start</div>
         )}
-      </div>
-    </>
+    </ToolPanel>
   );
 }

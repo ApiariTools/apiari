@@ -1,5 +1,6 @@
 mod buzz;
 mod config;
+mod config_migrate;
 mod config_set;
 mod config_validate;
 mod daemon;
@@ -119,6 +120,12 @@ enum ConfigCommand {
         #[arg(long)]
         workspace: Option<String>,
     },
+    /// Migrate workspace configs to the current schema
+    Migrate {
+        /// Workspace name (default: migrate all)
+        #[arg(long)]
+        workspace: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -228,6 +235,12 @@ async fn main() -> Result<()> {
             }
             ConfigCommand::Validate { workspace } => {
                 let code = config_validate::run(workspace.as_deref())?;
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            ConfigCommand::Migrate { workspace } => {
+                let code = config_migrate::run(workspace.as_deref())?;
                 if code != 0 {
                     std::process::exit(code);
                 }

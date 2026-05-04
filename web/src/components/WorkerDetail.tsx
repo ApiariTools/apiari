@@ -16,6 +16,7 @@ interface Props {
   workspace: string;
   remote?: string;
   onBack: () => void;
+  showBack?: boolean;
 }
 
 function branchName(branch: string): string {
@@ -29,7 +30,7 @@ function formatTime(iso: string): string {
   return new Date(normalized).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-export function WorkerDetail({ worker, detail, workspace, remote, onBack }: Props) {
+export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBack = true }: Props) {
   const [sending, setSending] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>("output");
   const [diffContent, setDiffContent] = useState<string | null | undefined>(undefined);
@@ -102,7 +103,7 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack }: Prop
       <div className={styles.info}>
         {/* Header with back, title, status, actions */}
         <div className={styles.infoHeader}>
-          <button className={styles.back} onClick={onBack}>&larr;</button>
+          {showBack ? <button className={styles.back} onClick={onBack}>&larr;</button> : null}
           <div className={styles.headerMid}>
             <div className={styles.titleRow}>
               <span className={styles.title}>{worker.id}</span>

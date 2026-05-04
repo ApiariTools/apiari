@@ -1,10 +1,15 @@
+import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, BellRing, BookOpen, Bot, FolderGit2, Sparkles, Wrench } from "lucide-react";
 import type { Bot as BotType, Followup, Repo, ResearchTask, Worker } from "../types";
 import type { WorkspaceMode } from "../consoleConfig";
+import * as api from "../api";
+import { ObjectRow } from "../primitives/ObjectRow";
+import { StatusBadge } from "../primitives/StatusBadge";
 import styles from "./OverviewPanel.module.css";
 
 interface Props {
   workspace: string;
+  remote?: string;
   bots: BotType[];
   workers: Worker[];
   repos: Repo[];
@@ -15,6 +20,7 @@ interface Props {
   onSelectBot: (name: string) => void;
   onSelectWorker: (id: string) => void;
   onOpenMode: (mode: WorkspaceMode) => void;
+  showHero?: boolean;
 }
 
 function statusLabel(workers: Worker[]) {
@@ -26,8 +32,23 @@ function statusLabel(workers: Worker[]) {
   return "No active workers";
 }
 
+function relativeTimeLabel(iso: string) {
+  const deltaMinutes = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (deltaMinutes < 60) return `${deltaMinutes}m`;
+  const hours = Math.round(deltaMinutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  return `${days}d`;
+}
+
+function previewLabel(content?: string | null) {
+  if (!content) return "Unread conversation";
+  return content.length > 84 ? `${content.slice(0, 84).trimEnd()}…` : content;
+}
+
 export function OverviewPanel({
   workspace,
+  remote,
   bots,
   workers,
   repos,
@@ -38,31 +59,108 @@ export function OverviewPanel({
   onSelectBot,
   onSelectWorker,
   onOpenMode,
+  showHero = true,
 }: Props) {
+  const [latestUnreadByBot, setLatestUnreadByBot] = useState<Record<string, { content: string; created_at: string } | null>>({});
   const pendingFollowups = followups.filter((f) => f.status === "pending");
   const runningWorkers = workers.filter((w) => w.status === "running" || w.status === "active" || w.status === "waiting");
   const dirtyRepos = repos.filter((r) => !r.is_clean);
   const activeResearch = researchTasks.filter((task) => task.status === "running");
+  const unreadBots = useMemo(() => bots
+    .filter((bot) => (unread[bot.name] ?? 0) > 0)
+    .sort((a, b) => (unread[b.name] ?? 0) - (unread[a.name] ?? 0)), [bots, unread]);
+  const nextWorker = runningWorkers[0];
+  const nextFollowup = pendingFollowups.slice().sort((a, b) => a.fires_at.localeCompare(b.fires_at))[0];
+  const continueBot = [...unreadBots]
+    .filter((bot) => latestUnreadByBot[bot.name]?.created_at)
+    .sort((a, b) => (latestUnreadByBot[b.name]?.created_at ?? "").localeCompare(latestUnreadByBot[a.name]?.created_at ?? ""))[0]
+    ?? unreadBots[0]
+    ?? bots.find((bot) => bot.name === primaryBot)
+    ?? bots[0];
+
+  useEffect(() => {
+    let cancelled = false;
+    const targets = Array.from(new Set([continueBot?.name, ...unreadBots.map((bot) => bot.name)].filter(Boolean))) as string[];
+    if (targets.length === 0) {
+      setLatestUnreadByBot({});
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    Promise.all(
+      targets.map(async (botName) => {
+        try {
+          const messages = await api.getConversations(workspace, botName, 1, remote);
+          const latest = messages[messages.length - 1];
+          return [botName, latest ? { content: latest.content, created_at: latest.created_at } : null] as const;
+        } catch {
+          return [botName, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) {
+        setLatestUnreadByBot(Object.fromEntries(entries));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace, remote, continueBot?.name, unreadBots]);
+
+  const continueMessage = continueBot ? latestUnreadByBot[continueBot.name] : null;
+
+  const continueActions = [
+    continueBot
+      ? {
+          key: `bot-${continueBot.name}`,
+          title: continueMessage ? previewLabel(continueMessage.content) : `Continue ${continueBot.name}`,
+          meta: continueMessage
+            ? `${continueBot.name} · ${relativeTimeLabel(continueMessage.created_at)}`
+            : `${continueBot.name}${unread[continueBot.name] ? ` · ${unread[continueBot.name]} unread` : ""}${continueBot.role ? ` · ${continueBot.role}` : ""}`,
+          action: () => onSelectBot(continueBot.name),
+        }
+      : null,
+    nextWorker
+      ? {
+          key: `worker-${nextWorker.id}`,
+          title: `Review ${nextWorker.id}`,
+          meta: `${nextWorker.status} · ${nextWorker.branch.replace(/^swarm\//, "")}`,
+          action: () => onSelectWorker(nextWorker.id),
+        }
+      : null,
+    nextFollowup
+      ? {
+          key: `followup-${nextFollowup.id}`,
+          title: nextFollowup.action,
+          meta: `${nextFollowup.bot} · due in ${relativeTimeLabel(nextFollowup.fires_at)}`,
+          action: () => onSelectBot(nextFollowup.bot),
+        }
+      : null,
+  ].filter(Boolean) as Array<{ key: string; title: string; meta: string; action: () => void }>;
 
   return (
     <div className={styles.page}>
-      <header className={styles.hero}>
-        <div>
-          <div className={styles.eyebrow}>Workspace control room</div>
-          <h1 className={styles.title}>{workspace}</h1>
-          <p className={styles.summary}>
-            Make bots, workers, repos, docs, and follow-ups the primary objects. Chat stays available, but the workspace leads.
-          </p>
-        </div>
-        <div className={styles.heroActions}>
-          <button className={styles.primaryAction} onClick={() => onSelectBot(primaryBot)}>
-            Open {primaryBot} chat
-          </button>
-          <button className={styles.secondaryAction} onClick={() => onOpenMode("workers")}>
-            Review workers
-          </button>
-        </div>
-      </header>
+      {showHero ? (
+        <header className={styles.hero}>
+          <div>
+            <div className={styles.eyebrow}>Workspace control room</div>
+            <h1 className={styles.title}>{workspace}</h1>
+            <p className={styles.summary}>
+              Make the next action obvious: continue a conversation, review worker output, or start a fresh task.
+            </p>
+          </div>
+          <div className={styles.heroActions}>
+            <button className={styles.primaryAction} onClick={() => continueBot && onSelectBot(continueBot.name)}>
+              {continueBot ? `Continue ${continueBot.name}` : "Open chat"}
+            </button>
+            <button className={styles.secondaryAction} onClick={() => onOpenMode("workers")}>
+              Review workers
+            </button>
+          </div>
+        </header>
+      ) : null}
 
       <section className={styles.metricGrid}>
         <button className={styles.metricCard} onClick={() => onOpenMode("chat")}>
@@ -77,17 +175,17 @@ export function OverviewPanel({
           <strong className={styles.metricValue}>{workers.length}</strong>
           <span className={styles.metricMeta}>{statusLabel(workers)}</span>
         </button>
+        <button className={styles.metricCard} onClick={() => onOpenMode("docs")}>
+          <BookOpen size={18} />
+          <span className={styles.metricLabel}>Docs</span>
+          <strong className={styles.metricValue}>{pendingFollowups.length}</strong>
+          <span className={styles.metricMeta}>{activeResearch.length} active research tasks</span>
+        </button>
         <button className={styles.metricCard} onClick={() => onOpenMode("repos")}>
           <FolderGit2 size={18} />
           <span className={styles.metricLabel}>Repos</span>
           <strong className={styles.metricValue}>{repos.length}</strong>
           <span className={styles.metricMeta}>{dirtyRepos.length} modified</span>
-        </button>
-        <button className={styles.metricCard} onClick={() => onOpenMode("docs")}>
-          <BookOpen size={18} />
-          <span className={styles.metricLabel}>Docs & Follow-ups</span>
-          <strong className={styles.metricValue}>{pendingFollowups.length}</strong>
-          <span className={styles.metricMeta}>{activeResearch.length} active research tasks</span>
         </button>
       </section>
 
@@ -95,30 +193,42 @@ export function OverviewPanel({
         <div className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
-              <div className={styles.cardTitle}>Immediate queue</div>
-              <div className={styles.cardSubtitle}>What likely needs attention next</div>
+              <div className={styles.cardTitle}>Needs attention</div>
+              <div className={styles.cardSubtitle}>Unread chats, due follow-ups, and active work</div>
             </div>
             <BellRing size={16} className={styles.cardIcon} />
           </div>
-          {pendingFollowups.length === 0 && activeResearch.length === 0 ? (
-            <div className={styles.empty}>No pending follow-ups or running research.</div>
+          {unreadBots.length === 0 && pendingFollowups.length === 0 && runningWorkers.length === 0 ? (
+            <div className={styles.empty}>Nothing urgent right now.</div>
           ) : (
             <div className={styles.list}>
-              {pendingFollowups.slice(0, 4).map((followup) => (
-                <div key={followup.id} className={styles.listRow}>
-                  <div>
-                    <div className={styles.rowTitle}>{followup.action}</div>
-                    <div className={styles.rowMeta}>{followup.bot} · due {new Date(followup.fires_at).toLocaleString()}</div>
-                  </div>
-                </div>
+              {unreadBots.slice(0, 3).map((bot) => (
+                <ObjectRow
+                  key={`unread-${bot.name}`}
+                  onClick={() => onSelectBot(bot.name)}
+                  ariaLabel={`Open unread bot ${bot.name}`}
+                  title={previewLabel(latestUnreadByBot[bot.name]?.content)}
+                  meta={`${bot.name} · ${unread[bot.name]} unread${latestUnreadByBot[bot.name]?.created_at ? ` · ${relativeTimeLabel(latestUnreadByBot[bot.name]!.created_at)}` : ""}`}
+                  right={<StatusBadge tone="accent">unread</StatusBadge>}
+                />
               ))}
-              {activeResearch.slice(0, 3).map((task) => (
-                <div key={task.id} className={styles.listRow}>
-                  <div>
-                    <div className={styles.rowTitle}>{task.topic}</div>
-                    <div className={styles.rowMeta}>Research running</div>
-                  </div>
-                </div>
+              {pendingFollowups.slice(0, 2).map((followup) => (
+                <ObjectRow
+                  key={followup.id}
+                  onClick={() => onSelectBot(followup.bot)}
+                  title={followup.action}
+                  meta={`${followup.bot} · due ${relativeTimeLabel(followup.fires_at)}`}
+                  right={<StatusBadge tone="accent">follow-up</StatusBadge>}
+                />
+              ))}
+              {runningWorkers.slice(0, 2).map((worker) => (
+                <ObjectRow
+                  key={`worker-${worker.id}`}
+                  onClick={() => onSelectWorker(worker.id)}
+                  title={worker.id}
+                  meta={`${worker.status} · ${worker.branch.replace(/^swarm\//, "")}`}
+                  right={<StatusBadge tone="success">worker</StatusBadge>}
+                />
               ))}
             </div>
           )}
@@ -127,25 +237,26 @@ export function OverviewPanel({
         <div className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
-              <div className={styles.cardTitle}>Bots</div>
-              <div className={styles.cardSubtitle}>Direct entry points into the workspace</div>
+              <div className={styles.cardTitle}>Continue</div>
+              <div className={styles.cardSubtitle}>The most likely next action</div>
             </div>
-            <Sparkles size={16} className={styles.cardIcon} />
+            <ArrowRight size={16} className={styles.cardIcon} />
           </div>
-          <div className={styles.list}>
-            {bots.map((bot) => (
-              <button key={bot.name} className={styles.actionRow} onClick={() => onSelectBot(bot.name)} aria-label={`Open overview bot ${bot.name}`}>
-                <div>
-                  <div className={styles.rowTitle}>{bot.name}</div>
-                  <div className={styles.rowMeta}>{bot.role || bot.provider || "Bot"}</div>
-                </div>
-                <div className={styles.rowRight}>
-                  {unread[bot.name] ? <span className={styles.badge}>{unread[bot.name]} unread</span> : null}
-                  <ArrowRight size={14} />
-                </div>
-              </button>
-            ))}
-          </div>
+          {continueActions.length === 0 ? (
+            <div className={styles.empty}>No active chat, worker, or follow-up to resume.</div>
+          ) : (
+            <div className={styles.list}>
+              {continueActions.map((entry) => (
+                <ObjectRow
+                  key={entry.key}
+                  title={entry.title}
+                  meta={entry.meta}
+                  onClick={entry.action}
+                  right={<ArrowRight size={14} />}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
@@ -153,8 +264,30 @@ export function OverviewPanel({
         <div className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
+              <div className={styles.cardTitle}>Start something</div>
+              <div className={styles.cardSubtitle}>Best entry points for new work</div>
+            </div>
+            <Sparkles size={16} className={styles.cardIcon} />
+          </div>
+          <div className={styles.list}>
+            {bots.map((bot) => (
+              <ObjectRow
+                key={bot.name}
+                onClick={() => onSelectBot(bot.name)}
+                ariaLabel={`Start with bot ${bot.name}`}
+                title={bot.name}
+                meta={bot.description || bot.role || bot.provider || "Bot"}
+                right={<ArrowRight size={14} />}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className={styles.card}>
+          <div className={styles.cardHeader}>
+            <div>
               <div className={styles.cardTitle}>Workers in flight</div>
-              <div className={styles.cardSubtitle}>Execution should be visible without opening chat</div>
+              <div className={styles.cardSubtitle}>Execution status without digging</div>
             </div>
             <Wrench size={16} className={styles.cardIcon} />
           </div>
@@ -163,26 +296,30 @@ export function OverviewPanel({
           ) : (
             <div className={styles.list}>
               {runningWorkers.slice(0, 4).map((worker) => (
-                <button key={worker.id} className={styles.actionRow} onClick={() => onSelectWorker(worker.id)}>
-                  <div>
-                    <div className={styles.rowTitle}>{worker.id}</div>
-                    <div className={styles.rowMeta}>{worker.status} · {worker.branch.replace(/^swarm\//, "")}</div>
-                  </div>
-                  <div className={styles.rowRight}>
-                    {worker.review_state ? <span className={styles.badge}>{worker.review_state}</span> : null}
-                    <ArrowRight size={14} />
-                  </div>
-                </button>
+                <ObjectRow
+                  key={worker.id}
+                  onClick={() => onSelectWorker(worker.id)}
+                  title={worker.id}
+                  meta={`${worker.status} · ${worker.branch.replace(/^swarm\//, "")}`}
+                  right={(
+                    <>
+                      {worker.review_state ? <StatusBadge tone="accent">{worker.review_state}</StatusBadge> : null}
+                      <ArrowRight size={14} />
+                    </>
+                  )}
+                />
               ))}
             </div>
           )}
         </div>
+      </section>
 
+      <section className={styles.columns}>
         <div className={styles.card}>
           <div className={styles.cardHeader}>
             <div>
               <div className={styles.cardTitle}>Repo state</div>
-              <div className={styles.cardSubtitle}>Operational health beats hidden sidebars</div>
+              <div className={styles.cardSubtitle}>Secondary context, not the main call to action</div>
             </div>
             <FolderGit2 size={16} className={styles.cardIcon} />
           </div>
@@ -191,15 +328,16 @@ export function OverviewPanel({
           ) : (
             <div className={styles.list}>
               {repos.slice(0, 5).map((repo) => (
-                <div key={repo.path} className={styles.listRow}>
-                  <div>
-                    <div className={styles.rowTitle}>{repo.name}</div>
-                    <div className={styles.rowMeta}>{repo.branch} · {repo.workers.length} workers</div>
-                  </div>
-                  <span className={`${styles.healthBadge} ${repo.is_clean ? styles.clean : styles.modified}`}>
-                    {repo.is_clean ? "clean" : "modified"}
-                  </span>
-                </div>
+                <ObjectRow
+                  key={repo.path}
+                  title={repo.name}
+                  meta={`${repo.branch} · ${repo.workers.length} workers`}
+                  right={(
+                    <StatusBadge tone={repo.is_clean ? "success" : "accent"}>
+                      {repo.is_clean ? "clean" : "modified"}
+                    </StatusBadge>
+                  )}
+                />
               ))}
             </div>
           )}

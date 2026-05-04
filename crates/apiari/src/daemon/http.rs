@@ -8,7 +8,7 @@ use std::{collections::HashMap, sync::Arc};
 use axum::{
     Json, Router,
     extract::{
-        Path, State, WebSocketUpgrade,
+        DefaultBodyLimit, Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::StatusCode,
@@ -84,6 +84,7 @@ pub enum WsUpdate {
         bot: String,
         role: String,
         content: String,
+        attachments: Option<String>,
         created_at: String,
     },
     /// A bot's live status changed.
@@ -138,7 +139,18 @@ pub struct WebChatRequest {
     pub workspace: String,
     pub bee: Option<String>,
     pub text: String,
+    pub attachments_json: Option<String>,
+    pub attachments: Vec<WebChatAttachment>,
     pub response_tx: mpsc::UnboundedSender<WebChatEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebChatAttachment {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub content_type: String,
+    #[serde(rename = "dataUrl")]
+    pub data_url: String,
 }
 
 #[derive(Debug)]
@@ -249,6 +261,10 @@ pub struct EdgeView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BeeConfigView {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     pub provider: String,
     pub model: String,
     pub max_turns: u32,
@@ -659,6 +675,10 @@ async fn handle_ws(mut socket: WebSocket, state: HttpState) {
 struct WorkspaceQuery {
     #[serde(default)]
     workspace: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    history: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -669,6 +689,8 @@ struct WorkspaceListItem {
 #[derive(Debug, Serialize)]
 struct BotListItem {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -735,7 +757,7 @@ struct WorkerDiffView {
 struct WorkspaceChatBody {
     message: String,
     #[serde(default)]
-    attachments: Option<Vec<serde_json::Value>>,
+    attachments: Option<Vec<WebChatAttachment>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -804,8 +826,28 @@ fn load_workspace_by_name(workspace: &str) -> Option<crate::config::Workspace> {
         .find(|ws| ws.name == workspace)
 }
 
+fn workspace_docs_dirs(config: &crate::config::WorkspaceConfig) -> Vec<std::path::PathBuf> {
+    vec![config.root.join(".apiari/docs"), config.root.join("docs")]
+}
+
 fn workspace_docs_dir(config: &crate::config::WorkspaceConfig) -> std::path::PathBuf {
-    config.root.join("docs")
+    workspace_docs_dirs(config)
+        .into_iter()
+        .find(|path| path.exists())
+        .unwrap_or_else(|| config.root.join(".apiari/docs"))
+}
+
+fn resolve_workspace_doc_path(
+    config: &crate::config::WorkspaceConfig,
+    filename: &str,
+) -> std::path::PathBuf {
+    for dir in workspace_docs_dirs(config) {
+        let path = dir.join(filename);
+        if path.exists() {
+            return path;
+        }
+    }
+    workspace_docs_dir(config).join(filename)
 }
 
 fn doc_title_from_filename(name: &str) -> String {
@@ -845,35 +887,41 @@ fn doc_updated_at(metadata: &std::fs::Metadata) -> String {
 }
 
 fn load_workspace_docs(config: &crate::config::WorkspaceConfig) -> Vec<DocView> {
-    let docs_dir = workspace_docs_dir(config);
     let mut docs = Vec::new();
-    let entries = match std::fs::read_dir(docs_dir) {
-        Ok(entries) => entries,
-        Err(_) => return docs,
-    };
+    let mut seen = std::collections::HashSet::new();
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-            continue;
+    for docs_dir in workspace_docs_dirs(config) {
+        let entries = match std::fs::read_dir(docs_dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|file| file.to_str()) else {
+                continue;
+            };
+            if !seen.insert(name.to_string()) {
+                continue;
+            }
+            let content = match std::fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(_) => continue,
+            };
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            docs.push(DocView {
+                name: name.to_string(),
+                title: doc_title_from_content(name, &content),
+                content: None,
+                updated_at: doc_updated_at(&metadata),
+            });
         }
-        let Some(name) = path.file_name().and_then(|file| file.to_str()) else {
-            continue;
-        };
-        let content = match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        let metadata = match entry.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
-        docs.push(DocView {
-            name: name.to_string(),
-            title: doc_title_from_content(name, &content),
-            content: None,
-            updated_at: doc_updated_at(&metadata),
-        });
     }
 
     docs.sort_by(|a, b| a.name.cmp(&b.name));
@@ -919,7 +967,8 @@ fn bot_items_for_workspace(config: &crate::config::WorkspaceConfig) -> Vec<BotLi
     bees.iter()
         .map(|bee| BotListItem {
             name: display_bee_name(&bees, bee),
-            role: bee.prompt.clone(),
+            color: bee.color.clone(),
+            role: bee.role.clone(),
             description: bee.prompt.clone(),
             provider: Some(bee.provider.clone()),
             model: (!bee.model.trim().is_empty()).then(|| bee.model.clone()),
@@ -1178,7 +1227,7 @@ async fn get_workspace_conversations(
                 bot: bot.clone(),
                 role: row.role,
                 content: row.content,
-                attachments: None,
+                attachments: row.attachments,
                 created_at: row.created_at,
             })
             .collect(),
@@ -1412,7 +1461,7 @@ async fn get_workspace_doc(
 ) -> Result<Json<DocView>, StatusCode> {
     let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
     let filename = sanitize_doc_name(&filename).ok_or(StatusCode::BAD_REQUEST)?;
-    let path = workspace_docs_dir(&ws.config).join(&filename);
+    let path = resolve_workspace_doc_path(&ws.config, &filename);
     let content = std::fs::read_to_string(&path).map_err(|_| StatusCode::NOT_FOUND)?;
     let metadata = std::fs::metadata(&path).map_err(|_| StatusCode::NOT_FOUND)?;
 
@@ -1442,7 +1491,7 @@ async fn delete_workspace_doc(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
     let filename = sanitize_doc_name(&filename).ok_or(StatusCode::BAD_REQUEST)?;
-    let path = workspace_docs_dir(&ws.config).join(filename);
+    let path = resolve_workspace_doc_path(&ws.config, &filename);
     std::fs::remove_file(path).map_err(|_| StatusCode::NOT_FOUND)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1532,23 +1581,20 @@ async fn send_workspace_chat(
     };
     let actual_bot = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
 
-    let message = if let Some(attachments) = body.attachments
-        && !attachments.is_empty()
-    {
-        format!(
-            "{}\n\n[attachments: {} file(s)]",
-            body.message,
-            attachments.len()
-        )
+    let attachments = body.attachments.unwrap_or_default();
+    let attachments_json = if attachments.is_empty() {
+        None
     } else {
-        body.message
+        serde_json::to_string(&attachments).ok()
     };
 
     let (response_tx, _response_rx) = mpsc::unbounded_channel::<WebChatEvent>();
     let req = WebChatRequest {
         workspace,
         bee: Some(actual_bot),
-        text: message,
+        text: body.message,
+        attachments_json,
+        attachments,
         response_tx,
     };
 
@@ -1571,6 +1617,8 @@ async fn get_bees(
                     .into_iter()
                     .map(|b| BeeConfigView {
                         name: b.name,
+                        role: b.role,
+                        color: b.color,
                         provider: b.provider,
                         model: b.model,
                         max_turns: b.max_turns,
@@ -1630,6 +1678,12 @@ async fn save_bees(
     for bee in &body {
         let mut table = toml_edit::Table::new();
         table["name"] = toml_edit::value(&bee.name);
+        if let Some(ref role) = bee.role {
+            table["role"] = toml_edit::value(role);
+        }
+        if let Some(ref color) = bee.color {
+            table["color"] = toml_edit::value(color);
+        }
         table["provider"] = toml_edit::value(&bee.provider);
         table["model"] = toml_edit::value(&bee.model);
         table["max_turns"] = toml_edit::value(bee.max_turns as i64);
@@ -2450,6 +2504,8 @@ struct SignalView {
     status: String,
     url: Option<String>,
     created_at: String,
+    updated_at: String,
+    resolved_at: Option<String>,
 }
 
 /// GET /api/signals?workspace=mgm&limit=50 — recent signals for the Briefing feed.
@@ -2458,16 +2514,22 @@ async fn get_signals(
     axum::extract::Query(q): axum::extract::Query<WorkspaceQuery>,
 ) -> Json<Vec<SignalView>> {
     let workspace = q.workspace.as_deref().unwrap_or(state.workspace.as_str());
+    let limit = q.limit.unwrap_or(50).min(200);
+    let include_history = q.history.unwrap_or(false);
 
     let store = match crate::buzz::signal::store::SignalStore::open(&state.db_path, workspace) {
         Ok(s) => s,
         Err(_) => return Json(vec![]),
     };
 
-    let signals = store.get_open_signals().unwrap_or_default();
+    let signals = if include_history {
+        store.get_signal_history(limit).unwrap_or_default()
+    } else {
+        store.get_open_signals().unwrap_or_default()
+    };
     let views: Vec<SignalView> = signals
         .iter()
-        .take(50)
+        .take(limit)
         .map(|s| SignalView {
             id: s.id,
             workspace: workspace.to_string(),
@@ -2477,6 +2539,8 @@ async fn get_signals(
             status: format!("{:?}", s.status),
             url: s.url.clone(),
             created_at: s.created_at.to_rfc3339(),
+            updated_at: s.updated_at.to_rfc3339(),
+            resolved_at: s.resolved_at.map(|value| value.to_rfc3339()),
         })
         .collect();
 
@@ -2581,6 +2645,8 @@ async fn chat_handler(
         workspace: body.workspace,
         bee: body.bee,
         text: body.text,
+        attachments_json: None,
+        attachments: vec![],
         response_tx,
     };
 
@@ -2797,6 +2863,8 @@ async fn workflow_run_handler(
                 workspace: body.workspace.clone(),
                 bee: body.bee.clone(),
                 text: step_message,
+                attachments_json: None,
+                attachments: vec![],
                 response_tx: resp_tx,
             };
 
@@ -2861,6 +2929,8 @@ async fn workflow_run_handler(
                 workspace: body.workspace.clone(),
                 bee: body.bee.clone(),
                 text: canvas_prompt,
+                attachments_json: None,
+                attachments: vec![],
                 response_tx: resp_tx,
             };
             if chat_tx.send(req).is_ok() {
@@ -3090,6 +3160,7 @@ pub async fn start_http_server(
         .route("/api/bees", get(get_bees).put(save_bees))
         .route("/api/ws", get(ws_handler))
         .route("/ws", get(ws_handler))
+        .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -3285,6 +3356,12 @@ mod tests {
         fs::write(docs_dir.join(name), content).unwrap();
     }
 
+    fn write_apiari_doc(root: &Path, name: &str, content: &str) {
+        let docs_dir = root.join(".apiari/docs");
+        fs::create_dir_all(&docs_dir).unwrap();
+        fs::write(docs_dir.join(name), content).unwrap();
+    }
+
     fn init_git_repo(path: &Path) {
         fs::create_dir_all(path).unwrap();
         Command::new("git")
@@ -3351,6 +3428,8 @@ mod tests {
     fn display_bee_name_maps_default_bee_to_main() {
         let bees = vec![crate::config::BeeConfig {
             name: "Bee".to_string(),
+            role: None,
+            color: None,
             provider: "claude".to_string(),
             model: "sonnet".to_string(),
             max_turns: 20,
@@ -3371,6 +3450,8 @@ mod tests {
         config.bees = Some(vec![
             crate::config::BeeConfig {
                 name: "Bee".to_string(),
+                role: None,
+                color: None,
                 provider: "claude".to_string(),
                 model: "sonnet".to_string(),
                 max_turns: 20,
@@ -3383,6 +3464,8 @@ mod tests {
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
+                role: None,
+                color: None,
                 provider: "codex".to_string(),
                 model: "gpt-5.3-codex".to_string(),
                 max_turns: 20,
@@ -3410,6 +3493,8 @@ mod tests {
         let mut config = test_workspace_config(std::path::PathBuf::from("/tmp/apiari"), vec![]);
         config.bees = Some(vec![crate::config::BeeConfig {
             name: "Claude".to_string(),
+            role: None,
+            color: None,
             provider: "claude".to_string(),
             model: "sonnet".to_string(),
             max_turns: 20,
@@ -3433,6 +3518,8 @@ mod tests {
         config.bees = Some(vec![
             crate::config::BeeConfig {
                 name: "Bee".to_string(),
+                role: Some("Coordinator".to_string()),
+                color: Some("#f5c542".to_string()),
                 provider: "claude".to_string(),
                 model: "sonnet".to_string(),
                 max_turns: 20,
@@ -3445,6 +3532,8 @@ mod tests {
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
+                role: Some("Code specialist".to_string()),
+                color: Some("#5b9bd5".to_string()),
                 provider: "codex".to_string(),
                 model: "gpt-5.3-codex".to_string(),
                 max_turns: 20,
@@ -3460,8 +3549,11 @@ mod tests {
         let items = bot_items_for_workspace(&config);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].name, "Main");
+        assert_eq!(items[0].role.as_deref(), Some("Coordinator"));
+        assert_eq!(items[0].color.as_deref(), Some("#f5c542"));
         assert_eq!(items[0].provider.as_deref(), Some("claude"));
         assert_eq!(items[1].name, "Codex");
+        assert_eq!(items[1].role.as_deref(), Some("Code specialist"));
         assert_eq!(items[1].provider.as_deref(), Some("codex"));
     }
 
@@ -3641,13 +3733,21 @@ model = "sonnet"
         let bee_scope =
             crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
         bee_scope
-            .save_message("assistant", "from bee scope", Some("system"), None, None)
+            .save_message(
+                "assistant",
+                "from bee scope",
+                None,
+                Some("system"),
+                None,
+                None,
+            )
             .unwrap();
         let root_scope = crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari");
         root_scope
             .save_message(
                 "assistant",
                 "from workspace scope",
+                None,
                 Some("system"),
                 None,
                 None,
@@ -3752,7 +3852,11 @@ model = "sonnet"
             State(state),
             Json(WorkspaceChatBody {
                 message: "hello".to_string(),
-                attachments: Some(vec![serde_json::json!({"name": "spec.txt"})]),
+                attachments: Some(vec![WebChatAttachment {
+                    name: "spec.txt".to_string(),
+                    content_type: "text/plain".to_string(),
+                    data_url: "data:text/plain;base64,c3BlYw==".to_string(),
+                }]),
             }),
         )
         .await
@@ -3763,8 +3867,9 @@ model = "sonnet"
         let request = chat_rx.recv().await.expect("chat request should be queued");
         assert_eq!(request.workspace, "apiari");
         assert_eq!(request.bee.as_deref(), Some("Bee"));
-        assert!(request.text.starts_with("hello"));
-        assert!(request.text.contains("[attachments: 1 file(s)]"));
+        assert_eq!(request.text, "hello");
+        assert_eq!(request.attachments.len(), 1);
+        assert!(request.attachments_json.is_some());
     }
 
     #[tokio::test]
@@ -4041,6 +4146,60 @@ state_path = "{}"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn docs_endpoints_prefer_apiari_docs_directory_when_present() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        write_apiari_doc(&root, "architecture.md", "# Apiari Architecture\n\nDetails");
+        write_doc(
+            &root,
+            "architecture.md",
+            "# Legacy Architecture\n\nOld details",
+        );
+
+        let docs = list_workspace_docs(Path("apiari".to_string()))
+            .await
+            .expect("docs list should resolve")
+            .0;
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0].title, "Apiari Architecture");
+
+        let architecture =
+            get_workspace_doc(Path(("apiari".to_string(), "architecture.md".to_string())))
+                .await
+                .expect("doc get should resolve")
+                .0;
+        assert_eq!(
+            architecture.content.as_deref(),
+            Some("# Apiari Architecture\n\nDetails")
+        );
+
+        let save = save_workspace_doc(
+            Path(("apiari".to_string(), "notes.md".to_string())),
+            Json(SaveDocBody {
+                content: "# Notes\n\nTodo".to_string(),
+            }),
+        )
+        .await
+        .expect("doc save should resolve")
+        .0;
+        assert_eq!(save.get("ok").and_then(|value| value.as_bool()), Some(true));
+        assert_eq!(
+            fs::read_to_string(root.join(".apiari/docs/notes.md")).unwrap(),
+            "# Notes\n\nTodo"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn docs_endpoints_reject_path_traversal() {
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
@@ -4098,12 +4257,12 @@ model = "gpt-5.3-codex"
         let main_scope =
             crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
         main_scope
-            .save_message("assistant", "main reply", Some("system"), None, None)
+            .save_message("assistant", "main reply", None, Some("system"), None, None)
             .unwrap();
         let codex_scope =
             crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Codex");
         codex_scope
-            .save_message("assistant", "codex reply", Some("system"), None, None)
+            .save_message("assistant", "codex reply", None, Some("system"), None, None)
             .unwrap();
 
         let unread_before = get_workspace_unread(Path("apiari".to_string())).await.0;
@@ -4156,7 +4315,7 @@ model = "sonnet"
             let main_scope =
                 crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
             main_scope
-                .save_message("assistant", "first reply", Some("system"), None, None)
+                .save_message("assistant", "first reply", None, Some("system"), None, None)
                 .unwrap();
         }
 
@@ -4173,7 +4332,14 @@ model = "sonnet"
             let main_scope =
                 crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
             main_scope
-                .save_message("assistant", "second reply", Some("system"), None, None)
+                .save_message(
+                    "assistant",
+                    "second reply",
+                    None,
+                    Some("system"),
+                    None,
+                    None,
+                )
                 .unwrap();
         }
 

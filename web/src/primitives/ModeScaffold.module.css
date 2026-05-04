@@ -1,0 +1,50 @@
+.shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.header {
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid var(--border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 65%),
+    rgba(17, 17, 17, 0.88);
+  backdrop-filter: blur(14px);
+  flex-shrink: 0;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.bodyScroll {
+  overflow: auto;
+}
+
+.headerHiddenMobile {
+}
+
+@media (max-width: 1200px) and (min-width: 769px) {
+  .header {
+    padding: 16px 20px 13px;
+  }
+}
+
+@media (max-width: 768px) {
+  .header {
+    padding: 10px var(--mobile-gutter) 8px;
+    border-bottom: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .headerHiddenMobile {
+    display: none;
+  }
+}

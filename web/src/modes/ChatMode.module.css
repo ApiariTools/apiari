@@ -1,0 +1,37 @@
+.page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 22%),
+    var(--bg);
+}
+
+.modeMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.providerChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text);
+  font-size: var(--font-size-micro);
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .page {
+    background: var(--bg);
+  }
+}

@@ -9,6 +9,8 @@ import * as api from "../api";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  Object.defineProperty(window, "innerWidth", { value: 1024, writable: true });
+  window.dispatchEvent(new Event("resize"));
 });
 
 describe("DocsPanel", () => {
@@ -17,6 +19,16 @@ describe("DocsPanel", () => {
     await waitFor(() => {
       expect(screen.getByText("Architecture")).toBeInTheDocument();
       expect(screen.getByText("Setup Guide")).toBeInTheDocument();
+    });
+  });
+
+  it("auto-selects the first doc and loads its content", async () => {
+    render(<DocsPanel workspace="test" />);
+    await waitFor(() => {
+      expect(api.getDoc).toHaveBeenCalledWith("test", "architecture.md", undefined);
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
     });
   });
 
@@ -74,5 +86,53 @@ describe("DocsPanel", () => {
       expect(api.saveDoc).toHaveBeenCalledWith("test", "new-doc.md", "", undefined);
     });
     promptSpy.mockRestore();
+  });
+
+  it("uses a focused list-to-doc flow on mobile", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    window.dispatchEvent(new Event("resize"));
+
+    const user = userEvent.setup();
+    render(<DocsPanel workspace="test" />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to document list" })).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Back to document list" }));
+    await waitFor(() => expect(screen.getByText("Setup Guide")).toBeInTheDocument());
+    await user.click(screen.getByText("Setup Guide"));
+
+    await waitFor(() => {
+      expect(api.getDoc).toHaveBeenCalledWith("test", "setup.md", undefined);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Back to document list" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Architecture")).not.toBeInTheDocument();
+  });
+
+  it("hides the editor when the mobile doc list is reopened", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 600, writable: true });
+    window.dispatchEvent(new Event("resize"));
+
+    const user = userEvent.setup();
+    render(<DocsPanel workspace="test" />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to document list" })).toBeInTheDocument());
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Back to document list" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Architecture")).toBeInTheDocument();
+    expect(screen.getByText("Setup Guide")).toBeInTheDocument();
+  });
+
+  it("restores an initial selected doc when remounted", async () => {
+    render(<DocsPanel workspace="test" initialSelectedDocName="setup.md" />);
+
+    await waitFor(() => {
+      expect(api.getDoc).toHaveBeenCalledWith("test", "setup.md", undefined);
+    });
   });
 });

@@ -4,6 +4,7 @@ import {
   ArrowUp,
   LayoutGrid,
   Package,
+  Radar,
   Wrench,
   MessageSquare,
   FileText,
@@ -34,6 +35,7 @@ const MODE_LABELS: Record<WorkspaceMode, string> = {
   workers: "Workers",
   repos: "Repos",
   docs: "Docs",
+  signals: "Signals",
 };
 
 const MODE_ICONS = {
@@ -42,6 +44,7 @@ const MODE_ICONS = {
   workers: Wrench,
   repos: Package,
   docs: FileText,
+  signals: Radar,
 };
 
 function moveMode(order: WorkspaceMode[], index: number, direction: -1 | 1) {

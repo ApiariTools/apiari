@@ -5,7 +5,10 @@
 
 use std::{fs::OpenOptions, io::Write, path::Path};
 
-use crate::config::{CURRENT_CONFIG_VERSION, WorkspaceConfig};
+use crate::config::{
+    CURRENT_CONFIG_VERSION, WorkspaceConfig, WorkspaceFileFormat, detect_workspace_file_format,
+    workspaces_dir,
+};
 
 /// Run the doctor check for a workspace. Returns the report text.
 ///
@@ -45,6 +48,18 @@ pub fn run(workspace_name: &str, config: &WorkspaceConfig, fix: bool) -> String 
             ));
             issues += 1;
         }
+    }
+
+    let config_path = workspaces_dir().join(format!("{workspace_name}.toml"));
+    if config_path.exists()
+        && let Ok(WorkspaceFileFormat::HiveCompat) = detect_workspace_file_format(&config_path)
+    {
+        lines.push(
+            "⚠️  workspace config is still using the old Hive-compatible schema — run `apiari config migrate --workspace ".to_string()
+                + workspace_name
+                + "`"
+        );
+        issues += 1;
     }
 
     // ── .apiari/ files ───────────────────────────────────────

@@ -1,0 +1,118 @@
+.page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 20%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 24%),
+    var(--bg);
+}
+
+.metaRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.metaCard {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 9px var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text);
+  font-size: var(--font-size-meta);
+}
+
+.metaLabel {
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: var(--font-size-tiny);
+}
+
+.metaValue {
+  color: var(--text-strong);
+  font-weight: 700;
+}
+
+.desktopFrame {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: var(--space-4);
+  padding: 18px var(--space-5) var(--space-5);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.leftRail,
+.rightPane {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%),
+    var(--bg-card);
+  overflow: hidden;
+  box-shadow: var(--shell-shadow);
+}
+
+.leftRail {
+  display: flex;
+}
+
+.rightPane {
+  display: flex;
+}
+
+.mobileFrame {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 1200px) and (min-width: 769px) {
+  .desktopFrame {
+    grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-4) 18px;
+  }
+}
+
+@media (max-width: 768px) {
+  .metaRow {
+    gap: 6px;
+    margin-top: var(--space-2);
+  }
+
+  .metaCard {
+    width: calc(50% - 3px);
+    justify-content: space-between;
+    border-radius: var(--radius-md);
+    padding: var(--space-2) 10px;
+  }
+
+  .metaCard:nth-child(n + 3) {
+    display: none;
+  }
+
+  .metaLabel {
+    font-size: 9px;
+  }
+
+  .metaValue {
+    font-size: var(--font-size-meta);
+  }
+
+  .mobileFrame {
+    background:
+      radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
+      var(--bg);
+  }
+}

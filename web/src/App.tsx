@@ -1,40 +1,21 @@
-import { Suspense, lazy } from "react";
-import { TopBar } from "./components/TopBar";
+import { AppShell } from "./shell/AppShell";
 import { CommandPalette } from "./components/CommandPalette";
-import { WorkspaceNav } from "./components/WorkspaceNav";
-import { ChatPanel } from "./components/ChatPanel";
 import { ReposPanel } from "./components/ReposPanel";
-import { WorkersPanel } from "./components/WorkersPanel";
-import { OverviewPanel } from "./components/OverviewPanel";
-import { MobileModeBar } from "./components/MobileModeBar";
 import { WorkspaceLayoutDialog } from "./components/WorkspaceLayoutDialog";
 import { useWorkspaceConsoleState } from "./useWorkspaceConsoleState";
+import styles from "./App.module.css";
+import { ChatMode } from "./modes/ChatMode";
+import { DocsMode } from "./modes/DocsMode";
+import { OverviewMode } from "./modes/OverviewMode";
+import { ReposMode } from "./modes/ReposMode";
+import { SignalsMode } from "./modes/SignalsMode";
+import { WorkersMode } from "./modes/WorkersMode";
+import { Suspense, lazy } from "react";
+import { ChatLanding } from "./components/ChatLanding";
 
-const WorkerDetail = lazy(() =>
-  import("./components/WorkerDetail").then((module) => ({ default: module.WorkerDetail })),
-);
-const DocsPanel = lazy(() =>
-  import("./components/DocsPanel").then((module) => ({ default: module.DocsPanel })),
-);
 const SimulatorPanel = lazy(() =>
   import("./components/SimulatorPanel").then((module) => ({ default: module.SimulatorPanel })),
 );
-
-function PanelFallback() {
-  return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--text-faint)",
-      }}
-    >
-      Loading panel...
-    </div>
-  );
-}
 
 export default function App() {
   const state = useWorkspaceConsoleState();
@@ -43,57 +24,59 @@ export default function App() {
     workers: state.workers.length || null,
     repos: state.repos.length || null,
   };
-  const showChatRepoRail = !state.isMobile && state.consoleProfile.showChatRepoRail;
+  const showChatRepoRail = !state.isTablet && state.consoleProfile.showChatRepoRail;
+  const showMobileModeBar =
+    state.isMobile
+    && !state.workerId
+    && !state.menuOpen
+    && !state.paletteOpen
+    && !state.layoutDialogOpen
+    && !state.simulatorOpen;
 
   let mainContent;
   if (state.mode === "docs") {
     mainContent = (
-      <Suspense fallback={<PanelFallback />}>
-        <DocsPanel workspace={state.workspace} remote={state.remote} />
-      </Suspense>
+      <DocsMode
+        workspace={state.workspace}
+        remote={state.remote}
+        docName={state.docName}
+        onSelectedDocNameChange={state.setDocName}
+        openListByDefaultOnMobile={state.isMobile}
+      />
+    );
+  } else if (state.mode === "signals") {
+    mainContent = (
+      <SignalsMode
+        workspace={state.workspace}
+        remote={state.remote}
+      />
     );
   } else if (state.mode === "workers") {
-    mainContent = state.workerId && state.selectedWorker ? (
-      <Suspense fallback={<PanelFallback />}>
-        <WorkerDetail
-          worker={state.selectedWorker}
-          detail={state.workerDetail}
-          workspace={state.workspace}
-          remote={state.remote}
-          onBack={state.handleBackFromWorker}
-        />
-      </Suspense>
-    ) : (
-      state.isMobile ? (
-        <WorkersPanel workers={state.workers} onSelectWorker={state.handleSelectWorker} />
-      ) : (
-        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-          <WorkersPanel workers={state.workers} onSelectWorker={state.handleSelectWorker} />
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "var(--text-faint)",
-            }}
-          >
-            Select a worker to inspect its live state.
-          </div>
-        </div>
-      )
+    mainContent = (
+      <WorkersMode
+        workspace={state.workspace}
+        remote={state.remote}
+        workers={state.workers}
+        workerId={state.workerId}
+        selectedWorker={state.selectedWorker}
+        workerDetail={state.workerDetail}
+        isMobile={state.isMobile}
+        onSelectWorker={state.handleSelectWorker}
+        onBackFromWorker={state.handleBackFromWorker}
+      />
     );
   } else if (state.mode === "repos") {
     mainContent = (
-      <ReposPanel
+      <ReposMode
         repos={state.reposWithFreshWorkers}
         researchTasks={state.researchTasks}
         onSelectWorker={state.handleSelectWorker}
       />
     );
   } else if (state.mode === "chat") {
-    mainContent = state.bot ? (
-      <ChatPanel
+    const chatSurface = state.bot ? (
+      <ChatMode
+        workspace={state.workspace}
         bot={state.bot}
         botDescription={state.selectedBot?.description}
         botProvider={state.selectedBot?.provider}
@@ -103,6 +86,9 @@ export default function App() {
         loading={state.loading}
         loadingStatus={state.loadingStatus}
         streamingContent={state.streamingContent}
+        hasOlderHistory={state.hasOlderHistory}
+        loadingOlderHistory={state.loadingOlderHistory}
+        onLoadOlderHistory={state.loadOlderHistory}
         onSend={state.handleSend}
         workerCount={state.workers.length}
         onWorkersToggle={() => state.handleSelectMode("workers")}
@@ -110,29 +96,38 @@ export default function App() {
         ttsVoice={state.ttsVoice}
         ttsSpeed={state.ttsSpeed}
         followups={state.followups.filter((followup) => followup.bot === state.bot)}
-        workspace={state.workspace}
         onFollowupCancelled={state.refreshFollowups}
+        bots={state.bots}
+        unread={state.unread}
+        onSelectBot={state.handleSelectBot}
       />
     ) : (
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexDirection: "column",
-          gap: 8,
-        }}
-      >
-        <div style={{ fontSize: 14, color: "var(--text-faint)" }}>
-          Select a bot to start chatting
+      <ChatLanding
+        workspace={state.workspace}
+        remote={state.remote}
+        bots={state.bots}
+        unread={state.unread}
+        onSelectBot={state.handleSelectBot}
+      />
+    );
+
+    mainContent = showChatRepoRail ? (
+      <div className={styles.chatWorkspaceLayout}>
+        <div className={styles.chatMain}>{chatSurface}</div>
+        <div className={styles.chatRail}>
+          <ReposPanel
+            repos={state.reposWithFreshWorkers}
+            researchTasks={state.researchTasks}
+            onSelectWorker={state.handleSelectWorker}
+          />
         </div>
       </div>
-    );
+    ) : chatSurface;
   } else {
     mainContent = (
-      <OverviewPanel
+      <OverviewMode
         workspace={state.workspace}
+        remote={state.remote}
         bots={state.bots}
         workers={state.workers}
         repos={state.reposWithFreshWorkers}
@@ -149,62 +144,30 @@ export default function App() {
 
   return (
     <>
-      <TopBar
+      <AppShell
         workspaces={state.workspaces}
-        active={state.workspace}
+        activeWorkspace={state.workspace}
         activeRemote={state.remote}
-        onSelect={state.handleSelectWorkspace}
+        onSelectWorkspace={state.handleSelectWorkspace}
         onMenuToggle={() => state.setMenuOpen((value) => !value)}
         onOpenPalette={() => state.setPaletteOpen(true)}
         onToggleSimulator={() => state.setSimulatorOpen((value) => !value)}
         usage={state.usage}
-      />
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", position: "relative" }}>
-        {state.menuOpen && (
-          <div className="drawer-backdrop" onClick={() => state.setMenuOpen(false)} />
-        )}
-        {(!state.isMobile || state.menuOpen) && (
-          <WorkspaceNav
-            modes={state.visibleModes}
-            activeMode={state.mode}
-            onSelectMode={state.handleSelectMode}
-            bots={state.bots}
-            activeBot={state.mode === "chat" ? state.bot : null}
-            onSelectBot={state.handleSelectBot}
-            workerCount={state.workers.length}
-            repoCount={state.repos.length}
-            pendingFollowupCount={state.pendingFollowupCount}
-            mobileOpen={state.menuOpen}
-            unread={state.unread}
-          />
-        )}
-        <div
-          style={{
-            flex: 1,
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-            paddingBottom: state.isMobile ? 88 : 0,
-          }}
-        >
+        isMobile={state.isMobile}
+        isTablet={state.isTablet}
+        menuOpen={state.menuOpen}
+        onCloseMenu={() => state.setMenuOpen(false)}
+        visibleModes={state.visibleModes}
+        activeMode={state.mode}
+        onSelectMode={state.handleSelectMode}
+        workerCount={state.workers.length}
+        repoCount={state.repos.length}
+        pendingFollowupCount={state.pendingFollowupCount}
+        showMobileModeBar={showMobileModeBar}
+        mobileBadgeCounts={mobileBadgeCounts}
+      >
           {mainContent}
-          {state.mode === "chat" && showChatRepoRail && (
-            <ReposPanel
-              repos={state.reposWithFreshWorkers}
-              researchTasks={state.researchTasks}
-              onSelectWorker={state.handleSelectWorker}
-            />
-          )}
-          {state.isMobile && !state.workerId && (
-            <MobileModeBar
-              modes={state.visibleModes}
-              activeMode={state.mode}
-              onSelectMode={state.handleSelectMode}
-              badgeCounts={mobileBadgeCounts}
-            />
-          )}
-        </div>
-      </div>
+      </AppShell>
       <Suspense fallback={null}>
         <SimulatorPanel
           open={state.simulatorOpen}
@@ -229,6 +192,7 @@ export default function App() {
         otherWorkspaceUnreads={state.otherWorkspaceUnreads}
         onStartResearch={() => state.handleStartResearch()}
         onOpenWorkspaceLayout={() => state.setLayoutDialogOpen(true)}
+        onOpenSignals={() => state.handleSelectMode("signals")}
       />
       <WorkspaceLayoutDialog
         open={state.layoutDialogOpen}

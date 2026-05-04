@@ -1,0 +1,24 @@
+name: worker-lifecycle-happy-path
+surface: orchestrator + daemon + web + tui
+purpose: Keep the main worker lifecycle visible and consistent across surfaces.
+setup:
+  - worker dispatch is available
+  - swarm state is resolvable from workspace config or workspace-root defaults
+trigger:
+  - dispatch worker
+  - worker enters running state
+  - worker reaches review or PR-linked state
+  - worker completes or closes
+expected:
+  lifecycle:
+    - running
+    - waiting_or_review
+    - pr_linked_or_closed
+  visibility:
+    - web worker list shows the worker
+    - worker detail remains inspectable while state changes
+    - tui selection remains valid as lists refresh
+coverage_now:
+  - crates/apiari/src/daemon/http.rs worker contract tests
+  - crates/apiari/src/ui/app.rs worker lifecycle tests
+  - web/src/__tests__/App.test.tsx

@@ -1,0 +1,23 @@
+name: workspace-mobile-shell
+surface: web
+purpose: Keep the workspace-first mobile shell usable as layout changes continue.
+setup:
+  - viewport is mobile sized
+  - at least one workspace and one primary bot exist
+trigger:
+  - load workspace overview directly
+  - switch modes via bottom bar
+  - open and close workspace drawer
+  - move through docs list-to-document flow
+expected:
+  navigation:
+    - explicit overview route does not redirect away
+    - bottom mode bar only appears in stable main-screen states
+    - drawer and bottom bar do not compete visually
+  docs:
+    - first doc auto-loads
+    - mobile docs can return to the list cleanly
+coverage_now:
+  - web/src/__tests__/App.test.tsx
+  - web/src/__tests__/DocsPanel.test.tsx
+  - web/e2e/app.spec.ts

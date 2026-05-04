@@ -67,14 +67,14 @@ describe("ReposPanel", () => {
     expect(screen.getByText("No repos found")).toBeInTheDocument();
   });
 
-  it("shows Repos title", () => {
+  it("shows workspace repos title", () => {
     render(<ReposPanel {...defaultProps} />);
-    expect(screen.getByText("Repos")).toBeInTheDocument();
+    expect(screen.getByText("Workspace repos")).toBeInTheDocument();
   });
 
-  it("always shows Research header even with no tasks", () => {
+  it("always shows research outputs header even with no tasks", () => {
     render(<ReposPanel {...defaultProps} />);
-    expect(screen.getByText("Research")).toBeInTheDocument();
+    expect(screen.getByText("Research outputs")).toBeInTheDocument();
     expect(screen.getByText("Use /research <topic> to start")).toBeInTheDocument();
   });
 
@@ -102,7 +102,7 @@ describe("ReposPanel", () => {
       },
     ];
     render(<ReposPanel {...defaultProps} researchTasks={tasks} />);
-    expect(screen.getByText("Research")).toBeInTheDocument();
+    expect(screen.getByText("Research outputs")).toBeInTheDocument();
     expect(screen.getByText("auth patterns")).toBeInTheDocument();
     expect(screen.getByText("caching strategies")).toBeInTheDocument();
     expect(screen.getByText("caching.md")).toBeInTheDocument();

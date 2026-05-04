@@ -1,0 +1,21 @@
+name: provider-parity-basic
+surface: coordinator + provider adapters
+purpose: Keep Claude, Codex, and Gemini aligned on visible behavior without requiring identical prompt bytes.
+setup:
+  - provider adapter is available
+  - scenario can run in mocked mode and optional real-provider smoke mode
+trigger:
+  - run a first-turn prompt
+  - run a second-turn or resumed prompt
+expected:
+  normalized_outcome:
+    - assistant produces a reply or normalized provider error
+    - usage events are parsed
+    - followup markers survive normalization
+    - session continuation behaves consistently
+  non_goals:
+    - exact wording match
+    - exact stream chunk match
+coverage_now:
+  - crates/apiari/src/buzz/coordinator/mod.rs parity tests
+  - opt-in real-provider smoke test

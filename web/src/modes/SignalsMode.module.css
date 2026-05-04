@@ -1,0 +1,127 @@
+.page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-6);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 10%, transparent), transparent 26%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-elevated) 96%, transparent), var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 24px;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+}
+
+.cardTop {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.titleWrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sourceRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sourceIcon {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.source {
+  color: var(--text-dim);
+  font-size: var(--font-size-meta);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.title {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: var(--font-size-title);
+  line-height: 1.25;
+}
+
+.rightMeta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.time {
+  color: var(--text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.status {
+  color: var(--text);
+  font-size: var(--font-size-meta);
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: var(--font-size-meta);
+  font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: var(--space-4) var(--mobile-gutter) calc(var(--mobile-bar-height) + var(--space-4));
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .cardTop {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .rightMeta {
+    align-items: flex-start;
+  }
+}

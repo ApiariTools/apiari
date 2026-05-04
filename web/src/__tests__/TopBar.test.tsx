@@ -13,16 +13,16 @@ describe("TopBar", () => {
 
   it("renders all workspace tabs", () => {
     render(<TopBar workspaces={workspaces} active="apiari" onSelect={vi.fn()} />);
-    expect(screen.getByText("apiari")).toBeInTheDocument();
-    expect(screen.getByText("mgm")).toBeInTheDocument();
-    expect(screen.getByText("cookedbooks")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Open workspace apiari" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Open workspace mgm" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open workspace cookedbooks" })).toBeInTheDocument();
   });
 
   it("calls onSelect when tab clicked", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     render(<TopBar workspaces={workspaces} active="apiari" onSelect={onSelect} />);
-    await user.click(screen.getByText("mgm"));
+    await user.click(screen.getByRole("button", { name: "Open workspace mgm" }));
     expect(onSelect).toHaveBeenCalledWith("mgm", undefined);
   });
 

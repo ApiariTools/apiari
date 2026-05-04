@@ -3,7 +3,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, Loader2, Square, Volume2, AudioLines } from "lucide-react";
 import { Howl, Howler } from "howler";
-import type { Message, Followup } from "../types";
+import type { Bot, Message, Followup } from "../types";
 import { splitSentences } from "../voice";
 import { ChatInput } from "./ChatInput";
 import { FollowupCard, FollowupIndicator } from "./FollowupCard";
@@ -23,6 +23,9 @@ interface Props {
   loading: boolean;
   loadingStatus?: string;
   streamingContent?: string;
+  hasOlderHistory?: boolean;
+  loadingOlderHistory?: boolean;
+  onLoadOlderHistory?: () => Promise<void>;
   workerCount?: number;
   onWorkersToggle?: () => void;
   onCancel?: () => void;
@@ -32,6 +35,10 @@ interface Props {
   followups?: Followup[];
   workspace?: string;
   onFollowupCancelled?: () => void;
+  bots?: Bot[];
+  unread?: Record<string, number>;
+  onSelectBot?: (name: string) => void;
+  compactHeader?: boolean;
 }
 
 interface QueuedMessage {
@@ -39,8 +46,35 @@ interface QueuedMessage {
   attachments?: Attachment[];
 }
 
-export function ChatPanel({ bot, botDescription, botProvider, botModel, messages, messagesLoading, loading, loadingStatus, streamingContent, onSend, workerCount, onWorkersToggle, onCancel, ttsVoice, ttsSpeed, followups, workspace, onFollowupCancelled }: Props) {
+export function ChatPanel({
+  bot,
+  botDescription,
+  botProvider,
+  botModel,
+  messages,
+  messagesLoading,
+  loading,
+  loadingStatus,
+  streamingContent,
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  onLoadOlderHistory,
+  onSend,
+  workerCount,
+  onWorkersToggle,
+  onCancel,
+  ttsVoice,
+  ttsSpeed,
+  followups,
+  workspace,
+  onFollowupCancelled,
+  bots,
+  unread,
+  onSelectBot,
+  compactHeader = false,
+}: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
   const [playingId, setPlayingId] = useState<number | null>(null);
@@ -49,6 +83,9 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
   const [triggerRecord, setTriggerRecord] = useState(0);
   const voiceModeRef = useRef(false);
   const stopThinkingCueRef = useRef<(() => void) | null>(null);
+  const isNearBottomRef = useRef(true);
+  const restoringOlderHistoryRef = useRef(false);
+  const loadingOlderRequestRef = useRef(false);
 
   // ── Voice state: listening / processing / speaking ──
   const voiceState: VoiceState = !voiceMode
@@ -138,7 +175,9 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
 
   // ── Auto-scroll ──
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (restoringOlderHistoryRef.current) return;
+    if (!isNearBottomRef.current) return;
+    bottomRef.current?.scrollIntoView({ behavior: messages.length > 0 ? "smooth" : "auto" });
     setShowScrollBtn(false);
   }, [messages.length, loading, loadingStatus]);
 
@@ -336,9 +375,42 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
 
   // ── Helpers ──
 
-  function handleMessagesScroll(e: React.UIEvent<HTMLDivElement>) {
+  async function handleMessagesScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
-    setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 40);
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isNearBottomRef.current = distanceFromBottom <= 120;
+    setShowScrollBtn(distanceFromBottom > 40);
+
+    if (
+      el.scrollTop <= 80
+      && hasOlderHistory
+      && !!onLoadOlderHistory
+      && !loadingOlderRequestRef.current
+      && !loadingOlderHistory
+      && !loading
+      && !messagesLoading
+    ) {
+      loadingOlderRequestRef.current = true;
+      restoringOlderHistoryRef.current = true;
+      const previousScrollHeight = el.scrollHeight;
+      const previousScrollTop = el.scrollTop;
+
+      try {
+        await onLoadOlderHistory();
+        requestAnimationFrame(() => {
+          const container = messagesRef.current;
+          if (container) {
+            const nextScrollTop = container.scrollHeight - previousScrollHeight + previousScrollTop;
+            container.scrollTop = Math.max(nextScrollTop, 0);
+          }
+          restoringOlderHistoryRef.current = false;
+          loadingOlderRequestRef.current = false;
+        });
+      } catch {
+        restoringOlderHistoryRef.current = false;
+        loadingOlderRequestRef.current = false;
+      }
+    }
   }
 
   function scrollToBottom() {
@@ -400,22 +472,43 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
 
   return (
     <div className={styles.panel}>
-      <div className={styles.header}>
-        <div className={styles.headerInfo}>
-          <div className={styles.headerNameRow}>
-            <div className={styles.headerName}>{bot}</div>
-            {botProvider && (
-              <span
-                className={styles.providerBadge}
-                title={botModel || undefined}
-                aria-label={botModel ? `Provider: ${botProvider}, model: ${botModel}` : `Provider: ${botProvider}`}
-              >
-                {botProvider.charAt(0).toUpperCase() + botProvider.slice(1)}
-              </span>
-            )}
+      <div className={`${styles.header} ${compactHeader ? styles.headerCompact : ""}`}>
+        {!compactHeader ? (
+          <div className={styles.headerInfo}>
+            <div className={styles.headerNameRow}>
+              <div className={styles.headerName}>{bot}</div>
+              {botProvider && (
+                <span
+                  className={styles.providerBadge}
+                  title={botModel || undefined}
+                  aria-label={botModel ? `Provider: ${botProvider}, model: ${botModel}` : `Provider: ${botProvider}`}
+                >
+                  {botProvider.charAt(0).toUpperCase() + botProvider.slice(1)}
+                </span>
+              )}
+            </div>
+            {botDescription && <div className={styles.headerDescription}>{botDescription}</div>}
           </div>
-          {botDescription && <div className={styles.headerDescription}>{botDescription}</div>}
-        </div>
+        ) : null}
+        {(bots && bots.length > 0 && onSelectBot) ? (
+          <div className={styles.botSwitcher} aria-label="Chat bots">
+            {bots.map((entry) => {
+              const isActive = entry.name === bot;
+              const count = unread?.[entry.name] || 0;
+              return (
+                <button
+                  key={entry.name}
+                  className={`${styles.botChip} ${isActive ? styles.botChipActive : ""}`}
+                  onClick={() => onSelectBot(entry.name)}
+                  aria-label={`Open bot ${entry.name}`}
+                >
+                  <span className={styles.botChipName}>{entry.name}</span>
+                  {count > 0 && !isActive ? <span className={styles.botChipBadge}>{count}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
         <div className={styles.headerActions}>
           <button
             className={`${styles.voiceModeBtn} ${voiceMode ? styles.voiceModeActive : ""}`}
@@ -433,7 +526,10 @@ export function ChatPanel({ bot, botDescription, botProvider, botModel, messages
       </div>
 
       <div className={styles.messagesWrap}>
-      <div className={styles.messages} onScroll={handleMessagesScroll}>
+      <div className={styles.messages} onScroll={handleMessagesScroll} ref={messagesRef}>
+        {loadingOlderHistory && messages.length > 0 && (
+          <div className={styles.empty}>Loading older messages...</div>
+        )}
         {messagesLoading && messages.length === 0 && (
           <div className={styles.empty}>Loading...</div>
         )}

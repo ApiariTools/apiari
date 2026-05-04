@@ -1,4 +1,5 @@
 import type { Worker } from "../types";
+import { ToolPanel } from "../primitives/ToolPanel";
 import styles from "./WorkersPanel.module.css";
 
 interface Props {
@@ -24,12 +25,12 @@ function branchName(branch: string): string {
 
 export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: Props) {
   return (
-    <>
-      {mobileOpen && (
-        <div className={styles.backdrop} onClick={onClose} />
-      )}
-      <div className={`${styles.panel} ${mobileOpen ? styles.mobileOpen : ""}`}>
-      <div className={styles.title}>Workers</div>
+    <ToolPanel
+      title="Workers"
+      subtitle="Execution status, active branches, and handoff context for autonomous work."
+      mobileOpen={mobileOpen}
+      onClose={onClose}
+    >
       {workers.map((w) => (
         <div
           key={w.id}
@@ -78,7 +79,6 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
           </div>
         </div>
       ))}
-    </div>
-    </>
+    </ToolPanel>
   );
 }

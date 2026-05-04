@@ -1,15 +1,18 @@
 .bar {
-  position: sticky;
-  bottom: 0;
+  position: fixed;
+  bottom: calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
+  left: var(--mobile-gutter);
+  right: var(--mobile-gutter);
   z-index: 15;
   display: flex;
   align-items: stretch;
   justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
-  border-top: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(17, 21, 32, 0.92), rgba(9, 11, 18, 0.98));
-  backdrop-filter: blur(16px);
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-top: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: var(--radius-md);
+  background: rgba(11, 12, 15, 0.94);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.16);
 }
 
 .buttonWrap {
@@ -22,28 +25,28 @@
   flex: 1;
   width: 100%;
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.03);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-faint);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 5px;
-  padding: 10px 8px;
-  font-size: 11px;
+  gap: 3px;
+  padding: 7px 6px 6px;
+  font-size: var(--font-size-tiny);
   font-weight: 600;
+  transition: background 120ms ease, color 120ms ease;
 }
 
 .active {
   color: var(--text-strong);
-  background: linear-gradient(180deg, rgba(245, 197, 66, 0.16), rgba(245, 197, 66, 0.06));
-  border-color: rgba(245, 197, 66, 0.24);
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .icon {
-  color: var(--accent);
+  color: currentColor;
 }
 
 .label {
@@ -54,15 +57,15 @@
 
 .badge {
   position: absolute;
-  top: 6px;
-  right: 10px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  top: 2px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
