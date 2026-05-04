@@ -19,6 +19,7 @@ interface Props {
   showBack?: boolean;
   onPromoteWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
   onRedispatchWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onCloseWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
 }
 
 function branchName(branch: string): string {
@@ -49,10 +50,12 @@ export function WorkerDetail({
   showBack = true,
   onPromoteWorker,
   onRedispatchWorker,
+  onCloseWorker,
 }: Props) {
   const [sending, setSending] = useState(false);
   const [acting, setActing] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [confirmClose, setConfirmClose] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>("output");
   const [diffContent, setDiffContent] = useState<string | null | undefined>(undefined);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -68,6 +71,7 @@ export function WorkerDetail({
 
   useEffect(() => {
     setActionMessage(null);
+    setConfirmClose(false);
   }, [worker.id]);
 
   useEffect(() => {
@@ -103,6 +107,18 @@ export function WorkerDetail({
     try {
       const result = await onRedispatchWorker(worker.id);
       setActionMessage(result.detail);
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function handleCloseConfirmed() {
+    if (acting) return;
+    setActing(true);
+    try {
+      const result = await onCloseWorker(worker.id);
+      setActionMessage(result.detail);
+      setConfirmClose(false);
     } finally {
       setActing(false);
     }
@@ -203,7 +219,11 @@ export function WorkerDetail({
                 Redispatch
               </button>
             )}
-            <button className={`${styles.headerBtn} ${styles.headerBtnDanger}`}>
+            <button
+              className={`${styles.headerBtn} ${styles.headerBtnDanger}`}
+              onClick={() => setConfirmClose((value) => !value)}
+              disabled={acting}
+            >
               Close
             </button>
           </div>
@@ -211,6 +231,19 @@ export function WorkerDetail({
 
         {actionMessage && (
           <div className={styles.actionNotice}>{actionMessage}</div>
+        )}
+        {confirmClose && (
+          <div className={styles.actionNotice}>
+            Close this worker and dismiss its task?
+            {" "}
+            <button className={styles.inlineAction} onClick={handleCloseConfirmed} disabled={acting}>
+              Confirm
+            </button>
+            {" "}
+            <button className={styles.inlineAction} onClick={() => setConfirmClose(false)} disabled={acting}>
+              Cancel
+            </button>
+          </div>
         )}
 
         {/* PR review summary */}

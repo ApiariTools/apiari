@@ -74,6 +74,7 @@ export default function App() {
         onBackFromWorker={state.handleBackFromWorker}
         onPromoteWorker={state.handlePromoteWorker}
         onRedispatchWorker={state.handleRedispatchWorker}
+        onCloseWorker={state.handleCloseWorker}
       />
     );
   } else if (state.mode === "repos") {

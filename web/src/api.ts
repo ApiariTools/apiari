@@ -106,6 +106,23 @@ export async function redispatchWorker(
   return res.json();
 }
 
+export async function closeWorker(
+  workspace: string,
+  workerId: string,
+  dismissTask = true,
+  remote?: string,
+): Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }> {
+  const res = await fetch(
+    `${BASE}${wsPath(workspace, remote)}/workers/${workerId}/close`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dismiss_task: dismissTask }),
+    },
+  );
+  return res.json();
+}
+
 export interface BotStatus {
   status: string;
   streaming_content: string;

@@ -46,6 +46,7 @@ const detail: WorkerDetailData = {
 
 const promoteWorker = vi.fn(async () => ({ ok: true, detail: "Created PR for branch `swarm/test`." }));
 const redispatchWorker = vi.fn(async () => ({ ok: true, worker_id: "worker-2", detail: "Spawned replacement worker `worker-2`." }));
+const closeWorker = vi.fn(async () => ({ ok: true, detail: "Closed worker and dismissed its task." }));
 
 describe("WorkerDetail", () => {
   it("renders timestamps on messages that have them", () => {
@@ -57,6 +58,7 @@ describe("WorkerDetail", () => {
         onBack={vi.fn()}
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
+        onCloseWorker={closeWorker}
       />
     );
     // Switch to chat tab
@@ -96,6 +98,7 @@ describe("WorkerDetail", () => {
         onBack={vi.fn()}
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
+        onCloseWorker={closeWorker}
       />
     );
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -121,6 +124,7 @@ describe("WorkerDetail", () => {
         onBack={vi.fn()}
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
+        onCloseWorker={closeWorker}
       />
     );
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -138,6 +142,7 @@ describe("WorkerDetail", () => {
         onBack={vi.fn()}
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
+        onCloseWorker={closeWorker}
       />
     );
 
@@ -165,11 +170,32 @@ describe("WorkerDetail", () => {
         onBack={vi.fn()}
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
+        onCloseWorker={closeWorker}
       />
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Promote to PR" }));
 
     expect(await screen.findByText(/Created PR for branch/)).toBeInTheDocument();
+  });
+
+  it("confirms before closing a worker and shows feedback", async () => {
+    render(
+      <WorkerDetail
+        worker={worker}
+        detail={detail}
+        workspace="test"
+        onBack={vi.fn()}
+        onPromoteWorker={promoteWorker}
+        onRedispatchWorker={redispatchWorker}
+        onCloseWorker={closeWorker}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.getByText(/Close this worker and dismiss its task/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    expect(await screen.findByText(/Closed worker and dismissed its task/)).toBeInTheDocument();
   });
 });

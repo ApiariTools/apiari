@@ -1450,6 +1450,12 @@ struct WorkspaceWorkerMessageBody {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CloseWorkerBody {
+    #[serde(default = "default_true")]
+    dismiss_task: bool,
+}
+
 #[derive(Debug, Serialize)]
 struct WorkerActionView {
     ok: bool,
@@ -1458,6 +1464,10 @@ struct WorkerActionView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pr_url: Option<String>,
     detail: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn worker_repo_name(worker: &SwarmWorktreeState, fallback_root: &std::path::Path) -> Option<String> {
@@ -1707,6 +1717,51 @@ async fn redispatch_workspace_worker(
         detail: format!(
             "Spawned replacement worker `{replacement_id}` in repo `{repo}`. Original worktree was left intact."
         ),
+    }))
+}
+
+/// POST /api/workspaces/:workspace/workers/:worker_id/close — close a worker and optionally dismiss its task.
+async fn close_workspace_worker(
+    Path((workspace, worker_id)): Path<(String, String)>,
+    Json(body): Json<CloseWorkerBody>,
+) -> Result<Json<WorkerActionView>, (StatusCode, String)> {
+    let ws = load_workspace_by_name(&workspace).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("workspace '{workspace}' not found"),
+        )
+    })?;
+
+    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws.config.root.clone());
+    swarm.close_worker(&worker_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to close worker: {e}"),
+        )
+    })?;
+
+    if body.dismiss_task
+        && let Ok(store) = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        && let Ok(Some(task)) = store.find_task_by_worker(&workspace, &worker_id)
+        && !task.stage.is_terminal()
+    {
+        let _ = store.transition_task(
+            &task.id,
+            &task.stage,
+            &crate::buzz::task::TaskStage::Dismissed,
+            Some("Closed from worker detail".to_string()),
+        );
+    }
+
+    Ok(Json(WorkerActionView {
+        ok: true,
+        worker_id: Some(worker_id),
+        pr_url: None,
+        detail: if body.dismiss_task {
+            "Closed worker and dismissed its task.".to_string()
+        } else {
+            "Closed worker.".to_string()
+        },
     }))
 }
 
@@ -3840,6 +3895,10 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/workers/{worker_id}/redispatch",
             post(redispatch_workspace_worker),
+        )
+        .route(
+            "/api/workspaces/{workspace}/workers/{worker_id}/close",
+            post(close_workspace_worker),
         )
         .route(
             "/api/workspaces/{workspace}/workers/{worker_id}/diff",

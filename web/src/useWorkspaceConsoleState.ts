@@ -374,6 +374,20 @@ export function useWorkspaceConsoleState() {
     return result;
   }, [workspace, remote, refreshRepos, refreshWorkerDetail, refreshWorkers]);
 
+  const handleCloseWorker = useCallback(async (id: string) => {
+    const result = await api.closeWorker(workspace, id, true, remote);
+    await Promise.all([
+      refreshWorkers(),
+      refreshRepos(),
+    ]);
+    if (workerId === id) {
+      setWorkerId(null);
+      setWorkerDetail(null);
+      setMode("workers");
+    }
+    return result;
+  }, [workspace, remote, refreshRepos, refreshWorkers, workerId]);
+
   const handleStartResearch = useCallback((topic?: string) => {
     const nextTopic = topic?.trim() || prompt("Research topic:")?.trim();
     if (!nextTopic) return;
@@ -502,6 +516,7 @@ export function useWorkspaceConsoleState() {
     handleBackFromWorker,
     handlePromoteWorker,
     handleRedispatchWorker,
+    handleCloseWorker,
     handleSend,
     handleStartResearch,
     applyConsoleProfile,

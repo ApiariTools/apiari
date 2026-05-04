@@ -130,6 +130,21 @@
   font-size: 13px;
 }
 
+.inlineAction {
+  margin-left: 8px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.inlineAction:hover {
+  border-color: var(--text-faint);
+}
+
 /* ── PR Review ── */
 .reviewSummary {
   display: flex;
