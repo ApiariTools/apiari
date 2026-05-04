@@ -146,9 +146,6 @@ impl ExecOptions {
         if let Some(sandbox) = self.sandbox {
             args.extend(["--sandbox".to_owned(), sandbox.as_str().to_owned()]);
         }
-        if let Some(approval) = self.approval {
-            args.extend(["--approval-policy".to_owned(), approval.as_str().to_owned()]);
-        }
         if self.full_auto {
             args.push("--full-auto".to_owned());
         }
@@ -192,9 +189,6 @@ impl ResumeOptions {
         if let Some(sandbox) = self.sandbox {
             args.extend(["--sandbox".to_owned(), sandbox.as_str().to_owned()]);
         }
-        if let Some(approval) = self.approval {
-            args.extend(["--approval-policy".to_owned(), approval.as_str().to_owned()]);
-        }
         for image in &self.images {
             args.extend(["--image".to_owned(), image.display().to_string()]);
         }
@@ -231,17 +225,14 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_and_approval() {
+    fn sandbox_flag() {
         let opts = ExecOptions {
             sandbox: Some(SandboxMode::ReadOnly),
-            approval: Some(ApprovalPolicy::OnFailure),
             ..Default::default()
         };
         let args = opts.to_cli_args();
         assert!(args.contains(&"--sandbox".to_owned()));
         assert!(args.contains(&"read-only".to_owned()));
-        assert!(args.contains(&"--approval-policy".to_owned()));
-        assert!(args.contains(&"on-failure".to_owned()));
     }
 
     #[test]
@@ -290,18 +281,18 @@ mod tests {
     }
 
     #[test]
-    fn resume_sandbox_and_approval() {
+    fn resume_sandbox_and_images() {
         let opts = ResumeOptions {
             session_id: Some("sess_123".to_owned()),
             sandbox: Some(SandboxMode::ReadOnly),
-            approval: Some(ApprovalPolicy::Never),
+            images: vec![PathBuf::from("a.png")],
             ..Default::default()
         };
         let args = opts.to_cli_args();
         assert!(args.contains(&"--sandbox".to_owned()));
         assert!(args.contains(&"read-only".to_owned()));
-        assert!(args.contains(&"--approval-policy".to_owned()));
-        assert!(args.contains(&"never".to_owned()));
+        assert!(args.contains(&"--image".to_owned()));
+        assert!(args.contains(&"a.png".to_owned()));
     }
 
     #[test]
