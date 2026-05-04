@@ -96,13 +96,6 @@ enum Command {
         command: ConfigCommand,
     },
 
-    /// Deprecated alias for `apiari daemon start --foreground --port ...`
-    Web {
-        /// Port for the HTTP server (default: 7422)
-        #[arg(long, default_value = "7422")]
-        port: u16,
-    },
-
     /// PreToolUse hook: validate Bash commands (used internally by coordinator)
     #[command(hide = true)]
     ValidateBash,
@@ -254,12 +247,6 @@ async fn main() -> Result<()> {
                 }
             }
         },
-        Some(Command::Web { port }) => {
-            eprintln!(
-                "Note: `apiari web` is deprecated. Use `apiari daemon start --foreground --port {port}` instead."
-            );
-            daemon::run_foreground_with_web_port(port).await?;
-        }
         Some(Command::ValidateBash) => {
             std::process::exit(validate_bash::run());
         }

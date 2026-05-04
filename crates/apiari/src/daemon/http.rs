@@ -3428,7 +3428,7 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
     // Ensure schema exists
     let _ = TaskStore::open(&db_path)?;
 
-    eprintln!("apiari web dev server");
+    eprintln!("apiari daemon API dev server");
     eprintln!("  API:      http://127.0.0.1:{port}");
     eprintln!("  DB:       {}", db_path.display());
     eprintln!("  YAML:     {}", yaml_path.display());
