@@ -7,7 +7,7 @@ Run `git config core.hooksPath .githooks` to activate pre-commit checks (fmt + c
 1. You are working in a git worktree on a `swarm/*` branch. Never commit to main.
 2. Only modify files within this repository.
 3. Do not run `cargo install` or modify system state.
-4. When done, commit and push your branch. Do NOT open a PR (`gh pr create`). Output `BRANCH_READY: <branch-name>` instead.
+4. When done, commit and push your branch, open the PR yourself, then output `PR_OPENED: <pr-url>`. Only use `BRANCH_READY: <branch-name>` when the task explicitly says a reviewer/coordinator flow will open the PR later.
 
 ## Architecture
 - `src/main.rs` — CLI entry point (clap)

@@ -666,7 +666,7 @@ pub(crate) async fn run_daemon(
                     SupervisorEvent::AgentEvent { worktree_id, event } => {
                         // Accumulate text output for reviewer workers so we can
                         // parse the review verdict when the agent finishes.
-                        // Also scan all workers for BRANCH_READY signals.
+                        // Also scan implementation workers for PR_OPENED / BRANCH_READY markers.
                         if let protocol::AgentEventWire::TextDelta { ref text } = event {
                             for ws in workspaces.values_mut() {
                                 if let Some(worker) = ws.workers.get_mut(&worktree_id) {
@@ -713,26 +713,59 @@ pub(crate) async fn run_daemon(
                                             worker.review_verdict = Some(verdict);
                                             state_dirty = true;
                                         }
-                                    } else if worker.ready_branch.is_none()
-                                        && let Some(branch) =
-                                            crate::core::state::parse_branch_ready(
-                                                &worker.accumulated_text,
-                                            )
-                                    {
-                                        let _ = event_tx.send(DaemonResponse::A2aTaskUpdate {
-                                            worktree_id: worktree_id.clone(),
-                                            task_state: a2a_types::TaskState::Working,
-                                            message: Some(A2aTaskMessage::data(
-                                                "application/json",
-                                                serde_json::json!({
-                                                    "type": "branch_ready",
-                                                    "branch": branch.clone(),
-                                                }),
-                                            )),
-                                            timestamp: chrono::Utc::now(),
-                                        });
-                                        worker.ready_branch = Some(branch);
-                                        state_dirty = true;
+                                    } else {
+                                        if worker.pr.is_none()
+                                            && let Some(url) =
+                                                crate::core::state::parse_pr_opened(
+                                                    &worker.accumulated_text,
+                                                )
+                                        {
+                                            let pr_number = url
+                                                .rsplit('/')
+                                                .next()
+                                                .and_then(|s| s.parse::<u64>().ok())
+                                                .unwrap_or(0);
+                                            worker.pr = Some(PrInfo {
+                                                number: pr_number,
+                                                title: "Worker-opened PR".to_string(),
+                                                state: "OPEN".to_string(),
+                                                url: url.clone(),
+                                            });
+                                            let _ = event_tx.send(DaemonResponse::A2aTaskUpdate {
+                                                worktree_id: worktree_id.clone(),
+                                                task_state: a2a_types::TaskState::Working,
+                                                message: Some(A2aTaskMessage::data(
+                                                    "application/json",
+                                                    serde_json::json!({
+                                                        "type": "pr_opened",
+                                                        "pr_url": url,
+                                                        "pr_number": pr_number,
+                                                    }),
+                                                )),
+                                                timestamp: chrono::Utc::now(),
+                                            });
+                                            state_dirty = true;
+                                        } else if worker.ready_branch.is_none()
+                                            && let Some(branch) =
+                                                crate::core::state::parse_branch_ready(
+                                                    &worker.accumulated_text,
+                                                )
+                                        {
+                                            let _ = event_tx.send(DaemonResponse::A2aTaskUpdate {
+                                                worktree_id: worktree_id.clone(),
+                                                task_state: a2a_types::TaskState::Working,
+                                                message: Some(A2aTaskMessage::data(
+                                                    "application/json",
+                                                    serde_json::json!({
+                                                        "type": "branch_ready",
+                                                        "branch": branch.clone(),
+                                                    }),
+                                                )),
+                                                timestamp: chrono::Utc::now(),
+                                            });
+                                            worker.ready_branch = Some(branch);
+                                            state_dirty = true;
+                                        }
                                     }
                                     break;
                                 }

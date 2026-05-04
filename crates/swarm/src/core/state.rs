@@ -71,6 +71,22 @@ pub fn parse_branch_ready(output: &str) -> Option<String> {
     None
 }
 
+/// Parse a `PR_OPENED: <pr-url>` line from worker text output.
+///
+/// Returns the PR URL if found, otherwise `None`.
+pub fn parse_pr_opened(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(url) = trimmed.strip_prefix("PR_OPENED:") {
+            let url = url.trim();
+            if !url.is_empty() {
+                return Some(url.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// PR info fetched from `gh`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrInfo {
@@ -428,6 +444,30 @@ mod tests {
         assert_eq!(
             parse_branch_ready(output),
             Some("swarm/foo-bar".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_pr_opened_basic() {
+        let output = "Done.\nPR_OPENED: https://github.com/ApiariTools/apiari/pull/42";
+        assert_eq!(
+            parse_pr_opened(output),
+            Some("https://github.com/ApiariTools/apiari/pull/42".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_pr_opened_not_present() {
+        let output = "Work complete.";
+        assert!(parse_pr_opened(output).is_none());
+    }
+
+    #[test]
+    fn parse_pr_opened_trims_whitespace() {
+        let output = "  PR_OPENED:   https://github.com/ApiariTools/apiari/pull/99  ";
+        assert_eq!(
+            parse_pr_opened(output),
+            Some("https://github.com/ApiariTools/apiari/pull/99".to_string())
         );
     }
 
