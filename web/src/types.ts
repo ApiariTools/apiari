@@ -39,6 +39,30 @@ export interface Worker {
   resolved_comments?: number;
 }
 
+export interface Task {
+  id: string;
+  title: string;
+  stage: string;
+  source?: string | null;
+  worker_id?: string | null;
+  pr_url?: string | null;
+  pr_number?: number | null;
+  repo?: string | null;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string | null;
+  cursor?: {
+    current_node: string;
+    counters: Record<string, number>;
+    history: Array<{
+      from_node: string;
+      to_node: string;
+      trigger: string;
+      timestamp: string;
+    }>;
+  } | null;
+}
+
 export interface Repo {
   name: string;
   path: string;

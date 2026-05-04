@@ -28,6 +28,23 @@ export const getBots = vi.fn().mockResolvedValue([
 
 export const getWorkers = vi.fn().mockResolvedValue([]);
 
+export const getTasks = vi.fn().mockResolvedValue([
+  {
+    id: "task-1",
+    title: "Tighten mobile card spacing",
+    stage: "Human Review",
+    source: "manual",
+    worker_id: "worker-1",
+    pr_url: "https://github.com/example/apiari/pull/12",
+    pr_number: 12,
+    repo: "apiari",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T02:00:00Z",
+    resolved_at: null,
+    cursor: null,
+  },
+]);
+
 export const getRepos = vi.fn().mockResolvedValue([]);
 
 export const getConversations = vi.fn().mockResolvedValue([

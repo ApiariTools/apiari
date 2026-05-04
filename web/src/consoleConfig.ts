@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
-import { FileText, LayoutGrid, MessageSquare, Package, Radar, Wrench } from "lucide-react";
+import { ClipboardList, FileText, LayoutGrid, MessageSquare, Package, Radar, Wrench } from "lucide-react";
 
-export type WorkspaceMode = "overview" | "chat" | "workers" | "repos" | "docs" | "signals" | "diagnostics";
+export type WorkspaceMode = "overview" | "chat" | "tasks" | "workers" | "repos" | "docs" | "signals" | "diagnostics";
 
 export interface WorkspaceModeDefinition {
   id: WorkspaceMode;
@@ -29,6 +29,7 @@ const CONSOLE_PROFILE_STORAGE_KEY = "apiari.consoleProfileOverrides";
 export const WORKSPACE_MODE_DEFINITIONS: Record<WorkspaceMode, WorkspaceModeDefinition> = {
   overview: { id: "overview", label: "Overview", icon: LayoutGrid },
   chat: { id: "chat", label: "Chat", icon: MessageSquare },
+  tasks: { id: "tasks", label: "Review", icon: ClipboardList },
   workers: { id: "workers", label: "Workers", icon: Wrench },
   repos: { id: "repos", label: "Repos", icon: Package },
   docs: { id: "docs", label: "Docs", icon: FileText },
@@ -40,7 +41,7 @@ export const DEFAULT_WORKSPACE_CONSOLE_PROFILE: WorkspaceConsoleProfile = {
   defaultDesktopMode: "overview",
   defaultMobileMode: "chat",
   defaultMobileBot: "Main",
-  navModeOrder: ["overview", "chat", "workers", "repos", "docs"],
+  navModeOrder: ["overview", "chat", "tasks", "workers", "repos", "docs"],
   showChatRepoRail: true,
   overviewPrimaryBot: "Main",
 };

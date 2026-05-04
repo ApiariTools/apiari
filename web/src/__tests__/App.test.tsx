@@ -69,11 +69,30 @@ describe("App", () => {
     });
   });
 
+  it("loads tasks on mount", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(api.getTasks).toHaveBeenCalled();
+    });
+  });
+
   it("renders chat messages", async () => {
     await renderAndSelectBot("Main");
     await waitFor(() => {
       expect(screen.getByText("hello")).toBeInTheDocument();
       expect(screen.getByText(/How can I help/)).toBeInTheDocument();
+    });
+  });
+
+  it("opens the review mode and shows lifecycle tasks", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const reviewButton = await screen.findByRole("button", { name: /^Review\d*$/ });
+    await user.click(reviewButton);
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Review" })).toBeInTheDocument();
+      expect(screen.getByText("Tighten mobile card spacing")).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /Open PR/i })).toBeInTheDocument();
     });
   });
 

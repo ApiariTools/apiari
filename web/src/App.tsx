@@ -10,6 +10,7 @@ import { DiagnosticsMode } from "./modes/DiagnosticsMode";
 import { OverviewMode } from "./modes/OverviewMode";
 import { ReposMode } from "./modes/ReposMode";
 import { SignalsMode } from "./modes/SignalsMode";
+import { TasksMode } from "./modes/TasksMode";
 import { WorkersMode } from "./modes/WorkersMode";
 import { Suspense, lazy } from "react";
 import { ChatLanding } from "./components/ChatLanding";
@@ -22,6 +23,7 @@ export default function App() {
   const state = useWorkspaceConsoleState();
   const mobileBadgeCounts = {
     overview: state.pendingFollowupCount || null,
+    tasks: state.tasks.filter((task) => task.stage !== "Merged" && task.stage !== "Dismissed").length || null,
     workers: state.workers.length || null,
     repos: state.repos.length || null,
   };
@@ -75,6 +77,14 @@ export default function App() {
         onPromoteWorker={state.handlePromoteWorker}
         onRedispatchWorker={state.handleRedispatchWorker}
         onCloseWorker={state.handleCloseWorker}
+      />
+    );
+  } else if (state.mode === "tasks") {
+    mainContent = (
+      <TasksMode
+        tasks={state.tasks}
+        workers={state.workers}
+        onSelectWorker={state.handleSelectWorker}
       />
     );
   } else if (state.mode === "repos") {
@@ -172,6 +182,7 @@ export default function App() {
         visibleModes={state.visibleModes}
         activeMode={state.mode}
         onSelectMode={state.handleSelectMode}
+        taskCount={state.tasks.filter((task) => task.stage !== "Merged" && task.stage !== "Dismissed").length}
         workerCount={state.workers.length}
         repoCount={state.repos.length}
         pendingFollowupCount={state.pendingFollowupCount}

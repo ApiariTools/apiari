@@ -15,6 +15,7 @@ interface Props {
   modes: WorkspaceModeDefinition[];
   activeMode: WorkspaceMode;
   onSelectMode: (mode: WorkspaceMode) => void;
+  taskCount: number;
   workerCount: number;
   repoCount: number;
   pendingFollowupCount: number;
@@ -29,6 +30,7 @@ export function WorkspaceNav({
   modes,
   activeMode,
   onSelectMode,
+  taskCount,
   workerCount,
   repoCount,
   pendingFollowupCount,
@@ -38,6 +40,7 @@ export function WorkspaceNav({
     mode,
     count:
       mode.id === "overview" ? (pendingFollowupCount > 0 ? pendingFollowupCount : null)
+        : mode.id === "tasks" ? (taskCount || null)
         : mode.id === "workers" ? (workerCount || null)
           : mode.id === "repos" ? (repoCount || null)
             : null,

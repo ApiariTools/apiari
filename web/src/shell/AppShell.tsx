@@ -23,6 +23,7 @@ interface Props {
   visibleModes: WorkspaceModeDefinition[];
   activeMode: WorkspaceMode;
   onSelectMode: (mode: WorkspaceMode) => void;
+  taskCount: number;
   workerCount: number;
   repoCount: number;
   pendingFollowupCount: number;
@@ -47,6 +48,7 @@ export function AppShell({
   visibleModes,
   activeMode,
   onSelectMode,
+  taskCount,
   workerCount,
   repoCount,
   pendingFollowupCount,
@@ -78,6 +80,7 @@ export function AppShell({
             modes={visibleModes}
             activeMode={activeMode}
             onSelectMode={onSelectMode}
+            taskCount={taskCount}
             workerCount={workerCount}
             repoCount={repoCount}
             pendingFollowupCount={pendingFollowupCount}

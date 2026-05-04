@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  ClipboardList,
   LayoutGrid,
   Package,
   Radar,
@@ -32,6 +33,7 @@ interface Props {
 const MODE_LABELS: Record<WorkspaceMode, string> = {
   overview: "Overview",
   chat: "Chat",
+  tasks: "Review",
   workers: "Workers",
   repos: "Repos",
   docs: "Docs",
@@ -42,6 +44,7 @@ const MODE_LABELS: Record<WorkspaceMode, string> = {
 const MODE_ICONS = {
   overview: LayoutGrid,
   chat: MessageSquare,
+  tasks: ClipboardList,
   workers: Wrench,
   repos: Package,
   docs: FileText,

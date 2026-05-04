@@ -189,10 +189,14 @@ pub struct TaskView {
     pub id: String,
     pub title: String,
     pub stage: String,
+    pub source: Option<String>,
     pub worker_id: Option<String>,
     pub pr_url: Option<String>,
+    pub pr_number: Option<i64>,
+    pub repo: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub resolved_at: Option<String>,
     pub cursor: Option<CursorView>,
 }
 
@@ -324,10 +328,14 @@ pub fn task_to_view(task: &Task) -> TaskView {
         id: task.id.clone(),
         title: task.title.clone(),
         stage: task.stage.as_str().to_string(),
+        source: task.source.clone(),
         worker_id: task.worker_id.clone(),
         pr_url: task.pr_url.clone(),
+        pr_number: task.pr_number,
+        repo: task.repo.clone(),
         created_at: task.created_at.to_rfc3339(),
         updated_at: task.updated_at.to_rfc3339(),
+        resolved_at: task.resolved_at.map(|value| value.to_rfc3339()),
         cursor,
     }
 }
@@ -1336,6 +1344,18 @@ async fn list_workspace_repos(Path(workspace): Path<String>) -> Json<Vec<RepoLis
     let repos = build_repo_list_items(&ws.config, &workspace_workers);
 
     Json(repos)
+}
+
+/// GET /api/workspaces/:workspace/tasks — list tasks for a workspace.
+async fn list_workspace_tasks(Path(workspace): Path<String>) -> Json<Vec<TaskView>> {
+    let tasks = TaskStore::open(&crate::config::db_path())
+        .ok()
+        .and_then(|store| store.get_all_tasks(&workspace).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|task| task_to_view(&task))
+        .collect();
+    Json(tasks)
 }
 
 /// GET /api/workspaces/:workspace/conversations/:bot — load history for one bot.
@@ -3872,6 +3892,7 @@ pub async fn start_http_server(
         .route("/api/signal", post(inject_signal))
         .route("/api/workspaces", get(list_workspaces))
         .route("/api/workspaces/{workspace}/bots", get(list_workspace_bots))
+        .route("/api/workspaces/{workspace}/tasks", get(list_workspace_tasks))
         .route(
             "/api/workspaces/{workspace}/repos",
             get(list_workspace_repos),

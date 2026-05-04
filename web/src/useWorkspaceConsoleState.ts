@@ -58,6 +58,8 @@ function buildHash(route: Route): string {
   switch (route.mode) {
     case "chat":
       return route.bot ? `#/${route.workspace}/chat/${encodeURIComponent(route.bot)}` : `#/${route.workspace}/chat`;
+    case "tasks":
+      return `#/${route.workspace}/tasks`;
     case "workers":
       return route.workerId
         ? `#/${route.workspace}/workers/worker/${route.workerId}`
@@ -144,6 +146,7 @@ export function useWorkspaceConsoleState() {
   const {
     bots,
     workers,
+    tasks,
     repos,
     reposWithFreshWorkers,
     unread,
@@ -156,6 +159,7 @@ export function useWorkspaceConsoleState() {
     otherWorkspaceBots,
     otherWorkspaceUnreads,
     refreshWorkers,
+    refreshTasks,
     refreshRepos,
   } = useWorkspaceResourcesState({ workspace, remote, workspaces, paletteOpen });
 
@@ -473,6 +477,7 @@ export function useWorkspaceConsoleState() {
     docName,
     bots,
     workers,
+    tasks,
     repos,
     reposWithFreshWorkers,
     messages,
@@ -517,6 +522,7 @@ export function useWorkspaceConsoleState() {
     handlePromoteWorker,
     handleRedispatchWorker,
     handleCloseWorker,
+    refreshTasks,
     handleSend,
     handleStartResearch,
     applyConsoleProfile,
