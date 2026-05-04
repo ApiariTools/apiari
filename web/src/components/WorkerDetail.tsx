@@ -72,6 +72,9 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
   const taskTitle = detail?.task_title ?? worker.task_title;
   const taskStage = detail?.task_stage ?? worker.task_stage;
   const taskRepo = detail?.task_repo ?? worker.task_repo;
+  const executionNote = detail?.execution_note ?? worker.execution_note;
+  const readyBranch = detail?.ready_branch ?? worker.ready_branch;
+  const hasUncommittedChanges = detail?.has_uncommitted_changes ?? worker.has_uncommitted_changes;
   const branchLabel = branchName(worker.branch);
   const locationLabel = taskRepo ? `repo ${taskRepo}` : branchLabel;
 
@@ -158,7 +161,14 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
         </div>
 
         {/* PR review summary */}
-        {(worker.review_state || worker.ci_status || (worker.open_comments != null && worker.open_comments > 0)) && (
+        {(worker.review_state ||
+          worker.ci_status ||
+          taskStage ||
+          taskRepo ||
+          executionNote ||
+          hasUncommittedChanges ||
+          readyBranch ||
+          (worker.open_comments != null && worker.open_comments > 0)) && (
           <div className={styles.reviewSummary}>
             {worker.review_state && (
               <span className={styles.reviewBadge} data-state={worker.review_state.toLowerCase()}>
@@ -179,9 +189,34 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
               {taskStage}
             </span>
           )}
+          {worker.status === "stalled" && (
+            <span className={styles.reviewBadge} data-state="changes_requested">
+              Stalled
+            </span>
+          )}
+          {hasUncommittedChanges && (
+            <span className={styles.reviewBadge} data-state="pending">
+              Uncommitted diff
+            </span>
+          )}
+          {!readyBranch && hasUncommittedChanges && (
+            <span className={styles.commentCount}>
+              no ready branch
+            </span>
+          )}
+          {readyBranch && (
+            <span className={styles.commentCount}>
+              ready branch {readyBranch}
+            </span>
+          )}
           {taskRepo && (
             <span className={styles.commentCount}>
               repo {taskRepo}
+            </span>
+          )}
+          {executionNote && (
+            <span className={styles.commentCount}>
+              {executionNote}
             </span>
           )}
           {worker.open_comments != null && worker.open_comments > 0 && (
@@ -236,6 +271,13 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
               {taskTitle && <p><strong>Task:</strong> {taskTitle}</p>}
               {taskStage && <p><strong>Lifecycle:</strong> {taskStage}</p>}
               {taskRepo && <p><strong>Repo:</strong> {taskRepo}</p>}
+              {hasUncommittedChanges && <p><strong>Execution:</strong> Uncommitted diff present</p>}
+              {readyBranch ? (
+                <p><strong>Ready branch:</strong> {readyBranch}</p>
+              ) : hasUncommittedChanges ? (
+                <p><strong>Ready branch:</strong> not signalled</p>
+              ) : null}
+              {executionNote && <p><strong>Note:</strong> {executionNote}</p>}
               {detail?.prompt ? (
                 <>
                   {(taskTitle || taskStage || taskRepo) && <p><strong>Worker prompt</strong></p>}

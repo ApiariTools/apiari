@@ -76,6 +76,16 @@
   color: var(--text-faint);
 }
 
+.tagWarn {
+  background: rgba(217, 119, 6, 0.14);
+  color: #f5c542;
+}
+
+.tagWarnSoft {
+  background: rgba(217, 119, 6, 0.08);
+  color: #d9a94a;
+}
+
 @keyframes pulse {
   0%,
   100% {

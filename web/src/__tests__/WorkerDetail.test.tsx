@@ -16,8 +16,11 @@ vi.mock("@git-diff-view/core", () => ({
 const worker: Worker = {
   id: "worker-1",
   branch: "swarm/test",
-  status: "done",
+  status: "stalled",
   agent: "claude",
+  execution_note: "Uncommitted diff, no ready branch, and no active session.",
+  ready_branch: null,
+  has_uncommitted_changes: true,
   task_id: "task-1",
   task_title: "Tighten worker lifecycle",
   task_stage: "Human Review",
@@ -132,9 +135,13 @@ describe("WorkerDetail", () => {
     expect(screen.getByText(/Task:/)).toBeInTheDocument();
     expect(screen.getByText(/Tighten worker lifecycle/)).toBeInTheDocument();
     expect(screen.getByText(/Lifecycle:/)).toBeInTheDocument();
-    expect(screen.getByText(/Human Review/)).toBeInTheDocument();
+    expect(screen.getAllByText(/Human Review/).length).toBeGreaterThan(0);
     expect(
       screen.getByText((_, el) => el?.textContent === "Repo: apiari"),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Execution:/)).toBeInTheDocument();
+    expect(screen.getByText(/Uncommitted diff present/)).toBeInTheDocument();
+    expect(screen.getByText(/Ready branch:/)).toBeInTheDocument();
+    expect(screen.getByText(/not signalled/)).toBeInTheDocument();
   });
 });

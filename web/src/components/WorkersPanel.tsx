@@ -58,9 +58,24 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
             {w.task_title || w.description || branchName(w.branch)}
           </div>
           <div className={styles.tags}>
+            {w.status === "stalled" && (
+              <span className={`${styles.tag} ${styles.tagWarn}`}>
+                Stalled
+              </span>
+            )}
             {w.task_stage && (
               <span className={styles.tag}>
                 {w.task_stage}
+              </span>
+            )}
+            {w.has_uncommitted_changes && (
+              <span className={`${styles.tag} ${styles.tagWarn}`}>
+                Uncommitted diff
+              </span>
+            )}
+            {!w.ready_branch && w.has_uncommitted_changes && (
+              <span className={`${styles.tag} ${styles.tagWarnSoft}`}>
+                No ready branch
               </span>
             )}
             {w.task_repo && (

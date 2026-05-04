@@ -20,6 +20,9 @@ export interface Worker {
   branch: string;
   status: string;
   agent: string;
+  execution_note?: string | null;
+  ready_branch?: string | null;
+  has_uncommitted_changes?: boolean;
   task_id?: string | null;
   task_title?: string | null;
   task_stage?: string | null;
