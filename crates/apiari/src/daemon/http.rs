@@ -1450,6 +1450,43 @@ struct WorkspaceWorkerMessageBody {
     message: String,
 }
 
+#[derive(Debug, Serialize)]
+struct WorkerActionView {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worker_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pr_url: Option<String>,
+    detail: String,
+}
+
+fn worker_repo_name(worker: &SwarmWorktreeState, fallback_root: &std::path::Path) -> Option<String> {
+    worker
+        .repo_path
+        .as_ref()
+        .map(|path| path.as_path())
+        .unwrap_or(fallback_root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+}
+
+fn worker_task_title(worker: &SwarmWorktreeState) -> String {
+    worker
+        .summary
+        .clone()
+        .or_else(|| {
+            worker
+                .prompt
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("Worker {}", worker.id))
+}
+
 /// POST /api/workspaces/:workspace/workers/:worker_id/send — send a message to a worker.
 async fn send_workspace_worker_message(
     Path((workspace, worker_id)): Path<(String, String)>,
@@ -1486,6 +1523,191 @@ async fn send_workspace_worker_message(
             format!("swarm send failed: {stderr}"),
         ))
     }
+}
+
+/// POST /api/workspaces/:workspace/workers/:worker_id/promote — commit worktree changes and open a PR.
+async fn promote_workspace_worker(
+    Path((workspace, worker_id)): Path<(String, String)>,
+) -> Result<Json<WorkerActionView>, (StatusCode, String)> {
+    let ws = load_workspace_by_name(&workspace).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("workspace '{workspace}' not found"),
+        )
+    })?;
+    let worker = find_worker_state(&ws.config, &worker_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("worker '{worker_id}' not found"),
+        )
+    })?;
+
+    let worktree_path = worker.worktree_path.clone().ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            format!("worker '{worker_id}' has no worktree path"),
+        )
+    })?;
+    let repo_path = worker
+        .repo_path
+        .clone()
+        .unwrap_or_else(|| ws.config.root.clone());
+
+    if worker_has_uncommitted_changes(&worker) {
+        apiari_swarm::core::merge::commit_all(
+            &worktree_path,
+            &format!("promote worker {}", worker.id),
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to commit worker changes: {e}"),
+            )
+        })?;
+    }
+
+    let branch_name = worker
+        .ready_branch
+        .clone()
+        .unwrap_or_else(|| worker.branch.clone());
+    let task_store = crate::buzz::task::store::TaskStore::open(&crate::config::db_path()).ok();
+    let existing_task = task_store
+        .as_ref()
+        .and_then(|store| store.find_task_by_worker(&workspace, &worker_id).ok())
+        .flatten();
+    let title = existing_task
+        .as_ref()
+        .map(|task| task.title.clone())
+        .unwrap_or_else(|| worker_task_title(&worker));
+    let body = "Promoted from worker output by apiari".to_string();
+
+    let pr_result = crate::buzz::orchestrator::workflow::create_system_pr(
+        &repo_path,
+        &branch_name,
+        &title,
+        &body,
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to create PR: {e}"),
+        )
+    })?;
+
+    if let Some(store) = task_store {
+        let task_id = if let Some(task) = existing_task {
+            if let Some(num) = pr_result.pr_number {
+                let _ = store.update_task_pr(&task.id, &pr_result.pr_url, num);
+            }
+            if let Some(repo) = worker_repo_name(&worker, &ws.config.root) {
+                let _ = store.update_task_repo(&task.id, &repo);
+            }
+            let _ = store.update_task_stage(&task.id, &crate::buzz::task::TaskStage::HumanReview);
+            task.id
+        } else {
+            let now = chrono::Utc::now();
+            let repo = worker_repo_name(&worker, &ws.config.root);
+            let task = crate::buzz::task::Task {
+                id: uuid::Uuid::new_v4().to_string(),
+                workspace: workspace.clone(),
+                title: title.clone(),
+                stage: crate::buzz::task::TaskStage::HumanReview,
+                source: Some("manual".to_string()),
+                source_url: None,
+                worker_id: Some(worker_id.clone()),
+                pr_url: Some(pr_result.pr_url.clone()),
+                pr_number: pr_result.pr_number,
+                repo,
+                created_at: now,
+                updated_at: now,
+                resolved_at: None,
+                metadata: serde_json::json!({ "promoted_manually": true }),
+            };
+            let _ = store.create_task(&task);
+            task.id
+        };
+        if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&crate::config::db_path()) {
+            let _ = ae.log_event(
+                &workspace,
+                Some(&task_id),
+                "pr",
+                &format!("PR created for worker {}", worker_id),
+                Some(&pr_result.pr_url),
+                Some("worker_action"),
+                None,
+                None,
+            );
+        }
+    }
+
+    Ok(Json(WorkerActionView {
+        ok: true,
+        worker_id: Some(worker_id),
+        pr_url: Some(pr_result.pr_url.clone()),
+        detail: format!("Created PR for branch `{branch_name}`."),
+    }))
+}
+
+/// POST /api/workspaces/:workspace/workers/:worker_id/redispatch — create a replacement worker and reattach the task.
+async fn redispatch_workspace_worker(
+    Path((workspace, worker_id)): Path<(String, String)>,
+) -> Result<Json<WorkerActionView>, (StatusCode, String)> {
+    let ws = load_workspace_by_name(&workspace).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("workspace '{workspace}' not found"),
+        )
+    })?;
+    let worker = find_worker_state(&ws.config, &worker_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("worker '{worker_id}' not found"),
+        )
+    })?;
+
+    let repo = worker_repo_name(&worker, &ws.config.root).ok_or_else(|| {
+        (
+            StatusCode::CONFLICT,
+            format!("worker '{worker_id}' has no repo context"),
+        )
+    })?;
+    let prompt = if !worker.prompt.trim().is_empty() {
+        worker.prompt.clone()
+    } else {
+        worker_task_title(&worker)
+    };
+
+    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws.config.root.clone());
+    let replacement_id = swarm
+        .create_worker(&repo, &prompt, &ws.config.swarm.default_agent)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to create replacement worker: {e}"),
+            )
+        })?;
+
+    if let Ok(store) = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        && let Ok(Some(task)) = store.find_task_by_worker(&workspace, &worker_id)
+    {
+        let _ = store.update_task_worker(&task.id, &replacement_id);
+        let _ = store.update_task_stage(&task.id, &crate::buzz::task::TaskStage::InProgress);
+        let mut metadata = task.metadata;
+        metadata["redispatched_from_worker_id"] = serde_json::Value::String(worker_id.clone());
+        metadata["replacement_worker_id"] = serde_json::Value::String(replacement_id.clone());
+        let _ = store.update_task_metadata(&task.id, &metadata);
+    }
+
+    Ok(Json(WorkerActionView {
+        ok: true,
+        worker_id: Some(replacement_id.clone()),
+        pr_url: None,
+        detail: format!(
+            "Spawned replacement worker `{replacement_id}` in repo `{repo}`. Original worktree was left intact."
+        ),
+    }))
 }
 
 /// GET /api/workspaces/:workspace/workers/:worker_id/diff — current worker worktree diff.
@@ -3610,6 +3832,14 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/workers/{worker_id}/send",
             post(send_workspace_worker_message),
+        )
+        .route(
+            "/api/workspaces/{workspace}/workers/{worker_id}/promote",
+            post(promote_workspace_worker),
+        )
+        .route(
+            "/api/workspaces/{workspace}/workers/{worker_id}/redispatch",
+            post(redispatch_workspace_worker),
         )
         .route(
             "/api/workspaces/{workspace}/workers/{worker_id}/diff",

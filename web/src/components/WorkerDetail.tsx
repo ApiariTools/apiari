@@ -40,6 +40,7 @@ function formatTime(iso: string): string {
 
 export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBack = true }: Props) {
   const [sending, setSending] = useState(false);
+  const [acting, setActing] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>("output");
   const [diffContent, setDiffContent] = useState<string | null | undefined>(undefined);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -66,6 +67,26 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
       await api.sendWorkerMessage(workspace, worker.id, text, remote);
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handlePromote() {
+    if (acting) return;
+    setActing(true);
+    try {
+      await api.promoteWorker(workspace, worker.id, remote);
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function handleRedispatch() {
+    if (acting) return;
+    setActing(true);
+    try {
+      await api.redispatchWorker(workspace, worker.id, remote);
+    } finally {
+      setActing(false);
     }
   }
 
@@ -153,6 +174,16 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
               >
                 PR
               </a>
+            )}
+            {!worker.pr_url && (hasUncommittedChanges || worker.status === "stalled") && (
+              <button className={styles.headerBtn} onClick={handlePromote} disabled={acting}>
+                Promote to PR
+              </button>
+            )}
+            {(worker.status === "stalled" || hasUncommittedChanges) && (
+              <button className={styles.headerBtn} onClick={handleRedispatch} disabled={acting}>
+                Redispatch
+              </button>
             )}
             <button className={`${styles.headerBtn} ${styles.headerBtnDanger}`}>
               Close
