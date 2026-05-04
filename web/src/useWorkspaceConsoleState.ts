@@ -155,6 +155,8 @@ export function useWorkspaceConsoleState() {
     usage,
     otherWorkspaceBots,
     otherWorkspaceUnreads,
+    refreshWorkers,
+    refreshRepos,
   } = useWorkspaceResourcesState({ workspace, remote, workspaces, paletteOpen });
 
   const {
@@ -186,6 +188,7 @@ export function useWorkspaceConsoleState() {
     workerDetail,
     setWorkerDetail,
     selectedWorker,
+    refreshWorkerDetail,
   } = useWorkerInspectorState({ workspace, remote, workerId, workers });
 
   useEffect(() => {
@@ -272,9 +275,9 @@ export function useWorkspaceConsoleState() {
     setDocName(null);
     setMenuOpen(false);
     if (workspace) {
-      api.getWorkerDetail(workspace, id, remote).then(setWorkerDetail).catch(() => setWorkerDetail(null));
+      refreshWorkerDetail(id);
     }
-  }, [workspace, remote]);
+  }, [refreshWorkerDetail, workspace]);
 
   const handleSelectMode = useCallback((nextMode: WorkspaceMode) => {
     const now = Date.now();
@@ -344,6 +347,32 @@ export function useWorkspaceConsoleState() {
     setWorkerId(null);
     setMode("workers");
   }, []);
+
+  const handlePromoteWorker = useCallback(async (id: string) => {
+    const result = await api.promoteWorker(workspace, id, remote);
+    await Promise.all([
+      refreshWorkers(),
+      refreshRepos(),
+      refreshWorkerDetail(id),
+    ]);
+    return result;
+  }, [workspace, remote, refreshRepos, refreshWorkerDetail, refreshWorkers]);
+
+  const handleRedispatchWorker = useCallback(async (id: string) => {
+    const result = await api.redispatchWorker(workspace, id, remote);
+    await Promise.all([
+      refreshWorkers(),
+      refreshRepos(),
+    ]);
+    if (result.worker_id) {
+      setMode("workers");
+      setWorkerId(result.worker_id);
+      await refreshWorkerDetail(result.worker_id);
+    } else {
+      await refreshWorkerDetail(id);
+    }
+    return result;
+  }, [workspace, remote, refreshRepos, refreshWorkerDetail, refreshWorkers]);
 
   const handleStartResearch = useCallback((topic?: string) => {
     const nextTopic = topic?.trim() || prompt("Research topic:")?.trim();
@@ -471,6 +500,8 @@ export function useWorkspaceConsoleState() {
     handleSelectWorker,
     handleSelectMode,
     handleBackFromWorker,
+    handlePromoteWorker,
+    handleRedispatchWorker,
     handleSend,
     handleStartResearch,
     applyConsoleProfile,

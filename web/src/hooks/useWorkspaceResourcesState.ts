@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "../api";
 import type { Bot, CrossWorkspaceBot, Followup, Repo, ResearchTask, Worker, Workspace } from "../types";
 
@@ -20,23 +20,32 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
   const [otherWorkspaceBots, setOtherWorkspaceBots] = useState<CrossWorkspaceBot[]>([]);
   const [otherWorkspaceUnreads, setOtherWorkspaceUnreads] = useState<Record<string, Record<string, number>>>({});
 
+  const refreshWorkers = useCallback(
+    () => api.getWorkers(workspace, remote).then(setWorkers),
+    [workspace, remote],
+  );
+  const refreshRepos = useCallback(
+    () => api.getRepos(workspace, remote).then(setRepos),
+    [workspace, remote],
+  );
+
   useEffect(() => {
     if (!workspace) return;
     api.getBots(workspace, remote).then(setBots);
-    api.getWorkers(workspace, remote).then(setWorkers);
-    api.getRepos(workspace, remote).then(setRepos);
+    refreshWorkers();
+    refreshRepos();
     api.getUnread(workspace, remote).then(setUnread);
     api.getResearchTasks(workspace, remote).then(setResearchTasks);
     api.getFollowups(workspace, remote).then(setFollowups);
-  }, [workspace, remote]);
+  }, [workspace, remote, refreshRepos, refreshWorkers]);
 
   useEffect(() => {
     if (!workspace) return;
     const workerInterval = setInterval(() => {
-      api.getWorkers(workspace, remote).then(setWorkers);
+      refreshWorkers();
     }, 5000);
     const repoInterval = setInterval(() => {
-      api.getRepos(workspace, remote).then(setRepos);
+      refreshRepos();
     }, 30000);
     const researchInterval = setInterval(() => {
       api.getResearchTasks(workspace, remote).then(setResearchTasks);
@@ -51,7 +60,7 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
       clearInterval(researchInterval);
       clearInterval(followupInterval);
     };
-  }, [workspace, remote]);
+  }, [workspace, remote, refreshRepos, refreshWorkers]);
 
   useEffect(() => {
     api.getUsage().then(setUsage).catch(() => {});
@@ -135,5 +144,7 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
     usage,
     otherWorkspaceBots,
     otherWorkspaceUnreads,
+    refreshWorkers,
+    refreshRepos,
   };
 }

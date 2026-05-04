@@ -72,6 +72,8 @@ export default function App() {
         isMobile={state.isMobile}
         onSelectWorker={state.handleSelectWorker}
         onBackFromWorker={state.handleBackFromWorker}
+        onPromoteWorker={state.handlePromoteWorker}
+        onRedispatchWorker={state.handleRedispatchWorker}
       />
     );
   } else if (state.mode === "repos") {

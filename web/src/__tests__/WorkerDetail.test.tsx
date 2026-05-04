@@ -44,6 +44,9 @@ const detail: WorkerDetailData = {
   ],
 };
 
+const promoteWorker = vi.fn(async () => ({ ok: true, detail: "Created PR for branch `swarm/test`." }));
+const redispatchWorker = vi.fn(async () => ({ ok: true, worker_id: "worker-2", detail: "Spawned replacement worker `worker-2`." }));
+
 describe("WorkerDetail", () => {
   it("renders timestamps on messages that have them", () => {
     render(
@@ -52,6 +55,8 @@ describe("WorkerDetail", () => {
         detail={detail}
         workspace="test"
         onBack={vi.fn()}
+        onPromoteWorker={promoteWorker}
+        onRedispatchWorker={redispatchWorker}
       />
     );
     // Switch to chat tab
@@ -89,6 +94,8 @@ describe("WorkerDetail", () => {
         detail={detailNoTs}
         workspace="test"
         onBack={vi.fn()}
+        onPromoteWorker={promoteWorker}
+        onRedispatchWorker={redispatchWorker}
       />
     );
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -112,6 +119,8 @@ describe("WorkerDetail", () => {
         detail={detailHumanTs}
         workspace="test"
         onBack={vi.fn()}
+        onPromoteWorker={promoteWorker}
+        onRedispatchWorker={redispatchWorker}
       />
     );
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -127,6 +136,8 @@ describe("WorkerDetail", () => {
         detail={detail}
         workspace="test"
         onBack={vi.fn()}
+        onPromoteWorker={promoteWorker}
+        onRedispatchWorker={redispatchWorker}
       />
     );
 
@@ -143,5 +154,22 @@ describe("WorkerDetail", () => {
     expect(screen.getByText(/Uncommitted diff present/)).toBeInTheDocument();
     expect(screen.getByText(/Ready branch:/)).toBeInTheDocument();
     expect(screen.getByText(/not signalled/)).toBeInTheDocument();
+  });
+
+  it("shows action feedback after promoting a worker", async () => {
+    render(
+      <WorkerDetail
+        worker={worker}
+        detail={detail}
+        workspace="test"
+        onBack={vi.fn()}
+        onPromoteWorker={promoteWorker}
+        onRedispatchWorker={redispatchWorker}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Promote to PR" }));
+
+    expect(await screen.findByText(/Created PR for branch/)).toBeInTheDocument();
   });
 });

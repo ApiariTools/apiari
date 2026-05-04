@@ -122,6 +122,14 @@
   color: var(--red);
 }
 
+.actionNotice {
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(245, 197, 66, 0.08);
+  color: var(--text);
+  font-size: 13px;
+}
+
 /* ── PR Review ── */
 .reviewSummary {
   display: flex;

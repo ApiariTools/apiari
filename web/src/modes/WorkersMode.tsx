@@ -25,6 +25,8 @@ interface Props {
   isMobile: boolean;
   onSelectWorker: (id: string) => void;
   onBackFromWorker: () => void;
+  onPromoteWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onRedispatchWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
 }
 
 export function WorkersMode({
@@ -37,6 +39,8 @@ export function WorkersMode({
   isMobile,
   onSelectWorker,
   onBackFromWorker,
+  onPromoteWorker,
+  onRedispatchWorker,
 }: Props) {
   const activeCount = workers.filter((worker) => worker.status === "running" || worker.status === "active").length;
   const reviewCount = workers.filter((worker) => worker.status === "waiting").length;
@@ -56,6 +60,8 @@ export function WorkersMode({
               remote={remote}
               onBack={onBackFromWorker}
               showBack={isMobile}
+              onPromoteWorker={onPromoteWorker}
+              onRedispatchWorker={onRedispatchWorker}
             />
           </Suspense>
         ) : (
@@ -72,6 +78,8 @@ export function WorkersMode({
                   remote={remote}
                   onBack={onBackFromWorker}
                   showBack={isMobile}
+                  onPromoteWorker={onPromoteWorker}
+                  onRedispatchWorker={onRedispatchWorker}
                 />
               </Suspense>
             </div>

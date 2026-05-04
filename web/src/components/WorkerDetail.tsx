@@ -17,6 +17,8 @@ interface Props {
   remote?: string;
   onBack: () => void;
   showBack?: boolean;
+  onPromoteWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onRedispatchWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
 }
 
 function branchName(branch: string): string {
@@ -38,9 +40,19 @@ function formatTime(iso: string): string {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBack = true }: Props) {
+export function WorkerDetail({
+  worker,
+  detail,
+  workspace,
+  remote,
+  onBack,
+  showBack = true,
+  onPromoteWorker,
+  onRedispatchWorker,
+}: Props) {
   const [sending, setSending] = useState(false);
   const [acting, setActing] = useState(false);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [infoTab, setInfoTab] = useState<InfoTab>("output");
   const [diffContent, setDiffContent] = useState<string | null | undefined>(undefined);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -53,6 +65,10 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
   useEffect(() => {
     setDiffContent(undefined);
   }, [workspace, worker.id, remote]);
+
+  useEffect(() => {
+    setActionMessage(null);
+  }, [worker.id]);
 
   useEffect(() => {
     if (infoTab === "diff" && diffContent === undefined) {
@@ -74,7 +90,8 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
     if (acting) return;
     setActing(true);
     try {
-      await api.promoteWorker(workspace, worker.id, remote);
+      const result = await onPromoteWorker(worker.id);
+      setActionMessage(result.detail);
     } finally {
       setActing(false);
     }
@@ -84,7 +101,8 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
     if (acting) return;
     setActing(true);
     try {
-      await api.redispatchWorker(workspace, worker.id, remote);
+      const result = await onRedispatchWorker(worker.id);
+      setActionMessage(result.detail);
     } finally {
       setActing(false);
     }
@@ -190,6 +208,10 @@ export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBa
             </button>
           </div>
         </div>
+
+        {actionMessage && (
+          <div className={styles.actionNotice}>{actionMessage}</div>
+        )}
 
         {/* PR review summary */}
         {(worker.review_state ||
