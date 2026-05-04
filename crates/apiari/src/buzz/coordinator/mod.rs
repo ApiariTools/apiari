@@ -229,6 +229,10 @@ impl Coordinator {
         self.execution_policy = policy;
     }
 
+    pub fn execution_policy(&self) -> crate::config::BeeExecutionPolicy {
+        self.execution_policy
+    }
+
     /// Set the working directory for the coordinator session.
     pub fn set_working_dir(&mut self, dir: PathBuf) {
         self.working_dir = Some(dir);

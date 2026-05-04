@@ -356,6 +356,7 @@ fn bee_matches_signal_source(bee: &BeeConfig, source: &str) -> bool {
 async fn run_coordinator_task(
     mut coordinator: Coordinator,
     store: SignalStore,
+    ws_config: WorkspaceConfig,
     mut job_rx: mpsc::UnboundedReceiver<CoordinatorJob>,
     cancel_token: Arc<std::sync::Mutex<Option<CancellationToken>>>,
     max_session_turns: u32,
@@ -391,6 +392,77 @@ async fn run_coordinator_task(
                             }
                         }
                     });
+                }
+
+                if coordinator.execution_policy() == crate::config::BeeExecutionPolicy::DispatchOnly
+                {
+                    match try_direct_dispatch_for_dispatch_only(
+                        &slot_name, &ws_config, &bee_name, &text, false,
+                    )
+                    .await
+                    {
+                        Ok(Some(response_text)) => {
+                            typing_cancel.cancel();
+
+                            {
+                                let conv_scope = conversation_scope(&slot_name, &bee_name);
+                                let conv = ConversationStore::new(store.conn(), &conv_scope);
+                                if let Err(e) = conv.save_message(
+                                    "user",
+                                    &text,
+                                    None,
+                                    Some("telegram"),
+                                    None,
+                                    None,
+                                ) {
+                                    warn!("[{slot_name}] failed to save user message: {e}");
+                                }
+                                if let Err(e) = conv.save_message(
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    Some("system"),
+                                    Some(coordinator.provider()),
+                                    None,
+                                ) {
+                                    warn!(
+                                        "[{slot_name}] failed to save direct-dispatch response: {e}"
+                                    );
+                                }
+                            }
+
+                            let msg = OutboundMessage {
+                                chat_id,
+                                text: response_text.clone(),
+                                buttons: vec![],
+                                topic_id,
+                            };
+                            if let Err(e) = channel.send_message(&msg).await {
+                                error!("[{slot_name}] failed to send response: {e}");
+                            }
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity(
+                                    "telegram",
+                                    &slot_name,
+                                    "assistant_message",
+                                    &response_text,
+                                );
+                            }
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            typing_cancel.cancel();
+                            let msg = OutboundMessage {
+                                chat_id,
+                                text: format!("Error: {e}"),
+                                buttons: vec![],
+                                topic_id,
+                            };
+                            let _ = channel.send_message(&msg).await;
+                            continue;
+                        }
+                    }
                 }
 
                 let bundle = match coordinator.prepare_dispatch(&store) {
@@ -600,6 +672,105 @@ async fn run_coordinator_task(
                     warn!("[{ws_name}] failed to set thinking status: {e}");
                 }
                 send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "thinking", "", None);
+
+                if coordinator.execution_policy() == crate::config::BeeExecutionPolicy::DispatchOnly
+                {
+                    match try_direct_dispatch_for_dispatch_only(
+                        &ws_name,
+                        &ws_config,
+                        &bee_name,
+                        &text,
+                        !image_paths.is_empty(),
+                    )
+                    .await
+                    {
+                        Ok(Some(response_text)) => {
+                            let assistant_created_at = chrono::Utc::now().to_rfc3339();
+                            let assistant_message_id = {
+                                let conv = ConversationStore::new(store.conn(), &conv_scope);
+                                match conv.save_message(
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    Some("system"),
+                                    Some(coordinator.provider()),
+                                    None,
+                                ) {
+                                    Ok(id) => Some(id),
+                                    Err(e) => {
+                                        warn!(
+                                            "[{ws_name}] failed to save direct-dispatch response: {e}"
+                                        );
+                                        None
+                                    }
+                                }
+                            };
+                            if let Err(e) = store.set_bot_status(&bee_name, "idle", "", None) {
+                                warn!("[{ws_name}] failed to clear bot status: {e}");
+                            }
+                            if let Some(id) = assistant_message_id {
+                                send_web_message_update(
+                                    &web_updates_tx,
+                                    id,
+                                    &ws_name,
+                                    &bee_name,
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    &assistant_created_at,
+                                );
+                            }
+                            send_web_bot_status(
+                                &web_updates_tx,
+                                &ws_name,
+                                &bee_name,
+                                "idle",
+                                "",
+                                None,
+                            );
+                            let _ = responder.send(socket::DaemonResponse::Token {
+                                workspace: ws_name.clone(),
+                                text: response_text,
+                            });
+                            let _ = responder.send(socket::DaemonResponse::Done {
+                                workspace: ws_name.clone(),
+                            });
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            let err_text = e.to_string();
+                            if let Err(log_err) = store.log_bot_turn_failure(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "direct_dispatch",
+                                &err_text,
+                            ) {
+                                warn!(
+                                    "[{ws_name}] failed to log direct-dispatch failure: {log_err}"
+                                );
+                            }
+                            if let Err(status_err) =
+                                store.set_bot_status(&bee_name, "idle", "", None)
+                            {
+                                warn!("[{ws_name}] failed to clear bot status: {status_err}");
+                            }
+                            send_web_bot_status(
+                                &web_updates_tx,
+                                &ws_name,
+                                &bee_name,
+                                "idle",
+                                "",
+                                None,
+                            );
+                            let _ = responder.send(socket::DaemonResponse::Error {
+                                workspace: ws_name.clone(),
+                                text: err_text,
+                            });
+                            continue;
+                        }
+                    }
+                }
 
                 let bundle = match coordinator.prepare_dispatch(&store) {
                     Ok(b) => b,
@@ -1978,6 +2149,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             let coord_handle = tokio::spawn(run_coordinator_task(
                 coordinator,
                 coord_store,
+                ws.config.clone(),
                 coord_rx,
                 cancel_token.clone(),
                 bee.max_session_turns,
@@ -2517,6 +2689,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                         bee.coord_handle = Some(tokio::spawn(run_coordinator_task(
                             coordinator,
                             coord_store,
+                            slot.config.clone(),
                             new_rx,
                             cancel_token,
                             bee.max_session_turns,
@@ -4583,6 +4756,97 @@ fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
 }
 
+fn looks_like_implementation_request(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "fix ",
+        "fix:",
+        "bug",
+        "implement",
+        "build",
+        "change ",
+        "change:",
+        "update ",
+        "update:",
+        "refactor",
+        "patch",
+        "wire ",
+        "wire up",
+        "add ",
+        "remove ",
+        "rename ",
+        "make it",
+        "make this",
+        "edit ",
+        "modify ",
+        "cleanup",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn resolve_auto_dispatch_repo(
+    workspace_name: &str,
+    ws_config: &WorkspaceConfig,
+) -> Result<Option<String>> {
+    let repos = apiari_swarm::core::git::detect_repos(&ws_config.root)?;
+    if repos.is_empty() {
+        return Ok(None);
+    }
+    if repos.len() == 1 {
+        return Ok(Some(apiari_swarm::core::git::repo_name(&repos[0])));
+    }
+
+    if let Some(repo) = repos
+        .iter()
+        .find(|repo| apiari_swarm::core::git::repo_name(repo) == workspace_name)
+    {
+        return Ok(Some(apiari_swarm::core::git::repo_name(repo)));
+    }
+
+    if let Some(root_name) = ws_config
+        .root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        && let Some(repo) = repos
+            .iter()
+            .find(|repo| apiari_swarm::core::git::repo_name(repo) == root_name)
+    {
+        return Ok(Some(apiari_swarm::core::git::repo_name(repo)));
+    }
+
+    Ok(None)
+}
+
+async fn try_direct_dispatch_for_dispatch_only(
+    workspace_name: &str,
+    ws_config: &WorkspaceConfig,
+    bee_name: &str,
+    text: &str,
+    has_attachments: bool,
+) -> Result<Option<String>> {
+    if has_attachments || !looks_like_implementation_request(text) {
+        return Ok(None);
+    }
+
+    let Some(repo) = resolve_auto_dispatch_repo(workspace_name, ws_config)? else {
+        return Ok(Some(
+            "This looks like an implementation request, but I could not choose a repo automatically. Tell me which repo to dispatch to."
+                .to_string(),
+        ));
+    };
+
+    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
+    let worker_id = swarm
+        .create_worker(&repo, text, &ws_config.swarm.default_agent)
+        .await?;
+
+    Ok(Some(format!(
+        "Dispatched worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}.",
+        ws_config.swarm.default_agent
+    )))
+}
+
 /// Handle a TUI slash command. Returns `(handled, inject_context)` where
 /// `handled` is `true` if the command was recognized and processed, and
 /// `inject_context` is an optional string to forward into the coordinator
@@ -5500,6 +5764,50 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn test_looks_like_implementation_request() {
+        assert!(super::looks_like_implementation_request(
+            "fix the chat loading bug"
+        ));
+        assert!(super::looks_like_implementation_request(
+            "implement a diagnostics page"
+        ));
+        assert!(!super::looks_like_implementation_request(
+            "what does this file do?"
+        ));
+    }
+
+    #[test]
+    fn test_resolve_auto_dispatch_repo_prefers_workspace_named_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+
+        let apiari_repo = workspace_root.join("apiari");
+        std::fs::create_dir_all(&apiari_repo).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&apiari_repo)
+            .output()
+            .unwrap();
+
+        let other_repo = workspace_root.join("other-repo");
+        std::fs::create_dir_all(&other_repo).unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&other_repo)
+            .output()
+            .unwrap();
+
+        let ws_config: crate::config::WorkspaceConfig =
+            toml::from_str(&format!("root = \"{}\"\n", workspace_root.display())).unwrap();
+
+        let repo = super::resolve_auto_dispatch_repo("apiari", &ws_config)
+            .unwrap()
+            .unwrap();
+        assert_eq!(repo, "apiari");
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_web_chat_flow_persists_messages_and_returns_bot_to_idle() {
@@ -5517,6 +5825,8 @@ mod tests {
 
         let db_path = temp.path().join("signals.db");
         let store = SignalStore::open(&db_path, "ws").unwrap();
+        let ws_config: crate::config::WorkspaceConfig =
+            toml::from_str(&format!("root = \"{}\"\n", temp.path().display())).unwrap();
         let mut coordinator = crate::buzz::coordinator::Coordinator::new("gemini-2.5-flash", 20);
         coordinator.set_provider("gemini".to_string());
         coordinator.set_working_dir(temp.path().to_path_buf());
@@ -5527,6 +5837,7 @@ mod tests {
             super::run_coordinator_task(
                 coordinator,
                 store,
+                ws_config,
                 job_rx,
                 cancel_token,
                 0,
@@ -5637,6 +5948,8 @@ mod tests {
 
         let db_path = temp.path().join("signals.db");
         let store = SignalStore::open(&db_path, "ws").unwrap();
+        let ws_config: crate::config::WorkspaceConfig =
+            toml::from_str(&format!("root = \"{}\"\n", temp.path().display())).unwrap();
         let mut coordinator = crate::buzz::coordinator::Coordinator::new("gemini-2.5-flash", 20);
         coordinator.set_provider("gemini".to_string());
         coordinator.set_working_dir(temp.path().to_path_buf());
@@ -5647,6 +5960,7 @@ mod tests {
             super::run_coordinator_task(
                 coordinator,
                 store,
+                ws_config,
                 job_rx,
                 cancel_token,
                 0,
@@ -5740,6 +6054,8 @@ mod tests {
 
         let db_path = temp.path().join("signals.db");
         let store = SignalStore::open(&db_path, "ws").unwrap();
+        let ws_config: crate::config::WorkspaceConfig =
+            toml::from_str(&format!("root = \"{}\"\n", temp.path().display())).unwrap();
         let mut coordinator = crate::buzz::coordinator::Coordinator::new("gemini-2.5-flash", 20);
         coordinator.set_provider("gemini".to_string());
         coordinator.set_working_dir(temp.path().to_path_buf());
@@ -5750,6 +6066,7 @@ mod tests {
             super::run_coordinator_task(
                 coordinator,
                 store,
+                ws_config,
                 job_rx,
                 cancel_token,
                 0,
