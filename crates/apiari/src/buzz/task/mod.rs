@@ -3,9 +3,11 @@
 //! Tasks move through stages on a kanban board. This module defines the
 //! data types; `store` provides the SQLite-backed persistence layer.
 
+pub mod attempt;
 pub mod event_store;
 pub mod store;
 
+pub use attempt::{TaskAttempt, TaskAttemptRole, TaskAttemptState};
 use chrono::{DateTime, Utc};
 pub use event_store::{ActivityEvent, ActivityEventStore};
 use serde::{Deserialize, Serialize};

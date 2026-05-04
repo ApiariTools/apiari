@@ -7,7 +7,10 @@ use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Result, WrapErr, eyre};
 use rusqlite::{Connection, params};
 
-use super::{Task, TaskEvent, TaskStage, event_store::ActivityEventStore};
+use super::{
+    Task, TaskAttempt, TaskAttemptRole, TaskAttemptState, TaskEvent, TaskStage,
+    event_store::ActivityEventStore,
+};
 
 /// SQLite task store.
 pub struct TaskStore {
@@ -71,6 +74,26 @@ impl TaskStore {
             );
 
             CREATE INDEX IF NOT EXISTS idx_task_events_task_id ON task_events(task_id);
+
+            CREATE TABLE IF NOT EXISTS task_attempts (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                workspace TEXT NOT NULL,
+                worker_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                state TEXT NOT NULL,
+                branch TEXT,
+                pr_url TEXT,
+                pr_number INTEGER,
+                detail TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_attempts_task_id ON task_attempts(task_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_task_attempts_workspace_worker ON task_attempts(workspace, worker_id);
             ",
         )
         .wrap_err("failed to create task tables")?;
@@ -287,6 +310,10 @@ impl TaskStore {
             "DELETE FROM task_events WHERE task_id IN (SELECT id FROM tasks WHERE workspace = ?1)",
             params![workspace],
         )?;
+        self.conn.execute(
+            "DELETE FROM task_attempts WHERE workspace = ?1",
+            params![workspace],
+        )?;
         let count = self
             .conn
             .execute("DELETE FROM tasks WHERE workspace = ?1", params![workspace])?;
@@ -317,6 +344,128 @@ impl TaskStore {
                 event.detail,
                 event.created_at.to_rfc3339(),
             ],
+        )?;
+        Ok(())
+    }
+
+    pub fn create_attempt(&self, attempt: &TaskAttempt) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO task_attempts
+             (id, task_id, workspace, worker_id, role, state, branch, pr_url, pr_number,
+              detail, created_at, updated_at, completed_at, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                attempt.id,
+                attempt.task_id,
+                attempt.workspace,
+                attempt.worker_id,
+                attempt.role.as_str(),
+                attempt.state.as_str(),
+                attempt.branch,
+                attempt.pr_url,
+                attempt.pr_number,
+                attempt.detail,
+                attempt.created_at.to_rfc3339(),
+                attempt.updated_at.to_rfc3339(),
+                attempt.completed_at.map(|t| t.to_rfc3339()),
+                attempt.metadata.to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn find_attempt_by_worker(
+        &self,
+        workspace: &str,
+        worker_id: &str,
+    ) -> Result<Option<TaskAttempt>> {
+        let result = self.conn.query_row(
+            "SELECT id, task_id, workspace, worker_id, role, state, branch, pr_url, pr_number,
+             detail, created_at, updated_at, completed_at, metadata
+             FROM task_attempts
+             WHERE workspace = ?1 AND worker_id = ?2
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![workspace, worker_id],
+            row_to_task_attempt,
+        );
+        match result {
+            Ok(attempt) => Ok(Some(attempt)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e).wrap_err("failed to find attempt by worker"),
+        }
+    }
+
+    pub fn get_latest_attempt_for_task(&self, task_id: &str) -> Result<Option<TaskAttempt>> {
+        let result = self.conn.query_row(
+            "SELECT id, task_id, workspace, worker_id, role, state, branch, pr_url, pr_number,
+             detail, created_at, updated_at, completed_at, metadata
+             FROM task_attempts
+             WHERE task_id = ?1
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![task_id],
+            row_to_task_attempt,
+        );
+        match result {
+            Ok(attempt) => Ok(Some(attempt)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e).wrap_err("failed to get latest attempt for task"),
+        }
+    }
+
+    pub fn update_attempt_state(
+        &self,
+        id: &str,
+        state: &TaskAttemptState,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let completed_at = if state.is_terminal() {
+            Some(now.clone())
+        } else {
+            None
+        };
+        self.conn.execute(
+            "UPDATE task_attempts
+             SET state = ?1, detail = COALESCE(?2, detail), updated_at = ?3, completed_at = COALESCE(?4, completed_at)
+             WHERE id = ?5",
+            params![state.as_str(), detail, now, completed_at, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_attempt_state_by_worker(
+        &self,
+        workspace: &str,
+        worker_id: &str,
+        state: &TaskAttemptState,
+        detail: Option<&str>,
+    ) -> Result<()> {
+        if let Some(attempt) = self.find_attempt_by_worker(workspace, worker_id)? {
+            self.update_attempt_state(&attempt.id, state, detail)?;
+        }
+        Ok(())
+    }
+
+    pub fn attach_attempt_pr_by_worker(
+        &self,
+        workspace: &str,
+        worker_id: &str,
+        pr_url: &str,
+        pr_number: Option<i64>,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE task_attempts
+             SET pr_url = ?1, pr_number = ?2, state = 'Succeeded', updated_at = ?3, completed_at = ?3
+             WHERE id = (
+                SELECT id FROM task_attempts
+                WHERE workspace = ?4 AND worker_id = ?5
+                ORDER BY created_at DESC
+                LIMIT 1
+             )",
+            params![pr_url, pr_number, now, workspace, worker_id],
         )?;
         Ok(())
     }
@@ -428,6 +577,37 @@ fn row_to_task_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskEvent> {
         created_at: created_at
             .parse::<DateTime<Utc>>()
             .unwrap_or_else(|_| Utc::now()),
+    })
+}
+
+fn row_to_task_attempt(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskAttempt> {
+    let role_str: String = row.get(4)?;
+    let state_str: String = row.get(5)?;
+    let created_at: String = row.get(10)?;
+    let updated_at: String = row.get(11)?;
+    let completed_at: Option<String> = row.get(12)?;
+    let metadata_str: String = row.get(13)?;
+
+    Ok(TaskAttempt {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        workspace: row.get(2)?,
+        worker_id: row.get(3)?,
+        role: TaskAttemptRole::from_str(&role_str).unwrap_or(TaskAttemptRole::Implementation),
+        state: TaskAttemptState::from_str(&state_str).unwrap_or(TaskAttemptState::Created),
+        branch: row.get(6)?,
+        pr_url: row.get(7)?,
+        pr_number: row.get(8)?,
+        detail: row.get(9)?,
+        created_at: created_at
+            .parse::<DateTime<Utc>>()
+            .unwrap_or_else(|_| Utc::now()),
+        updated_at: updated_at
+            .parse::<DateTime<Utc>>()
+            .unwrap_or_else(|_| Utc::now()),
+        completed_at: completed_at.and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+        metadata: serde_json::from_str(&metadata_str)
+            .unwrap_or(serde_json::Value::Object(serde_json::Map::new())),
     })
 }
 
@@ -723,5 +903,95 @@ mod tests {
             events.is_empty(),
             "no events should be logged on rejected transition"
         );
+    }
+
+    #[test]
+    fn test_create_and_update_attempt() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_task("acme", "Attempt task");
+        store.create_task(&task).unwrap();
+
+        let now = Utc::now();
+        let attempt = TaskAttempt {
+            id: Uuid::new_v4().to_string(),
+            task_id: task.id.clone(),
+            workspace: "acme".to_string(),
+            worker_id: "worker-1".to_string(),
+            role: TaskAttemptRole::Implementation,
+            state: TaskAttemptState::Running,
+            branch: Some("swarm/worker-1".to_string()),
+            pr_url: None,
+            pr_number: None,
+            detail: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            metadata: serde_json::json!({}),
+        };
+        store.create_attempt(&attempt).unwrap();
+
+        let found = store
+            .find_attempt_by_worker("acme", "worker-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, attempt.id);
+        assert_eq!(found.state, TaskAttemptState::Running);
+
+        store
+            .update_attempt_state(&attempt.id, &TaskAttemptState::Blocked, Some("Need input"))
+            .unwrap();
+        let updated = store
+            .get_latest_attempt_for_task(&task.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, TaskAttemptState::Blocked);
+        assert_eq!(updated.detail.as_deref(), Some("Need input"));
+        assert!(updated.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_attach_attempt_pr_by_worker_marks_succeeded() {
+        let store = TaskStore::open_memory().unwrap();
+        let task = make_task("acme", "PR attempt");
+        store.create_task(&task).unwrap();
+
+        let now = Utc::now();
+        let attempt = TaskAttempt {
+            id: Uuid::new_v4().to_string(),
+            task_id: task.id.clone(),
+            workspace: "acme".to_string(),
+            worker_id: "worker-2".to_string(),
+            role: TaskAttemptRole::Implementation,
+            state: TaskAttemptState::Running,
+            branch: Some("swarm/worker-2".to_string()),
+            pr_url: None,
+            pr_number: None,
+            detail: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            metadata: serde_json::json!({}),
+        };
+        store.create_attempt(&attempt).unwrap();
+
+        store
+            .attach_attempt_pr_by_worker(
+                "acme",
+                "worker-2",
+                "https://github.com/org/repo/pull/42",
+                Some(42),
+            )
+            .unwrap();
+
+        let updated = store
+            .get_latest_attempt_for_task(&task.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.state, TaskAttemptState::Succeeded);
+        assert_eq!(
+            updated.pr_url.as_deref(),
+            Some("https://github.com/org/repo/pull/42")
+        );
+        assert_eq!(updated.pr_number, Some(42));
     }
 }

@@ -3403,6 +3403,25 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                             if let Err(e) = task_store.create_task(&task) {
                                                                 tracing::warn!("[task-engine] failed to create task for worker {worker_id}: {e}");
                                                             } else {
+                                                                let attempt = crate::buzz::task::TaskAttempt {
+                                                                    id: uuid::Uuid::new_v4().to_string(),
+                                                                    task_id: task.id.clone(),
+                                                                    workspace: slot.name.clone(),
+                                                                    worker_id: worker_id.clone(),
+                                                                    role: crate::buzz::task::TaskAttemptRole::Implementation,
+                                                                    state: crate::buzz::task::TaskAttemptState::Running,
+                                                                    branch: None,
+                                                                    pr_url: None,
+                                                                    pr_number: None,
+                                                                    detail: Some("Worker spawned".to_string()),
+                                                                    created_at: now,
+                                                                    updated_at: now,
+                                                                    completed_at: None,
+                                                                    metadata: serde_json::json!({}),
+                                                                };
+                                                                if let Err(e) = task_store.create_attempt(&attempt) {
+                                                                    tracing::warn!("[task-engine] failed to create attempt for worker {worker_id}: {e}");
+                                                                }
                                                                 info!("[task-engine] created task '{}' for worker {worker_id}", task.title);
                                                                 // Log worker spawn and initial stage to activity feed.
                                                                 if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
@@ -3455,6 +3474,10 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                     && let Err(e) = task_store.update_task_pr(&task.id, url, num) {
                                                                         tracing::warn!("[task-engine] failed to update PR on task: {e}");
                                                                     }
+                                                            if let Some(ref url) = pr_url
+                                                                && let Err(e) = task_store.attach_attempt_pr_by_worker(&slot.name, &worker_id, url, pr_number) {
+                                                                    tracing::warn!("[task-engine] failed to attach PR on attempt: {e}");
+                                                                }
                                                             if let Some(ref r) = repo
                                                                 && let Err(e) = task_store.update_task_repo(&task.id, r) {
                                                                     tracing::warn!("[task-engine] failed to update repo on task: {e}");
@@ -3536,6 +3559,26 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                     if let Err(e) = ts.update_task_metadata(&task_id, &meta) {
                                                                         tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
                                                                     } else {
+                                                                        let now = chrono::Utc::now();
+                                                                        let attempt = crate::buzz::task::TaskAttempt {
+                                                                            id: uuid::Uuid::new_v4().to_string(),
+                                                                            task_id: task_id.clone(),
+                                                                            workspace: ws_name_for_review.clone(),
+                                                                            worker_id: reviewer_id.clone(),
+                                                                            role: crate::buzz::task::TaskAttemptRole::Reviewer,
+                                                                            state: crate::buzz::task::TaskAttemptState::Running,
+                                                                            branch: None,
+                                                                            pr_url: task.pr_url.clone(),
+                                                                            pr_number: task.pr_number,
+                                                                            detail: Some("Reviewer dispatched".to_string()),
+                                                                            created_at: now,
+                                                                            updated_at: now,
+                                                                            completed_at: None,
+                                                                            metadata: serde_json::json!({}),
+                                                                        };
+                                                                        if let Err(e) = ts.create_attempt(&attempt) {
+                                                                            tracing::warn!("[task-engine] failed to create reviewer attempt: {e}");
+                                                                        }
                                                                         info!("[task-engine] dispatched reviewer {reviewer_id} for task '{task_title}'");
                                                                         if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&db_path) {
                                                                             let _ = ae.log_event(
@@ -3640,6 +3683,26 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                         if let Err(e) = ts.update_task_metadata(&task_id, &meta2) {
                                                                             tracing::warn!("[task-engine] failed to store reviewer_worker_id: {e}");
                                                                         } else {
+                                                                            let now = chrono::Utc::now();
+                                                                            let attempt = crate::buzz::task::TaskAttempt {
+                                                                                id: uuid::Uuid::new_v4().to_string(),
+                                                                                task_id: task_id.clone(),
+                                                                                workspace: ws_name_branch.clone(),
+                                                                                worker_id: reviewer_id.clone(),
+                                                                                role: crate::buzz::task::TaskAttemptRole::Reviewer,
+                                                                                state: crate::buzz::task::TaskAttemptState::Running,
+                                                                                branch: Some(branch_name.clone()),
+                                                                                pr_url: None,
+                                                                                pr_number: None,
+                                                                                detail: Some("Branch reviewer dispatched".to_string()),
+                                                                                created_at: now,
+                                                                                updated_at: now,
+                                                                                completed_at: None,
+                                                                                metadata: serde_json::json!({}),
+                                                                            };
+                                                                            if let Err(e) = ts.create_attempt(&attempt) {
+                                                                                tracing::warn!("[task-engine] failed to create branch reviewer attempt: {e}");
+                                                                            }
                                                                             info!("[task-engine] dispatched branch reviewer {reviewer_id} for task '{task_title}'");
                                                                             if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(&db_path) {
                                                                                 let _ = ae.log_event(
@@ -3758,7 +3821,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                 Ok((vid, true)) => {
                                                                     info!("[task-engine] emitted review verdict '{verdict}' for task '{}'", task.title);
                                                                     // Log review event to activity feed.
-                                                                    if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
+                                                                if let Ok(ae) = crate::buzz::task::ActivityEventStore::open(slot.store.db_path()) {
                                                                         let review_meta = serde_json::json!({
                                                                             "verdict": verdict,
                                                                             "reviewer_worker_id": worker_id,
@@ -3778,6 +3841,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                     if let Ok(Some(vrecord)) = slot.store.get_signal(vid)
                                                                         && let Ok(ts2) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                                                     {
+                                                                        let _ = ts2.update_attempt_state_by_worker(
+                                                                            &slot.name,
+                                                                            &worker_id,
+                                                                            &crate::buzz::task::TaskAttemptState::Succeeded,
+                                                                            Some(&format!("Review verdict: {verdict}")),
+                                                                        );
                                                                         match slot.orchestrator.process_signal(&ts2, &slot.name, &vrecord) {
                                                                             Ok(verdict_orch_result) => {
                                                                                 let ve_result = verdict_orch_result.engine_result;
@@ -3873,6 +3942,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                     tracing::warn!("[task-engine] failed to upsert verdict signal: {e}");
                                                                 }
                                                             }
+                                                        } else {
+                                                            let _ = task_store.update_attempt_state_by_worker(
+                                                                &slot.name,
+                                                                &worker_id,
+                                                                &crate::buzz::task::TaskAttemptState::Failed,
+                                                                Some("Reviewer closed without verdict"),
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -3887,6 +3963,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                     && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path())
                                                         && let Ok(Some(task)) = task_store.find_task_by_worker(&slot.name, &worker_id)
                                                             && !task.stage.is_terminal() && task.pr_url.is_none() {
+                                                                let _ = task_store.update_attempt_state_by_worker(
+                                                                    &slot.name,
+                                                                    &worker_id,
+                                                                    &crate::buzz::task::TaskAttemptState::Failed,
+                                                                    Some("Worker closed without PR"),
+                                                                );
                                                                 let from_stage = task.stage.clone();
                                                                 if let Err(e) = task_store.transition_task(
                                                                     &task.id,
@@ -3916,6 +3998,19 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                     }
                                                                 }
                                                             }
+                                            }
+
+                                            if is_new && (update.source == "swarm_worker_waiting" || (update.source == "swarm" && update.external_id.starts_with("swarm-waiting-"))) {
+                                                let worker_id = update.external_id.strip_prefix("swarm-waiting-").unwrap_or("").to_string();
+                                                if !worker_id.is_empty()
+                                                    && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(slot.store.db_path()) {
+                                                    let _ = task_store.update_attempt_state_by_worker(
+                                                        &slot.name,
+                                                        &worker_id,
+                                                        &crate::buzz::task::TaskAttemptState::Waiting,
+                                                        Some("Worker waiting for input"),
+                                                    );
+                                                }
                                             }
 
                                             // Auto-forward CI failure to the matching swarm worker
