@@ -563,9 +563,9 @@ describe("WebSocket message dedup", () => {
 
     await renderAndSelectBot("Main");
 
-    // Wait for initial messages to render before clearing mocks
+    // Wait for the Main chat surface to be active before clearing mocks
     await waitFor(() => {
-      expect(screen.getByText("hello")).toBeInTheDocument();
+      expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument();
     });
 
     // Clear call counts from initial load
@@ -603,7 +603,7 @@ describe("WebSocket message dedup", () => {
     await renderAndSelectBot("Main");
 
     await waitFor(() => {
-      expect(screen.getByText("hello")).toBeInTheDocument();
+      expect(screen.getByPlaceholderText(/Message Main/)).toBeInTheDocument();
     });
 
     (api.getConversations as ReturnType<typeof vi.fn>).mockClear();
