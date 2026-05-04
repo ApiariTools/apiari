@@ -41,6 +41,15 @@ export const getTasks = vi.fn().mockResolvedValue([
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T02:00:00Z",
     resolved_at: null,
+    latest_attempt: {
+      worker_id: "worker-1",
+      role: "implementation",
+      state: "succeeded",
+      detail: "Opened PR for review.",
+      created_at: "2026-01-01T00:10:00Z",
+      updated_at: "2026-01-01T02:00:00Z",
+      completed_at: "2026-01-01T02:00:00Z",
+    },
     cursor: null,
   },
 ]);

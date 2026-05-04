@@ -34,6 +34,21 @@ function toneForStage(stage: string): "accent" | "success" | "neutral" | "danger
   return "neutral";
 }
 
+function toneForAttemptState(state?: string | null): "accent" | "success" | "neutral" | "danger" {
+  if (state === "succeeded") return "success";
+  if (state === "failed" || state === "cancelled") return "danger";
+  if (state === "blocked" || state === "waiting") return "accent";
+  return "neutral";
+}
+
+function labelForAttemptRole(role?: string | null): string | null {
+  if (!role) return null;
+  if (role === "implementation") return "Implementation";
+  if (role === "reviewer") return "Reviewer";
+  if (role === "investigator") return "Investigator";
+  return role;
+}
+
 export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
   const activeTasks = tasks.filter((task) => !TERMINAL_STAGES.includes(task.stage as (typeof TERMINAL_STAGES)[number]));
   const terminalTasks = tasks
@@ -89,6 +104,7 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                           const linkedWorker = task.worker_id
                             ? workers.find((worker) => worker.id === task.worker_id)
                             : null;
+                          const latestAttempt = task.latest_attempt ?? null;
                           return (
                             <article key={task.id} className={styles.card}>
                               <div className={styles.cardTop}>
@@ -100,6 +116,14 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                                 {task.source ? <span>source: {task.source}</span> : null}
                                 <span>updated: {formatTaskTime(task.updated_at)}</span>
                               </div>
+                              {latestAttempt ? (
+                                <div className={styles.metaRow}>
+                                  <StatusBadge tone={toneForAttemptState(latestAttempt.state)}>
+                                    {labelForAttemptRole(latestAttempt.role) ?? "Attempt"} {latestAttempt.state}
+                                  </StatusBadge>
+                                  {latestAttempt.detail ? <span>{latestAttempt.detail}</span> : null}
+                                </div>
+                              ) : null}
                               <div className={styles.actions}>
                                 {task.worker_id ? (
                                   <button
@@ -148,6 +172,11 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                         {task.repo ? <span>repo: {task.repo}</span> : null}
                         <span>{formatTaskTime(task.resolved_at || task.updated_at)}</span>
                       </div>
+                      {task.latest_attempt?.detail ? (
+                        <div className={styles.metaRow}>
+                          <span>{task.latest_attempt.detail}</span>
+                        </div>
+                      ) : null}
                     </article>
                   ))}
                 </div>

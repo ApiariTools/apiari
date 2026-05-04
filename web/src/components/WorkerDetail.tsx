@@ -127,6 +127,7 @@ export function WorkerDetail({
   const taskTitle = detail?.task_title ?? worker.task_title;
   const taskStage = detail?.task_stage ?? worker.task_stage;
   const taskRepo = detail?.task_repo ?? worker.task_repo;
+  const latestAttempt = detail?.latest_attempt ?? worker.latest_attempt ?? null;
   const executionNote = detail?.execution_note ?? worker.execution_note;
   const readyBranch = detail?.ready_branch ?? worker.ready_branch;
   const hasUncommittedChanges = detail?.has_uncommitted_changes ?? worker.has_uncommitted_changes;
@@ -358,6 +359,12 @@ export function WorkerDetail({
               {taskTitle && <p><strong>Task:</strong> {taskTitle}</p>}
               {taskStage && <p><strong>Lifecycle:</strong> {taskStage}</p>}
               {taskRepo && <p><strong>Repo:</strong> {taskRepo}</p>}
+              {latestAttempt?.role ? (
+                <p><strong>Latest attempt:</strong> {latestAttempt.role} {latestAttempt.state}</p>
+              ) : null}
+              {latestAttempt?.detail ? (
+                <p><strong>Attempt detail:</strong> {latestAttempt.detail}</p>
+              ) : null}
               {hasUncommittedChanges && <p><strong>Execution:</strong> Uncommitted diff present</p>}
               {readyBranch ? (
                 <p><strong>Ready branch:</strong> {readyBranch}</p>

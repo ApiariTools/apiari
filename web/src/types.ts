@@ -27,6 +27,7 @@ export interface Worker {
   task_title?: string | null;
   task_stage?: string | null;
   task_repo?: string | null;
+  latest_attempt?: TaskAttemptSummary | null;
   pr_url: string | null;
   pr_title: string | null;
   description: string | null;
@@ -51,6 +52,7 @@ export interface Task {
   created_at: string;
   updated_at: string;
   resolved_at?: string | null;
+  latest_attempt?: TaskAttemptSummary | null;
   cursor?: {
     current_node: string;
     counters: Record<string, number>;
@@ -61,6 +63,19 @@ export interface Task {
       timestamp: string;
     }>;
   } | null;
+}
+
+export interface TaskAttemptSummary {
+  worker_id: string;
+  role: string;
+  state: string;
+  branch?: string | null;
+  pr_url?: string | null;
+  pr_number?: number | null;
+  detail?: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
 }
 
 export interface Repo {

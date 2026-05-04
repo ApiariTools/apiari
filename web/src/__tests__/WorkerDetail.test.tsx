@@ -25,6 +25,15 @@ const worker: Worker = {
   task_title: "Tighten worker lifecycle",
   task_stage: "Human Review",
   task_repo: "apiari",
+  latest_attempt: {
+    worker_id: "worker-1",
+    role: "implementation",
+    state: "failed",
+    detail: "Worker finished without a ready branch or PR handoff.",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:02:00Z",
+    completed_at: "2026-01-01T00:02:00Z",
+  },
   pr_url: null,
   pr_title: null,
   description: null,
@@ -162,12 +171,16 @@ describe("WorkerDetail", () => {
     expect(
       screen.getByText((_, el) => el?.textContent === "Repo: apiari"),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Latest attempt:/)).toBeInTheDocument();
+    expect(screen.getByText(/implementation failed/)).toBeInTheDocument();
+    expect(screen.getByText(/Attempt detail:/)).toBeInTheDocument();
+    expect(screen.getByText(/Worker finished without a ready branch or PR handoff/)).toBeInTheDocument();
     expect(screen.getByText(/Execution:/)).toBeInTheDocument();
     expect(screen.getByText(/Uncommitted diff present/)).toBeInTheDocument();
     expect(screen.getByText(/Ready branch:/)).toBeInTheDocument();
     expect(screen.getByText(/not signalled/)).toBeInTheDocument();
     expect(screen.getByText(/Worker kind:/)).toBeInTheDocument();
-    expect(screen.getByText(/implementation/)).toBeInTheDocument();
+    expect(screen.getAllByText(/implementation/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Inherited task/)).toBeInTheDocument();
     expect(screen.getByText(/Inherited context/)).toBeInTheDocument();
     expect(screen.getByText(/Execution plan/)).toBeInTheDocument();

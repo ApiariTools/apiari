@@ -26,7 +26,7 @@ use tracing::{error, info};
 
 use crate::buzz::{
     orchestrator::graph::{WorkflowGraph, walker::GraphCursor},
-    task::{Task, store::TaskStore},
+    task::{Task, TaskAttempt, store::TaskStore},
 };
 
 // ── Shared state ───────────────────────────────────────────────────────
@@ -197,7 +197,28 @@ pub struct TaskView {
     pub created_at: String,
     pub updated_at: String,
     pub resolved_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_attempt: Option<TaskAttemptView>,
     pub cursor: Option<CursorView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaskAttemptView {
+    pub worker_id: String,
+    pub role: String,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_number: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
 }
 
 /// Cursor state for a task.
@@ -304,7 +325,46 @@ pub struct BeesConfigResponse {
 
 // ── Conversions ────────────────────────────────────────────────────────
 
+fn task_attempt_to_view(attempt: &TaskAttempt) -> TaskAttemptView {
+    TaskAttemptView {
+        worker_id: attempt.worker_id.clone(),
+        role: attempt.role.as_str().to_string(),
+        state: attempt.state.as_str().to_string(),
+        branch: attempt.branch.clone(),
+        pr_url: attempt.pr_url.clone(),
+        pr_number: attempt.pr_number,
+        detail: attempt.detail.clone(),
+        created_at: attempt.created_at.to_rfc3339(),
+        updated_at: attempt.updated_at.to_rfc3339(),
+        completed_at: attempt.completed_at.map(|value| value.to_rfc3339()),
+    }
+}
+
+fn latest_attempt_view_for_task(store: &TaskStore, task_id: &str) -> Option<TaskAttemptView> {
+    store
+        .get_latest_attempt_for_task(task_id)
+        .ok()
+        .flatten()
+        .map(|attempt| task_attempt_to_view(&attempt))
+}
+
+fn latest_attempt_view_for_worker(
+    store: &TaskStore,
+    workspace: &str,
+    worker_id: &str,
+) -> Option<TaskAttemptView> {
+    store
+        .find_attempt_by_worker(workspace, worker_id)
+        .ok()
+        .flatten()
+        .map(|attempt| task_attempt_to_view(&attempt))
+}
+
 pub fn task_to_view(task: &Task) -> TaskView {
+    task_to_view_with_attempt(task, None)
+}
+
+fn task_to_view_with_attempt(task: &Task, latest_attempt: Option<TaskAttemptView>) -> TaskView {
     let cursor: Option<CursorView> = task
         .metadata
         .get("graph_cursor")
@@ -336,6 +396,7 @@ pub fn task_to_view(task: &Task) -> TaskView {
         created_at: task.created_at.to_rfc3339(),
         updated_at: task.updated_at.to_rfc3339(),
         resolved_at: task.resolved_at.map(|value| value.to_rfc3339()),
+        latest_attempt,
         cursor,
     }
 }
@@ -590,7 +651,7 @@ async fn get_tasks(
         .get_all_tasks(workspace)
         .unwrap_or_default()
         .iter()
-        .map(task_to_view)
+        .map(|task| task_to_view_with_attempt(task, latest_attempt_view_for_task(&store, &task.id)))
         .collect();
 
     Json(tasks)
@@ -634,11 +695,17 @@ async fn handle_ws(mut socket: WebSocket, state: HttpState) {
     // Send initial snapshot
     let tasks: Vec<TaskView> = TaskStore::open(&state.db_path)
         .ok()
-        .and_then(|store| store.get_all_tasks(&state.workspace).ok())
-        .unwrap_or_default()
-        .iter()
-        .map(task_to_view)
-        .collect();
+        .map(|store| {
+            store
+                .get_all_tasks(&state.workspace)
+                .unwrap_or_default()
+                .iter()
+                .map(|task| {
+                    task_to_view_with_attempt(task, latest_attempt_view_for_task(&store, &task.id))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let graph = state.graph.read().await;
     let snapshot = WsUpdate::Snapshot {
@@ -1366,11 +1433,18 @@ async fn list_workspace_repos(Path(workspace): Path<String>) -> Json<Vec<RepoLis
 async fn list_workspace_tasks(Path(workspace): Path<String>) -> Json<Vec<TaskView>> {
     let tasks = TaskStore::open(&crate::config::db_path())
         .ok()
-        .and_then(|store| store.get_all_tasks(&workspace).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|task| task_to_view(&task))
-        .collect();
+        .map(|store| {
+            store
+                .get_all_tasks(&workspace)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|task| {
+                    let latest_attempt = latest_attempt_view_for_task(&store, &task.id);
+                    task_to_view_with_attempt(&task, latest_attempt)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Json(tasks)
 }
 
@@ -2575,6 +2649,8 @@ struct WorkerView {
     task_stage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     task_repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_attempt: Option<TaskAttemptView>,
     pr_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pr_title: Option<String>,
@@ -2662,7 +2738,10 @@ fn load_swarm_state(config: &crate::config::WorkspaceConfig) -> Option<SwarmStat
     serde_json::from_str(&content).ok()
 }
 
-fn worker_events_path(config: &crate::config::WorkspaceConfig, worker_id: &str) -> std::path::PathBuf {
+fn worker_events_path(
+    config: &crate::config::WorkspaceConfig,
+    worker_id: &str,
+) -> std::path::PathBuf {
     config
         .resolved_swarm_dir()
         .join("agents")
@@ -2670,10 +2749,7 @@ fn worker_events_path(config: &crate::config::WorkspaceConfig, worker_id: &str) 
         .join("events.jsonl")
 }
 
-fn worker_session_completed(
-    config: &crate::config::WorkspaceConfig,
-    worker_id: &str,
-) -> bool {
+fn worker_session_completed(config: &crate::config::WorkspaceConfig, worker_id: &str) -> bool {
     let path = worker_events_path(config, worker_id);
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;
@@ -2820,6 +2896,9 @@ fn worker_status_for_task(task: &crate::buzz::task::Task) -> String {
 
 fn worker_view_from_task(workspace: &str, task: &crate::buzz::task::Task) -> Option<WorkerView> {
     let worker_id = task.worker_id.as_ref()?.clone();
+    let latest_attempt = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        .ok()
+        .and_then(|store| latest_attempt_view_for_task(&store, &task.id));
     Some(WorkerView {
         id: worker_id,
         workspace: workspace.to_string(),
@@ -2837,6 +2916,7 @@ fn worker_view_from_task(workspace: &str, task: &crate::buzz::task::Task) -> Opt
         task_title: Some(task.title.clone()),
         task_stage: Some(task.stage.as_str().to_string()),
         task_repo: task.repo.clone(),
+        latest_attempt,
         pr_url: task.pr_url.clone(),
         pr_title: Some(task.title.clone()),
         description: Some(task.title.clone()),
@@ -2863,6 +2943,9 @@ fn worker_view_from_state(
     let overlay_pr_url = overlay.as_ref().and_then(|task| task.pr_url.clone());
     let overlay_pr_title = overlay.as_ref().and_then(|task| task.pr_title.clone());
     let overlay_status = overlay.as_ref().and_then(|task| task.status.clone());
+    let latest_attempt = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        .ok()
+        .and_then(|store| latest_attempt_view_for_worker(&store, workspace, &worker.id));
 
     WorkerView {
         id: worker.id.clone(),
@@ -2881,6 +2964,7 @@ fn worker_view_from_state(
         task_title: overlay_task_title,
         task_stage: overlay_task_stage,
         task_repo: overlay_task_repo,
+        latest_attempt,
         pr_url: worker
             .pr
             .as_ref()
@@ -3751,7 +3835,7 @@ async fn workflow_run_handler(
             let _ = store.create_task(&task);
             // Broadcast task creation to web UI
             let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                task: task_to_view(&task),
+                task: task_to_view_with_attempt(&task, latest_attempt_view_for_task(&store, &task.id)),
             });
         }
 
@@ -3779,7 +3863,10 @@ async fn workflow_run_handler(
                 let mut updated_task = task.clone();
                 updated_task.metadata = metadata;
                 let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                    task: task_to_view(&updated_task),
+                    task: task_to_view_with_attempt(
+                        &updated_task,
+                        latest_attempt_view_for_task(&store, &updated_task.id),
+                    ),
                 });
             }
 
@@ -3853,7 +3940,10 @@ async fn workflow_run_handler(
             let mut final_task = task.clone();
             final_task.stage = crate::buzz::task::TaskStage::Merged;
             let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                task: task_to_view(&final_task),
+                task: task_to_view_with_attempt(
+                    &final_task,
+                    latest_attempt_view_for_task(&store, &final_task.id),
+                ),
             });
         }
 
@@ -4233,11 +4323,14 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
                             result.workflow_actions.len(),
                         );
 
-                        if let Some(task) = &result.engine_result.task {
-                            let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                                task: task_to_view(task),
-                            });
-                        }
+                            if let Some(task) = &result.engine_result.task {
+                                let latest_attempt = crate::buzz::task::store::TaskStore::open(&db_path)
+                                    .ok()
+                                    .and_then(|store| latest_attempt_view_for_task(&store, &task.id));
+                                let _ = updates_tx.send(WsUpdate::TaskUpdated {
+                                    task: task_to_view_with_attempt(task, latest_attempt),
+                                });
+                            }
                         let _ = updates_tx.send(WsUpdate::SignalProcessed {
                             source: sig.source,
                             title: sig.title,
@@ -4589,6 +4682,7 @@ mod tests {
                 task_title: None,
                 task_stage: None,
                 task_repo: None,
+                latest_attempt: None,
                 pr_url: None,
                 pr_title: None,
                 description: None,
@@ -4613,6 +4707,7 @@ mod tests {
                 task_title: None,
                 task_stage: None,
                 task_repo: None,
+                latest_attempt: None,
                 pr_url: None,
                 pr_title: None,
                 description: None,
