@@ -236,6 +236,24 @@ mod tests {
     }
 
     #[test]
+    fn exec_does_not_emit_unsupported_approval_flag() {
+        let opts = ExecOptions {
+            sandbox: Some(SandboxMode::WorkspaceWrite),
+            approval: Some(ApprovalPolicy::Never),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(
+            !args.iter().any(|arg| arg == "--approval-policy"),
+            "codex exec args must not include unsupported --approval-policy flag"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "never"),
+            "approval value should not be serialized for codex exec"
+        );
+    }
+
+    #[test]
     fn config_overrides() {
         let opts = ExecOptions {
             config_overrides: vec![
@@ -293,6 +311,25 @@ mod tests {
         assert!(args.contains(&"read-only".to_owned()));
         assert!(args.contains(&"--image".to_owned()));
         assert!(args.contains(&"a.png".to_owned()));
+    }
+
+    #[test]
+    fn resume_does_not_emit_unsupported_approval_flag() {
+        let opts = ResumeOptions {
+            session_id: Some("sess_123".to_owned()),
+            sandbox: Some(SandboxMode::ReadOnly),
+            approval: Some(ApprovalPolicy::Never),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(
+            !args.iter().any(|arg| arg == "--approval-policy"),
+            "codex exec resume args must not include unsupported --approval-policy flag"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "never"),
+            "approval value should not be serialized for codex exec resume"
+        );
     }
 
     #[test]

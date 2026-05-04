@@ -6,6 +6,7 @@
 //! ```
 
 use apiari_codex_sdk::{CodexClient, Event, ExecOptions, Item};
+use std::process::Command;
 
 #[tokio::test]
 #[ignore = "requires codex CLI installed"]
@@ -74,4 +75,26 @@ async fn exec_thread_id_tracked() {
     while execution.next_event().await.unwrap().is_some() {}
 
     assert!(execution.is_finished());
+}
+
+#[test]
+#[ignore = "requires codex CLI installed"]
+fn exec_args_are_accepted_by_current_codex_cli() {
+    let output = Command::new("codex")
+        .args([
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "workspace-write",
+            "Say exactly hi",
+        ])
+        .output()
+        .expect("failed to invoke codex CLI");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("unexpected argument"),
+        "codex CLI rejected generated exec args: {stderr}"
+    );
 }
