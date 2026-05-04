@@ -1899,11 +1899,8 @@ pub async fn run_foreground_with_web_port(web_port: u16) -> Result<()> {
                 remove_pid();
                 let exe = std::env::current_exe()?;
                 let mut cmd = std::process::Command::new(&exe);
-                if web_port == 7422 {
-                    cmd.args(["daemon", "start", "--foreground"]);
-                } else {
-                    cmd.args(["web", "--port", &web_port.to_string()]);
-                }
+                cmd.args(["daemon", "start", "--foreground", "--port"]);
+                cmd.arg(web_port.to_string());
                 let err = cmd.exec();
                 // exec only returns on error
                 error!("exec failed: {err}");
@@ -1923,6 +1920,10 @@ pub async fn run_foreground_with_web_port(web_port: u16) -> Result<()> {
 
 /// Spawn the daemon in the background.
 pub fn spawn_background() -> Result<()> {
+    spawn_background_with_web_port(7422)
+}
+
+pub fn spawn_background_with_web_port(web_port: u16) -> Result<()> {
     if let Some(pid) = read_pid()
         && is_process_alive(pid)
     {
@@ -1938,7 +1939,8 @@ pub fn spawn_background() -> Result<()> {
     let stderr_file = log_file.try_clone()?;
 
     let child = std::process::Command::new(exe)
-        .args(["daemon", "start", "--foreground"])
+        .args(["daemon", "start", "--foreground", "--port"])
+        .arg(web_port.to_string())
         .stdout(log_file)
         .stderr(stderr_file)
         .stdin(std::process::Stdio::null())

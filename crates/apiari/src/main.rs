@@ -29,6 +29,10 @@ enum DaemonCommand {
         /// Run in foreground (for debugging)
         #[arg(long)]
         foreground: bool,
+
+        /// Port for the HTTP/WebSocket API server (default: 7422)
+        #[arg(long, default_value = "7422")]
+        port: u16,
     },
     /// Stop the running daemon
     Stop,
@@ -37,6 +41,10 @@ enum DaemonCommand {
         /// Run in foreground (for debugging)
         #[arg(long)]
         foreground: bool,
+
+        /// Port for the HTTP/WebSocket API server (default: 7422)
+        #[arg(long, default_value = "7422")]
+        port: u16,
     },
 }
 
@@ -88,7 +96,7 @@ enum Command {
         command: ConfigCommand,
     },
 
-    /// Launch the web UI dev server (HTTP API on localhost)
+    /// Deprecated alias for `apiari daemon start --foreground --port ...`
     Web {
         /// Port for the HTTP server (default: 7422)
         #[arg(long, default_value = "7422")]
@@ -185,22 +193,22 @@ async fn main() -> Result<()> {
             command,
             background,
         }) => match command {
-            Some(DaemonCommand::Start { foreground }) => {
+            Some(DaemonCommand::Start { foreground, port }) => {
                 if foreground {
-                    daemon::run_foreground().await?;
+                    daemon::run_foreground_with_web_port(port).await?;
                 } else {
-                    daemon::spawn_background()?;
+                    daemon::spawn_background_with_web_port(port)?;
                 }
             }
             Some(DaemonCommand::Stop) => {
                 daemon::stop_daemon()?;
             }
-            Some(DaemonCommand::Restart { foreground }) => {
+            Some(DaemonCommand::Restart { foreground, port }) => {
                 daemon::stop_daemon()?;
                 if foreground {
-                    daemon::run_foreground().await?;
+                    daemon::run_foreground_with_web_port(port).await?;
                 } else {
-                    daemon::spawn_background()?;
+                    daemon::spawn_background_with_web_port(port)?;
                 }
             }
             None => {
@@ -247,6 +255,9 @@ async fn main() -> Result<()> {
             }
         },
         Some(Command::Web { port }) => {
+            eprintln!(
+                "Note: `apiari web` is deprecated. Use `apiari daemon start --foreground --port {port}` instead."
+            );
             daemon::run_foreground_with_web_port(port).await?;
         }
         Some(Command::ValidateBash) => {
