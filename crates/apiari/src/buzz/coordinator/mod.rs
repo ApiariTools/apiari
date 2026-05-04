@@ -646,7 +646,12 @@ impl Coordinator {
             .as_ref()
             .and_then(|hooks| hooks.pre_turn());
 
-        let mut execution = if let Some(ref sid) = self.session_id {
+        let mut execution = if let Some(ref sid) = self.session_id
+            && matches!(
+                self.execution_policy,
+                crate::config::BeeExecutionPolicy::Autonomous
+            )
+        {
             client
                 .exec_resume(
                     prompt,
@@ -654,17 +659,7 @@ impl Coordinator {
                         session_id: Some(sid.clone()),
                         model: model.clone(),
                         images: image_paths.to_vec(),
-                        sandbox: Some(match self.execution_policy {
-                            crate::config::BeeExecutionPolicy::Autonomous => {
-                                apiari_codex_sdk::SandboxMode::WorkspaceWrite
-                            }
-                            _ => apiari_codex_sdk::SandboxMode::ReadOnly,
-                        }),
-                        approval: Some(apiari_codex_sdk::ApprovalPolicy::Never),
-                        dangerously_bypass_sandbox: matches!(
-                            self.execution_policy,
-                            crate::config::BeeExecutionPolicy::Autonomous
-                        ),
+                        dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
                     },
