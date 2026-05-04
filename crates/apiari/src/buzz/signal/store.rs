@@ -513,6 +513,52 @@ impl SignalStore {
         Ok(())
     }
 
+    pub fn find_pending_followup_by_bot_action(
+        &self,
+        bot: &str,
+        action: &str,
+    ) -> Result<Option<FollowupRecord>> {
+        let result = self.conn.query_row(
+            "SELECT id, bot, action, created_at, fires_at, status
+             FROM followups
+             WHERE workspace = ?1 AND bot = ?2 AND action = ?3 AND status = 'pending'
+             ORDER BY created_at DESC
+             LIMIT 1",
+            params![self.workspace, bot, action],
+            |row| {
+                Ok(FollowupRecord {
+                    id: row.get(0)?,
+                    bot: row.get(1)?,
+                    action: row.get(2)?,
+                    created_at: row.get(3)?,
+                    fires_at: row.get(4)?,
+                    status: row.get(5)?,
+                })
+            },
+        );
+
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn refresh_followup_schedule(
+        &self,
+        id: &str,
+        fires_at: &str,
+        created_at: &str,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE followups
+             SET created_at = ?3, fires_at = ?2, status = 'pending'
+             WHERE workspace = ?1 AND id = ?4",
+            params![self.workspace, fires_at, created_at, id],
+        )?;
+        Ok(changed > 0)
+    }
+
     pub fn list_followups(&self) -> Result<Vec<FollowupRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, bot, action, created_at, fires_at, status

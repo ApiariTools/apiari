@@ -1094,7 +1094,11 @@ async fn run_coordinator_task(
                         send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "idle", "", None);
                         // Only persist non-empty assistant responses (tool-only turns
                         // produce empty text which clutters history).
-                        if !response.trim().is_empty() {
+                        let bee_actions =
+                            crate::buzz::coordinator::actions::parse_actions(&response);
+                        let display_response = render_followup_only_response(&response, &bee_actions)
+                            .unwrap_or_else(|| response.clone());
+                        if !display_response.trim().is_empty() {
                             let session_id = coordinator.session_token().map(|t| t.token.as_str());
                             let provider = Some(coordinator.provider());
                             let assistant_created_at = chrono::Utc::now().to_rfc3339();
@@ -1102,7 +1106,7 @@ async fn run_coordinator_task(
                                 let conv = ConversationStore::new(store.conn(), &conv_scope);
                                 match conv.save_message(
                                     "assistant",
-                                    &response,
+                                    &display_response,
                                     None,
                                     Some("system"),
                                     provider,
@@ -1122,7 +1126,7 @@ async fn run_coordinator_task(
                                     &ws_name,
                                     &bee_name,
                                     "assistant",
-                                    &response,
+                                    &display_response,
                                     None,
                                     &assistant_created_at,
                                 );
@@ -1134,20 +1138,18 @@ async fn run_coordinator_task(
                         });
                         // Only broadcast non-empty responses (tool-only turns
                         // have no text to show).
-                        if !response.trim().is_empty()
+                        if !display_response.trim().is_empty()
                             && let Some(ref server) = socket_server
                         {
                             server.broadcast_activity(
                                 "tui",
                                 &ws_name,
                                 "assistant_message",
-                                &response,
+                                &display_response,
                             );
                         }
 
                         // Parse and execute action markers from chat responses
-                        let bee_actions =
-                            crate::buzz::coordinator::actions::parse_actions(&response);
                         if !bee_actions.is_empty() {
                             let ws_root = crate::config::discover_workspaces()
                                 .ok()
@@ -1905,27 +1907,58 @@ fn execute_bee_actions(
                     warn!("[{slot_name}] action: invalid followup time spec: {when}");
                     continue;
                 };
-                let id = uuid::Uuid::new_v4().to_string();
-                match store.create_followup(
-                    &id,
-                    &web_bee_name(bee_name),
-                    action,
-                    &now.to_rfc3339(),
-                    &fires_at,
-                    "pending",
-                ) {
-                    Ok(()) => {
-                        info!("[{slot_name}] action: scheduled followup {id} for {fires_at}");
-                        send_web_followup_created(
-                            web_updates_tx,
-                            slot_name,
-                            bee_name,
+                let bot_name = web_bee_name(bee_name);
+                match store.find_pending_followup_by_bot_action(&bot_name, action) {
+                    Ok(Some(existing)) => match store.refresh_followup_schedule(
+                        &existing.id,
+                        &fires_at,
+                        &now.to_rfc3339(),
+                    ) {
+                        Ok(true) => {
+                            info!(
+                                "[{slot_name}] action: refreshed followup {} for {fires_at}",
+                                existing.id
+                            );
+                            send_web_followup_created(
+                                web_updates_tx,
+                                slot_name,
+                                bee_name,
+                                &existing.id,
+                                action,
+                                &fires_at,
+                            );
+                        }
+                        Ok(false) => warn!(
+                            "[{slot_name}] action: pending followup {} was not updated",
+                            existing.id
+                        ),
+                        Err(e) => warn!("[{slot_name}] action: failed to refresh followup: {e}"),
+                    },
+                    Ok(None) => {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        match store.create_followup(
                             &id,
+                            &bot_name,
                             action,
+                            &now.to_rfc3339(),
                             &fires_at,
-                        );
+                            "pending",
+                        ) {
+                            Ok(()) => {
+                                info!("[{slot_name}] action: scheduled followup {id} for {fires_at}");
+                                send_web_followup_created(
+                                    web_updates_tx,
+                                    slot_name,
+                                    bee_name,
+                                    &id,
+                                    action,
+                                    &fires_at,
+                                );
+                            }
+                            Err(e) => warn!("[{slot_name}] action: failed to create followup: {e}"),
+                        }
                     }
-                    Err(e) => warn!("[{slot_name}] action: failed to create followup: {e}"),
+                    Err(e) => warn!("[{slot_name}] action: failed to inspect pending followups: {e}"),
                 }
             }
             BeeAction::Canvas { content } => {
@@ -1950,6 +1983,44 @@ fn execute_bee_actions(
             }
         }
     }
+}
+
+fn render_followup_only_response(
+    response: &str,
+    actions: &[crate::buzz::coordinator::actions::BeeAction],
+) -> Option<String> {
+    use crate::buzz::coordinator::actions::BeeAction;
+
+    if actions.is_empty() {
+        return None;
+    }
+    if !actions.iter().all(|action| matches!(action, BeeAction::Followup { .. })) {
+        return None;
+    }
+
+    let mut remaining = response.trim().to_string();
+    for action in actions {
+        if let BeeAction::Followup { when, action } = action {
+            let marker = format!("[FOLLOWUP: {when} | {action}]");
+            remaining = remaining.replace(&marker, "");
+        }
+    }
+    if !remaining.trim().is_empty() {
+        return None;
+    }
+
+    let lines = actions
+        .iter()
+        .filter_map(|action| {
+            if let BeeAction::Followup { when, action } = action {
+                Some(format!("Scheduled follow-up: {action} ({when})"))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 fn dispatch_due_followups(
@@ -6412,6 +6483,59 @@ mod tests {
         let task_store = crate::buzz::task::store::TaskStore::open(&db_path).unwrap();
         let tasks = task_store.get_all_tasks("mgm").unwrap();
         assert_eq!(tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_render_followup_only_response_humanizes_marker_only_turn() {
+        let actions = vec![crate::buzz::coordinator::actions::BeeAction::Followup {
+            when: "15m".to_string(),
+            action: "Check whether the worker opened a PR".to_string(),
+        }];
+
+        let rendered = super::render_followup_only_response(
+            "[FOLLOWUP: 15m | Check whether the worker opened a PR]",
+            &actions,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered,
+            "Scheduled follow-up: Check whether the worker opened a PR (15m)"
+        );
+    }
+
+    #[test]
+    fn test_execute_bee_actions_refreshes_duplicate_pending_followup() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("signals.db");
+        let store = SignalStore::open(&db_path, "mgm").unwrap();
+
+        super::execute_bee_actions(
+            &[crate::buzz::coordinator::actions::BeeAction::Followup {
+                when: "15m".to_string(),
+                action: "Check if worker backend-ab5b opened a PR".to_string(),
+            }],
+            &store,
+            "mgm",
+            "Triage",
+            temp.path(),
+            &None,
+        );
+        super::execute_bee_actions(
+            &[crate::buzz::coordinator::actions::BeeAction::Followup {
+                when: "30m".to_string(),
+                action: "Check if worker backend-ab5b opened a PR".to_string(),
+            }],
+            &store,
+            "mgm",
+            "Triage",
+            temp.path(),
+            &None,
+        );
+
+        let followups = store.list_followups().unwrap();
+        assert_eq!(followups.len(), 1);
+        assert_eq!(followups[0].action, "Check if worker backend-ab5b opened a PR");
     }
 
     #[test]
