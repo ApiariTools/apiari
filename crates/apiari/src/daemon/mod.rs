@@ -1096,7 +1096,7 @@ async fn run_coordinator_task(
                         // produce empty text which clutters history).
                         let bee_actions =
                             crate::buzz::coordinator::actions::parse_actions(&response);
-                        let display_response = render_followup_only_response(&response, &bee_actions)
+                        let display_response = render_action_only_response(&response, &bee_actions)
                             .unwrap_or_else(|| response.clone());
                         if !display_response.trim().is_empty() {
                             let session_id = coordinator.session_token().map(|t| t.token.as_str());
@@ -1985,25 +1985,51 @@ fn execute_bee_actions(
     }
 }
 
-fn render_followup_only_response(
+fn action_marker_text(action: &crate::buzz::coordinator::actions::BeeAction) -> String {
+    use crate::buzz::coordinator::actions::BeeAction;
+
+    match action {
+        BeeAction::Dismiss { signal_id } => format!("[DISMISS: {signal_id}]"),
+        BeeAction::Escalate { message } => format!("[ESCALATE: {message}]"),
+        BeeAction::Fix { description } => format!("[FIX: {description}]"),
+        BeeAction::Snooze { signal_id, hours } => format!("[SNOOZE: {signal_id}, {hours}]"),
+        BeeAction::Task { title } => format!("[TASK: {title}]"),
+        BeeAction::Research { topic } => format!("[RESEARCH: {topic}]"),
+        BeeAction::Followup { when, action } => format!("[FOLLOWUP: {when} | {action}]"),
+        BeeAction::Canvas { content } => format!("[CANVAS]{content}[/CANVAS]"),
+    }
+}
+
+fn humanize_action(action: &crate::buzz::coordinator::actions::BeeAction) -> Option<String> {
+    use crate::buzz::coordinator::actions::BeeAction;
+
+    match action {
+        BeeAction::Dismiss { signal_id } => Some(format!("Dismissed signal #{signal_id}")),
+        BeeAction::Escalate { message } => Some(format!("Escalated: {message}")),
+        BeeAction::Fix { description } => Some(format!("Logged fix issue: {description}")),
+        BeeAction::Snooze { signal_id, hours } => {
+            Some(format!("Snoozed signal #{signal_id} for {hours}h"))
+        }
+        BeeAction::Task { title } => Some(format!("Created task: {title}")),
+        BeeAction::Research { topic } => Some(format!("Queued research: {topic}")),
+        BeeAction::Followup { when, action } => {
+            Some(format!("Scheduled follow-up: {action} ({when})"))
+        }
+        BeeAction::Canvas { .. } => Some("Updated canvas".to_string()),
+    }
+}
+
+fn render_action_only_response(
     response: &str,
     actions: &[crate::buzz::coordinator::actions::BeeAction],
 ) -> Option<String> {
-    use crate::buzz::coordinator::actions::BeeAction;
-
     if actions.is_empty() {
-        return None;
-    }
-    if !actions.iter().all(|action| matches!(action, BeeAction::Followup { .. })) {
         return None;
     }
 
     let mut remaining = response.trim().to_string();
     for action in actions {
-        if let BeeAction::Followup { when, action } = action {
-            let marker = format!("[FOLLOWUP: {when} | {action}]");
-            remaining = remaining.replace(&marker, "");
-        }
+        remaining = remaining.replace(&action_marker_text(action), "");
     }
     if !remaining.trim().is_empty() {
         return None;
@@ -2011,13 +2037,7 @@ fn render_followup_only_response(
 
     let lines = actions
         .iter()
-        .filter_map(|action| {
-            if let BeeAction::Followup { when, action } = action {
-                Some(format!("Scheduled follow-up: {action} ({when})"))
-            } else {
-                None
-            }
-        })
+        .filter_map(humanize_action)
         .collect::<Vec<_>>();
 
     (!lines.is_empty()).then(|| lines.join("\n"))
@@ -6486,13 +6506,13 @@ mod tests {
     }
 
     #[test]
-    fn test_render_followup_only_response_humanizes_marker_only_turn() {
+    fn test_render_action_only_response_humanizes_marker_only_turn() {
         let actions = vec![crate::buzz::coordinator::actions::BeeAction::Followup {
             when: "15m".to_string(),
             action: "Check whether the worker opened a PR".to_string(),
         }];
 
-        let rendered = super::render_followup_only_response(
+        let rendered = super::render_action_only_response(
             "[FOLLOWUP: 15m | Check whether the worker opened a PR]",
             &actions,
         )
@@ -6501,6 +6521,48 @@ mod tests {
         assert_eq!(
             rendered,
             "Scheduled follow-up: Check whether the worker opened a PR (15m)"
+        );
+    }
+
+    #[test]
+    fn test_render_action_only_response_humanizes_fix_only_turn() {
+        let actions = vec![crate::buzz::coordinator::actions::BeeAction::Fix {
+            description: "Replace not with ! in ProjectDashboard.handle_params".to_string(),
+        }];
+
+        let rendered = super::render_action_only_response(
+            "[FIX: Replace not with ! in ProjectDashboard.handle_params]",
+            &actions,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered,
+            "Logged fix issue: Replace not with ! in ProjectDashboard.handle_params"
+        );
+    }
+
+    #[test]
+    fn test_render_action_only_response_humanizes_multiple_actions() {
+        let actions = vec![
+            crate::buzz::coordinator::actions::BeeAction::Task {
+                title: "Investigate duplicate PR creation".to_string(),
+            },
+            crate::buzz::coordinator::actions::BeeAction::Followup {
+                when: "15m".to_string(),
+                action: "Check whether the worker opened a PR".to_string(),
+            },
+        ];
+
+        let rendered = super::render_action_only_response(
+            "[TASK: Investigate duplicate PR creation]\n[FOLLOWUP: 15m | Check whether the worker opened a PR]",
+            &actions,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rendered,
+            "Created task: Investigate duplicate PR creation\nScheduled follow-up: Check whether the worker opened a PR (15m)"
         );
     }
 
