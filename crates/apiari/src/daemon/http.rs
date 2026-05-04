@@ -1459,7 +1459,7 @@ async fn get_workspace_worker_detail(
         .flatten();
     let worker = find_worker_state(&ws.config, &worker_id);
     let worker_view = if let Some(worker) = worker.as_ref() {
-        worker_view_from_state(&workspace, worker)
+        worker_view_from_state(&workspace, &ws.config, worker)
     } else if let Some(task) = task.as_ref() {
         worker_view_from_task(&workspace, task).ok_or(StatusCode::NOT_FOUND)?
     } else {
@@ -2662,7 +2662,41 @@ fn load_swarm_state(config: &crate::config::WorkspaceConfig) -> Option<SwarmStat
     serde_json::from_str(&content).ok()
 }
 
-fn worker_status_for_state(worker: &SwarmWorktreeState) -> String {
+fn worker_events_path(config: &crate::config::WorkspaceConfig, worker_id: &str) -> std::path::PathBuf {
+    config
+        .resolved_swarm_dir()
+        .join("agents")
+        .join(worker_id)
+        .join("events.jsonl")
+}
+
+fn worker_session_completed(
+    config: &crate::config::WorkspaceConfig,
+    worker_id: &str,
+) -> bool {
+    let path = worker_events_path(config, worker_id);
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    content
+        .lines()
+        .rev()
+        .take(20)
+        .any(|line| line.contains(r#""type":"session_result""#))
+}
+
+fn worker_status_for_state(
+    config: &crate::config::WorkspaceConfig,
+    worker: &SwarmWorktreeState,
+) -> String {
+    if worker_session_completed(config, &worker.id) {
+        return if worker.ready_branch.is_some() || worker.pr.is_some() {
+            "completed".to_string()
+        } else {
+            "failed".to_string()
+        };
+    }
+
     if worker.phase.as_deref() == Some("running")
         && worker.agent_session_status.as_deref() != Some("running")
         && worker.ready_branch.is_none()
@@ -2684,11 +2718,24 @@ fn worker_status_for_state(worker: &SwarmWorktreeState) -> String {
     }
 }
 
-fn worker_execution_note(worker: &SwarmWorktreeState) -> Option<String> {
+fn worker_execution_note(
+    config: &crate::config::WorkspaceConfig,
+    worker: &SwarmWorktreeState,
+) -> Option<String> {
     if let Some(note) = worker.failure_note.clone()
         && !note.trim().is_empty()
     {
         return Some(note);
+    }
+    if worker_session_completed(config, &worker.id)
+        && worker.ready_branch.is_none()
+        && worker.pr.is_none()
+        && !worker_has_uncommitted_changes(worker)
+    {
+        return Some(
+            "Worker finished without a ready branch or PR handoff. It stopped without a promotable code change."
+                .to_string(),
+        );
     }
     if worker.phase.as_deref() == Some("running")
         && worker.agent_session_status.as_deref() != Some("running")
@@ -2803,7 +2850,11 @@ fn worker_view_from_task(workspace: &str, task: &crate::buzz::task::Task) -> Opt
     })
 }
 
-fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> WorkerView {
+fn worker_view_from_state(
+    workspace: &str,
+    config: &crate::config::WorkspaceConfig,
+    worker: &SwarmWorktreeState,
+) -> WorkerView {
     let overlay = worker_task_overlay(workspace, &worker.id);
     let overlay_task_id = overlay.as_ref().map(|task| task.task_id.clone());
     let overlay_task_title = overlay.as_ref().map(|task| task.task_title.clone());
@@ -2822,8 +2873,8 @@ fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> Worke
         } else {
             worker.agent_kind.clone()
         },
-        status: overlay_status.unwrap_or_else(|| worker_status_for_state(worker)),
-        execution_note: worker_execution_note(worker),
+        status: overlay_status.unwrap_or_else(|| worker_status_for_state(config, worker)),
+        execution_note: worker_execution_note(config, worker),
         ready_branch: worker.ready_branch.clone(),
         has_uncommitted_changes: worker_has_uncommitted_changes(worker),
         task_id: overlay_task_id,
@@ -2861,7 +2912,7 @@ fn load_worker_views(workspace: &str, config: &crate::config::WorkspaceConfig) -
             state
                 .worktrees
                 .iter()
-                .map(|worker| worker_view_from_state(workspace, worker))
+                .map(|worker| worker_view_from_state(workspace, config, worker))
                 .collect()
         })
         .unwrap_or_default();
@@ -5107,6 +5158,62 @@ state_path = "{}"
         assert_eq!(
             workers[0].execution_note.as_deref(),
             Some("Uncommitted diff present; worker has not marked a ready branch yet.")
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn get_workspace_workers_marks_session_completed_without_handoff_as_failed() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        let swarm_dir = root.join(".swarm");
+        let worktree = root.join(".swarm/wt/apiari-ebbc");
+        let agent_dir = root.join(".swarm/agents/apiari-ebbc");
+        fs::create_dir_all(&worktree).unwrap();
+        fs::create_dir_all(&agent_dir).unwrap();
+
+        write_workspace_file(
+            temp.path(),
+            "apiari",
+            &format!(r#"root = "{}""#, root.display()),
+        );
+
+        write_swarm_state(
+            &swarm_dir.join("state.json"),
+            &serde_json::json!({
+                "worktrees": [
+                    {
+                        "id": "apiari-ebbc",
+                        "branch": "swarm/example",
+                        "agent_kind": "codex",
+                        "phase": "running",
+                        "agent_session_status": "running",
+                        "prompt": "tighten cards",
+                        "repo_path": root,
+                        "worktree_path": worktree
+                    }
+                ]
+            }),
+        );
+
+        fs::write(
+            agent_dir.join("events.jsonl"),
+            r#"{"type":"assistant_text","timestamp":"2026-05-04T22:40:59.649150Z","text":"I stopped."}
+{"type":"session_result","timestamp":"2026-05-04T22:40:59.714859Z","turns":0,"cost_usd":null,"session_id":null}
+"#,
+        )
+        .unwrap();
+
+        let workers = get_workspace_workers(Path("apiari".to_string())).await.0;
+        assert_eq!(workers.len(), 1);
+        assert_eq!(workers[0].status, "failed");
+        assert_eq!(
+            workers[0].execution_note.as_deref(),
+            Some(
+                "Worker finished without a ready branch or PR handoff. It stopped without a promotable code change."
+            )
         );
     }
 
