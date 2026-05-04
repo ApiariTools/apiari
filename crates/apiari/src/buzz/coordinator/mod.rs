@@ -708,9 +708,7 @@ impl Coordinator {
                     });
                 }
                 apiari_codex_sdk::Event::ItemCompleted { item } => {
-                    if let Some(text) = item.text()
-                        && !text.is_empty()
-                    {
+                    if let Some(text) = codex_assistant_text(item) {
                         response = text.to_string();
                         on_event(CoordinatorEvent::Token(text.to_string()));
                     }
@@ -951,6 +949,15 @@ impl Coordinator {
         self.session_id = None;
         self.session_token = None;
         self.pending_context = None;
+    }
+}
+
+fn codex_assistant_text(item: &apiari_codex_sdk::Item) -> Option<&str> {
+    match item {
+        apiari_codex_sdk::Item::AgentMessage { text, .. } => {
+            text.as_deref().filter(|text| !text.is_empty())
+        }
+        _ => None,
     }
 }
 
@@ -1738,5 +1745,20 @@ mod tests {
             assert_eq!(second_token.provider, provider);
             assert_eq!(second_token.token, first_token.token);
         }
+    }
+
+    #[test]
+    fn codex_assistant_text_ignores_reasoning_items() {
+        let reasoning = apiari_codex_sdk::Item::Reasoning {
+            id: Some("r_1".to_string()),
+            text: Some("Let me think".to_string()),
+        };
+        let message = apiari_codex_sdk::Item::AgentMessage {
+            id: Some("m_1".to_string()),
+            text: Some("Final answer".to_string()),
+        };
+
+        assert_eq!(codex_assistant_text(&reasoning), None);
+        assert_eq!(codex_assistant_text(&message), Some("Final answer"));
     }
 }

@@ -424,8 +424,16 @@ export function ChatPanel({
   }
 
   function formatTime(iso: string): string {
-    const normalized = iso.includes("Z") || iso.includes("+") ? iso : iso + "Z";
-    return new Date(normalized).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const trimmed = iso.trim();
+    if (!trimmed) return "";
+    const normalized = trimmed.includes("T")
+      ? (trimmed.includes("Z") || trimmed.includes("+") ? trimmed : `${trimmed}Z`)
+      : trimmed;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+      return trimmed;
+    }
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
 
   function renderAttachments(json: string | null) {

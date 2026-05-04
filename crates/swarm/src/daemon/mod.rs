@@ -783,7 +783,7 @@ pub(crate) async fn run_daemon(
                                 .filter(|w| w.phase.is_active() || (w.phase == WorkerPhase::Waiting && w.pr.is_none()))
                                 .map(|w| PrPollJob {
                                     worker_id: w.id.clone(),
-                                    branch: w.branch.clone(),
+                                    branch: branch_for_pr_lookup(w),
                                     repo_path: w.repo_path.clone(),
                                     worktree_path: w.worktree_path.clone(),
                                     had_pr: w.pr.is_some(),
@@ -811,7 +811,7 @@ pub(crate) async fn run_daemon(
                         .filter(|w| ids.contains(&w.id))
                         .map(|w| PrPollJob {
                             worker_id: w.id.clone(),
-                            branch: w.branch.clone(),
+                            branch: branch_for_pr_lookup(w),
                             repo_path: w.repo_path.clone(),
                             worktree_path: w.worktree_path.clone(),
                             had_pr: w.pr.is_some(),
@@ -1692,6 +1692,14 @@ struct PrPollJob {
     workspace_path: PathBuf,
 }
 
+fn branch_for_pr_lookup(worker: &ManagedWorker) -> String {
+    worker
+        .ready_branch
+        .clone()
+        .filter(|branch| !branch.trim().is_empty())
+        .unwrap_or_else(|| worker.branch.clone())
+}
+
 /// Result of a single PR poll (returned from the background thread).
 struct PrPollResult {
     worker_id: String,
@@ -2392,5 +2400,31 @@ mod tests {
         }];
         let results = poll_prs_background(jobs);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn branch_for_pr_lookup_prefers_ready_branch() {
+        let worker = ManagedWorker {
+            id: "worker-1".to_string(),
+            branch: "swarm/worker-1".to_string(),
+            prompt: "do work".to_string(),
+            kind: AgentKind::Claude,
+            repo_path: PathBuf::from("/tmp/repo"),
+            worktree_path: PathBuf::from("/tmp/repo/.swarm/wt/worker-1"),
+            phase: WorkerPhase::Running,
+            session_id: None,
+            restart_count: 0,
+            pr: None,
+            created_at: Local::now(),
+            message_tx: None,
+            agent_card: build_agent_card("worker-1", "repo", "claude", "worker"),
+            role: Some("worker".to_string()),
+            review_pr: None,
+            accumulated_text: String::new(),
+            review_verdict: None,
+            ready_branch: Some("feature/real-branch".to_string()),
+        };
+
+        assert_eq!(branch_for_pr_lookup(&worker), "feature/real-branch");
     }
 }

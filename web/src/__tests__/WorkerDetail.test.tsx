@@ -89,4 +89,27 @@ describe("WorkerDetail", () => {
     const workerLabel = screen.getByText((_, el) => el?.tagName === "STRONG" && el.textContent === "worker-1");
     expect(workerLabel.parentElement!.textContent).not.toMatch(/\d{1,2}:\d{2}/);
   });
+
+  it("renders already-formatted human timestamps without Invalid Date", () => {
+    const detailHumanTs: WorkerDetailData = {
+      ...worker,
+      prompt: null,
+      output: null,
+      conversation: [
+        { role: "assistant", content: "thinking...", timestamp: "10:54 AM" },
+      ],
+    };
+    render(
+      <WorkerDetail
+        worker={worker}
+        detail={detailHumanTs}
+        workspace="test"
+        onBack={vi.fn()}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+
+    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.className?.toString().includes("msgMeta") ?? false).textContent).toContain("10:54 AM");
+  });
 });

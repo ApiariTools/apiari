@@ -2235,6 +2235,12 @@ struct WorkerView {
     resolved_comments: Option<u64>,
 }
 
+struct WorkerTaskOverlay {
+    pr_url: Option<String>,
+    pr_title: Option<String>,
+    status: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SwarmStateFile {
     #[serde(default)]
@@ -2292,6 +2298,27 @@ fn worker_status_for_state(worker: &SwarmWorktreeState) -> String {
     }
 }
 
+fn worker_task_overlay(workspace: &str, worker_id: &str) -> Option<WorkerTaskOverlay> {
+    let task = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        .ok()?
+        .find_task_by_worker(workspace, worker_id)
+        .ok()??;
+
+    let status = match task.stage {
+        crate::buzz::task::TaskStage::HumanReview => Some("waiting".to_string()),
+        crate::buzz::task::TaskStage::Merged | crate::buzz::task::TaskStage::Dismissed => {
+            Some("completed".to_string())
+        }
+        _ => None,
+    };
+
+    Some(WorkerTaskOverlay {
+        pr_url: task.pr_url,
+        pr_title: Some(task.title),
+        status,
+    })
+}
+
 fn elapsed_secs(created_at: Option<chrono::DateTime<chrono::Local>>) -> Option<i64> {
     created_at.map(|ts| {
         chrono::Local::now()
@@ -2302,6 +2329,11 @@ fn elapsed_secs(created_at: Option<chrono::DateTime<chrono::Local>>) -> Option<i
 }
 
 fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> WorkerView {
+    let overlay = worker_task_overlay(workspace, &worker.id);
+    let overlay_pr_url = overlay.as_ref().and_then(|task| task.pr_url.clone());
+    let overlay_pr_title = overlay.as_ref().and_then(|task| task.pr_title.clone());
+    let overlay_status = overlay.as_ref().and_then(|task| task.status.clone());
+
     WorkerView {
         id: worker.id.clone(),
         workspace: workspace.to_string(),
@@ -2311,13 +2343,18 @@ fn worker_view_from_state(workspace: &str, worker: &SwarmWorktreeState) -> Worke
         } else {
             worker.agent_kind.clone()
         },
-        status: worker_status_for_state(worker),
+        status: overlay_status.unwrap_or_else(|| worker_status_for_state(worker)),
         pr_url: worker
             .pr
             .as_ref()
             .and_then(|pr| pr.url.clone())
-            .filter(|url| !url.is_empty()),
-        pr_title: worker.pr.as_ref().and_then(|pr| pr.title.clone()),
+            .filter(|url| !url.is_empty())
+            .or(overlay_pr_url),
+        pr_title: worker
+            .pr
+            .as_ref()
+            .and_then(|pr| pr.title.clone())
+            .or(overlay_pr_title),
         description: worker
             .summary
             .clone()

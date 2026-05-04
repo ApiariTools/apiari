@@ -26,8 +26,16 @@ function branchName(branch: string): string {
 type InfoTab = "output" | "task" | "diff" | "chat";
 
 function formatTime(iso: string): string {
-  const normalized = iso.includes("Z") || iso.includes("+") || iso.includes("-", 10) ? iso : iso + "Z";
-  return new Date(normalized).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const trimmed = iso.trim();
+  if (!trimmed) return "";
+  const normalized = trimmed.includes("T")
+    ? (trimmed.includes("Z") || trimmed.includes("+") || trimmed.includes("-", 10) ? trimmed : `${trimmed}Z`)
+    : trimmed;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return trimmed;
+  }
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 export function WorkerDetail({ worker, detail, workspace, remote, onBack, showBack = true }: Props) {
