@@ -1,0 +1,75 @@
+.page {
+  display: grid;
+  gap: 20px;
+}
+
+.section {
+  display: grid;
+  gap: 12px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sectionHeader h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.cardList {
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  border: 1px solid var(--surface-border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-lg, 16px);
+  background: var(--surface-raised, rgba(255, 255, 255, 0.03));
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.cardTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cardBody {
+  display: grid;
+  gap: 8px;
+}
+
+.meta,
+.inlineMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notes {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.68));
+}
+
+.path,
+.time {
+  color: var(--text-secondary, rgba(255, 255, 255, 0.68));
+  font-size: 0.88rem;
+}
+
+.errorBlock,
+.messageBlock {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  color: var(--text-primary, #fff);
+}

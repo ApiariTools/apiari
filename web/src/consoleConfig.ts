@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import { FileText, LayoutGrid, MessageSquare, Package, Radar, Wrench } from "lucide-react";
 
-export type WorkspaceMode = "overview" | "chat" | "workers" | "repos" | "docs" | "signals";
+export type WorkspaceMode = "overview" | "chat" | "workers" | "repos" | "docs" | "signals" | "diagnostics";
 
 export interface WorkspaceModeDefinition {
   id: WorkspaceMode;
@@ -33,6 +33,7 @@ export const WORKSPACE_MODE_DEFINITIONS: Record<WorkspaceMode, WorkspaceModeDefi
   repos: { id: "repos", label: "Repos", icon: Package },
   docs: { id: "docs", label: "Docs", icon: FileText },
   signals: { id: "signals", label: "Signals", icon: Radar },
+  diagnostics: { id: "diagnostics", label: "Diagnostics", icon: Radar },
 };
 
 export const DEFAULT_WORKSPACE_CONSOLE_PROFILE: WorkspaceConsoleProfile = {

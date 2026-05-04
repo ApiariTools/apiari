@@ -6,6 +6,7 @@ import { useWorkspaceConsoleState } from "./useWorkspaceConsoleState";
 import styles from "./App.module.css";
 import { ChatMode } from "./modes/ChatMode";
 import { DocsMode } from "./modes/DocsMode";
+import { DiagnosticsMode } from "./modes/DiagnosticsMode";
 import { OverviewMode } from "./modes/OverviewMode";
 import { ReposMode } from "./modes/ReposMode";
 import { SignalsMode } from "./modes/SignalsMode";
@@ -49,6 +50,14 @@ export default function App() {
       <SignalsMode
         workspace={state.workspace}
         remote={state.remote}
+      />
+    );
+  } else if (state.mode === "diagnostics") {
+    mainContent = (
+      <DiagnosticsMode
+        workspace={state.workspace}
+        remote={state.remote}
+        bot={state.bot}
       />
     );
   } else if (state.mode === "workers") {
@@ -193,6 +202,7 @@ export default function App() {
         onStartResearch={() => state.handleStartResearch()}
         onOpenWorkspaceLayout={() => state.setLayoutDialogOpen(true)}
         onOpenSignals={() => state.handleSelectMode("signals")}
+        onOpenDiagnostics={() => state.handleSelectMode("diagnostics")}
       />
       <WorkspaceLayoutDialog
         open={state.layoutDialogOpen}

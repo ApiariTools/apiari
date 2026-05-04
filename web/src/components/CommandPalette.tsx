@@ -20,6 +20,7 @@ interface Props {
   onStartResearch?: () => void;
   onOpenWorkspaceLayout?: () => void;
   onOpenSignals?: () => void;
+  onOpenDiagnostics?: () => void;
   unread?: Record<string, number>;
   otherWorkspaceUnreads?: Record<string, Record<string, number>>;
 }
@@ -41,6 +42,7 @@ export function CommandPalette({
   onStartResearch,
   onOpenWorkspaceLayout,
   onOpenSignals,
+  onOpenDiagnostics,
   unread = {},
   otherWorkspaceUnreads = {},
 }: Props) {
@@ -142,7 +144,7 @@ export function CommandPalette({
             })}
           </Command.Group>
         )}
-        {(onStartResearch || onOpenWorkspaceLayout || onOpenSignals) && (
+        {(onStartResearch || onOpenWorkspaceLayout || onOpenSignals || onOpenDiagnostics) && (
           <Command.Group heading="Actions">
             {onStartResearch && (
               <Command.Item
@@ -175,6 +177,17 @@ export function CommandPalette({
                 }}
               >
                 Open Signals Debug
+              </Command.Item>
+            )}
+            {onOpenDiagnostics && (
+              <Command.Item
+                value="bot diagnostics"
+                onSelect={() => {
+                  onOpenDiagnostics();
+                  onOpenChange(false);
+                }}
+              >
+                Open Bot Diagnostics
               </Command.Item>
             )}
           </Command.Group>

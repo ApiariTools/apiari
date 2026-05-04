@@ -723,6 +723,36 @@ struct BotStatusView {
 }
 
 #[derive(Debug, Serialize)]
+struct BotTurnFailureView {
+    id: i64,
+    bot: String,
+    provider: Option<String>,
+    source: String,
+    error_text: String,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderCapabilityView {
+    name: String,
+    installed: bool,
+    binary_path: Option<String>,
+    sandbox_flag_supported: Option<bool>,
+    approval_flag_supported: Option<bool>,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct BotDebugView {
+    workspace: String,
+    bot: String,
+    provider: Option<String>,
+    status: Option<BotStatusView>,
+    recent_failures: Vec<BotTurnFailureView>,
+    recent_messages: Vec<ConversationMessageView>,
+}
+
+#[derive(Debug, Serialize)]
 struct ConversationMessageView {
     id: i64,
     workspace: String,
@@ -760,6 +790,56 @@ struct WorkspaceChatBody {
     message: String,
     #[serde(default)]
     attachments: Option<Vec<WebChatAttachment>>,
+}
+
+async fn probe_provider_capability(name: &str, bin: &str) -> ProviderCapabilityView {
+    let which = tokio::process::Command::new("which").arg(bin).output().await;
+    let installed = which.as_ref().is_ok_and(|output| output.status.success());
+    let binary_path = which.ok().and_then(|output| {
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            (!value.is_empty()).then_some(value)
+        } else {
+            None
+        }
+    });
+
+    let mut notes = Vec::new();
+    let mut sandbox_flag_supported = None;
+    let mut approval_flag_supported = None;
+
+    if installed {
+        match tokio::process::Command::new(bin).arg("exec").arg("--help").output().await {
+            Ok(output) => {
+                let combined = format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                if name == "codex" {
+                    sandbox_flag_supported = Some(combined.contains("--sandbox"));
+                    approval_flag_supported = Some(combined.contains("--approval-policy"));
+                    if approval_flag_supported == Some(false) {
+                        notes.push("Current codex exec CLI does not support --approval-policy.".to_string());
+                    }
+                }
+            }
+            Err(err) => {
+                notes.push(format!("Failed to inspect CLI help: {err}"));
+            }
+        }
+    } else {
+        notes.push("Provider CLI not found on PATH.".to_string());
+    }
+
+    ProviderCapabilityView {
+        name: name.to_string(),
+        installed,
+        binary_path,
+        sandbox_flag_supported,
+        approval_flag_supported,
+        notes,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2555,6 +2635,96 @@ async fn get_signals(
     Json(views)
 }
 
+/// GET /api/providers/capabilities — inspect the locally installed provider CLIs.
+async fn get_provider_capabilities() -> Json<Vec<ProviderCapabilityView>> {
+    let mut items = Vec::with_capacity(3);
+    items.push(probe_provider_capability("claude", "claude").await);
+    items.push(probe_provider_capability("codex", "codex").await);
+    items.push(probe_provider_capability("gemini", "gemini").await);
+    Json(items)
+}
+
+/// GET /api/workspaces/:workspace/bots/:bot/debug — recent failures + status + recent messages.
+async fn get_workspace_bot_debug(
+    Path((workspace, bot)): Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<BotDebugView> {
+    let limit = params
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20)
+        .min(100);
+
+    let provider = load_workspace_by_name(&workspace).and_then(|ws| {
+        let resolved = resolve_bee_name_for_api(&ws.config, &bot).unwrap_or(bot.clone());
+        ws.config
+            .resolved_bees()
+            .into_iter()
+            .find(|bee| bee.name == resolved)
+            .map(|bee| bee.provider)
+    });
+
+    let store = match crate::buzz::signal::store::SignalStore::open(
+        &crate::config::db_path(),
+        &workspace,
+    ) {
+        Ok(store) => store,
+        Err(_) => {
+            return Json(BotDebugView {
+                workspace,
+                bot,
+                provider,
+                status: None,
+                recent_failures: vec![],
+                recent_messages: vec![],
+            });
+        }
+    };
+
+    let status = store
+        .get_bot_status(&bot)
+        .ok()
+        .flatten()
+        .map(|status| BotStatusView {
+            status: status.status,
+            streaming_content: status.streaming_content,
+            tool_name: status.tool_name,
+        });
+
+    let recent_failures = store
+        .list_bot_turn_failures(&bot, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|failure| BotTurnFailureView {
+            id: failure.id,
+            bot: failure.bot,
+            provider: failure.provider,
+            source: failure.source,
+            error_text: failure.error_text,
+            created_at: failure.created_at,
+        })
+        .collect();
+
+    let recent_messages = get_workspace_conversations(
+        Path((workspace.clone(), bot.clone())),
+        axum::extract::Query(std::collections::HashMap::from([(
+            "limit".to_string(),
+            limit.to_string(),
+        )])),
+    )
+    .await
+    .0;
+
+    Json(BotDebugView {
+        workspace,
+        bot,
+        provider,
+        status,
+        recent_failures,
+        recent_messages,
+    })
+}
+
 // ── Conversation history ──────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -3125,6 +3295,10 @@ pub async fn start_http_server(
             get(get_workspace_bot_status),
         )
         .route(
+            "/api/workspaces/{workspace}/bots/{bot}/debug",
+            get(get_workspace_bot_debug),
+        )
+        .route(
             "/api/workspaces/{workspace}/bots/{bot}/cancel",
             post(cancel_workspace_bot),
         )
@@ -3163,6 +3337,7 @@ pub async fn start_http_server(
         .route("/api/worker/send", post(send_worker_message))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))
+        .route("/api/providers/capabilities", get(get_provider_capabilities))
         .route("/api/signals", get(get_signals))
         .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))

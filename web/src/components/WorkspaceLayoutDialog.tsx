@@ -36,6 +36,7 @@ const MODE_LABELS: Record<WorkspaceMode, string> = {
   repos: "Repos",
   docs: "Docs",
   signals: "Signals",
+  diagnostics: "Diagnostics",
 };
 
 const MODE_ICONS = {
@@ -45,6 +46,7 @@ const MODE_ICONS = {
   repos: Package,
   docs: FileText,
   signals: Radar,
+  diagnostics: Radar,
 };
 
 function moveMode(order: WorkspaceMode[], index: number, direction: -1 | 1) {

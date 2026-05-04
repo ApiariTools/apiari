@@ -605,6 +605,14 @@ async fn run_coordinator_task(
                     Ok(b) => b,
                     Err(e) => {
                         let err_text = e.to_string();
+                        if let Err(log_err) = store.log_bot_turn_failure(
+                            &bee_name,
+                            Some(coordinator.provider()),
+                            "prepare_dispatch",
+                            &err_text,
+                        ) {
+                            warn!("[{ws_name}] failed to log prepare-dispatch failure: {log_err}");
+                        }
                         let err_created_at = chrono::Utc::now().to_rfc3339();
                         let err_message_id = {
                             let conv = ConversationStore::new(store.conn(), &conv_scope);
@@ -763,6 +771,16 @@ async fn run_coordinator_task(
 
                 match result {
                     Ok(response) => {
+                        if response.trim().is_empty()
+                            && let Err(log_err) = store.log_bot_turn_failure(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "empty_response",
+                                "provider completed the turn without emitting assistant text",
+                            )
+                        {
+                            warn!("[{ws_name}] failed to log empty-response turn: {log_err}");
+                        }
                         if let Err(e) = store.set_bot_status(&bee_name, "idle", "", None) {
                             warn!("[{ws_name}] failed to clear bot status: {e}");
                         }
@@ -852,6 +870,16 @@ async fn run_coordinator_task(
                     Err(e) => {
                         let was_cancelled = e.to_string() == "cancelled";
                         let err_text = e.to_string();
+                        if !was_cancelled
+                            && let Err(log_err) = store.log_bot_turn_failure(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch",
+                                &err_text,
+                            )
+                        {
+                            warn!("[{ws_name}] failed to log dispatch failure: {log_err}");
+                        }
                         // Restore pending context so it's available on the
                         // next attempt — the coordinator never ingested it.
                         if let Some(ctx) = pending_ctx {

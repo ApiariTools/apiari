@@ -65,4 +65,30 @@ export const cancelFollowup = vi.fn().mockResolvedValue({ ok: true });
 export const getResearchTasks = vi.fn().mockResolvedValue([]);
 export const startResearch = vi.fn().mockResolvedValue({ id: "research-1", topic: "test", status: "running" });
 export const getSignals = vi.fn().mockResolvedValue([]);
+export const getProviderCapabilities = vi.fn().mockResolvedValue([
+  {
+    name: "claude",
+    installed: true,
+    binary_path: "/usr/local/bin/claude",
+    sandbox_flag_supported: null,
+    approval_flag_supported: null,
+    notes: [],
+  },
+  {
+    name: "codex",
+    installed: true,
+    binary_path: "/usr/local/bin/codex",
+    sandbox_flag_supported: true,
+    approval_flag_supported: false,
+    notes: ["Current codex exec CLI does not support --approval-policy."],
+  },
+]);
+export const getBotDebugData = vi.fn().mockResolvedValue({
+  workspace: "apiari",
+  bot: "Main",
+  provider: "claude",
+  status: { status: "idle", streaming_content: "", tool_name: null },
+  recent_failures: [],
+  recent_messages: [],
+});
 export const connectWebSocket = vi.fn().mockReturnValue({ close: vi.fn() });

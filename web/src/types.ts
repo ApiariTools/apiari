@@ -109,3 +109,34 @@ export interface Signal {
   updated_at: string;
   resolved_at: string | null;
 }
+
+export interface ProviderCapability {
+  name: string;
+  installed: boolean;
+  binary_path: string | null;
+  sandbox_flag_supported: boolean | null;
+  approval_flag_supported: boolean | null;
+  notes: string[];
+}
+
+export interface BotTurnFailure {
+  id: number;
+  bot: string;
+  provider: string | null;
+  source: string;
+  error_text: string;
+  created_at: string;
+}
+
+export interface BotDebugData {
+  workspace: string;
+  bot: string;
+  provider: string | null;
+  status: {
+    status: string;
+    streaming_content: string;
+    tool_name: string | null;
+  } | null;
+  recent_failures: BotTurnFailure[];
+  recent_messages: Message[];
+}

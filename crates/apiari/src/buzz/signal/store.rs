@@ -29,6 +29,16 @@ pub struct FollowupRecord {
     pub status: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct BotTurnFailureRecord {
+    pub id: i64,
+    pub bot: String,
+    pub provider: Option<String>,
+    pub source: String,
+    pub error_text: String,
+    pub created_at: String,
+}
+
 /// SQLite signal store, scoped to a workspace.
 pub struct SignalStore {
     conn: Connection,
@@ -151,6 +161,18 @@ impl SignalStore {
                 fires_at TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending'
             );
+
+            CREATE TABLE IF NOT EXISTS bot_turn_failures (
+                id INTEGER PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                bot TEXT NOT NULL,
+                provider TEXT,
+                source TEXT NOT NULL,
+                error_text TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_bot_turn_failures_workspace_bot
+                ON bot_turn_failures(workspace, bot, created_at DESC);
             ",
         )?;
 
@@ -523,6 +545,50 @@ impl SignalStore {
                     created_at: row.get(3)?,
                     fires_at: row.get(4)?,
                     status: row.get(5)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
+    }
+
+    pub fn log_bot_turn_failure(
+        &self,
+        bot: &str,
+        provider: Option<&str>,
+        source: &str,
+        error_text: &str,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO bot_turn_failures (workspace, bot, provider, source, error_text, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+            params![self.workspace, bot, provider, source, error_text],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn list_bot_turn_failures(
+        &self,
+        bot: &str,
+        limit: usize,
+    ) -> Result<Vec<BotTurnFailureRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, bot, provider, source, error_text, created_at
+             FROM bot_turn_failures
+             WHERE workspace = ?1 AND bot = ?2
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?3",
+        )?;
+
+        let records = stmt
+            .query_map(params![self.workspace, bot, limit as i64], |row| {
+                Ok(BotTurnFailureRecord {
+                    id: row.get(0)?,
+                    bot: row.get(1)?,
+                    provider: row.get(2)?,
+                    source: row.get(3)?,
+                    error_text: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1515,5 +1581,23 @@ mod tests {
         // The second snooze should have replaced the first
         let diff = (snoozed - until2).num_seconds().abs();
         assert!(diff < 2, "snooze should be close to until2");
+    }
+
+    #[test]
+    fn test_log_and_list_bot_turn_failures() {
+        let store = test_store();
+        let _ = store
+            .log_bot_turn_failure("Codex", Some("codex"), "dispatch", "provider returned empty response")
+            .unwrap();
+        let _ = store
+            .log_bot_turn_failure("Codex", Some("codex"), "runtime", "unexpected argument '--approval-policy' found")
+            .unwrap();
+
+        let failures = store.list_bot_turn_failures("Codex", 10).unwrap();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0].bot, "Codex");
+        assert_eq!(failures[0].provider.as_deref(), Some("codex"));
+        assert!(!failures[0].source.is_empty());
+        assert!(!failures[0].error_text.is_empty());
     }
 }

@@ -1,4 +1,17 @@
-import type { Workspace, Bot, Worker, WorkerDetail, Message, Repo, Doc, ResearchTask, Followup, Signal } from "./types";
+import type {
+  Workspace,
+  Bot,
+  Worker,
+  WorkerDetail,
+  Message,
+  Repo,
+  Doc,
+  ResearchTask,
+  Followup,
+  Signal,
+  ProviderCapability,
+  BotDebugData,
+} from "./types";
 
 const BASE = "/api";
 
@@ -242,6 +255,19 @@ export function getSignals(
   if (options?.history) params.set("history", "true");
   if (options?.limit) params.set("limit", String(options.limit));
   return get(`/signals?${params.toString()}`);
+}
+
+export function getProviderCapabilities(): Promise<ProviderCapability[]> {
+  return get("/providers/capabilities");
+}
+
+export function getBotDebugData(
+  workspace: string,
+  bot: string,
+  limit = 20,
+  remote?: string,
+): Promise<BotDebugData> {
+  return get(`${wsPath(workspace, remote)}/bots/${encodeURIComponent(bot)}/debug?limit=${limit}`);
 }
 
 export async function startResearch(

@@ -38,7 +38,7 @@ export function parseHash(): Route {
     return {
       workspace,
       mode,
-      bot: mode === "chat" ? parts[2] || "" : "",
+      bot: mode === "chat" || mode === "diagnostics" ? parts[2] || "" : "",
       workerId: mode === "workers" && parts[2] === "worker" ? parts[3] || null : null,
       docName: mode === "docs" ? decodeURIComponent(parts[2] || "") || null : null,
     };
@@ -70,6 +70,10 @@ function buildHash(route: Route): string {
         : `#/${route.workspace}/docs`;
     case "signals":
       return `#/${route.workspace}/signals`;
+    case "diagnostics":
+      return route.bot
+        ? `#/${route.workspace}/diagnostics/${route.bot}`
+        : `#/${route.workspace}/diagnostics`;
     default:
       return `#/${route.workspace}`;
   }
@@ -320,8 +324,13 @@ export function useWorkspaceConsoleState() {
         return;
       }
       setDocName(remembered?.docName ?? null);
+      return;
     }
-  }, [bot, isMobile, mode, workspaceStateKey]);
+
+    if (nextMode === "diagnostics") {
+      setBot(remembered?.bot || bot || consoleProfile.overviewPrimaryBot || "");
+    }
+  }, [bot, consoleProfile.overviewPrimaryBot, isMobile, mode, workspaceStateKey]);
 
   useEffect(() => {
     if (!workspace || !workerId) return;
@@ -403,7 +412,7 @@ export function useWorkspaceConsoleState() {
   const workspaceVoice = workspaces.find((ws) => ws.name === workspace && ws.remote === remote);
   const visibleModes = getOrderedWorkspaceModes(
     (isMobile ? consoleProfile.navModeOrder.filter((mode) => mode !== "repos") : consoleProfile.navModeOrder)
-      .filter((mode) => mode !== "signals"),
+      .filter((mode) => mode !== "signals" && mode !== "diagnostics"),
   );
   const applyConsoleProfile = useCallback((nextProfile: WorkspaceConsoleProfile) => {
     setConsoleProfileVersion((value) => value + 1);

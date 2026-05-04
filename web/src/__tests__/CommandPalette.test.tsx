@@ -111,4 +111,17 @@ describe("CommandPalette", () => {
     );
     expect(screen.getByText("7")).toBeInTheDocument();
   });
+
+  it("renders diagnostics action when provided", async () => {
+    const user = userEvent.setup();
+    const onOpenDiagnostics = vi.fn();
+    render(
+      <CommandPalette
+        {...defaultProps}
+        onOpenDiagnostics={onOpenDiagnostics}
+      />
+    );
+    await user.click(screen.getByText("Open Bot Diagnostics"));
+    expect(onOpenDiagnostics).toHaveBeenCalled();
+  });
 });
