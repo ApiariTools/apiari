@@ -921,6 +921,8 @@ struct HiveBotConfig {
     #[serde(default = "default_model")]
     model: String,
     #[serde(default)]
+    execution_policy: BeeExecutionPolicy,
+    #[serde(default)]
     role: Option<String>,
     #[serde(default)]
     color: Option<String>,
@@ -987,7 +989,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
             name: bot.name.clone(),
             role: bot.role.clone(),
             color: bot.color.clone(),
-            execution_policy: BeeExecutionPolicy::default(),
+            execution_policy: bot.execution_policy,
             provider: bot.provider.clone(),
             max_turns: default_max_turns(),
             prompt: hive_bot_prompt(&root, bot),
@@ -1732,6 +1734,7 @@ model = "claude-sonnet-4.6"
 [[bots]]
 name = "Codex"
 provider = "codex"
+execution_policy = "dispatch_only"
 "##;
 
         let config = toml::from_str::<HiveWorkspaceFile>(toml_str).unwrap();
@@ -1748,6 +1751,7 @@ provider = "codex"
         assert_eq!(bees[1].model, "sonnet");
         assert_eq!(bees[2].name, "Codex");
         assert_eq!(bees[2].provider, "codex");
+        assert_eq!(bees[2].execution_policy, BeeExecutionPolicy::DispatchOnly);
     }
 
     #[test]
@@ -1788,6 +1792,7 @@ root = "{}"
 
 [[bots]]
 name = "Triage"
+execution_policy = "observe"
 role = "Detect, triage, and fix Sentry issues"
 color = "#f59e0b"
 prompt_file = ".apiari/bots/triage.md"
@@ -1808,6 +1813,7 @@ proactive_prompt = "Check for new issues."
             triage.heartbeat_prompt.as_deref(),
             Some("Check for new issues.")
         );
+        assert_eq!(triage.execution_policy, BeeExecutionPolicy::Observe);
         assert_eq!(triage.signal_hooks.len(), 1);
         assert_eq!(triage.signal_hooks[0].source, "sentry");
         let prompt = triage.prompt.as_deref().unwrap();
