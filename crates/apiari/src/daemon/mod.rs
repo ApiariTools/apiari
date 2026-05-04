@@ -1683,6 +1683,16 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             Ok(s) => s,
             Err(e) => return ExitReason::Error(e),
         };
+        match store.clear_active_bot_statuses() {
+            Ok(count) if count > 0 => {
+                info!(
+                    "[{}] cleared {} stale active bot status row(s)",
+                    ws.name, count
+                );
+            }
+            Ok(_) => {}
+            Err(e) => warn!("[{}] failed to clear stale bot statuses: {e}", ws.name),
+        }
         let buzz_config = to_buzz_config(&ws.config);
 
         // Validate workspace-level schedule once at startup (warns on malformed active_hours).

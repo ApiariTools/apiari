@@ -433,6 +433,19 @@ impl SignalStore {
         }
     }
 
+    pub fn clear_active_bot_statuses(&self) -> Result<usize> {
+        let changed = self.conn.execute(
+            "UPDATE bot_status
+             SET status = 'idle',
+                 streaming_content = '',
+                 tool_name = NULL,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+             WHERE workspace = ?1 AND status != 'idle'",
+            params![self.workspace],
+        )?;
+        Ok(changed)
+    }
+
     pub fn mark_bot_seen(&self, bot: &str, last_seen_message_id: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO bot_seen (workspace, bot, last_seen_message_id, updated_at)
@@ -1204,6 +1217,26 @@ mod tests {
             assert_eq!(followup.action, "Check CI status");
             assert_eq!(followup.status, "pending");
         }
+    }
+
+    #[test]
+    fn test_clear_active_bot_statuses_resets_non_idle_rows() {
+        let store = test_store();
+        store
+            .set_bot_status("Codex", "streaming", "partial output", Some("Bash"))
+            .unwrap();
+        store.set_bot_status("Claude", "idle", "", None).unwrap();
+
+        let changed = store.clear_active_bot_statuses().unwrap();
+        assert_eq!(changed, 1);
+
+        let codex = store.get_bot_status("Codex").unwrap().unwrap();
+        assert_eq!(codex.status, "idle");
+        assert!(codex.streaming_content.is_empty());
+        assert!(codex.tool_name.is_none());
+
+        let claude = store.get_bot_status("Claude").unwrap().unwrap();
+        assert_eq!(claude.status, "idle");
     }
 
     #[test]
