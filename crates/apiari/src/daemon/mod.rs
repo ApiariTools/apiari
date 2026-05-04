@@ -1643,6 +1643,146 @@ async fn run_coordinator_task(
     }
 }
 
+fn normalize_issue_fingerprint(input: &str) -> String {
+    const STOPWORDS: &[&str] = &[
+        "a", "an", "and", "are", "at", "be", "for", "from", "in", "into", "is", "it", "its",
+        "line", "lines", "nil", "of", "on", "or", "replace", "the", "to", "when", "with",
+    ];
+
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | ':' | '[' | ']') {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    let mut exact_location = Vec::new();
+    let mut error_family = Vec::new();
+    let mut variable_anchor = Vec::new();
+    let mut remaining = Vec::new();
+    for token in tokens {
+        if token.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        if token.len() < 4 && !token.contains(['.', '_', '[', ']']) {
+            continue;
+        }
+        if STOPWORDS.contains(&token.as_str()) {
+            continue;
+        }
+        if token.contains('.') && !token.contains(['[', ']']) {
+            if !exact_location.contains(&token) {
+                exact_location.push(token);
+            }
+            continue;
+        }
+        if token.ends_with("error") || token.ends_with("exception") {
+            if !error_family.contains(&token) {
+                error_family.push(token);
+            }
+            continue;
+        }
+        if token.contains('_') || token.contains(['[', ']']) {
+            if !variable_anchor.contains(&token) {
+                variable_anchor.push(token);
+            }
+            continue;
+        }
+        if !remaining.contains(&token) {
+            remaining.push(token);
+        }
+    }
+
+    let mut significant = Vec::new();
+    for bucket in [&exact_location, &error_family, &variable_anchor, &remaining] {
+        for token in bucket.iter().take(3) {
+            if !significant.contains(token) {
+                significant.push(token.clone());
+            }
+            if significant.len() >= 2 {
+                break;
+            }
+        }
+        if significant.len() >= 2 {
+            break;
+        }
+    }
+
+    if significant.is_empty() {
+        let compact = input
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>();
+        compact
+            .split_whitespace()
+            .take(6)
+            .collect::<Vec<_>>()
+            .join("-")
+    } else {
+        significant.join("-")
+    }
+}
+
+fn metadata_fingerprint(metadata: &serde_json::Value) -> Option<&str> {
+    metadata.get("fingerprint").and_then(|value| value.as_str())
+}
+
+fn has_matching_open_fix_signal(
+    store: &crate::buzz::signal::store::SignalStore,
+    source: &str,
+    fingerprint: &str,
+) -> bool {
+    store
+        .get_open_signals()
+        .map(|signals| {
+            signals.into_iter().any(|signal| {
+                if signal.source != source {
+                    return false;
+                }
+                let metadata_match = signal
+                    .metadata
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                    .and_then(|value| metadata_fingerprint(&value).map(str::to_owned))
+                    .is_some_and(|value| value == fingerprint);
+                metadata_match || normalize_issue_fingerprint(&signal.title) == fingerprint
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn has_matching_open_task(
+    task_store: &crate::buzz::task::store::TaskStore,
+    workspace: &str,
+    source: &str,
+    fingerprint: &str,
+) -> bool {
+    task_store
+        .get_active_tasks(workspace)
+        .map(|tasks| {
+            tasks.into_iter().any(|task| {
+                if task.source.as_deref() != Some(source) {
+                    return false;
+                }
+                let metadata_match = metadata_fingerprint(&task.metadata).is_some_and(|value| value == fingerprint);
+                metadata_match || normalize_issue_fingerprint(&task.title) == fingerprint
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Execute parsed Bee action markers against the signal/task stores.
 fn execute_bee_actions(
     actions: &[crate::buzz::coordinator::actions::BeeAction],
@@ -1678,9 +1818,20 @@ fn execute_bee_actions(
             }
             BeeAction::Fix { description } => {
                 let source = format!("bee_{bee_name}");
-                let external_id =
-                    format!("fix-{}-{}", bee_name, chrono::Utc::now().timestamp_millis());
-                let update = SignalUpdate::new(&source, &external_id, description, Severity::Error);
+                let fingerprint = normalize_issue_fingerprint(description);
+                if has_matching_open_fix_signal(store, &source, &fingerprint) {
+                    info!(
+                        "[{slot_name}] action: skipped duplicate fix signal source={source} fingerprint={fingerprint}: {description}"
+                    );
+                    continue;
+                }
+                let external_id = format!("fix-{bee_name}-{fingerprint}");
+                let metadata = serde_json::json!({
+                    "bee": bee_name,
+                    "fingerprint": fingerprint,
+                });
+                let update = SignalUpdate::new(&source, &external_id, description, Severity::Error)
+                    .with_metadata(metadata.to_string());
                 match store.upsert_signal(&update) {
                     Ok((id, _)) => info!(
                         "[{slot_name}] action: fix signal id={id} source={source}: {description}"
@@ -1701,12 +1852,14 @@ fn execute_bee_actions(
             }
             BeeAction::Task { title } => {
                 // Open a TaskStore on the same DB and create a task in Triage stage.
+                let source = format!("bee_{bee_name}");
+                let fingerprint = normalize_issue_fingerprint(title);
                 let task = crate::buzz::task::Task {
                     id: uuid::Uuid::new_v4().to_string(),
                     workspace: store.workspace().to_string(),
                     title: title.clone(),
                     stage: crate::buzz::task::TaskStage::Triage,
-                    source: Some(format!("bee_{bee_name}")),
+                    source: Some(source.clone()),
                     source_url: None,
                     worker_id: None,
                     pr_url: None,
@@ -1715,13 +1868,30 @@ fn execute_bee_actions(
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                     resolved_at: None,
-                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                    metadata: serde_json::json!({
+                        "bee": bee_name,
+                        "fingerprint": fingerprint,
+                    }),
                 };
                 match crate::buzz::task::store::TaskStore::open(store.db_path()) {
-                    Ok(task_store) => match task_store.create_task(&task) {
-                        Ok(()) => info!("[{slot_name}] action: created task \"{title}\""),
-                        Err(e) => warn!("[{slot_name}] action: failed to create task: {e}"),
-                    },
+                    Ok(task_store) => {
+                        if has_matching_open_task(
+                            &task_store,
+                            store.workspace(),
+                            &source,
+                            metadata_fingerprint(&task.metadata).unwrap_or_default(),
+                        ) {
+                            info!(
+                                "[{slot_name}] action: skipped duplicate task source={source} fingerprint={}: {title}",
+                                metadata_fingerprint(&task.metadata).unwrap_or_default()
+                            );
+                        } else {
+                            match task_store.create_task(&task) {
+                                Ok(()) => info!("[{slot_name}] action: created task \"{title}\""),
+                                Err(e) => warn!("[{slot_name}] action: failed to create task: {e}"),
+                            }
+                        }
+                    }
                     Err(e) => warn!("[{slot_name}] action: failed to open task store: {e}"),
                 }
             }
@@ -6161,6 +6331,87 @@ mod tests {
         assert!(!super::looks_like_implementation_request(
             "can you summarize the routing model?"
         ));
+    }
+
+    #[test]
+    fn test_normalize_issue_fingerprint_collapses_similar_triage_titles() {
+        let a = super::normalize_issue_fingerprint(
+            "Replace `not` with `!` in ProjectDashboard.handle_params (lines 248, 521) — ArgumentError when assigns key is nil",
+        );
+        let b = super::normalize_issue_fingerprint(
+            "ArgumentError in ProjectDashboard.handle_params — replace `not socket.assigns[:page_view_tracked`",
+        );
+
+        assert!(a.contains("projectdashboard.handle_params"));
+        assert!(b.contains("projectdashboard.handle_params"));
+        assert!(a.contains("argumenterror") || b.contains("argumenterror"));
+    }
+
+    #[test]
+    fn test_execute_bee_actions_dedupes_fix_signals_by_fingerprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("signals.db");
+        let store = SignalStore::open(&db_path, "mgm").unwrap();
+
+        super::execute_bee_actions(
+            &[crate::buzz::coordinator::actions::BeeAction::Fix {
+                description: "ArgumentError in ProjectDashboard.handle_params — replace `not socket.assigns[:page_view_tracked`".to_string(),
+            }],
+            &store,
+            "mgm",
+            "Triage",
+            temp.path(),
+            &None,
+        );
+        super::execute_bee_actions(
+            &[crate::buzz::coordinator::actions::BeeAction::Fix {
+                description: "Replace `not` with `!` in ProjectDashboard.handle_params (lines 248, 521) — ArgumentError when assigns key is nil".to_string(),
+            }],
+            &store,
+            "mgm",
+            "Triage",
+            temp.path(),
+            &None,
+        );
+
+        let open = store.get_open_signals().unwrap();
+        let triage_signals: Vec<_> = open
+            .into_iter()
+            .filter(|signal| signal.source == "bee_Triage")
+            .collect();
+        assert_eq!(triage_signals.len(), 1);
+    }
+
+    #[test]
+    fn test_execute_bee_actions_dedupes_tasks_by_fingerprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("signals.db");
+        let store = SignalStore::open(&db_path, "mgm").unwrap();
+
+        super::execute_bee_actions(
+            &[crate::buzz::coordinator::actions::BeeAction::Task {
+                title: "ArgumentError in ProjectDashboard.handle_params — replace `not socket.assigns[:page_view_tracked`".to_string(),
+            }],
+            &store,
+            "mgm",
+            "Triage",
+            temp.path(),
+            &None,
+        );
+        super::execute_bee_actions(
+            &[crate::buzz::coordinator::actions::BeeAction::Task {
+                title: "Replace `not` with `!` in ProjectDashboard.handle_params (lines 248, 521) — ArgumentError when assigns key is nil".to_string(),
+            }],
+            &store,
+            "mgm",
+            "Triage",
+            temp.path(),
+            &None,
+        );
+
+        let task_store = crate::buzz::task::store::TaskStore::open(&db_path).unwrap();
+        let tasks = task_store.get_all_tasks("mgm").unwrap();
+        assert_eq!(tasks.len(), 1);
     }
 
     #[test]
