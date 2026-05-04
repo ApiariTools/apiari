@@ -1856,6 +1856,9 @@ pub async fn run_foreground_with_web_port(web_port: u16) -> Result<()> {
         return Ok(());
     }
     write_pid()?;
+    if let Ok(exe) = std::env::current_exe() {
+        info!("daemon executable: {}", exe.display());
+    }
 
     loop {
         let workspaces = config::discover_workspaces()?;
@@ -4878,9 +4881,52 @@ fn remove_pid() {
     let _ = std::fs::remove_file(pid_path());
 }
 
+fn looks_like_non_implementation_request(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return true;
+    }
+
+    if [
+        "hi",
+        "hello",
+        "hey",
+        "yo",
+        "thanks",
+        "thank you",
+        "cool",
+        "nice",
+    ]
+    .contains(&lower.as_str())
+    {
+        return true;
+    }
+
+    [
+        "what ",
+        "why ",
+        "how ",
+        "explain",
+        "summarize",
+        "review ",
+        "thoughts on",
+        "what do you think",
+        "is this",
+        "are we",
+        "can you explain",
+        "can you summarize",
+        "look at",
+        "investigate",
+        "debug why",
+    ]
+    .iter()
+    .any(|needle| lower.starts_with(needle))
+}
+
 fn looks_like_implementation_request(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
-    [
+
+    let explicit_positive = [
         "fix ",
         "fix:",
         "bug",
@@ -4899,9 +4945,54 @@ fn looks_like_implementation_request(text: &str) -> bool {
         "rename ",
         "make it",
         "make this",
+        "make them",
+        "can we make",
+        "could we make",
         "edit ",
         "modify ",
         "cleanup",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    if explicit_positive {
+        return true;
+    }
+
+    if looks_like_non_implementation_request(text) {
+        return false;
+    }
+
+    [
+        " too ",
+        " doesn't ",
+        " doesnt ",
+        " isn't ",
+        " isnt ",
+        " broken",
+        " wrong",
+        " off",
+        " janky",
+        " jumpy",
+        " cramped",
+        " overlap",
+        " overflow",
+        " hidden",
+        " missing",
+        " compact",
+        " mobile",
+        " desktop",
+        " ipad",
+        " layout",
+        " padding",
+        " scroll",
+        " cards",
+        " square",
+        " chat ",
+        " page",
+        " tab",
+        " button",
+        " ui ",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -5908,8 +5999,18 @@ mod tests {
         assert!(super::looks_like_implementation_request(
             "implement a diagnostics page"
         ));
+        assert!(super::looks_like_implementation_request(
+            "The overview cards are too square… can we make them more compact on mobile?"
+        ));
+        assert!(super::looks_like_implementation_request(
+            "the mobile chat tab is broken and the layout feels off"
+        ));
         assert!(!super::looks_like_implementation_request(
             "what does this file do?"
+        ));
+        assert!(!super::looks_like_implementation_request("hi"));
+        assert!(!super::looks_like_implementation_request(
+            "can you summarize the routing model?"
         ));
     }
 
