@@ -62,6 +62,12 @@ pub struct ResumeOptions {
     /// Model to use for the resumed session.
     pub model: Option<String>,
 
+    /// Sandbox mode controlling file system access.
+    pub sandbox: Option<SandboxMode>,
+
+    /// Approval policy for tool execution.
+    pub approval: Option<ApprovalPolicy>,
+
     /// Image file paths to include as context.
     pub images: Vec<PathBuf>,
 
@@ -183,6 +189,12 @@ impl ResumeOptions {
         if let Some(ref model) = self.model {
             args.extend(["-m".to_owned(), model.clone()]);
         }
+        if let Some(sandbox) = self.sandbox {
+            args.extend(["--sandbox".to_owned(), sandbox.as_str().to_owned()]);
+        }
+        if let Some(approval) = self.approval {
+            args.extend(["--approval-policy".to_owned(), approval.as_str().to_owned()]);
+        }
         for image in &self.images {
             args.extend(["--image".to_owned(), image.display().to_string()]);
         }
@@ -275,6 +287,21 @@ mod tests {
         };
         let args = opts.to_cli_args();
         assert_eq!(args, vec!["--last"]);
+    }
+
+    #[test]
+    fn resume_sandbox_and_approval() {
+        let opts = ResumeOptions {
+            session_id: Some("sess_123".to_owned()),
+            sandbox: Some(SandboxMode::ReadOnly),
+            approval: Some(ApprovalPolicy::Never),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(args.contains(&"--sandbox".to_owned()));
+        assert!(args.contains(&"read-only".to_owned()));
+        assert!(args.contains(&"--approval-policy".to_owned()));
+        assert!(args.contains(&"never".to_owned()));
     }
 
     #[test]

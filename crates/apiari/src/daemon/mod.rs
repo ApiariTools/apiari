@@ -4105,17 +4105,24 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
         ws.config.coordinator.max_turns,
     );
     coordinator.set_name(ws.config.coordinator.name.clone());
+    let effective_policy =
+        crate::config::BeeExecutionPolicy::Autonomous.resolved(ws.config.authority);
 
     let skill_ctx = build_skill_context(workspace_name, &ws.config);
     coordinator.set_extra_context(build_skills_prompt(&skill_ctx));
     if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
+    } else if let Some(preamble) =
+        default_bee_prompt_preamble(&ws.config.coordinator.name, effective_policy)
+    {
+        coordinator.set_prompt_preamble(preamble);
     }
-    let (allowed, disallowed) = tools_for_authority(ws.config.authority);
+    let (allowed, disallowed) = tools_for_execution_policy(effective_policy);
     info!(
-        "[{workspace_name}] coordinator authority={:?} allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}",
+        "[{workspace_name}] coordinator authority={:?} execution_policy={effective_policy:?} allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}",
         ws.config.authority
     );
+    coordinator.set_execution_policy(effective_policy);
     coordinator.set_tools(allowed);
     coordinator.set_disallowed_tools(disallowed);
     coordinator.set_working_dir(ws.config.root.clone());
@@ -4322,6 +4329,64 @@ fn build_skill_context(workspace_name: &str, config: &WorkspaceConfig) -> SkillC
     ctx
 }
 
+fn resolved_bee_execution_policy(
+    ws_config: &WorkspaceConfig,
+    bee: &BeeConfig,
+) -> crate::config::BeeExecutionPolicy {
+    bee.execution_policy.resolved(ws_config.authority)
+}
+
+fn default_bee_prompt_preamble(
+    name: &str,
+    policy: crate::config::BeeExecutionPolicy,
+) -> Option<String> {
+    let workspaces_dir = crate::config::workspaces_dir();
+    let config_dir = crate::config::config_dir();
+    let workspaces_dir_display = workspaces_dir.display();
+    let config_dir_display = config_dir.display();
+    let role_boundaries = match policy {
+        crate::config::BeeExecutionPolicy::Observe => {
+            "- You are in read-only mode.\n\
+             - You are NOT a coding assistant. NEVER write, edit, or generate code.\n\
+             - You must NOT dispatch swarm workers.\n\
+             - You must NOT use Bash.\n\
+             - You may answer questions, inspect context already provided, and use read-only tools only.\n"
+                .to_string()
+        }
+        crate::config::BeeExecutionPolicy::DispatchOnly => {
+            format!(
+                "- You are NOT a coding assistant. NEVER write, edit, or generate code.\n\
+                 - When asked to implement, fix, build, or code anything: dispatch a swarm worker. No exceptions.\n\
+                 - If swarm cannot dispatch to a repo, STOP and tell the user.\n\
+                 - You CAN use Bash freely for research and investigation (git log, gh pr view, swarm status, curl APIs, sqlite3, ls, etc.).\n\
+                 - You must NEVER use Bash to modify the workspace: no creating/editing/deleting files, no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files.\n\
+                 - The ONLY Bash writes allowed are to /tmp/, your persistent memory file, `.apiari/`, and {workspaces_dir_display}.\n\
+                 - You MAY use Write or Edit only under `.apiari/` and the workspace config file in {workspaces_dir_display}.\n"
+            )
+        }
+        crate::config::BeeExecutionPolicy::Autonomous => {
+            format!(
+                "- You MAY investigate and implement directly.\n\
+                 - You MAY also dispatch swarm workers when parallelism, isolation, or repo boundaries make that the better choice.\n\
+                 - You may use Bash for research and implementation within the workspace.\n\
+                 - You should still prefer small, deliberate changes and explain what you are doing.\n\
+                 - `/devmode on` temporarily unlocks broader repo/bootstrap writes for creation workflows. State file: `~/.local/state/apiari/.devmode`.\n\
+                 - Intentionally outside {config_dir_display} to prevent self-enabling.\n"
+            )
+        }
+    };
+
+    Some(format!(
+        "You are {name}, the coordinator for this workspace.\n\n\
+         ## Identity\n\
+         You are an ops coordinator — you plan work, monitor signals, triage issues, answer questions about the workspace, and coordinate execution.\n\
+         You are concise, proactive, and technically precise.\n\n\
+         ## Role Boundaries\n\
+         {role_boundaries}\n\
+         - Keep responses short and direct.\n"
+    ))
+}
+
 /// Ensure the `.apiari/` scaffold exists in the workspace root.
 ///
 /// Creates `.apiari/context.md` (minimal stub) and `.apiari/skills/` if they
@@ -4360,7 +4425,13 @@ fn build_bee_coordinator(
     let mut coordinator = Coordinator::new(&bee.model, bee.max_turns);
     coordinator.set_provider(bee.provider.clone());
     coordinator.set_name(bee.name.clone());
-    let skill_ctx = build_skill_context(ws_name, ws_config);
+    let effective_policy = resolved_bee_execution_policy(ws_config, bee);
+    let mut skill_ctx = build_skill_context(ws_name, ws_config);
+    if effective_policy == crate::config::BeeExecutionPolicy::Observe {
+        skill_ctx.authority = crate::config::WorkspaceAuthority::Observe;
+        skill_ctx.capabilities.dispatch_workers = false;
+        skill_ctx.can_dispatch_workers = false;
+    }
     let mut extra_context = build_skills_prompt(&skill_ctx);
 
     // Inject workflow description so the Bee knows its process
@@ -4380,14 +4451,17 @@ fn build_bee_coordinator(
     }
 
     coordinator.set_extra_context(extra_context);
+    coordinator.set_execution_policy(effective_policy);
     if let Some(ref prompt) = bee.prompt {
         coordinator.set_prompt_preamble(prompt.clone());
     } else if let Some(ref preamble) = skill_ctx.prompt_preamble {
         coordinator.set_prompt_preamble(preamble.clone());
+    } else if let Some(preamble) = default_bee_prompt_preamble(&bee.name, effective_policy) {
+        coordinator.set_prompt_preamble(preamble);
     }
-    let (allowed, disallowed) = tools_for_authority(ws_config.authority);
+    let (allowed, disallowed) = tools_for_execution_policy(effective_policy);
     info!(
-        "[{ws_name}] coordinator authority={:?} allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}",
+        "[{ws_name}] coordinator authority={:?} execution_policy={effective_policy:?} allowed_tools: {allowed:?}, disallowed_tools: {disallowed:?}",
         ws_config.authority
     );
     coordinator.set_tools(allowed);
@@ -4402,14 +4476,26 @@ fn build_bee_coordinator(
     coordinator
 }
 
-/// Return (allowed, disallowed) tool lists based on authority level.
-fn tools_for_authority(authority: crate::config::WorkspaceAuthority) -> (Vec<String>, Vec<String>) {
-    match authority {
-        crate::config::WorkspaceAuthority::Observe => (
+/// Return (allowed, disallowed) tool lists based on bee execution policy.
+fn tools_for_execution_policy(
+    policy: crate::config::BeeExecutionPolicy,
+) -> (Vec<String>, Vec<String>) {
+    match policy {
+        crate::config::BeeExecutionPolicy::Observe => (
             observe_coordinator_tools(),
             observe_coordinator_disallowed_tools(),
         ),
-        crate::config::WorkspaceAuthority::Autonomous => (
+        crate::config::BeeExecutionPolicy::DispatchOnly => (
+            ["Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ["Write", "Edit", "NotebookEdit", "Task"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        ),
+        crate::config::BeeExecutionPolicy::Autonomous => (
             default_coordinator_tools(),
             default_coordinator_disallowed_tools(),
         ),

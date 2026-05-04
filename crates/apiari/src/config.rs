@@ -83,6 +83,34 @@ pub enum WorkspaceAuthority {
     Autonomous,
 }
 
+/// Per-bee execution policy — controls whether a bee may directly implement code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BeeExecutionPolicy {
+    /// Read-only. No Bash, no edits, no worker dispatch.
+    Observe,
+    /// Investigate and dispatch workers, but do not implement directly.
+    DispatchOnly,
+    /// May implement directly with provider-native write access.
+    Autonomous,
+}
+
+impl Default for BeeExecutionPolicy {
+    fn default() -> Self {
+        Self::Autonomous
+    }
+}
+
+impl BeeExecutionPolicy {
+    /// Apply the workspace-level ceiling to a bee policy.
+    pub fn resolved(self, authority: WorkspaceAuthority) -> Self {
+        match authority {
+            WorkspaceAuthority::Observe => Self::Observe,
+            WorkspaceAuthority::Autonomous => self,
+        }
+    }
+}
+
 /// Workspace capabilities — fine-grained permission controls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceCapabilities {
@@ -209,7 +237,7 @@ impl TryFrom<MergePrsRaw> for MergePrsPolicy {
 ///
 /// The daemon's doctor check (`apiari doctor`) compares the on-disk `config_version`
 /// against this value and warns users whose configs are older than the current version.
-pub const CURRENT_CONFIG_VERSION: u32 = 3;
+pub const CURRENT_CONFIG_VERSION: u32 = 4;
 
 /// Schedule configuration — defines when watchers and signal hooks are active.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -450,6 +478,9 @@ pub struct BeeConfig {
     /// Optional accent color for UI surfaces.
     #[serde(default)]
     pub color: Option<String>,
+    /// Whether this bee may observe only, dispatch only, or act autonomously.
+    #[serde(default)]
+    pub execution_policy: BeeExecutionPolicy,
     /// LLM provider: "claude", "codex", or "gemini".
     #[serde(default = "default_provider")]
     pub provider: String,
@@ -520,6 +551,7 @@ impl WorkspaceConfig {
             name: c.name.clone(),
             role: None,
             color: None,
+            execution_policy: BeeExecutionPolicy::default(),
             provider: c.provider.clone(),
             model: c.model.clone(),
             max_turns: c.max_turns,
@@ -931,6 +963,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
             name: default_coordinator_name(),
             role: None,
             color: None,
+            execution_policy: BeeExecutionPolicy::default(),
             provider: default_provider(),
             model: default_model(),
             max_turns: default_max_turns(),
@@ -947,6 +980,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
             name: bot.name.clone(),
             role: bot.role.clone(),
             color: bot.color.clone(),
+            execution_policy: BeeExecutionPolicy::default(),
             provider: bot.provider.clone(),
             max_turns: default_max_turns(),
             prompt: hive_bot_prompt(&root, bot),
@@ -2694,6 +2728,7 @@ name = "Bee"
             name: "TestBee".into(),
             role: None,
             color: None,
+            execution_policy: BeeExecutionPolicy::default(),
             provider: "claude".into(),
             model: "sonnet".into(),
             max_turns: 20,
@@ -2758,5 +2793,21 @@ name = "Bee"
             ..default_bee()
         };
         assert_eq!(bee.heartbeat_duration(), None);
+    }
+
+    #[test]
+    fn test_bee_execution_policy_respects_workspace_observe_ceiling() {
+        assert_eq!(
+            BeeExecutionPolicy::Autonomous.resolved(WorkspaceAuthority::Observe),
+            BeeExecutionPolicy::Observe
+        );
+        assert_eq!(
+            BeeExecutionPolicy::DispatchOnly.resolved(WorkspaceAuthority::Observe),
+            BeeExecutionPolicy::Observe
+        );
+        assert_eq!(
+            BeeExecutionPolicy::DispatchOnly.resolved(WorkspaceAuthority::Autonomous),
+            BeeExecutionPolicy::DispatchOnly
+        );
     }
 }

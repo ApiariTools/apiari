@@ -265,6 +265,8 @@ pub struct BeeConfigView {
     pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    #[serde(default)]
+    pub execution_policy: crate::config::BeeExecutionPolicy,
     pub provider: String,
     pub model: String,
     pub max_turns: u32,
@@ -1619,6 +1621,7 @@ async fn get_bees(
                         name: b.name,
                         role: b.role,
                         color: b.color,
+                        execution_policy: b.execution_policy,
                         provider: b.provider,
                         model: b.model,
                         max_turns: b.max_turns,
@@ -1684,6 +1687,11 @@ async fn save_bees(
         if let Some(ref color) = bee.color {
             table["color"] = toml_edit::value(color);
         }
+        table["execution_policy"] = toml_edit::value(match bee.execution_policy {
+            crate::config::BeeExecutionPolicy::Observe => "observe",
+            crate::config::BeeExecutionPolicy::DispatchOnly => "dispatch_only",
+            crate::config::BeeExecutionPolicy::Autonomous => "autonomous",
+        });
         table["provider"] = toml_edit::value(&bee.provider);
         table["model"] = toml_edit::value(&bee.model);
         table["max_turns"] = toml_edit::value(bee.max_turns as i64);
@@ -3430,6 +3438,7 @@ mod tests {
             name: "Bee".to_string(),
             role: None,
             color: None,
+            execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
             provider: "claude".to_string(),
             model: "sonnet".to_string(),
             max_turns: 20,
@@ -3452,6 +3461,7 @@ mod tests {
                 name: "Bee".to_string(),
                 role: None,
                 color: None,
+                execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
                 provider: "claude".to_string(),
                 model: "sonnet".to_string(),
                 max_turns: 20,
@@ -3466,6 +3476,7 @@ mod tests {
                 name: "Codex".to_string(),
                 role: None,
                 color: None,
+                execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
                 provider: "codex".to_string(),
                 model: "gpt-5.3-codex".to_string(),
                 max_turns: 20,
@@ -3495,6 +3506,7 @@ mod tests {
             name: "Claude".to_string(),
             role: None,
             color: None,
+            execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
             provider: "claude".to_string(),
             model: "sonnet".to_string(),
             max_turns: 20,
@@ -3520,6 +3532,7 @@ mod tests {
                 name: "Bee".to_string(),
                 role: Some("Coordinator".to_string()),
                 color: Some("#f5c542".to_string()),
+                execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
                 provider: "claude".to_string(),
                 model: "sonnet".to_string(),
                 max_turns: 20,
@@ -3534,6 +3547,7 @@ mod tests {
                 name: "Codex".to_string(),
                 role: Some("Code specialist".to_string()),
                 color: Some("#5b9bd5".to_string()),
+                execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
                 provider: "codex".to_string(),
                 model: "gpt-5.3-codex".to_string(),
                 max_turns: 20,

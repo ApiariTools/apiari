@@ -155,6 +155,7 @@ pub struct Coordinator {
     prompt_preamble: Option<String>,
     allowed_tools: Vec<String>,
     disallowed_tools: Vec<String>,
+    execution_policy: crate::config::BeeExecutionPolicy,
     working_dir: Option<PathBuf>,
     settings: Option<String>,
     safety_hooks: Option<Box<dyn SafetyHooks>>,
@@ -178,6 +179,7 @@ impl Coordinator {
             prompt_preamble: None,
             allowed_tools: Vec::new(),
             disallowed_tools: Vec::new(),
+            execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
             working_dir: None,
             settings: None,
             safety_hooks: None,
@@ -221,6 +223,10 @@ impl Coordinator {
     /// Set tools that are explicitly blocked (hard enforcement).
     pub fn set_disallowed_tools(&mut self, tools: Vec<String>) {
         self.disallowed_tools = tools;
+    }
+
+    pub fn set_execution_policy(&mut self, policy: crate::config::BeeExecutionPolicy) {
+        self.execution_policy = policy;
     }
 
     /// Set the working directory for the coordinator session.
@@ -648,7 +654,17 @@ impl Coordinator {
                         session_id: Some(sid.clone()),
                         model: model.clone(),
                         images: image_paths.to_vec(),
-                        dangerously_bypass_sandbox: true,
+                        sandbox: Some(match self.execution_policy {
+                            crate::config::BeeExecutionPolicy::Autonomous => {
+                                apiari_codex_sdk::SandboxMode::WorkspaceWrite
+                            }
+                            _ => apiari_codex_sdk::SandboxMode::ReadOnly,
+                        }),
+                        approval: Some(apiari_codex_sdk::ApprovalPolicy::Never),
+                        dangerously_bypass_sandbox: matches!(
+                            self.execution_policy,
+                            crate::config::BeeExecutionPolicy::Autonomous
+                        ),
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
                     },
@@ -660,8 +676,18 @@ impl Coordinator {
                     prompt,
                     ExecOptions {
                         model,
+                        sandbox: Some(match self.execution_policy {
+                            crate::config::BeeExecutionPolicy::Autonomous => {
+                                apiari_codex_sdk::SandboxMode::WorkspaceWrite
+                            }
+                            _ => apiari_codex_sdk::SandboxMode::ReadOnly,
+                        }),
+                        approval: Some(apiari_codex_sdk::ApprovalPolicy::Never),
                         images: image_paths.to_vec(),
-                        dangerously_bypass_sandbox: true,
+                        dangerously_bypass_sandbox: matches!(
+                            self.execution_policy,
+                            crate::config::BeeExecutionPolicy::Autonomous
+                        ),
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
                     },
@@ -746,7 +772,10 @@ impl Coordinator {
                         session_id: Some(sid.clone()),
                         model: Some(self.model.clone()),
                         working_dir: self.working_dir.clone(),
-                        yolo: true,
+                        yolo: matches!(
+                            self.execution_policy,
+                            crate::config::BeeExecutionPolicy::Autonomous
+                        ),
                     },
                 )
                 .await?
@@ -757,7 +786,10 @@ impl Coordinator {
                     GeminiOptions {
                         model: Some(self.model.clone()),
                         working_dir: self.working_dir.clone(),
-                        yolo: true,
+                        yolo: matches!(
+                            self.execution_policy,
+                            crate::config::BeeExecutionPolicy::Autonomous
+                        ),
                         ..Default::default()
                     },
                 )
