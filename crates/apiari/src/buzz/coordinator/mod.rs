@@ -671,11 +671,11 @@ impl Coordinator {
                     ExecOptions {
                         model,
                         sandbox: Some(match self.execution_policy {
-                            crate::config::BeeExecutionPolicy::Observe => {
+                            crate::config::BeeExecutionPolicy::Observe
+                            | crate::config::BeeExecutionPolicy::DispatchOnly => {
                                 apiari_codex_sdk::SandboxMode::ReadOnly
                             }
-                            crate::config::BeeExecutionPolicy::DispatchOnly
-                            | crate::config::BeeExecutionPolicy::Autonomous => {
+                            crate::config::BeeExecutionPolicy::Autonomous => {
                                 apiari_codex_sdk::SandboxMode::WorkspaceWrite
                             }
                         }),

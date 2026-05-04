@@ -4388,7 +4388,8 @@ fn default_bee_prompt_preamble(
                  - If swarm cannot dispatch to a repo, STOP and tell the user.\n\
                  - You CAN use Bash freely for research and investigation (git log, gh pr view, swarm status, curl APIs, sqlite3, ls, etc.).\n\
                  - You must NEVER use Bash to modify the workspace: no creating/editing/deleting files, no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files.\n\
-                 - The ONLY Bash writes allowed are to /tmp/, your persistent memory file, `.apiari/`, and {workspaces_dir_display}.\n\
+                 - For worker dispatch, use inline `swarm create --repo <repo> \"<prompt>\"` style commands. Do NOT create temp prompt files or use `--prompt-file`.\n\
+                 - The ONLY Bash writes allowed are your persistent memory file, `.apiari/`, and {workspaces_dir_display}.\n\
                  - You MAY use Write or Edit only under `.apiari/` and the workspace config file in {workspaces_dir_display}.\n"
             )
         }

@@ -543,7 +543,14 @@ impl WorkspaceConfig {
         if let Some(ref bees) = self.bees
             && !bees.is_empty()
         {
-            return bees.clone();
+            return bees
+                .iter()
+                .cloned()
+                .map(|mut bee| {
+                    bee.model = normalize_model_identifier(&bee.provider, &bee.model);
+                    bee
+                })
+                .collect();
         }
         // Convert single coordinator config to a BeeConfig
         let c = &self.coordinator;
@@ -553,7 +560,7 @@ impl WorkspaceConfig {
             color: None,
             execution_policy: BeeExecutionPolicy::default(),
             provider: c.provider.clone(),
-            model: c.model.clone(),
+            model: normalize_model_identifier(&c.provider, &c.model),
             max_turns: c.max_turns,
             prompt: c.prompt.clone(),
             max_session_turns: c.max_session_turns,
@@ -976,7 +983,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
         }];
 
         bees.extend(value.bots.iter().map(|bot| BeeConfig {
-            model: legacy_bot_model(&bot.provider, &bot.model),
+            model: normalize_model_identifier(&bot.provider, &bot.model),
             name: bot.name.clone(),
             role: bot.role.clone(),
             color: bot.color.clone(),
@@ -1525,7 +1532,7 @@ pub fn to_buzz_config(ws: &WorkspaceConfig) -> crate::buzz::config::BuzzConfig {
                 .collect(),
         },
         coordinator: crate::buzz::config::CoordinatorConfig {
-            model: ws.coordinator.model.clone(),
+            model: normalize_model_identifier(&ws.coordinator.provider, &ws.coordinator.model),
             max_turns: ws.coordinator.max_turns,
         },
         morning_brief: ws.morning_brief.as_ref().map(|mb| {
@@ -1617,12 +1624,23 @@ fn default_provider() -> String {
     "claude".to_string()
 }
 
-fn legacy_bot_model(provider: &str, model: &str) -> String {
-    if provider == "codex" && model == default_model() {
-        String::new()
-    } else {
-        model.to_string()
+fn normalize_model_identifier(provider: &str, model: &str) -> String {
+    let trimmed = model.trim();
+
+    if provider == "codex" && trimmed == default_model() {
+        return String::new();
     }
+
+    if provider == "claude"
+        && matches!(
+            trimmed,
+            "claude-sonnet-4.6" | "claude-sonnet-4-6" | "claude-sonnet-4"
+        )
+    {
+        return default_model();
+    }
+
+    trimmed.to_string()
 }
 
 fn default_watcher_interval() -> u64 {
@@ -1727,8 +1745,26 @@ provider = "codex"
         assert_eq!(bees[0].provider, "claude");
         assert_eq!(bees[1].name, "Claude");
         assert_eq!(bees[1].provider, "claude");
+        assert_eq!(bees[1].model, "sonnet");
         assert_eq!(bees[2].name, "Codex");
         assert_eq!(bees[2].provider, "codex");
+    }
+
+    #[test]
+    fn test_resolved_bees_normalizes_legacy_claude_model_aliases() {
+        let toml_str = r#"
+root = "/Users/josh/Developer/apiari"
+
+[coordinator]
+provider = "claude"
+model = "claude-sonnet-4.6"
+"#;
+
+        let config: WorkspaceConfig = toml::from_str(toml_str).unwrap();
+        let bees = config.resolved_bees();
+        assert_eq!(bees.len(), 1);
+        assert_eq!(bees[0].provider, "claude");
+        assert_eq!(bees[0].model, "sonnet");
     }
 
     #[test]

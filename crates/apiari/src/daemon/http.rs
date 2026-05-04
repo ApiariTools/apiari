@@ -793,7 +793,10 @@ struct WorkspaceChatBody {
 }
 
 async fn probe_provider_capability(name: &str, bin: &str) -> ProviderCapabilityView {
-    let which = tokio::process::Command::new("which").arg(bin).output().await;
+    let which = tokio::process::Command::new("which")
+        .arg(bin)
+        .output()
+        .await;
     let installed = which.as_ref().is_ok_and(|output| output.status.success());
     let binary_path = which.ok().and_then(|output| {
         if output.status.success() {
@@ -809,7 +812,12 @@ async fn probe_provider_capability(name: &str, bin: &str) -> ProviderCapabilityV
     let mut approval_flag_supported = None;
 
     if installed {
-        match tokio::process::Command::new(bin).arg("exec").arg("--help").output().await {
+        match tokio::process::Command::new(bin)
+            .arg("exec")
+            .arg("--help")
+            .output()
+            .await
+        {
             Ok(output) => {
                 let combined = format!(
                     "{}\n{}",
@@ -820,7 +828,10 @@ async fn probe_provider_capability(name: &str, bin: &str) -> ProviderCapabilityV
                     sandbox_flag_supported = Some(combined.contains("--sandbox"));
                     approval_flag_supported = Some(combined.contains("--approval-policy"));
                     if approval_flag_supported == Some(false) {
-                        notes.push("Current codex exec CLI does not support --approval-policy.".to_string());
+                        notes.push(
+                            "Current codex exec CLI does not support --approval-policy."
+                                .to_string(),
+                        );
                     }
                 }
             }
@@ -3337,7 +3348,10 @@ pub async fn start_http_server(
         .route("/api/worker/send", post(send_worker_message))
         .route("/api/briefing/dismiss", post(dismiss_signal))
         .route("/api/briefing/snooze", post(snooze_signal))
-        .route("/api/providers/capabilities", get(get_provider_capabilities))
+        .route(
+            "/api/providers/capabilities",
+            get(get_provider_capabilities),
+        )
         .route("/api/signals", get(get_signals))
         .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))

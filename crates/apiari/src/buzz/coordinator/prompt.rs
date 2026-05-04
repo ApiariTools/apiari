@@ -31,10 +31,12 @@ pub fn default_preamble(name: &str) -> String {
          - You CAN use Bash freely for research and investigation (git log, gh pr view, \
            swarm status, curl APIs, sqlite3, ls, etc.).\n\
          - You must NEVER use Bash to modify the workspace: no creating/editing/deleting files, \
-           no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files. \
-           The ONLY Bash writes allowed are to /tmp/ (for swarm --prompt-file), your persistent \
-           memory file (see Persistent Memory section if present), `.apiari/` (see below), \
-           and `{workspaces_dir_display}` (see below).\n\
+           no git add/commit/push, no curl -o/wget into repos, no echo/cat/sed writing to files.\n\
+         - For worker dispatch, use inline `swarm create --repo <repo> \"<prompt>\"` style commands. \
+           Do NOT create temp prompt files or use `--prompt-file`.\n\
+         - The ONLY Bash writes allowed are your persistent memory file (see Persistent Memory \
+           section if present), `.apiari/` (see below), and `{workspaces_dir_display}` \
+           (see below).\n\
          - You MAY use Write, Edit, or Bash to create and update files under `.apiari/`: \
            specifically `.apiari/context.md` and `.apiari/skills/*.md`. These are coordinator-owned \
            config files (project context and playbooks), NOT code. Do NOT write to any other \

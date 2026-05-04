@@ -1587,10 +1587,20 @@ mod tests {
     fn test_log_and_list_bot_turn_failures() {
         let store = test_store();
         let _ = store
-            .log_bot_turn_failure("Codex", Some("codex"), "dispatch", "provider returned empty response")
+            .log_bot_turn_failure(
+                "Codex",
+                Some("codex"),
+                "dispatch",
+                "provider returned empty response",
+            )
             .unwrap();
         let _ = store
-            .log_bot_turn_failure("Codex", Some("codex"), "runtime", "unexpected argument '--approval-policy' found")
+            .log_bot_turn_failure(
+                "Codex",
+                Some("codex"),
+                "runtime",
+                "unexpected argument '--approval-policy' found",
+            )
             .unwrap();
 
         let failures = store.list_bot_turn_failures("Codex", 10).unwrap();
