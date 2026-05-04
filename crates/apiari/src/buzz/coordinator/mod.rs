@@ -650,8 +650,7 @@ impl Coordinator {
             && matches!(
                 self.execution_policy,
                 crate::config::BeeExecutionPolicy::Autonomous
-            )
-        {
+            ) {
             client
                 .exec_resume(
                     prompt,
@@ -672,10 +671,13 @@ impl Coordinator {
                     ExecOptions {
                         model,
                         sandbox: Some(match self.execution_policy {
-                            crate::config::BeeExecutionPolicy::Autonomous => {
+                            crate::config::BeeExecutionPolicy::Observe => {
+                                apiari_codex_sdk::SandboxMode::ReadOnly
+                            }
+                            crate::config::BeeExecutionPolicy::DispatchOnly
+                            | crate::config::BeeExecutionPolicy::Autonomous => {
                                 apiari_codex_sdk::SandboxMode::WorkspaceWrite
                             }
-                            _ => apiari_codex_sdk::SandboxMode::ReadOnly,
                         }),
                         approval: Some(apiari_codex_sdk::ApprovalPolicy::Never),
                         images: image_paths.to_vec(),
