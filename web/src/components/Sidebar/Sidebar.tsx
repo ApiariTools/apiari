@@ -9,6 +9,11 @@ export interface SidebarItem {
   meta?: string
 }
 
+export interface ActivityItem {
+  label: string
+  color: string
+}
+
 export interface SidebarProps {
   selectedType: 'auto_bot' | 'worker' | null
   selectedId: string | null
@@ -21,6 +26,8 @@ export interface SidebarProps {
   onQuickDispatch?: () => void
   /** Number of workers hidden because they are in a terminal state (merged/abandoned/failed). */
   doneWorkerCount?: number
+  /** Running background activity items shown at the bottom of the sidebar. */
+  activityItems?: ActivityItem[]
 }
 
 function dotClass(status: string): string {
@@ -90,8 +97,9 @@ function WorkspaceSelector({ workspaces, workspace, onWorkspaceChange }: Workspa
         aria-haspopup="listbox"
         aria-expanded={open}
       >
+        <span className={styles.workspaceOrb} aria-hidden="true" />
         <span className={styles.workspaceName}>{workspace || 'Loading...'}</span>
-        <ChevronDown size={14} className={styles.workspaceChevron} />
+        <ChevronDown size={12} className={styles.workspaceChevron} />
       </button>
       {open && (
         <div className={styles.workspaceDropdown} role="listbox" aria-label="Select workspace">
@@ -127,6 +135,7 @@ export default function Sidebar({
   onWorkspaceChange,
   onQuickDispatch,
   doneWorkerCount = 0,
+  activityItems,
 }: SidebarProps) {
   return (
     <nav className={styles.sidebar} aria-label="Sidebar">
@@ -187,6 +196,16 @@ export default function Sidebar({
           </p>
         )}
       </div>
+      {activityItems && activityItems.length > 0 && (
+        <div className={styles.activityStrip}>
+          {activityItems.map((item, i) => (
+            <div key={i} className={styles.activityItem}>
+              <span className={styles.activityDot} style={{ background: item.color }} />
+              <span className={styles.activityLabel}>{item.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </nav>
   )
 }

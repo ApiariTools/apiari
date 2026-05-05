@@ -360,6 +360,13 @@ export default function App() {
   const sidebarWorkers = activeWorkers.map(workerToSidebarItem)
   const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
+  const activityItems = workers
+    .filter((w) => w.state === 'running')
+    .map((w) => ({
+      label: `${(w.goal ?? w.id).slice(0, 35)} · running`,
+      color: 'var(--status-running)',
+    }))
+
   const mainContent = !workspace ? (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-faint)', fontFamily: 'var(--font)', fontSize: '14px' }}>
       Loading workspaces...
@@ -417,6 +424,7 @@ export default function App() {
               updateHash(ws)
             }}
             onQuickDispatch={() => setQuickDispatchOpen(true)}
+            activityItems={activityItems}
           />
         }
         main={mainContent}

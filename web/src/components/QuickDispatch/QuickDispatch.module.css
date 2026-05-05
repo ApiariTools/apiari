@@ -3,7 +3,8 @@
 .overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
   z-index: 300;
   display: flex;
   align-items: center;
@@ -17,9 +18,9 @@
   width: 540px;
   max-width: calc(100vw - 32px);
   background: var(--bg-card);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
   padding: 24px;
   overflow-y: auto;
   max-height: calc(100vh - 64px);
@@ -42,7 +43,7 @@
 
 .intentTextarea {
   width: 100%;
-  background: var(--bg);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-strong);
@@ -52,7 +53,7 @@
   resize: none;
   line-height: 1.5;
   outline: none;
-  transition: border-color 120ms;
+  transition: border-color 120ms, box-shadow 120ms;
 }
 
 .intentTextarea::placeholder {
@@ -60,7 +61,8 @@
 }
 
 .intentTextarea:focus {
-  border-color: var(--border-strong);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(245, 197, 66, 0.2);
 }
 
 /* ── Repo pills ──────────────────────────────────────────────────────────── */
@@ -118,9 +120,7 @@
 
 .footer {
   display: flex;
-  flex-direction: row;
-  justify-content: flex-end;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
   margin-top: 24px;
   border-top: 1px solid var(--border);
@@ -157,7 +157,8 @@
 }
 
 .dispatchBtn {
-  height: 32px;
+  height: 44px;
+  width: 100%;
   padding: 0 16px;
   background: var(--accent);
   border: none;
@@ -169,6 +170,7 @@
   cursor: pointer;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   transition: opacity 100ms;
 }

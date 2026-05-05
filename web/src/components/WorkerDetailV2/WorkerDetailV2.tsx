@@ -29,9 +29,10 @@ function statusClass(worker: WorkerV2): string {
 }
 
 function StatusBadge({ worker }: { worker: WorkerV2 }) {
+  const isRunning = !worker.is_stalled && worker.state === 'running'
   return (
     <span className={`${styles.statusBadge} ${statusClass(worker)}`} data-testid="status-badge">
-      <span className={styles.statusDot} />
+      <span className={`${styles.statusDot} ${isRunning ? styles.statusDotRunning : ''}`} />
       {worker.label}
     </span>
   )
@@ -717,7 +718,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
       </div>
 
       {/* ── Tab content (scrollable) ── */}
-      <div className={styles.tabContent}>
+      <div key={activeTab} className={styles.tabContent}>
         {activeTab === 'timeline' && (
           <div className={styles.timelinePanel}>
             {/* Top divider: Worker started */}
@@ -782,6 +783,17 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
         {activeTab === 'reviews' && (
           <div className={styles.reviewsPanel} data-testid="reviews-section">
+            {reviewing && (
+              <div className={styles.reviewInProgress}>
+                <div className={styles.reviewInProgressHeader}>
+                  <span className={styles.reviewInProgressDot} />
+                  <span className={styles.reviewInProgressLabel}>General · reviewing now</span>
+                  <span className={styles.reviewInProgressTime}>started just now</span>
+                </div>
+                <div className={styles.reviewSkeletonLine} style={{ width: '80%' }} />
+                <div className={styles.reviewSkeletonLine} style={{ width: '55%' }} />
+              </div>
+            )}
             {reviews.length === 0 ? (
               <div className={styles.reviewsEmpty}>
                 <p className={styles.reviewsEmptyText}>No reviews yet.</p>

@@ -19,24 +19,33 @@
 .workspaceTrigger {
   display: flex;
   align-items: center;
-  height: 48px;
+  height: 44px;
   width: 100%;
   padding: 0 12px;
   background: transparent;
   border: none;
   cursor: pointer;
   text-align: left;
-  gap: 6px;
+  gap: 8px;
   font-family: var(--font);
+  transition: background 150ms;
 }
 
 .workspaceTrigger:hover {
   background: var(--bg-hover);
 }
 
+.workspaceOrb {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
 .workspaceName {
   flex: 1;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text-strong);
   font-weight: 600;
   white-space: nowrap;
@@ -56,9 +65,9 @@
   left: 0;
   right: 0;
   background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md, 6px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
   z-index: 200;
   display: flex;
   flex-direction: column;
@@ -74,9 +83,10 @@
   cursor: pointer;
   text-align: left;
   font-family: var(--font);
-  font-size: 14px;
+  font-size: 13px;
   color: var(--text);
   width: 100%;
+  transition: background 100ms;
 }
 
 .workspaceOption:hover {
@@ -93,6 +103,8 @@
   flex-shrink: 0;
 }
 
+/* ── Sections ────────────────────────────────────────────────────────────── */
+
 .section {
   display: flex;
   flex-direction: column;
@@ -106,12 +118,12 @@
 }
 
 .sectionLabel {
-  padding: 12px 16px 4px;
-  font-size: var(--font-size-meta);
+  padding: 16px 12px 6px;
+  font-size: 11px;
   font-family: var(--font);
   color: var(--text-faint);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   font-weight: 600;
 }
 
@@ -135,21 +147,24 @@
   color: var(--text-strong);
 }
 
+/* ── Sidebar items ───────────────────────────────────────────────────────── */
+
 .item {
   display: flex;
   align-items: center;
-  height: 36px;
-  padding-left: 8px;
-  padding-right: 12px;
+  height: 32px;
+  padding: 0 8px 0 12px;
   cursor: pointer;
   border: none;
+  border-left: 2px solid transparent;
   background: transparent;
   width: 100%;
   text-align: left;
-  transition: background 100ms;
+  transition: background 120ms, border-color 120ms;
   gap: 8px;
   font-family: var(--font);
   text-decoration: none;
+  position: relative;
 }
 
 .item:hover {
@@ -158,17 +173,21 @@
 
 .itemSelected {
   background: var(--bg-hover);
+  border-left-color: var(--accent);
 }
 
+/* ── Status dots ─────────────────────────────────────────────────────────── */
+
 .dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
 .dotRunning {
   background: var(--status-running);
+  animation: pulse 2s ease-in-out infinite;
 }
 
 .dotWaiting {
@@ -191,6 +210,8 @@
   background: var(--text-faint);
 }
 
+/* ── Item labels ─────────────────────────────────────────────────────────── */
+
 .name {
   flex: 1;
   font-size: var(--font-size-small);
@@ -203,6 +224,7 @@
 
 .nameSelected {
   color: var(--text-strong);
+  font-weight: 500;
 }
 
 .meta {
@@ -215,23 +237,60 @@
   flex-shrink: 0;
 }
 
+/* ── Divider ─────────────────────────────────────────────────────────────── */
+
 .divider {
   height: 1px;
   background: var(--border);
   margin: 4px 0;
 }
 
+/* ── Empty / done states ─────────────────────────────────────────────────── */
+
 .emptyMessage {
-  padding: 8px 16px;
+  padding: 8px 12px;
   font-size: 12px;
   color: var(--text-faint);
   font-family: var(--font);
 }
 
 .doneFooter {
-  padding: 4px 16px 8px;
+  padding: 4px 12px 8px;
   font-size: 11px;
   color: var(--text-faint);
   font-family: var(--font);
   opacity: 0.6;
+}
+
+/* ── Activity strip ──────────────────────────────────────────────────────── */
+
+.activityStrip {
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activityItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.activityDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.activityLabel {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
