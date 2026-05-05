@@ -2026,6 +2026,30 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
         }
     }
 
+    // Spawn v2 swarm reconcilers — one per workspace.
+    for slot in &slots {
+        let conn = match rusqlite::Connection::open(&slot.db_path) {
+            Ok(c) => {
+                if let Err(e) = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                {
+                    warn!("[{}] reconciler: pragma failed: {e}", slot.name);
+                }
+                std::sync::Arc::new(std::sync::Mutex::new(c))
+            }
+            Err(e) => {
+                warn!("[{}] reconciler: failed to open db: {e}", slot.name);
+                continue;
+            }
+        };
+        let reconciler_config = crate::buzz::swarm_reconciler::SwarmReconcilerConfig {
+            workspace: slot.name.clone(),
+            workspace_root: slot.config.root.clone(),
+            event_tx: None,
+        };
+        crate::buzz::swarm_reconciler::spawn_reconciler(reconciler_config, conn);
+        info!("[{}] swarm reconciler started", slot.name);
+    }
+
     // Deduplicate Telegram connections by bot_token
     let (tx, mut rx) = mpsc::channel::<ChannelEvent>(64);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
