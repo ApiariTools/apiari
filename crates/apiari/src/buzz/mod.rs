@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod auto_bot;
+pub mod auto_bot_runner;
 pub mod channel;
 pub mod config;
 pub mod conversation;

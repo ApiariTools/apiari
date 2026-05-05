@@ -55,6 +55,7 @@ pub struct HttpState {
 /// A WebSocket update message sent to all connected clients.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum WsUpdate {
     /// Full state snapshot (sent on initial connect).
     Snapshot {
@@ -129,6 +130,19 @@ pub enum WsUpdate {
         state: String,
         label: String,
         properties: serde_json::Value,
+    },
+    /// An auto bot run started.
+    AutoBotRunStarted {
+        workspace: String,
+        auto_bot_id: String,
+        run_id: String,
+    },
+    /// An auto bot run finished.
+    AutoBotRunFinished {
+        workspace: String,
+        auto_bot_id: String,
+        run_id: String,
+        outcome: String,
     },
 }
 
@@ -1497,8 +1511,9 @@ async fn get_workspace_worker_environment(
     Path(workspace): Path<String>,
 ) -> Result<Json<WorkerEnvironmentStatusView>, StatusCode> {
     let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
-    let status = crate::daemon::worker_environment_status_for_workspace(&workspace, &ws.config, None)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let status =
+        crate::daemon::worker_environment_status_for_workspace(&workspace, &ws.config, None)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(WorkerEnvironmentStatusView {
         repo: status.repo,
         ready: status.ready,
@@ -1674,8 +1689,7 @@ fn worker_repo_name(
 ) -> Option<String> {
     worker
         .repo_path
-        .as_ref()
-        .map(|path| path.as_path())
+        .as_deref()
         .unwrap_or(fallback_root)
         .file_name()
         .and_then(|name| name.to_str())
@@ -4643,6 +4657,406 @@ async fn v2_requeue_worker(
     }
 }
 
+// ── v2 Auto-bot API routes ─────────────────────────────────────────────
+
+/// Open an AutoBotStore against the given db_path.
+fn open_auto_bot_store_from_path(
+    db_path: &std::path::Path,
+) -> color_eyre::Result<crate::buzz::auto_bot::AutoBotStore> {
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| color_eyre::eyre::eyre!("failed to open auto_bot db: {e}"))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+    let store = crate::buzz::auto_bot::AutoBotStore::new(conn);
+    store.ensure_schema()?;
+    Ok(store)
+}
+
+/// GET /api/workspaces/{ws}/v2/auto-bots — list auto bots.
+async fn v2_list_auto_bots(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match store.list(&workspace) {
+        Ok(bots) => Json(serde_json::json!({"auto_bots": bots})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/workspaces/{ws}/v2/auto-bots/{id} — detail + last 20 runs.
+async fn v2_get_auto_bot(
+    Path((workspace, bot_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match store.get(&workspace, &bot_id) {
+        Ok(Some(bot)) => {
+            let runs = store.list_runs(&bot_id, 20).unwrap_or_default();
+            Json(serde_json::json!({"auto_bot": bot, "runs": runs})).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// Request body for creating an auto bot.
+#[derive(Debug, serde::Deserialize)]
+struct V2CreateAutoBotBody {
+    name: String,
+    #[serde(default = "default_auto_bot_color")]
+    color: String,
+    trigger_type: String,
+    cron_schedule: Option<String>,
+    signal_source: Option<String>,
+    signal_filter: Option<String>,
+    prompt: String,
+    #[serde(default = "default_provider")]
+    provider: String,
+    model: Option<String>,
+}
+
+fn default_auto_bot_color() -> String {
+    "#f5c542".to_string()
+}
+
+fn default_provider() -> String {
+    "claude".to_string()
+}
+
+/// POST /api/workspaces/{ws}/v2/auto-bots — create.
+async fn v2_create_auto_bot(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+    Json(body): Json<V2CreateAutoBotBody>,
+) -> impl IntoResponse {
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let bot = crate::buzz::auto_bot::AutoBot {
+        id: uuid::Uuid::new_v4().to_string(),
+        workspace: workspace.clone(),
+        name: body.name,
+        color: body.color,
+        trigger_type: body.trigger_type,
+        cron_schedule: body.cron_schedule,
+        signal_source: body.signal_source,
+        signal_filter: body.signal_filter,
+        prompt: body.prompt,
+        provider: body.provider,
+        model: body.model,
+        enabled: true,
+        created_at: now.clone(),
+        updated_at: now,
+        status: String::new(),
+    };
+
+    match store.upsert(&bot) {
+        Ok(()) => match store.get(&workspace, &bot.id) {
+            Ok(Some(created)) => (StatusCode::CREATED, Json(created)).into_response(),
+            _ => (StatusCode::CREATED, Json(serde_json::json!({"id": bot.id}))).into_response(),
+        },
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// Request body for patching an auto bot.
+#[derive(Debug, serde::Deserialize)]
+struct V2UpdateAutoBotBody {
+    name: Option<String>,
+    color: Option<String>,
+    trigger_type: Option<String>,
+    cron_schedule: Option<String>,
+    signal_source: Option<String>,
+    signal_filter: Option<String>,
+    prompt: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    enabled: Option<bool>,
+}
+
+/// PATCH /api/workspaces/{ws}/v2/auto-bots/{id} — update (partial).
+async fn v2_update_auto_bot(
+    Path((workspace, bot_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    Json(body): Json<V2UpdateAutoBotBody>,
+) -> impl IntoResponse {
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let existing = match store.get(&workspace, &bot_id) {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let updated = crate::buzz::auto_bot::AutoBot {
+        name: body.name.unwrap_or(existing.name),
+        color: body.color.unwrap_or(existing.color),
+        trigger_type: body.trigger_type.unwrap_or(existing.trigger_type),
+        cron_schedule: body.cron_schedule.or(existing.cron_schedule),
+        signal_source: body.signal_source.or(existing.signal_source),
+        signal_filter: body.signal_filter.or(existing.signal_filter),
+        prompt: body.prompt.unwrap_or(existing.prompt),
+        provider: body.provider.unwrap_or(existing.provider),
+        model: body.model.or(existing.model),
+        enabled: body.enabled.unwrap_or(existing.enabled),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+        ..existing
+    };
+
+    match store.upsert(&updated) {
+        Ok(()) => match store.get(&workspace, &bot_id) {
+            Ok(Some(b)) => Json(b).into_response(),
+            _ => Json(serde_json::json!({"ok": true})).into_response(),
+        },
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/workspaces/{ws}/v2/auto-bots/{id} — delete.
+async fn v2_delete_auto_bot(
+    Path((workspace, bot_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match store.delete(&workspace, &bot_id) {
+        Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "not found"})),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": msg})),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// GET /api/workspaces/{ws}/v2/auto-bots/{id}/runs — paginated runs.
+async fn v2_list_auto_bot_runs(
+    Path((workspace, bot_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    // Check workspace is valid by checking the bot exists.
+    let _ = workspace;
+    let limit: usize = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
+    let offset: usize = params
+        .get("offset")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Fetch limit+offset rows then slice (SQLite OFFSET requires LIMIT to work efficiently)
+    let all_runs = match store.list_runs(&bot_id, limit + offset) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    let runs: Vec<_> = all_runs.into_iter().skip(offset).collect();
+    Json(serde_json::json!({"runs": runs})).into_response()
+}
+
+/// POST /api/workspaces/{ws}/v2/auto-bots/{id}/trigger — manually trigger.
+async fn v2_trigger_auto_bot(
+    Path((workspace, bot_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let bot = match store.get(&workspace, &bot_id) {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let run = crate::buzz::auto_bot::AutoBotRun {
+        id: run_id.clone(),
+        auto_bot_id: bot_id.clone(),
+        workspace: workspace.clone(),
+        triggered_by: "manual".to_string(),
+        started_at: now,
+        finished_at: None,
+        outcome: None,
+        summary: None,
+        worker_id: None,
+    };
+
+    if let Err(e) = store.insert_run(&run) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Broadcast started event
+    let _ = state.updates_tx.send(WsUpdate::AutoBotRunStarted {
+        workspace: workspace.clone(),
+        auto_bot_id: bot_id.clone(),
+        run_id: run_id.clone(),
+    });
+
+    // Spawn the bot execution asynchronously
+    let store = std::sync::Arc::new(store);
+    let workspace_root = load_workspace_root(&workspace);
+    let updates_tx = state.updates_tx.clone();
+    tokio::spawn(async move {
+        crate::buzz::auto_bot_runner::run_bot_external(
+            bot,
+            "manual".to_string(),
+            run_id.clone(),
+            store,
+            workspace.clone(),
+            workspace_root,
+        )
+        .await;
+
+        // Broadcast finished event (we don't know outcome here, so emit a generic done)
+        let _ = updates_tx.send(WsUpdate::AutoBotRunFinished {
+            workspace,
+            auto_bot_id: bot_id,
+            run_id,
+            outcome: "unknown".to_string(),
+        });
+    });
+
+    Json(serde_json::json!({"run_id": run.id, "ok": true})).into_response()
+}
+
+/// Load the workspace root path from config, falling back to CWD.
+fn load_workspace_root(workspace: &str) -> std::path::PathBuf {
+    load_workspace_by_name(workspace)
+        .map(|ws| ws.config.root)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
 // ── Server setup ───────────────────────────────────────────────────────
 
 /// Start the HTTP server. Returns channels for the daemon to consume.
@@ -4806,6 +5220,25 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/v2/workers/{worker_id}/requeue",
             post(v2_requeue_worker),
+        )
+        // v2 auto-bot routes
+        .route(
+            "/api/workspaces/{workspace}/v2/auto-bots",
+            get(v2_list_auto_bots).post(v2_create_auto_bot),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/auto-bots/{bot_id}",
+            get(v2_get_auto_bot)
+                .patch(v2_update_auto_bot)
+                .delete(v2_delete_auto_bot),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/auto-bots/{bot_id}/runs",
+            get(v2_list_auto_bot_runs),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/auto-bots/{bot_id}/trigger",
+            post(v2_trigger_auto_bot),
         )
         .route("/api/ws", get(ws_handler))
         .route("/ws", get(ws_handler))

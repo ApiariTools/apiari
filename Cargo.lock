@@ -127,6 +127,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "color-eyre",
+ "croner",
  "crossterm 0.28.1",
  "dirs",
  "futures",

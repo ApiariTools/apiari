@@ -2929,6 +2929,37 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
         info!("[{}] swarm reconciler started", slot.name);
     }
 
+    // Spawn auto bot runners — one per workspace.
+    for slot in &slots {
+        let conn = match rusqlite::Connection::open(&slot.db_path) {
+            Ok(c) => {
+                if let Err(e) = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                {
+                    warn!("[{}] auto_bot_runner: pragma failed: {e}", slot.name);
+                }
+                std::sync::Arc::new(std::sync::Mutex::new(c))
+            }
+            Err(e) => {
+                warn!("[{}] auto_bot_runner: failed to open db: {e}", slot.name);
+                continue;
+            }
+        };
+        let auto_bot_store =
+            std::sync::Arc::new(crate::buzz::auto_bot::AutoBotStore::new(Arc::clone(&conn)));
+        if let Err(e) = auto_bot_store.ensure_schema() {
+            warn!("[{}] auto_bot_runner: schema error: {e}", slot.name);
+            continue;
+        }
+        let runner = std::sync::Arc::new(crate::buzz::auto_bot_runner::AutoBotRunner::new(
+            auto_bot_store,
+            conn,
+            slot.name.clone(),
+            slot.config.root.clone(),
+        ));
+        runner.spawn();
+        info!("[{}] auto bot runner started", slot.name);
+    }
+
     // Deduplicate Telegram connections by bot_token
     let (tx, mut rx) = mpsc::channel::<ChannelEvent>(64);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -5859,7 +5890,10 @@ fn likely_files_from_repo(repo_root: &Path, text: &str) -> Vec<String> {
     scored.into_iter().take(3).map(|(_, path)| path).collect()
 }
 
-pub(crate) fn find_repo_root_path(ws_config: &WorkspaceConfig, repo: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn find_repo_root_path(
+    ws_config: &WorkspaceConfig,
+    repo: &str,
+) -> Result<Option<PathBuf>> {
     let repos = apiari_swarm::core::git::detect_repos(&ws_config.root)?;
     Ok(repos
         .into_iter()
@@ -5894,20 +5928,8 @@ fn prompt_likely_needs_web_toolchain_for_repo(text: Option<&str>, repo_root: &Pa
         Some(text) => {
             let lower = text.to_ascii_lowercase();
             [
-                "mobile",
-                "ui",
-                "frontend",
-                "css",
-                "layout",
-                "panel",
-                "cards",
-                "button",
-                "header",
-                "chat",
-                "docs",
-                "workers",
-                "repos",
-                "overview",
+                "mobile", "ui", "frontend", "css", "layout", "panel", "cards", "button", "header",
+                "chat", "docs", "workers", "repos", "overview",
             ]
             .iter()
             .any(|needle| lower.contains(needle))
@@ -6115,7 +6137,8 @@ fn dispatch_shaping_markdown(shape: &DispatchTaskShape) -> String {
     let likely_files = if shape.likely_files.is_empty() {
         "- No confident target files identified yet.".to_string()
     } else {
-        shape.likely_files
+        shape
+            .likely_files
             .iter()
             .map(|path| format!("- `{path}`"))
             .collect::<Vec<_>>()
@@ -6124,7 +6147,8 @@ fn dispatch_shaping_markdown(shape: &DispatchTaskShape) -> String {
     let anti_goals = if shape.anti_goals.is_empty() {
         "- No explicit anti-goals were extracted from the request.".to_string()
     } else {
-        shape.anti_goals
+        shape
+            .anti_goals
             .iter()
             .map(|goal| format!("- {goal}"))
             .collect::<Vec<_>>()

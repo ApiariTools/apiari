@@ -49,6 +49,7 @@ axum = { version = "0.8", features = ["ws"] }
 async-stream = "0.3"
 tower-http = { version = "0.6", features = ["cors"] }
 base64 = "0.22"
+croner = "3"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ binary-ext }"
