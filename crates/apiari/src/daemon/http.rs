@@ -4252,19 +4252,90 @@ async fn v2_get_worker(
                 .into_response();
         }
     };
-    match store.get(&workspace, &id) {
-        Ok(Some(w)) => Json(w).into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not found"})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
-        )
-            .into_response(),
+    let worker = match store.get(&workspace, &id) {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Read events from .swarm/agents/{id}/events.jsonl
+    let events = if let Some(ws) = load_workspace_by_name(&workspace) {
+        let events_path = ws.config.root
+            .join(".swarm")
+            .join("agents")
+            .join(&id)
+            .join("events.jsonl");
+        read_worker_events(&events_path)
+    } else {
+        vec![]
+    };
+
+    let mut response = serde_json::to_value(&worker).unwrap_or_default();
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("events".to_string(), serde_json::json!(events));
     }
+    Json(response).into_response()
+}
+
+fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    content
+        .lines()
+        .filter_map(|line| {
+            let val: serde_json::Value = serde_json::from_str(line).ok()?;
+            let event_type = val.get("type")?.as_str()?;
+            // Only surface meaningful event types
+            match event_type {
+                "assistant_text" => {
+                    let content = val.get("text")?.as_str()?;
+                    let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    Some(serde_json::json!({
+                        "event_type": "assistant_text",
+                        "content": content,
+                        "created_at": created_at,
+                    }))
+                }
+                "tool_use" => {
+                    let tool = val.get("tool").and_then(|t| t.as_str()).unwrap_or("unknown");
+                    let input = val.get("input").map(|i| i.to_string()).unwrap_or_default();
+                    let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    Some(serde_json::json!({
+                        "event_type": "tool_use",
+                        "content": format!("{tool}: {input}"),
+                        "created_at": created_at,
+                    }))
+                }
+                "user_message" => {
+                    let content = val.get("text")
+                        .or_else(|| val.get("message"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
+                    let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    Some(serde_json::json!({
+                        "event_type": "user_message",
+                        "content": content,
+                        "created_at": created_at,
+                    }))
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// POST /api/workspaces/{ws}/v2/workers — create a worker from a brief.
@@ -4453,6 +4524,18 @@ fn format_brief_as_prompt(brief: &serde_json::Value) -> String {
             parts.push(format!("# Acceptance Criteria\n\n{}", items.join("\n")));
         }
     }
+
+    // Review mode instructions — tell the worker explicitly what to do when done
+    let review_mode = brief
+        .get("review_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local_first");
+    let review_instructions = if review_mode == "pr_first" {
+        "# When Done\n\nCommit your changes, push the branch, and open a PR with `gh pr create`."
+    } else {
+        "# When Done\n\nCommit your changes and push the branch. Do NOT open a PR — the reviewer will inspect the branch locally first."
+    };
+    parts.push(review_instructions.to_string());
 
     parts.join("\n\n")
 }
