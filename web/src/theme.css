@@ -1,55 +1,53 @@
 :root {
+  /* Layout */
+  --sidebar-width: 240px;
+  --sidebar-rail-width: 60px;
+  --bottom-bar-height: 56px;
+
+  /* Backgrounds */
+  --bg: #111;
+  --bg-card: #191919;
+  --bg-hover: #1e1e1e;
+
+  /* Borders */
+  --border: #252525;
+  --border-strong: #333;
+
+  /* Text */
+  --text: #aaa;
+  --text-strong: #eee;
+  --text-faint: #555;
+
+  /* Accent */
+  --accent: #f5c542;
+
+  /* Status colors */
+  --status-running: #5cb85c;
+  --status-waiting: #f5c542;
+  --status-stalled: #e8a020;
+  --status-failed: #e85555;
+  --status-merged: #7c5cbf;
+  --status-abandoned: #555;
+
+  /* Typography */
+  --font: system-ui, -apple-system, sans-serif;
+  --font-size-base: 15px;
+  --font-size-small: 13px;
+  --font-size-meta: 12px;
+  --font-size-input: 16px;
+
+  /* Spacing */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
-  --space-7: 32px;
 
-  --bg: #0b0d10;
-  --bg-card: #12151a;
-  --bg-elevated: #171b22;
-  --surface: #0f1216;
-  --surface-raised: #141920;
-  --surface-elevated: #1a2028;
-  --surface-muted: rgba(255, 255, 255, 0.025);
-  --border: #232934;
-  --border-strong: rgba(255, 255, 255, 0.09);
-  --text: #adb4be;
-  --text-strong: #eef2f6;
-  --text-faint: #6d7683;
-  --text-dim: #8f98a6;
-  --accent: #d9a84a;
-  --accent-strong: #edc778;
-  --accent-soft: rgba(217, 168, 74, 0.12);
-  --red: #f06c62;
-  --red-soft: rgba(240, 108, 98, 0.14);
-  --green: #63c28d;
-  --green-soft: rgba(99, 194, 141, 0.14);
-  --blue: #6ea9ff;
-  --blue-soft: rgba(110, 169, 255, 0.16);
-  --purple: #c197ff;
-  --purple-soft: rgba(193, 151, 255, 0.16);
-  --font: "SF Pro Display", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
-  --font-size-display: clamp(30px, 4vw, 42px);
-  --font-size-title: 18px;
-  --font-size-body: 14px;
-  --font-size-meta: 12px;
-  --font-size-micro: 11px;
-  --font-size-tiny: 10px;
-  --line-height-body: 1.45;
-  --line-height-meta: 1.35;
-  --radius: 10px;
-  --radius-sm: 10px;
-  --radius-md: 14px;
-  --radius-lg: 22px;
-  --shell-shadow: 0 20px 48px rgba(0, 0, 0, 0.28);
-  --mobile-gutter: 14px;
-  --mobile-bar-height: 92px;
-  --shell-surface:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
-    var(--bg-card);
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 }
 
 *,
@@ -71,12 +69,9 @@ body {
 
 body {
   font-family: var(--font);
-  background:
-    radial-gradient(circle at top, rgba(217, 168, 74, 0.04), transparent 22%),
-    radial-gradient(circle at bottom left, rgba(110, 169, 255, 0.035), transparent 22%),
-    var(--bg);
+  background: var(--bg);
   color: var(--text);
-  font-size: 15px;
+  font-size: var(--font-size-base);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }

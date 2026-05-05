@@ -1,0 +1,84 @@
+.layout {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+.sidebar {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* iPad overlay sidebar */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: row;
+}
+
+.overlayBackdrop {
+  flex: 1;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.overlaySidebar {
+  order: -1;
+}
+
+/* Desktop: sidebar always visible */
+@media (min-width: 1025px) {
+  .sidebar {
+    display: flex;
+  }
+
+  .bottomBar {
+    display: none;
+  }
+
+  .mainMobile {
+    padding-bottom: 0;
+  }
+}
+
+/* iPad: sidebar hidden by default, shown as overlay */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .sidebar {
+    display: none;
+  }
+
+  .bottomBar {
+    display: none;
+  }
+}
+
+/* Mobile: no sidebar, bottom tab bar */
+@media (max-width: 768px) {
+  .sidebar {
+    display: none;
+  }
+
+  .bottomBar {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+  }
+
+  .main {
+    padding-bottom: var(--bottom-bar-height);
+  }
+}

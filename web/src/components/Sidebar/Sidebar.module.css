@@ -1,0 +1,111 @@
+.sidebar {
+  width: var(--sidebar-width);
+  height: 100%;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+}
+
+.sectionLabel {
+  padding: 12px 16px 4px;
+  font-size: var(--font-size-meta);
+  font-family: var(--font);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding-left: 8px;
+  padding-right: 12px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  transition: background 100ms;
+  gap: 8px;
+  font-family: var(--font);
+  text-decoration: none;
+}
+
+.item:hover {
+  background: var(--bg-hover);
+}
+
+.itemSelected {
+  background: var(--bg-hover);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotRunning {
+  background: var(--status-running);
+}
+
+.dotWaiting {
+  background: var(--status-waiting);
+}
+
+.dotStalled {
+  background: var(--status-stalled);
+}
+
+.dotFailed {
+  background: var(--status-failed);
+}
+
+.dotMerged {
+  background: var(--status-merged);
+}
+
+.dotIdle {
+  background: var(--text-faint);
+}
+
+.name {
+  flex: 1;
+  font-size: var(--font-size-small);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.nameSelected {
+  color: var(--text-strong);
+}
+
+.meta {
+  font-size: var(--font-size-meta);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80px;
+  flex-shrink: 0;
+}
+
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}

@@ -1,0 +1,42 @@
+.bar {
+  width: 100%;
+  height: var(--bottom-bar-height);
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--font);
+  transition: color 100ms;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tabActive {
+  color: var(--accent);
+}
+
+.tabActive:hover {
+  color: var(--accent);
+}
+
+.label {
+  font-size: var(--font-size-meta);
+  line-height: 1;
+}

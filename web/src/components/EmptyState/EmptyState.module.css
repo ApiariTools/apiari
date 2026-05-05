@@ -1,0 +1,26 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+}
+
+.icon {
+  color: var(--text-faint);
+}
+
+.heading {
+  font-size: 16px;
+  font-family: var(--font);
+  color: var(--text-strong);
+  font-weight: 500;
+}
+
+.subtext {
+  font-size: var(--font-size-small);
+  font-family: var(--font);
+  color: var(--text-faint);
+  text-align: center;
+}
