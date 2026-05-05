@@ -495,6 +495,34 @@ async fn run_coordinator_task(
                             }
                             continue;
                         }
+                        Ok(DirectDispatchDecision::NeedsClarification {
+                            response_text,
+                            detail,
+                        }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_needs_clarification",
+                                &detail,
+                            );
+                            typing_cancel.cancel();
+                            let msg = OutboundMessage {
+                                chat_id,
+                                text: response_text.clone(),
+                                buttons: vec![],
+                                topic_id,
+                            };
+                            let _ = channel.send_message(&msg).await;
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity(
+                                    "telegram",
+                                    &slot_name,
+                                    "assistant_message",
+                                    &response_text,
+                                );
+                            }
+                            continue;
+                        }
                         Ok(DirectDispatchDecision::Skipped(reason)) => {
                             let _ = store.log_bot_turn_decision(
                                 &bee_name,
@@ -829,6 +857,68 @@ async fn run_coordinator_task(
                                     Err(e) => {
                                         warn!(
                                             "[{ws_name}] failed to save repo-selection response: {e}"
+                                        );
+                                        None
+                                    }
+                                }
+                            };
+                            if let Err(e) = store.set_bot_status(&bee_name, "idle", "", None) {
+                                warn!("[{ws_name}] failed to clear bot status: {e}");
+                            }
+                            if let Some(id) = assistant_message_id {
+                                send_web_message_update(
+                                    &web_updates_tx,
+                                    id,
+                                    &ws_name,
+                                    &bee_name,
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    &assistant_created_at,
+                                );
+                            }
+                            send_web_bot_status(
+                                &web_updates_tx,
+                                &ws_name,
+                                &bee_name,
+                                "idle",
+                                "",
+                                None,
+                            );
+                            let _ = responder.send(socket::DaemonResponse::Token {
+                                workspace: ws_name.clone(),
+                                text: response_text,
+                            });
+                            let _ = responder.send(socket::DaemonResponse::Done {
+                                workspace: ws_name.clone(),
+                            });
+                            continue;
+                        }
+                        Ok(DirectDispatchDecision::NeedsClarification {
+                            response_text,
+                            detail,
+                        }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_needs_clarification",
+                                &detail,
+                            );
+                            let assistant_created_at = chrono::Utc::now().to_rfc3339();
+                            let assistant_message_id = {
+                                let conv = ConversationStore::new(store.conn(), &conv_scope);
+                                match conv.save_message(
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    Some("system"),
+                                    Some(coordinator.provider()),
+                                    None,
+                                ) {
+                                    Ok(id) => Some(id),
+                                    Err(e) => {
+                                        warn!(
+                                            "[{ws_name}] failed to save clarification response: {e}"
                                         );
                                         None
                                     }
@@ -5463,9 +5553,14 @@ async fn classify_with_local_apple_router(_text: &str) -> Result<Option<AppleLoc
     Ok(None)
 }
 
+#[derive(Debug)]
 enum DirectDispatchDecision {
     Skipped(String),
     Dispatched {
+        response_text: String,
+        detail: String,
+    },
+    NeedsClarification {
         response_text: String,
         detail: String,
     },
@@ -5710,6 +5805,13 @@ Original user request\n{text}",
     })
 }
 
+fn dispatch_clarification_question(shape: &DispatchTaskShape) -> String {
+    let goal = shape.goal.trim();
+    format!(
+        "This looks like an implementation request, but I can’t confidently identify the target files yet. What exact component, file, or screen should I change for: {goal}?"
+    )
+}
+
 fn resolve_auto_dispatch_repo(
     workspace_name: &str,
     ws_config: &WorkspaceConfig,
@@ -5792,9 +5894,7 @@ async fn try_direct_dispatch_for_dispatch_only(
                     }
                 }
             } else {
-                return Ok(DirectDispatchDecision::Skipped(
-                    "ambiguous_without_local_router".to_string(),
-                ));
+                "ambiguous_without_local_router".to_string()
             }
         }
     };
@@ -5810,6 +5910,16 @@ async fn try_direct_dispatch_for_dispatch_only(
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
     let task_shape = shape_dispatch_task(ws_config, &repo, text)?;
+    if task_shape.confidence == "low" && task_shape.likely_files.is_empty() {
+        return Ok(DirectDispatchDecision::NeedsClarification {
+            detail: format!(
+                "{decision_detail}; repo={repo}; confidence={}; anti_goals={}; likely_files=none",
+                task_shape.confidence,
+                task_shape.anti_goals.len(),
+            ),
+            response_text: dispatch_clarification_question(&task_shape),
+        });
+    }
     let worker_mode =
         crate::buzz::coordinator::swarm_client::infer_worker_mode(&task_shape.shaped_prompt);
     let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir_with_mode(
@@ -6881,6 +6991,62 @@ model = "sonnet"
                 .iter()
                 .any(|path| path == "web/src/components/WorkersPanel.module.css")
         );
+    }
+
+    #[tokio::test]
+    async fn test_try_direct_dispatch_for_dispatch_only_asks_for_clarification_on_low_confidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("apiari");
+        fs::create_dir_all(repo_root.join("web/src/components")).unwrap();
+        fs::write(
+            repo_root.join("web/src/components/TopBar.tsx"),
+            "export function TopBar() {}\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo_root)
+            .status()
+            .unwrap();
+
+        let ws_config: WorkspaceConfig = toml::from_str(&format!(
+            r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+
+[swarm]
+default_agent = "codex"
+"#,
+            repo_root.display()
+        ))
+        .unwrap();
+
+        let decision = super::try_direct_dispatch_for_dispatch_only(
+            "apiari",
+            &ws_config,
+            "Codex",
+            "Make the overview cards better on mobile.",
+            false,
+        )
+        .await
+        .unwrap();
+
+        match decision {
+            super::DirectDispatchDecision::NeedsClarification {
+                response_text,
+                detail,
+            } => {
+                assert!(response_text.contains("can’t confidently identify the target files"));
+                assert!(detail.contains("confidence=low"));
+                assert!(detail.contains("likely_files=none"));
+            }
+            other => panic!("expected NeedsClarification, got {other:?}"),
+        }
     }
 
     #[test]
