@@ -9,7 +9,13 @@ pub mod http;
 pub mod morning_brief;
 pub mod socket;
 
-use std::{collections::HashMap, fs, path::PathBuf, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+};
 
 use color_eyre::eyre::{Result, WrapErr};
 use serde::Deserialize;
@@ -5469,6 +5475,241 @@ enum DirectDispatchDecision {
     },
 }
 
+#[derive(Debug, Clone)]
+struct DispatchTaskShape {
+    goal: String,
+    likely_files: Vec<String>,
+    anti_goals: Vec<String>,
+    confidence: &'static str,
+    shaped_prompt: String,
+}
+
+fn prompt_anti_goals(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("do not ")
+                || lower.starts_with("don't ")
+                || lower.starts_with("only ")
+                || lower.starts_with("do not:")
+        })
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn prompt_goal(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.trim_end_matches(['.', '!', '?']).trim().to_string())
+        .filter(|line| !line.is_empty())
+        .unwrap_or_else(|| text.trim().to_string())
+}
+
+fn explicit_file_paths(text: &str) -> Vec<String> {
+    let exts = [
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".css", ".md", ".toml", ".yml", ".yaml", ".json",
+    ];
+    let mut paths = Vec::new();
+    for token in text.split_whitespace() {
+        let cleaned = token
+            .trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '`' | '"' | '\'' | ',' | '.' | ':' | ';' | '(' | ')' | '[' | ']'
+                )
+            })
+            .trim();
+        if cleaned.contains('/') && exts.iter().any(|ext| cleaned.ends_with(ext)) {
+            paths.push(cleaned.to_string());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn prompt_keywords(text: &str) -> Vec<String> {
+    let stop = [
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "only",
+        "change",
+        "make",
+        "more",
+        "less",
+        "small",
+        "screens",
+        "screen",
+        "mobile",
+        "worker",
+        "cards",
+        "card",
+        "list",
+        "panel",
+        "style",
+        "styling",
+        "component",
+        "components",
+        "code",
+        "repo",
+        "please",
+        "should",
+        "would",
+        "could",
+        "into",
+        "from",
+        "than",
+        "just",
+        "need",
+        "touch",
+        "modify",
+    ];
+    let mut keywords = Vec::new();
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.')
+    {
+        let word = raw.trim().to_ascii_lowercase();
+        if word.len() < 3 || stop.contains(&word.as_str()) {
+            continue;
+        }
+        if !keywords.contains(&word) {
+            keywords.push(word);
+        }
+    }
+    keywords
+}
+
+fn likely_files_from_repo(repo_root: &Path, text: &str) -> Vec<String> {
+    let keywords = prompt_keywords(text);
+    if keywords.is_empty() {
+        return Vec::new();
+    }
+
+    let output = std::process::Command::new("rg")
+        .args(["--files"])
+        .current_dir(repo_root)
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut scored = Vec::new();
+    for line in stdout.lines() {
+        let path = line.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let lower = path.to_ascii_lowercase();
+        let mut score = 0_i32;
+        for keyword in &keywords {
+            if lower.contains(keyword) {
+                score += 3;
+            }
+        }
+        if lower.contains("workerspanel") && text.to_ascii_lowercase().contains("worker") {
+            score += 5;
+        }
+        if lower.contains("mobile") {
+            score += 1;
+        }
+        if lower.contains("css") && text.to_ascii_lowercase().contains("padding") {
+            score += 2;
+        }
+        if score > 0 {
+            scored.push((score, path.to_string()));
+        }
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().take(3).map(|(_, path)| path).collect()
+}
+
+fn find_repo_root_path(ws_config: &WorkspaceConfig, repo: &str) -> Result<Option<PathBuf>> {
+    let repos = apiari_swarm::core::git::detect_repos(&ws_config.root)?;
+    Ok(repos
+        .into_iter()
+        .find(|path| apiari_swarm::core::git::repo_name(path) == repo))
+}
+
+fn shape_dispatch_task(
+    ws_config: &WorkspaceConfig,
+    repo: &str,
+    text: &str,
+) -> Result<DispatchTaskShape> {
+    let goal = prompt_goal(text);
+    let anti_goals = prompt_anti_goals(text);
+    let explicit_paths = explicit_file_paths(text);
+    let likely_files = if !explicit_paths.is_empty() {
+        explicit_paths
+    } else if let Some(repo_root) = find_repo_root_path(ws_config, repo)? {
+        likely_files_from_repo(&repo_root, text)
+    } else {
+        Vec::new()
+    };
+
+    let confidence = if !likely_files.is_empty() {
+        if explicit_file_paths(text).is_empty() {
+            "medium"
+        } else {
+            "high"
+        }
+    } else {
+        "low"
+    };
+
+    let likely_files_md = if likely_files.is_empty() {
+        "- No exact file identified; inspect the most likely surface before editing.\n".to_string()
+    } else {
+        likely_files
+            .iter()
+            .map(|path| format!("- `{path}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    let anti_goals_md = if anti_goals.is_empty() {
+        "- Do not broaden scope beyond the requested change.\n".to_string()
+    } else {
+        anti_goals
+            .iter()
+            .map(|goal| format!("- {goal}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+
+    let shaped_prompt = format!(
+        "Coordinator-shaped task packet\n\n\
+Goal\n- {goal}\n\n\
+Repo\n- `{repo}`\n\n\
+Likely target files\n{likely_files_md}\n\
+Anti-goals\n{anti_goals_md}\n\
+Confidence\n- {confidence}\n\n\
+Dispatch rules\n\
+- Start from the likely target files above instead of rediscovering the task from scratch.\n\
+- If the first file is wrong, inspect nearby files before broadening scope.\n\
+- If confidence is low and the target is still ambiguous after inspection, stop and explain exactly what pointer is missing.\n\n\
+Original user request\n{text}",
+    );
+
+    Ok(DispatchTaskShape {
+        goal,
+        likely_files,
+        anti_goals,
+        confidence,
+        shaped_prompt,
+    })
+}
+
 fn resolve_auto_dispatch_repo(
     workspace_name: &str,
     ws_config: &WorkspaceConfig,
@@ -5568,26 +5809,41 @@ async fn try_direct_dispatch_for_dispatch_only(
     };
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
-    let worker_mode = crate::buzz::coordinator::swarm_client::infer_worker_mode(text);
+    let task_shape = shape_dispatch_task(ws_config, &repo, text)?;
+    let worker_mode =
+        crate::buzz::coordinator::swarm_client::infer_worker_mode(&task_shape.shaped_prompt);
     let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir_with_mode(
         &repo,
-        text,
+        &task_shape.shaped_prompt,
         worker_mode,
     );
     let worker_id = swarm
-        .create_worker_with_task_dir(&repo, text, &ws_config.swarm.default_agent, Some(task_dir))
+        .create_worker_with_task_dir(
+            &repo,
+            &task_shape.shaped_prompt,
+            &ws_config.swarm.default_agent,
+            Some(task_dir),
+        )
         .await?;
 
     Ok(DirectDispatchDecision::Dispatched {
         detail: format!(
-            "{decision_detail}; repo={repo}; agent={}; worker_mode={}",
+            "{decision_detail}; repo={repo}; agent={}; worker_mode={}; confidence={}; anti_goals={}; likely_files={}",
             ws_config.swarm.default_agent,
-            worker_mode.as_str()
+            worker_mode.as_str(),
+            task_shape.confidence,
+            task_shape.anti_goals.len(),
+            if task_shape.likely_files.is_empty() {
+                "none".to_string()
+            } else {
+                task_shape.likely_files.join(",")
+            }
         ),
         response_text: format!(
-            "Dispatched {} worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}.",
+            "Dispatched {} worker `{worker_id}` to repo `{repo}` using agent `{}` for {bee_name}. Goal: {}.",
             worker_mode.as_str(),
-            ws_config.swarm.default_agent
+            ws_config.swarm.default_agent,
+            task_shape.goal
         ),
     })
 }
@@ -6350,12 +6606,14 @@ mod tests {
     use std::{
         fs,
         path::Path,
+        process::Command,
         sync::{Mutex, OnceLock},
     };
 
     use crate::buzz::task::{Task, TaskStage, store::TaskStore};
     use crate::{
         buzz::{conversation::ConversationStore, signal::store::SignalStore},
+        config::WorkspaceConfig,
         daemon::{http, socket},
     };
     use chrono::Utc;
@@ -6530,6 +6788,99 @@ mod tests {
         assert!(!super::looks_like_implementation_request(
             "can you summarize the routing model?"
         ));
+    }
+
+    #[test]
+    fn test_shape_dispatch_task_preserves_explicit_file_and_anti_goals() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws_config: WorkspaceConfig = toml::from_str(&format!(
+            r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+"#,
+            temp.path().display()
+        ))
+        .unwrap();
+
+        let shape = super::shape_dispatch_task(
+            &ws_config,
+            "apiari",
+            "Reduce padding in `web/src/components/WorkersPanel.module.css`.\nDo not change chat or backend code.",
+        )
+        .unwrap();
+
+        assert_eq!(shape.confidence, "high");
+        assert!(
+            shape
+                .likely_files
+                .contains(&"web/src/components/WorkersPanel.module.css".to_string())
+        );
+        assert_eq!(shape.anti_goals.len(), 1);
+        assert!(shape.shaped_prompt.contains("Likely target files"));
+        assert!(
+            shape
+                .shaped_prompt
+                .contains("Do not change chat or backend code.")
+        );
+    }
+
+    #[test]
+    fn test_shape_dispatch_task_detects_likely_repo_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("apiari");
+        fs::create_dir_all(repo_root.join("web/src/components")).unwrap();
+        fs::write(
+            repo_root.join("web/src/components/WorkersPanel.module.css"),
+            ".card {}\n",
+        )
+        .unwrap();
+        fs::write(
+            repo_root.join("web/src/components/ChatPanel.tsx"),
+            "export function ChatPanel() {}\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo_root)
+            .status()
+            .unwrap();
+
+        let ws_config: WorkspaceConfig = toml::from_str(&format!(
+            r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+model = "sonnet"
+"#,
+            repo_root.display()
+        ))
+        .unwrap();
+
+        let shape = super::shape_dispatch_task(
+            &ws_config,
+            "apiari",
+            "Reduce the vertical padding in the worker cards on small screens so the Workers list is more compact on mobile.",
+        )
+        .unwrap();
+
+        assert_eq!(
+            shape.goal,
+            "Reduce the vertical padding in the worker cards on small screens so the Workers list is more compact on mobile"
+        );
+        assert_eq!(shape.confidence, "medium");
+        assert!(
+            shape
+                .likely_files
+                .iter()
+                .any(|path| path == "web/src/components/WorkersPanel.module.css")
+        );
     }
 
     #[test]
