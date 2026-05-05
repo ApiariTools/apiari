@@ -47,6 +47,17 @@
   --shell-shadow: 0 20px 48px rgba(0, 0, 0, 0.28);
   --mobile-gutter: 14px;
   --mobile-bar-height: 92px;
+  --sidebar-width: 240px;
+  --sidebar-rail-width: 60px;
+  --bg-hover: #1e1e1e;
+  --border-strong: #333;
+  --status-running: #5cb85c;
+  --status-waiting: #f5c542;
+  --status-stalled: #e8a020;
+  --status-failed: #e85555;
+  --status-merged: #7c5cbf;
+  --font-size-base: 15px;
+  --font-size-input: 16px;
   --shell-surface:
     linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0)),
     var(--bg-card);

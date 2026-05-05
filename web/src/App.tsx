@@ -1,233 +1,91 @@
-import { AppShell } from "./shell/AppShell";
-import { CommandPalette } from "./components/CommandPalette";
-import { ReposPanel } from "./components/ReposPanel";
-import { WorkspaceLayoutDialog } from "./components/WorkspaceLayoutDialog";
-import { useWorkspaceConsoleState } from "./useWorkspaceConsoleState";
-import styles from "./App.module.css";
-import { ChatMode } from "./modes/ChatMode";
-import { DocsMode } from "./modes/DocsMode";
-import { DiagnosticsMode } from "./modes/DiagnosticsMode";
-import { OverviewMode } from "./modes/OverviewMode";
-import { ReposMode } from "./modes/ReposMode";
-import { SignalsMode } from "./modes/SignalsMode";
-import { TasksMode } from "./modes/TasksMode";
-import { WorkersMode } from "./modes/WorkersMode";
-import { Suspense, lazy } from "react";
-import { ChatLanding } from "./components/ChatLanding";
+import { useState, useEffect } from 'react';
+import { Layout } from './components/Layout/Layout';
+import { Sidebar } from './components/Sidebar/Sidebar';
+import { BottomTabBar } from './components/BottomTabBar/BottomTabBar';
+import { EmptyState } from './components/EmptyState/EmptyState';
 
-const SimulatorPanel = lazy(() =>
-  import("./components/SimulatorPanel").then((module) => ({ default: module.SimulatorPanel })),
-);
+type EntityType = 'auto_bot' | 'worker';
+type Tab = 'auto_bots' | 'workers' | 'chat' | 'new';
+
+interface SelectedEntity {
+  type: EntityType;
+  id: string;
+}
+
+function PlaceholderDetail({ entity }: { entity: SelectedEntity }) {
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      height: '100%',
+      flexDirection: 'column',
+      gap: 8,
+    }}>
+      <div style={{ fontSize: 14, color: 'var(--text-faint)' }}>
+        {entity.type === 'worker' ? 'Worker' : 'Auto Bot'}: {entity.id}
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
-  const state = useWorkspaceConsoleState();
-  const mobileBadgeCounts = {
-    overview: state.pendingFollowupCount || null,
-    tasks: state.tasks.filter((task) => task.stage !== "Merged" && task.stage !== "Dismissed").length || null,
-    workers: state.workers.length || null,
-    repos: state.repos.length || null,
+  const [selectedEntity, setSelectedEntity] = useState<SelectedEntity | null>(null);
+  const [activeTab, setActiveTab] = useState<Tab>('auto_bots');
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+
+  // Cmd+K palette stub, Cmd+J focus stub
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.repeat) return;
+      const key = e.key.toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && key === 'k') {
+        e.preventDefault();
+        // Command palette — Phase 5
+      }
+      if ((e.metaKey || e.ctrlKey) && key === 'j') {
+        e.preventDefault();
+        // Focus input — Phase 4
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleSelect = (type: EntityType, id: string) => {
+    setSelectedEntity({ type, id });
   };
-  const showChatRepoRail = !state.isTablet && state.consoleProfile.showChatRepoRail;
-  const showMobileModeBar =
-    state.isMobile
-    && !state.workerId
-    && !state.menuOpen
-    && !state.paletteOpen
-    && !state.layoutDialogOpen
-    && !state.simulatorOpen;
 
-  let mainContent;
-  if (state.mode === "docs") {
-    mainContent = (
-      <DocsMode
-        workspace={state.workspace}
-        remote={state.remote}
-        docName={state.docName}
-        onSelectedDocNameChange={state.setDocName}
-        openListByDefaultOnMobile={state.isMobile}
-      />
-    );
-  } else if (state.mode === "signals") {
-    mainContent = (
-      <SignalsMode
-        workspace={state.workspace}
-        remote={state.remote}
-      />
-    );
-  } else if (state.mode === "diagnostics") {
-    mainContent = (
-      <DiagnosticsMode
-        workspace={state.workspace}
-        remote={state.remote}
-        bot={state.bot}
-      />
-    );
-  } else if (state.mode === "workers") {
-    mainContent = (
-      <WorkersMode
-        workspace={state.workspace}
-        remote={state.remote}
-        workers={state.workers}
-        workerEnvironment={state.workerEnvironment}
-        workerId={state.workerId}
-        selectedWorker={state.selectedWorker}
-        workerDetail={state.workerDetail}
-        isMobile={state.isMobile}
-        onSelectWorker={state.handleSelectWorker}
-        onBackFromWorker={state.handleBackFromWorker}
-        onPromoteWorker={state.handlePromoteWorker}
-        onRedispatchWorker={state.handleRedispatchWorker}
-        onCloseWorker={state.handleCloseWorker}
-      />
-    );
-  } else if (state.mode === "tasks") {
-    mainContent = (
-      <TasksMode
-        tasks={state.tasks}
-        workers={state.workers}
-        onSelectWorker={state.handleSelectWorker}
-      />
-    );
-  } else if (state.mode === "repos") {
-    mainContent = (
-      <ReposMode
-        repos={state.reposWithFreshWorkers}
-        researchTasks={state.researchTasks}
-        onSelectWorker={state.handleSelectWorker}
-      />
-    );
-  } else if (state.mode === "chat") {
-    const chatSurface = state.bot ? (
-      <ChatMode
-        workspace={state.workspace}
-        bot={state.bot}
-        botDescription={state.selectedBot?.description}
-        botProvider={state.selectedBot?.provider}
-        botModel={state.selectedBot?.model}
-        messages={state.messages}
-        messagesLoading={state.messagesLoading}
-        loading={state.loading}
-        loadingStatus={state.loadingStatus}
-        streamingContent={state.streamingContent}
-        hasOlderHistory={state.hasOlderHistory}
-        loadingOlderHistory={state.loadingOlderHistory}
-        onLoadOlderHistory={state.loadOlderHistory}
-        onSend={state.handleSend}
-        workerCount={state.workers.length}
-        onWorkersToggle={() => state.handleSelectMode("workers")}
-        onCancel={state.cancelActiveBot}
-        ttsVoice={state.ttsVoice}
-        ttsSpeed={state.ttsSpeed}
-        followups={state.followups.filter((followup) => followup.bot === state.bot)}
-        onFollowupCancelled={state.refreshFollowups}
-        bots={state.bots}
-        unread={state.unread}
-        onSelectBot={state.handleSelectBot}
-      />
-    ) : (
-      <ChatLanding
-        workspace={state.workspace}
-        remote={state.remote}
-        bots={state.bots}
-        unread={state.unread}
-        onSelectBot={state.handleSelectBot}
-      />
-    );
+  const mainContent = selectedEntity
+    ? <PlaceholderDetail entity={selectedEntity} />
+    : <EmptyState />;
 
-    mainContent = showChatRepoRail ? (
-      <div className={styles.chatWorkspaceLayout}>
-        <div className={styles.chatMain}>{chatSurface}</div>
-        <div className={styles.chatRail}>
-          <ReposPanel
-            repos={state.reposWithFreshWorkers}
-            researchTasks={state.researchTasks}
-            onSelectWorker={state.handleSelectWorker}
-          />
+  if (isMobile) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div style={{ flex: 1, overflow: 'hidden' }}>
+          {mainContent}
         </div>
+        <BottomTabBar activeTab={activeTab} onTabChange={setActiveTab} />
       </div>
-    ) : chatSurface;
-  } else {
-    mainContent = (
-      <OverviewMode
-        workspace={state.workspace}
-        remote={state.remote}
-        bots={state.bots}
-        workers={state.workers}
-        repos={state.reposWithFreshWorkers}
-        followups={state.followups}
-        researchTasks={state.researchTasks}
-        unread={state.unread}
-        primaryBot={state.consoleProfile.overviewPrimaryBot}
-        onSelectBot={state.handleSelectBot}
-        onSelectWorker={state.handleSelectWorker}
-        onOpenMode={state.handleSelectMode}
-      />
     );
   }
 
   return (
-    <>
-      <AppShell
-        workspaces={state.workspaces}
-        activeWorkspace={state.workspace}
-        activeRemote={state.remote}
-        onSelectWorkspace={state.handleSelectWorkspace}
-        onMenuToggle={() => state.setMenuOpen((value) => !value)}
-        onOpenPalette={() => state.setPaletteOpen(true)}
-        onToggleSimulator={() => state.setSimulatorOpen((value) => !value)}
-        usage={state.usage}
-        isMobile={state.isMobile}
-        isTablet={state.isTablet}
-        menuOpen={state.menuOpen}
-        onCloseMenu={() => state.setMenuOpen(false)}
-        visibleModes={state.visibleModes}
-        activeMode={state.mode}
-        onSelectMode={state.handleSelectMode}
-        taskCount={state.tasks.filter((task) => task.stage !== "Merged" && task.stage !== "Dismissed").length}
-        workerCount={state.workers.length}
-        repoCount={state.repos.length}
-        pendingFollowupCount={state.pendingFollowupCount}
-        showMobileModeBar={showMobileModeBar}
-        mobileBadgeCounts={mobileBadgeCounts}
-      >
-          {mainContent}
-      </AppShell>
-      <Suspense fallback={null}>
-        <SimulatorPanel
-          open={state.simulatorOpen}
-          onClose={() => state.setSimulatorOpen(false)}
+    <Layout
+      sidebar={
+        <Sidebar
+          selectedId={selectedEntity?.id ?? null}
+          onSelect={handleSelect}
         />
-      </Suspense>
-      <CommandPalette
-        open={state.paletteOpen}
-        onOpenChange={state.setPaletteOpen}
-        workspaces={state.workspaces}
-        bots={state.bots}
-        workers={state.workers}
-        currentWorkspace={state.workspace}
-        currentRemote={state.remote}
-        currentBot={state.bot}
-        onSelectWorkspace={state.handleSelectWorkspace}
-        onSelectBot={state.handleSelectBot}
-        onSelectWorker={state.handleSelectWorker}
-        otherWorkspaceBots={state.otherWorkspaceBots}
-        onSelectWorkspaceBot={state.handleSelectWorkspaceBot}
-        unread={state.unread}
-        otherWorkspaceUnreads={state.otherWorkspaceUnreads}
-        onStartResearch={() => state.handleStartResearch()}
-        onOpenWorkspaceLayout={() => state.setLayoutDialogOpen(true)}
-        onOpenSignals={() => state.handleSelectMode("signals")}
-        onOpenDiagnostics={() => state.handleSelectMode("diagnostics")}
-      />
-      <WorkspaceLayoutDialog
-        open={state.layoutDialogOpen}
-        workspace={state.workspace}
-        remote={state.remote}
-        bots={state.bots}
-        profile={state.consoleProfile}
-        onClose={() => state.setLayoutDialogOpen(false)}
-        onProfileSaved={state.applyConsoleProfile}
-      />
-    </>
+      }
+      main={mainContent}
+    />
   );
 }
