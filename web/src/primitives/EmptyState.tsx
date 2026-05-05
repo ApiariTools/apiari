@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import styles from "./EmptyState.module.css";
+import { HtmlComment } from "../components/HtmlComment";
 
 interface Props {
   title: string;
@@ -11,6 +12,7 @@ export function EmptyState({ title, body }: Props) {
     <div className={styles.state}>
       <div className={styles.title}>{title}</div>
       {body ? <div className={styles.body}>{body}</div> : null}
+      <HtmlComment text=" apiari-test " />
     </div>
   );
 }

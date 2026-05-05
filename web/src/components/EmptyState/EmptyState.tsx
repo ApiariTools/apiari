@@ -1,5 +1,6 @@
 import { LayoutGrid } from 'lucide-react'
 import styles from './EmptyState.module.css'
+import { HtmlComment } from '../HtmlComment'
 
 export default function EmptyState() {
   return (
@@ -7,6 +8,7 @@ export default function EmptyState() {
       <LayoutGrid size={32} className={styles.icon} aria-hidden="true" />
       <p className={styles.heading}>Select something</p>
       <p className={styles.subtext}>Choose a worker or auto bot from the sidebar</p>
+      <HtmlComment text=" apiari-test " />
     </div>
   )
 }
