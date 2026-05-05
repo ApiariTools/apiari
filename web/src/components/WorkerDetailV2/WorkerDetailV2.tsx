@@ -40,10 +40,12 @@ function StatusBadge({ worker }: { worker: WorkerV2 }) {
 function Pills({ worker }: { worker: WorkerV2 }) {
   return (
     <div className={styles.pills} data-testid="property-pills">
-      {/* Tests passing */}
-      <span className={`${styles.pill} ${worker.tests_passing ? styles.pillGreen : styles.pillRed}`}>
-        {worker.tests_passing ? 'Tests passing' : 'Tests failing'}
-      </span>
+      {/* Tests passing — only shown when explicitly confirmed true */}
+      {worker.tests_passing && (
+        <span className={`${styles.pill} ${styles.pillGreen}`}>
+          Local tests ✓
+        </span>
+      )}
 
       {/* Branch ready */}
       {worker.branch_ready && (

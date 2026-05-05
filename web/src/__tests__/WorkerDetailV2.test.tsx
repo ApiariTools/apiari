@@ -73,7 +73,7 @@ describe("WorkerDetailV2", () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const pills = await screen.findByTestId("property-pills");
     expect(pills).toBeInTheDocument();
-    expect(pills).toHaveTextContent("Tests passing");
+    expect(pills).toHaveTextContent("Local tests ✓");
     expect(pills).toHaveTextContent("local first");
   });
 
