@@ -128,4 +128,21 @@
   .mobileOpen {
     display: flex;
   }
+
+  .card {
+    margin: 0 var(--mobile-gutter) 8px;
+    padding: 10px 14px;
+  }
+
+  .top {
+    margin-bottom: 4px;
+  }
+
+  .desc {
+    margin-bottom: 5px;
+  }
+
+  .attemptDetail {
+    margin-top: 4px;
+  }
 }
