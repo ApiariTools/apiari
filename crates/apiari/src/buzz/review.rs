@@ -1,13 +1,51 @@
 //! Worker code review — one-shot ephemeral review sessions powered by the claude CLI.
 //!
-//! `run_review()` is the main entry point. It:
-//! 1. Gets the diff for the worker's branch
-//! 2. Reads optional repo context
-//! 3. Runs the claude CLI with a structured review prompt
-//! 4. Parses the JSON response
-//! 5. Stores the review in the DB
-//! 6. Optionally sends the worker_message via `swarm send`
-//! 7. Emits a WebSocket event
+//! # How reviews work
+//!
+//! A review is triggered via `POST /api/workspaces/{ws}/v2/workers/{id}/review`.
+//! The worker must be in `waiting` state with `branch_ready = true`.
+//!
+//! ## Review lifecycle
+//!
+//! 1. **Diff** — `git diff main...HEAD` in the worker's worktree.
+//! 2. **Context** — `.apiari/context.md` from the workspace root (if present).
+//! 3. **Run** — claude CLI invoked with a structured prompt via stdin (large diffs
+//!    exceed shell arg limits). The reviewer has `Read` + `Bash` tool access so it
+//!    can explore the repo before deciding.
+//! 4. **Parse** — last JSON block extracted from claude's output using brace-balancing
+//!    (not ```` ``` ```` scanning, which breaks when issue descriptions contain code examples).
+//! 5. **Store** — `WorkerReview` written to `worker_reviews` table.
+//! 6. **Deliver** — `swarm send` used to push `worker_message` to the live agent.
+//!    Returns `ReviewOutcome { send_succeeded }` so callers know if delivery worked.
+//! 7. **Auto-requeue** — if delivery failed (agent dead after reboot/crash) AND verdict
+//!    is `request_changes`, the caller (`http.rs`) auto-spawns a replacement worker with
+//!    the review feedback prepended to the prompt via `auto_requeue_with_feedback()`.
+//!
+//! ## Verdicts
+//!
+//! | Verdict           | Meaning                                              | Auto-action        |
+//! |-------------------|------------------------------------------------------|--------------------|
+//! | `approve`         | Changes look good, no action needed                  | Nothing            |
+//! | `request_changes` | Blocking issues — worker must fix before merge       | Send + auto-requeue if send fails |
+//! | `comment`         | Non-blocking feedback, worker may address or ignore  | Send only          |
+//!
+//! ## Worker message delivery
+//!
+//! `swarm send` delivers the message to a running agent process via an in-memory channel.
+//! If the swarm daemon was restarted (e.g. after a reboot), those channels are gone and
+//! `swarm send` returns "unknown worker". This is not an error — `send_succeeded = false`
+//! triggers auto-requeue instead.
+//!
+//! ## JSON schema
+//!
+//! ```json
+//! {
+//!   "verdict": "approve" | "request_changes" | "comment",
+//!   "summary": "One paragraph summary.",
+//!   "issues": [{ "severity": "blocking|suggestion|nitpick", "file": "...", "description": "..." }],
+//!   "worker_message": "Actionable message for the worker, or null if approve."
+//! }
+//! ```
 
 use std::{
     path::Path,
@@ -329,6 +367,23 @@ pub struct ReviewOutcome {
     pub review: WorkerReview,
     /// True when `swarm send` succeeded or the verdict was "approve" (no send needed).
     pub send_succeeded: bool,
+}
+
+/// Returns true when a failed send should trigger an automatic worker requeue.
+///
+/// Auto-requeue fires when:
+/// - The `swarm send` delivery failed (agent process is dead)
+/// - The verdict is `request_changes` (worker needs to act on the feedback)
+/// - There is a worker message to inject into the new prompt
+///
+/// `approve` and `comment` verdicts never trigger auto-requeue — either no action
+/// is needed (`approve`) or the feedback is optional (`comment`).
+pub fn should_auto_requeue(
+    verdict: &str,
+    send_succeeded: bool,
+    worker_message: &Option<String>,
+) -> bool {
+    !send_succeeded && verdict == "request_changes" && worker_message.is_some()
 }
 
 /// Run a code review for the given worker. Returns a `ReviewOutcome`.
@@ -757,5 +812,49 @@ Analysis: JSX comments are stripped at compile time.
             list[0].worker_message.as_deref(),
             Some("Fix the error handling.")
         );
+    }
+
+    // ── should_auto_requeue ───────────────────────────────────────────────
+
+    #[test]
+    fn auto_requeue_fires_when_send_failed_and_request_changes() {
+        let msg = Some("Fix the issue.".to_string());
+        assert!(should_auto_requeue("request_changes", false, &msg));
+    }
+
+    #[test]
+    fn auto_requeue_does_not_fire_when_send_succeeded() {
+        let msg = Some("Fix the issue.".to_string());
+        assert!(!should_auto_requeue("request_changes", true, &msg));
+    }
+
+    #[test]
+    fn auto_requeue_does_not_fire_for_approve() {
+        // approve verdict → worker is done, no requeue needed
+        assert!(!should_auto_requeue("approve", false, &None));
+        assert!(!should_auto_requeue(
+            "approve",
+            false,
+            &Some("msg".to_string())
+        ));
+    }
+
+    #[test]
+    fn auto_requeue_does_not_fire_for_comment() {
+        // comment verdict → feedback is optional, don't force a new agent
+        let msg = Some("Consider refactoring.".to_string());
+        assert!(!should_auto_requeue("comment", false, &msg));
+    }
+
+    #[test]
+    fn auto_requeue_does_not_fire_without_worker_message() {
+        // no message → nothing to inject into the new prompt, skip requeue
+        assert!(!should_auto_requeue("request_changes", false, &None));
+    }
+
+    #[test]
+    fn auto_requeue_does_not_fire_for_unknown_verdict() {
+        let msg = Some("Fix it.".to_string());
+        assert!(!should_auto_requeue("unknown_verdict", false, &msg));
     }
 }
