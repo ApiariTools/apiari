@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
 import styles from './Sidebar.module.css'
 
 export interface SidebarItem {
@@ -13,6 +15,9 @@ export interface SidebarProps {
   onSelect: (type: 'auto_bot' | 'worker', id: string) => void
   autoBots: SidebarItem[]
   workers: SidebarItem[]
+  workspaces: string[]
+  workspace: string
+  onWorkspaceChange: (ws: string) => void
 }
 
 function dotClass(status: string): string {
@@ -52,15 +57,80 @@ function SidebarItemRow({ item, type, isSelected, onSelect }: ItemProps) {
   )
 }
 
+interface WorkspaceSelectorProps {
+  workspaces: string[]
+  workspace: string
+  onWorkspaceChange: (ws: string) => void
+}
+
+function WorkspaceSelector({ workspaces, workspace, onWorkspaceChange }: WorkspaceSelectorProps) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  return (
+    <div className={styles.workspaceSelector} ref={ref}>
+      <button
+        className={styles.workspaceTrigger}
+        onClick={() => setOpen((o) => !o)}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span className={styles.workspaceName}>{workspace || 'Loading...'}</span>
+        <ChevronDown size={14} className={styles.workspaceChevron} />
+      </button>
+      {open && (
+        <div className={styles.workspaceDropdown} role="listbox" aria-label="Select workspace">
+          {workspaces.map((ws) => (
+            <button
+              key={ws}
+              className={`${styles.workspaceOption} ${ws === workspace ? styles.workspaceOptionActive : ''}`}
+              onClick={() => {
+                onWorkspaceChange(ws)
+                setOpen(false)
+              }}
+              type="button"
+              role="option"
+              aria-selected={ws === workspace}
+            >
+              {ws}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Sidebar({
   selectedType,
   selectedId,
   onSelect,
   autoBots,
   workers,
+  workspaces,
+  workspace,
+  onWorkspaceChange,
 }: SidebarProps) {
   return (
     <nav className={styles.sidebar} aria-label="Sidebar">
+      <WorkspaceSelector
+        workspaces={workspaces}
+        workspace={workspace}
+        onWorkspaceChange={onWorkspaceChange}
+      />
+      <div className={styles.selectorDivider} />
       <div className={styles.section}>
         <span className={styles.sectionLabel}>Auto Bots</span>
         {autoBots.length === 0 ? (

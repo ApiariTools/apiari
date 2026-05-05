@@ -105,6 +105,7 @@ const mockAutoBotDetail: AutoBotDetail = {
 };
 
 beforeEach(() => {
+  vi.mocked(api.getWorkspaces).mockResolvedValue([{ name: "default" }]);
   vi.mocked(api.listWorkersV2).mockResolvedValue(mockWorkers);
   vi.mocked(api.getWorkerV2).mockResolvedValue(mockWorkerDetail);
   vi.mocked(api.listAutoBots).mockResolvedValue(mockAutoBots);
@@ -132,9 +133,13 @@ describe("App shell", () => {
     expect((await screen.findAllByText("update-deps")).length).toBeGreaterThan(0);
   });
 
-  it("shows empty state when nothing is selected", () => {
+  it("shows empty state when nothing is selected", async () => {
+    // Override mocks to return empty lists so Dashboard shows EmptyState
+    vi.mocked(api.listWorkersV2).mockResolvedValue([]);
+    vi.mocked(api.listAutoBots).mockResolvedValue([]);
     render(<App />);
-    expect(screen.getByText("Select something")).toBeInTheDocument();
+    // Wait for workspace to load, then Dashboard shows EmptyState
+    expect(await screen.findByText("Select something")).toBeInTheDocument();
     expect(screen.getByText("Choose a worker or auto bot from the sidebar")).toBeInTheDocument();
   });
 
@@ -159,10 +164,13 @@ describe("App shell", () => {
     render(<App />);
     // Wait for auto bots to load then click the sidebar button
     await screen.findAllByText("Triage");
-    // Click the sidebar item button specifically (not the dashboard row)
+    // Click the Triage sidebar item button (find by role within navigation)
     const sidebarNav = screen.getByRole("navigation", { name: "Sidebar" });
-    const triageBtn = sidebarNav.querySelector("button") as HTMLElement;
-    await user.click(triageBtn);
+    // Get the Triage button within the sidebar nav (not the workspace trigger)
+    const triageBtns = Array.from(sidebarNav.querySelectorAll("button")).filter(
+      (b) => b.textContent?.includes("Triage") && !b.getAttribute("aria-haspopup"),
+    );
+    await user.click(triageBtns[0]);
     // AutoBotDetail renders the bot name as heading
     expect(await screen.findByTestId("bot-name")).toHaveTextContent("Triage");
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();

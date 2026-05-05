@@ -9,6 +9,90 @@
   overflow-y: auto;
 }
 
+/* ── Workspace selector ─────────────────────────────────────────────────── */
+
+.workspaceSelector {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.workspaceTrigger {
+  display: flex;
+  align-items: center;
+  height: 48px;
+  width: 100%;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  gap: 6px;
+  font-family: var(--font);
+}
+
+.workspaceTrigger:hover {
+  background: var(--bg-hover);
+}
+
+.workspaceName {
+  flex: 1;
+  font-size: 14px;
+  color: var(--text-strong);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.workspaceChevron {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.workspaceDropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 6px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspaceOption {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 16px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text);
+  width: 100%;
+}
+
+.workspaceOption:hover {
+  background: var(--bg-hover);
+}
+
+.workspaceOptionActive {
+  color: var(--accent);
+}
+
+.selectorDivider {
+  height: 1px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
 .section {
   display: flex;
   flex-direction: column;

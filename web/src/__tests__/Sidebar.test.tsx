@@ -9,6 +9,9 @@ const defaultProps = {
   onSelect: vi.fn(),
   autoBots: [] as SidebarItem[],
   workers: [] as SidebarItem[],
+  workspaces: ["default"],
+  workspace: "default",
+  onWorkspaceChange: vi.fn(),
 };
 
 const workerItems: SidebarItem[] = [
