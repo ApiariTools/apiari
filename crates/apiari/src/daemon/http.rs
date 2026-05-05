@@ -5057,6 +5057,196 @@ fn load_workspace_root(workspace: &str) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
+// ── v2 Context-bot API routes ──────────────────────────────────────────
+
+/// Context snapshot sent with each context bot message.
+#[derive(Debug, Deserialize)]
+struct ContextBotContext {
+    view: String,
+    #[serde(default)]
+    entity_id: Option<String>,
+    #[serde(default)]
+    entity_snapshot: Option<serde_json::Value>,
+}
+
+/// POST /api/workspaces/{ws}/v2/context-bot/chat request body.
+#[derive(Debug, Deserialize)]
+struct ContextBotChatBody {
+    message: String,
+    /// Client-managed session ID — echoed back in the response.
+    /// Not used for server-side resumption (each call is stateless).
+    #[serde(default)]
+    session_id: Option<String>,
+    context: ContextBotContext,
+}
+
+/// Response from the context bot endpoint.
+#[derive(Debug, Serialize)]
+struct ContextBotChatResponse {
+    response: String,
+    session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatched_worker_id: Option<String>,
+}
+
+/// Build the context-bot system prompt by injecting the view context snapshot.
+fn build_context_bot_system_prompt(ctx: &ContextBotContext) -> String {
+    let mut prompt = String::from(
+        "You are a context-aware assistant helping the user navigate and manage their project.\n\n",
+    );
+
+    prompt.push_str(&format!("Current view: {}\n", ctx.view));
+
+    if let Some(ref entity_id) = ctx.entity_id {
+        prompt.push_str(&format!("You are looking at: {entity_id}\n"));
+    }
+
+    if let Some(ref snapshot) = ctx.entity_snapshot {
+        let pretty =
+            serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| snapshot.to_string());
+        prompt.push_str("\nContext snapshot:\n");
+        prompt.push_str(&pretty);
+        prompt.push('\n');
+    }
+
+    prompt.push_str(
+        "\nYou can help the user:\n\
+         - Understand what's happening with this worker/bot\n\
+         - Decide what action to take\n\
+         - Dispatch a new worker (respond with DISPATCH_WORKER: {goal} on its own line to trigger dispatch)\n\
+         \n\
+         Be concise. The user is a developer. No fluff.",
+    );
+
+    prompt
+}
+
+/// POST /api/workspaces/{ws}/v2/context-bot/chat — stateless context bot turn.
+///
+/// Session history is managed client-side. Each call is independent; the
+/// session_id is echoed back for client tracking.
+///
+/// TODO: Session resumption via `claude --continue` / `--resume` is a future
+/// enhancement. The client already tracks message history locally and sends
+/// the full context snapshot on each call, so stateless operation is sufficient
+/// for now.
+async fn v2_context_bot_chat(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+    Json(body): Json<ContextBotChatBody>,
+) -> impl IntoResponse {
+    let session_id = body
+        .session_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // Verify claude CLI is available.
+    let which = tokio::process::Command::new("which")
+        .arg("claude")
+        .output()
+        .await;
+    if !which.is_ok_and(|out| out.status.success()) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "claude CLI not available"})),
+        )
+            .into_response();
+    }
+
+    let system_prompt = build_context_bot_system_prompt(&body.context);
+
+    // Run claude with a short turn limit — context bot should be fast.
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::process::Command::new("claude")
+            .arg("--print")
+            .arg("--max-turns")
+            .arg("3")
+            .arg("--system")
+            .arg(&system_prompt)
+            .arg(&body.message)
+            .output(),
+    )
+    .await;
+
+    let raw = match output {
+        Ok(Ok(out)) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        Ok(Ok(out)) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("claude exited non-zero: {stderr}")})),
+            )
+                .into_response();
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": format!("failed to run claude: {e}")})),
+            )
+                .into_response();
+        }
+        Err(_elapsed) => {
+            return (
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(serde_json::json!({"error": "claude timed out"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Check for DISPATCH_WORKER: directive.
+    let mut dispatched_worker_id: Option<String> = None;
+    let workspace_root = load_workspace_root(&workspace);
+    let ws = load_workspace_by_name(&workspace);
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(goal) = trimmed.strip_prefix("DISPATCH_WORKER:") {
+            let goal = goal.trim().to_string();
+            if !goal.is_empty() {
+                let worker_id = format!("ctx-{}", uuid::Uuid::new_v4());
+                let prompt_path = std::env::temp_dir().join(format!("ctx-worker-{worker_id}.txt"));
+
+                // Determine repo from workspace config (use first configured repo if available).
+                let repo = ws
+                    .as_ref()
+                    .and_then(|w| w.config.repos.first())
+                    .map(String::as_str)
+                    .unwrap_or("");
+
+                let brief = format!("Context bot dispatch:\n\n{goal}\n\nWorkspace: {workspace}");
+                if tokio::fs::write(&prompt_path, &brief).await.is_ok() {
+                    let mut cmd = tokio::process::Command::new("swarm");
+                    cmd.arg("--dir").arg(&workspace_root).arg("create");
+                    if !repo.is_empty() {
+                        cmd.arg("--repo").arg(repo);
+                    }
+                    cmd.arg("--prompt-file").arg(&prompt_path);
+
+                    if let Ok(status) = cmd.status().await
+                        && status.success()
+                    {
+                        dispatched_worker_id = Some(worker_id);
+                    }
+                    let _ = tokio::fs::remove_file(&prompt_path).await;
+                }
+                break;
+            }
+        }
+    }
+
+    let _ = state.updates_tx; // keep state alive (ws broadcast not needed for this endpoint)
+
+    Json(ContextBotChatResponse {
+        response: raw,
+        session_id,
+        dispatched_worker_id,
+    })
+    .into_response()
+}
+
 // ── Server setup ───────────────────────────────────────────────────────
 
 /// Start the HTTP server. Returns channels for the daemon to consume.
@@ -5239,6 +5429,11 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/v2/auto-bots/{bot_id}/trigger",
             post(v2_trigger_auto_bot),
+        )
+        // v2 context-bot routes
+        .route(
+            "/api/workspaces/{workspace}/v2/context-bot/chat",
+            post(v2_context_bot_chat),
         )
         .route("/api/ws", get(ws_handler))
         .route("/ws", get(ws_handler))
@@ -7051,5 +7246,112 @@ model = "sonnet"
         let view = task_to_view_with_attempt(&task, Some(attempt));
         assert_eq!(view.stage, "In AI Review");
         assert_eq!(view.lifecycle_state, "Changes Requested");
+    }
+
+    // ── Context-bot tests ──────────────────────────────────────────────
+
+    #[test]
+    fn context_bot_system_prompt_includes_view_and_snapshot() {
+        let ctx = ContextBotContext {
+            view: "worker_detail".to_string(),
+            entity_id: Some("apiari-3".to_string()),
+            entity_snapshot: Some(serde_json::json!({
+                "state": "waiting",
+                "label": "Tests failing",
+                "goal": "Add rate limiting to /api/chat",
+                "branch": "swarm/rate-limit",
+                "pr_url": "https://github.com/example/pr/42",
+                "tests_passing": false,
+                "branch_ready": true,
+                "revision_count": 1
+            })),
+        };
+
+        let prompt = build_context_bot_system_prompt(&ctx);
+
+        // Prompt should contain the view name
+        assert!(
+            prompt.contains("worker_detail"),
+            "prompt should include the view name"
+        );
+
+        // Prompt should contain the entity ID
+        assert!(
+            prompt.contains("apiari-3"),
+            "prompt should include the entity_id"
+        );
+
+        // Prompt should contain the snapshot fields
+        assert!(
+            prompt.contains("tests_passing"),
+            "prompt should include snapshot keys"
+        );
+        assert!(
+            prompt.contains("branch_ready"),
+            "prompt should include branch_ready key"
+        );
+        assert!(
+            prompt.contains("rate-limit"),
+            "prompt should include snapshot values"
+        );
+
+        // Prompt should contain the dispatch instruction
+        assert!(
+            prompt.contains("DISPATCH_WORKER"),
+            "prompt should explain the dispatch directive"
+        );
+
+        // Response shape: verify ContextBotChatResponse serializes correctly
+        let resp = ContextBotChatResponse {
+            response: "The tests are failing because...".to_string(),
+            session_id: "ctx-abc123".to_string(),
+            dispatched_worker_id: None,
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["session_id"].as_str(), Some("ctx-abc123"));
+        assert_eq!(
+            json["response"].as_str(),
+            Some("The tests are failing because...")
+        );
+        // dispatched_worker_id should be absent when None
+        assert!(
+            json.get("dispatched_worker_id").is_none(),
+            "dispatched_worker_id should be omitted when None"
+        );
+    }
+
+    #[test]
+    fn context_bot_system_prompt_without_entity_id() {
+        let ctx = ContextBotContext {
+            view: "auto_bot_feed".to_string(),
+            entity_id: None,
+            entity_snapshot: Some(serde_json::json!({"status": "idle"})),
+        };
+
+        let prompt = build_context_bot_system_prompt(&ctx);
+        assert!(prompt.contains("auto_bot_feed"));
+        assert!(prompt.contains("idle"));
+        // "You are looking at:" should NOT appear when entity_id is None
+        assert!(
+            !prompt.contains("You are looking at:"),
+            "entity_id line should be absent when no entity_id"
+        );
+    }
+
+    #[test]
+    fn context_bot_response_with_dispatched_worker_serializes_worker_id() {
+        let resp = ContextBotChatResponse {
+            response: "Dispatching worker.\n\nDISPATCH_WORKER: Fix the failing auth tests"
+                .to_string(),
+            session_id: "ctx-xyz".to_string(),
+            dispatched_worker_id: Some("apiari-5".to_string()),
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(
+            json["dispatched_worker_id"].as_str(),
+            Some("apiari-5"),
+            "dispatched_worker_id should appear in JSON when set"
+        );
+        assert_eq!(json["session_id"].as_str(), Some("ctx-xyz"));
     }
 }
