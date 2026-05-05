@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import Layout from './components/Layout/Layout'
 import Sidebar from './components/Sidebar/Sidebar'
 import BottomTabBar from './components/BottomTabBar/BottomTabBar'
-import EmptyState from './components/EmptyState/EmptyState'
+import Dashboard from './components/Dashboard/Dashboard'
 import WorkerDetailV2 from './components/WorkerDetailV2/WorkerDetailV2'
 import AutoBotDetail from './components/AutoBotDetail/AutoBotDetail'
 import ContextBotManager from './components/ContextBot/ContextBotManager'
+import CommandPalette from './components/CommandPalette/CommandPalette'
 import { Bot, Wrench } from 'lucide-react'
 import { listWorkersV2, listAutoBots, connectWebSocket, chatWithContextBot } from './api'
 import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from './types'
@@ -46,6 +47,7 @@ export default function App() {
   const [autoBots, setAutoBots] = useState<AutoBot[]>([])
   const [loading, setLoading] = useState(true)
   const [contextSessions, setContextSessions] = useState<ContextBotSession[]>([])
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const workerPollRef = useRef<number | null>(null)
   const autoBotPollRef = useRef<number | null>(null)
 
@@ -233,6 +235,18 @@ export default function App() {
     return () => ws.close()
   }, [])
 
+  // Cmd+K / Ctrl+K opens command palette
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setPaletteOpen((open) => !open)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
   const sidebarWorkers = workers.map(workerToSidebarItem)
   const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
@@ -252,7 +266,13 @@ export default function App() {
       />
     )
   ) : (
-    <EmptyState />
+    <Dashboard
+      workspace={WORKSPACE}
+      workers={workers}
+      autoBots={autoBots}
+      onSelectWorker={(id) => setSelected({ type: 'worker', id })}
+      onSelectAutoBot={(id) => setSelected({ type: 'auto_bot', id })}
+    />
   )
 
   const tabs = [
@@ -297,6 +317,21 @@ export default function App() {
           setContextSessions((prev) => prev.filter((s) => s.id !== id))
         }
       />
+      {paletteOpen && (
+        <CommandPalette
+          workers={workers}
+          autoBots={autoBots}
+          onSelectWorker={(id) => {
+            setSelected({ type: 'worker', id })
+            setPaletteOpen(false)
+          }}
+          onSelectAutoBot={(id) => {
+            setSelected({ type: 'auto_bot', id })
+            setPaletteOpen(false)
+          }}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
     </>
   )
 }

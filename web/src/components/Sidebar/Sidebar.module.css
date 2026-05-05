@@ -109,3 +109,10 @@
   background: var(--border);
   margin: 4px 0;
 }
+
+.emptyMessage {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-family: var(--font);
+}

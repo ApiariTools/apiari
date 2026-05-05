@@ -63,28 +63,36 @@ export default function Sidebar({
     <nav className={styles.sidebar} aria-label="Sidebar">
       <div className={styles.section}>
         <span className={styles.sectionLabel}>Auto Bots</span>
-        {autoBots.map((bot) => (
-          <SidebarItemRow
-            key={bot.id}
-            item={bot}
-            type="auto_bot"
-            isSelected={selectedType === 'auto_bot' && selectedId === bot.id}
-            onSelect={onSelect}
-          />
-        ))}
+        {autoBots.length === 0 ? (
+          <p className={styles.emptyMessage}>No auto bots</p>
+        ) : (
+          autoBots.map((bot) => (
+            <SidebarItemRow
+              key={bot.id}
+              item={bot}
+              type="auto_bot"
+              isSelected={selectedType === 'auto_bot' && selectedId === bot.id}
+              onSelect={onSelect}
+            />
+          ))
+        )}
       </div>
       <div className={styles.divider} />
       <div className={styles.section}>
         <span className={styles.sectionLabel}>Workers</span>
-        {workers.map((worker) => (
-          <SidebarItemRow
-            key={worker.id}
-            item={worker}
-            type="worker"
-            isSelected={selectedType === 'worker' && selectedId === worker.id}
-            onSelect={onSelect}
-          />
-        ))}
+        {workers.length === 0 ? (
+          <p className={styles.emptyMessage}>No workers yet</p>
+        ) : (
+          workers.map((worker) => (
+            <SidebarItemRow
+              key={worker.id}
+              item={worker}
+              type="worker"
+              isSelected={selectedType === 'worker' && selectedId === worker.id}
+              onSelect={onSelect}
+            />
+          ))
+        )}
       </div>
     </nav>
   )

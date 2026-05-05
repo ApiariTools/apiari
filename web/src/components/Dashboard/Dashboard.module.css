@@ -1,0 +1,144 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-6);
+  background: var(--bg);
+  gap: var(--space-6);
+}
+
+/* ── Greeting ────────────────────────────────────────────────────────── */
+
+.greeting {
+  font-size: 14px;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+/* ── Stat cards ──────────────────────────────────────────────────────── */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-3);
+}
+
+@media (max-width: 768px) {
+  .stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.statCard {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.statCount {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.statLabel {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.countRunning { color: var(--status-running); }
+.countWaiting { color: var(--status-waiting); }
+.countFailed  { color: var(--status-failed); }
+.countMerged  { color: var(--status-merged); }
+
+/* ── Sections ────────────────────────────────────────────────────────── */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sectionLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 0 var(--space-2);
+}
+
+/* ── Item rows ───────────────────────────────────────────────────────── */
+
+.itemRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background 100ms;
+  font-family: var(--font);
+  min-height: 36px;
+}
+
+.itemRow:hover {
+  background: var(--bg-hover);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.dotRunning { background: var(--status-running); }
+.dotWaiting { background: var(--status-waiting); }
+.dotStalled { background: var(--status-stalled); }
+.dotFailed  { background: var(--status-failed); }
+.dotMerged  { background: var(--status-merged); }
+.dotIdle    { background: var(--text-faint); }
+
+.itemName {
+  flex: 1;
+  font-size: var(--font-size-small);
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.itemMeta {
+  font-size: var(--font-size-meta);
+  color: var(--text-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.itemTimestamp {
+  font-size: var(--font-size-meta);
+  color: var(--text-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.revPill {
+  font-size: 11px;
+  color: var(--text-faint);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 1px 8px;
+  flex-shrink: 0;
+}

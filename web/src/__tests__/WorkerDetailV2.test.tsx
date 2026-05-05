@@ -160,15 +160,17 @@ describe("WorkerDetailV2", () => {
     });
   });
 
-  it("shows loading state initially", () => {
+  it("shows loading skeleton initially", () => {
     vi.mocked(api.getWorkerV2).mockImplementation(() => new Promise(() => {}));
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.getByTestId("loading-skeleton")).toBeInTheDocument();
   });
 
   it("shows error state on failure", async () => {
     vi.mocked(api.getWorkerV2).mockRejectedValue(new Error("network error"));
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
-    expect(await screen.findByText("network error")).toBeInTheDocument();
+    expect(await screen.findByTestId("error-state")).toBeInTheDocument();
+    expect(screen.getByText("network error")).toBeInTheDocument();
+    expect(screen.getByTestId("retry-btn")).toBeInTheDocument();
   });
 });

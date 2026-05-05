@@ -223,7 +223,11 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   if (loading) {
     return (
       <div className={styles.container}>
-        <div className={styles.stateCenter}>Loading...</div>
+        <div className={styles.skeletonWrapper} data-testid="loading-skeleton">
+          <div className={`${styles.skeletonLine} ${styles.skeletonTitle}`} />
+          <div className={`${styles.skeletonLine} ${styles.skeletonMeta}`} />
+          <div className={`${styles.skeletonLine} ${styles.skeletonBody}`} />
+        </div>
       </div>
     )
   }
@@ -231,7 +235,17 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   if (error || !data) {
     return (
       <div className={styles.container}>
-        <div className={styles.stateCenter}>{error ?? 'Worker not found'}</div>
+        <div className={styles.errorCenter} data-testid="error-state">
+          <span className={styles.errorText}>{error ?? 'Worker not found'}</span>
+          <button
+            className={styles.retryBtn}
+            type="button"
+            onClick={() => { setError(null); setLoading(true); load(true) }}
+            data-testid="retry-btn"
+          >
+            Retry
+          </button>
+        </div>
       </div>
     )
   }

@@ -120,14 +120,16 @@ describe("App shell", () => {
 
   it("renders auto bots from API in the sidebar", async () => {
     render(<App />);
-    expect(await screen.findByText("Triage")).toBeInTheDocument();
-    expect(await screen.findByText("Standup")).toBeInTheDocument();
+    // Names appear in both sidebar and dashboard, so use findAllByText
+    expect((await screen.findAllByText("Triage")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Standup")).length).toBeGreaterThan(0);
   });
 
   it("renders workers from API in the sidebar", async () => {
     render(<App />);
-    expect(await screen.findByText("fix-auth-rate-limit")).toBeInTheDocument();
-    expect(await screen.findByText("update-deps")).toBeInTheDocument();
+    // Names appear in both sidebar and dashboard, so use findAllByText
+    expect((await screen.findAllByText("fix-auth-rate-limit")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("update-deps")).length).toBeGreaterThan(0);
   });
 
   it("shows empty state when nothing is selected", () => {
@@ -139,18 +141,28 @@ describe("App shell", () => {
   it("shows worker detail when a worker is selected", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText("fix-auth-rate-limit");
-    await user.click(screen.getByText("fix-auth-rate-limit"));
+    // Wait for sidebar to load then click the sidebar worker button
+    const sidebarNav = await screen.findByRole("navigation", { name: "Sidebar" });
+    await screen.findAllByText("fix-auth-rate-limit");
+    // Get all buttons with that name and click the first (sidebar) one
+    const workerBtns = screen.getAllByRole("button", { name: /fix-auth-rate-limit/ });
+    await user.click(workerBtns[0]);
     // WorkerDetailV2 renders the goal as heading
     expect(await screen.findByText("fix-auth-rate-limit", { selector: "h1" })).toBeInTheDocument();
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
+    // Keep sidebarNav reference to suppress unused warning
+    expect(sidebarNav).toBeInTheDocument();
   });
 
   it("shows auto bot detail when an auto bot is selected", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByText("Triage");
-    await user.click(screen.getByText("Triage"));
+    // Wait for auto bots to load then click the sidebar button
+    await screen.findAllByText("Triage");
+    // Click the sidebar item button specifically (not the dashboard row)
+    const sidebarNav = screen.getByRole("navigation", { name: "Sidebar" });
+    const triageBtn = sidebarNav.querySelector("button") as HTMLElement;
+    await user.click(triageBtn);
     // AutoBotDetail renders the bot name as heading
     expect(await screen.findByTestId("bot-name")).toHaveTextContent("Triage");
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
@@ -163,10 +175,13 @@ describe("App shell", () => {
       events: [],
     }));
     render(<App />);
-    await screen.findByText("fix-auth-rate-limit");
-    await user.click(screen.getByText("fix-auth-rate-limit"));
+    // Wait for sidebar buttons
+    await screen.findAllByText("fix-auth-rate-limit");
+    const workerBtns = screen.getAllByRole("button", { name: /fix-auth-rate-limit/ });
+    await user.click(workerBtns[0]);
     expect(await screen.findByText("fix-auth-rate-limit", { selector: "h1" })).toBeInTheDocument();
-    await user.click(screen.getByText("update-deps"));
+    const updateDepsBtns = screen.getAllByRole("button", { name: /update-deps/ });
+    await user.click(updateDepsBtns[0]);
     await waitFor(() => {
       expect(screen.queryByText("fix-auth-rate-limit", { selector: "h1" })).not.toBeInTheDocument();
     });
