@@ -4375,30 +4375,37 @@ async fn v2_create_worker(
 
     match output {
         Ok(out) if out.status.success() => {
-            // Transition to queued
-            let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Queued);
-            // Emit WS event
-            let event = serde_json::json!({
-                "type": "worker_v2_state",
-                "workspace": workspace,
-                "worker_id": id,
-                "state": "queued",
-                "label": "Queued",
-                "properties": {}
-            });
+            // Swarm prints its assigned ID on stdout (e.g. "apiari-a06f").
+            // Re-key the DB record so the reconciler can match by ID.
+            let swarm_id = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .to_string();
+            let final_id = if !swarm_id.is_empty() && swarm_id != id {
+                // Delete the UUID record and upsert under the swarm-assigned ID
+                // so the reconciler can match it by ID.
+                let _ = store.rekey(&id, &swarm_id);
+                let mut rekeyed = worker.clone();
+                rekeyed.id = swarm_id.clone();
+                rekeyed.state = crate::buzz::worker::WorkerState::Queued;
+                let _ = store.upsert(&rekeyed);
+                swarm_id
+            } else {
+                let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Queued);
+                id.clone()
+            };
+
             let _ = state
                 .updates_tx
                 .send(crate::daemon::http::WsUpdate::WorkerV2State {
                     workspace: workspace.clone(),
-                    worker_id: id.clone(),
+                    worker_id: final_id.clone(),
                     state: "queued".to_string(),
                     label: "Queued".to_string(),
                     properties: serde_json::json!({}),
                 });
-            let _ = event; // avoid unused warning
             Json(serde_json::json!({
                 "ok": true,
-                "worker_id": id,
+                "worker_id": final_id,
             }))
             .into_response()
         }

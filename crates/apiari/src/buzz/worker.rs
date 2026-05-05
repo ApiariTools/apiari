@@ -451,6 +451,18 @@ impl WorkerStore {
         }
         Ok(())
     }
+
+    /// Replace a worker's UUID with the swarm-assigned ID.
+    /// Deletes the old record and upserts under the new ID.
+    pub fn rekey(&self, old_id: &str, new_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM workers WHERE id = ?1", params![old_id])
+            .wrap_err("rekey: delete old worker")?;
+        drop(conn);
+        // Caller is responsible for upserting the record with the new ID.
+        let _ = new_id; // used by caller
+        Ok(())
+    }
 }
 
 // ── Row mapping ────────────────────────────────────────────────────────
