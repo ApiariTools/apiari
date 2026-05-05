@@ -324,7 +324,14 @@ pub fn parse_review_json(
 
 // ── Main entry point ──────────────────────────────────────────────────
 
-/// Run a code review for the given worker. Returns the stored `WorkerReview`.
+/// Result of a completed review, including whether the worker message was delivered.
+pub struct ReviewOutcome {
+    pub review: WorkerReview,
+    /// True when `swarm send` succeeded or the verdict was "approve" (no send needed).
+    pub send_succeeded: bool,
+}
+
+/// Run a code review for the given worker. Returns a `ReviewOutcome`.
 ///
 /// Steps:
 /// 1. Get `git diff main...HEAD` in the worker's worktree.
@@ -340,7 +347,7 @@ pub async fn run_review(
     workspace_root: &Path,
     conn: Arc<Mutex<Connection>>,
     event_tx: Option<broadcast::Sender<Value>>,
-) -> Result<WorkerReview> {
+) -> Result<ReviewOutcome> {
     // ── 1. Determine worktree path ────────────────────────────────────
 
     let worktree_path = workspace_root.join(".swarm").join("wt").join(&worker.id);
@@ -511,6 +518,8 @@ pub async fn run_review(
 
     // ── 8. Send worker_message if needed ───────────────────────────────
 
+    let mut send_succeeded = true; // assume success; only relevant when send is attempted
+
     if verdict != "approve"
         && let Some(ref msg) = worker_message
     {
@@ -528,14 +537,16 @@ pub async fn run_review(
                 info!("[review/{workspace}] sent worker message to {}", worker.id);
             }
             Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
                 warn!(
-                    "[review/{workspace}] swarm send failed for {}: {}",
-                    worker.id,
-                    String::from_utf8_lossy(&out.stderr)
+                    "[review/{workspace}] swarm send failed for {}: {stderr}",
+                    worker.id
                 );
+                send_succeeded = false;
             }
             Err(e) => {
                 warn!("[review/{workspace}] failed to run swarm send: {e}");
+                send_succeeded = false;
             }
         }
     }
@@ -553,7 +564,10 @@ pub async fn run_review(
         let _ = tx.send(event);
     }
 
-    Ok(review)
+    Ok(ReviewOutcome {
+        review,
+        send_succeeded,
+    })
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
