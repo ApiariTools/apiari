@@ -13,6 +13,7 @@ import type {
   Signal,
   ProviderCapability,
   BotDebugData,
+  WorkerBrief,
   WorkerV2,
   WorkerDetailV2,
   AutoBot,
@@ -386,6 +387,19 @@ export async function requeueWorkerV2(workspace: string, id: string): Promise<vo
     method: "POST",
   });
   if (!res.ok) throw new Error(`requeue worker: ${res.status}`);
+}
+
+export async function createWorkerV2(
+  workspace: string,
+  data: { brief: Partial<WorkerBrief> & { goal: string; repo: string }; repo: string },
+): Promise<WorkerV2> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`create worker: ${res.status}`);
+  return res.json();
 }
 
 // ── Auto Bot API ─────────────────────────────────────────────────────────

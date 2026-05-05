@@ -166,3 +166,33 @@ export const updateAutoBot = vi.fn().mockResolvedValue(null);
 export const deleteAutoBot = vi.fn().mockResolvedValue(undefined);
 export const triggerAutoBot = vi.fn().mockResolvedValue(undefined);
 export const getAutoBotRuns = vi.fn().mockResolvedValue([]);
+
+// v2 Worker create mock
+export const createWorkerV2 = vi.fn().mockResolvedValue({
+  id: 'worker-new',
+  workspace: 'apiari',
+  state: 'briefed',
+  label: 'Briefed',
+  brief: null,
+  repo: 'apiari',
+  branch: null,
+  goal: 'Test goal',
+  tests_passing: false,
+  branch_ready: false,
+  pr_url: null,
+  pr_approved: false,
+  is_stalled: false,
+  revision_count: 0,
+  review_mode: 'local_first',
+  blocked_reason: null,
+  last_output_at: null,
+  state_entered_at: '2026-05-04T10:00:00Z',
+  created_at: '2026-05-04T10:00:00Z',
+  updated_at: '2026-05-04T10:00:00Z',
+});
+
+// Context Bot API mock
+export const chatWithContextBot = vi.fn().mockResolvedValue({
+  response: 'Here is your brief.',
+  session_id: 'session-1',
+});

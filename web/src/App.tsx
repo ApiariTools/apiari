@@ -7,6 +7,7 @@ import WorkerDetailV2 from './components/WorkerDetailV2/WorkerDetailV2'
 import AutoBotDetail from './components/AutoBotDetail/AutoBotDetail'
 import ContextBotManager from './components/ContextBot/ContextBotManager'
 import CommandPalette from './components/CommandPalette/CommandPalette'
+import QuickDispatch from './components/QuickDispatch/QuickDispatch'
 import { Bot, Wrench } from 'lucide-react'
 import { getWorkspaces, listWorkersV2, listAutoBots, connectWebSocket, chatWithContextBot } from './api'
 import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from './types'
@@ -48,6 +49,7 @@ export default function App() {
   const [loading, setLoading] = useState(true)
   const [contextSessions, setContextSessions] = useState<ContextBotSession[]>([])
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [quickDispatchOpen, setQuickDispatchOpen] = useState(false)
   const workerPollRef = useRef<number | null>(null)
   const autoBotPollRef = useRef<number | null>(null)
   const workspaceRef = useRef<string>('')
@@ -268,6 +270,23 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
+  // 'n' key opens quick dispatch (when not in an input)
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (
+        e.key === 'n' &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLTextAreaElement)
+      ) {
+        setQuickDispatchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [])
+
   const sidebarWorkers = workers.map(workerToSidebarItem)
   const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
@@ -325,6 +344,7 @@ export default function App() {
               setWorkspace(ws)
               setSelected(null)
             }}
+            onQuickDispatch={() => setQuickDispatchOpen(true)}
           />
         }
         main={mainContent}
@@ -361,6 +381,17 @@ export default function App() {
             setPaletteOpen(false)
           }}
           onClose={() => setPaletteOpen(false)}
+        />
+      )}
+      {quickDispatchOpen && (
+        <QuickDispatch
+          workspace={workspace}
+          onClose={() => setQuickDispatchOpen(false)}
+          onDispatched={(workerId) => {
+            setQuickDispatchOpen(false)
+            setSelected({ type: 'worker', id: workerId })
+            listWorkersV2(workspace).then(setWorkers).catch(() => {})
+          }}
         />
       )}
     </>

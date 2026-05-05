@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Plus } from 'lucide-react'
 import styles from './Sidebar.module.css'
 
 export interface SidebarItem {
@@ -18,6 +18,7 @@ export interface SidebarProps {
   workspaces: string[]
   workspace: string
   onWorkspaceChange: (ws: string) => void
+  onQuickDispatch?: () => void
 }
 
 function dotClass(status: string): string {
@@ -122,6 +123,7 @@ export default function Sidebar({
   workspaces,
   workspace,
   onWorkspaceChange,
+  onQuickDispatch,
 }: SidebarProps) {
   return (
     <nav className={styles.sidebar} aria-label="Sidebar">
@@ -149,7 +151,20 @@ export default function Sidebar({
       </div>
       <div className={styles.divider} />
       <div className={styles.section}>
-        <span className={styles.sectionLabel}>Workers</span>
+        <div className={styles.sectionHeader}>
+          <span className={styles.sectionLabel}>Workers</span>
+          {onQuickDispatch && (
+            <button
+              type="button"
+              className={styles.addBtn}
+              onClick={onQuickDispatch}
+              aria-label="New worker"
+              data-testid="quick-dispatch-trigger"
+            >
+              <Plus size={14} />
+            </button>
+          )}
+        </div>
         {workers.length === 0 ? (
           <p className={styles.emptyMessage}>No workers yet</p>
         ) : (
