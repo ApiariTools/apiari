@@ -114,7 +114,7 @@ export function resolveWorkspaceConsoleProfile(workspace?: string, remote?: stri
 export function getDefaultWorkspaceSelection(profile: WorkspaceConsoleProfile, isMobile: boolean) {
   return {
     mode: isMobile ? profile.defaultMobileMode : profile.defaultDesktopMode,
-    bot: "",
+    bot: isMobile ? profile.defaultMobileBot : "",
   };
 }
 
