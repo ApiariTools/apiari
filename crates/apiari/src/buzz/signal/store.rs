@@ -225,6 +225,9 @@ impl SignalStore {
         // Ensure task tables exist on the shared DB connection.
         crate::buzz::task::store::TaskStore::ensure_schema(&self.conn)?;
 
+        // Ensure v2 worker tables exist on the shared DB connection.
+        crate::buzz::worker::ensure_schema(&self.conn)?;
+
         Ok(())
     }
 
