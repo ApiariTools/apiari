@@ -1,0 +1,333 @@
+/* ── Manager (container for all panels) ─────────────────────────────── */
+
+.manager {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+/* ── Panel ──────────────────────────────────────────────────────────── */
+
+.panel {
+  width: 320px;
+  height: 420px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+}
+
+.panelMinimized {
+  height: 44px;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+
+.header {
+  height: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+.panelMinimized .header {
+  border-bottom: none;
+  cursor: pointer;
+}
+
+.headerInfo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.headerDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.headerTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.iconBtn {
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-faint);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.iconBtn:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+/* ── Messages ───────────────────────────────────────────────────────── */
+
+.messages {
+  flex: 1;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.emptyHint {
+  font-size: 13px;
+  color: var(--text-faint);
+  text-align: center;
+  margin-top: 16px;
+}
+
+/* User message */
+
+.msgUser {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.msgUserLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.msgUserContent {
+  font-size: 13px;
+  color: var(--text-strong);
+  text-align: right;
+  line-height: 1.5;
+}
+
+/* Assistant message */
+
+.msgAssistant {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.msgAssistantContent {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.msgAssistantContent p {
+  margin: 0 0 4px;
+}
+
+.msgAssistantContent p:last-child {
+  margin-bottom: 0;
+}
+
+.msgAssistantContent code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+.msgAssistantContent pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+
+/* Loading dots */
+
+.loadingDots {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.loadingDots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  animation: dotBounce 1.2s infinite ease-in-out;
+}
+
+.loadingDots span:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.loadingDots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.loadingDots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes dotBounce {
+  0%, 80%, 100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── Input bar ──────────────────────────────────────────────────────── */
+
+.inputBar {
+  height: 44px;
+  min-height: 44px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+}
+
+.input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-strong);
+  font-size: 16px; /* 16px prevents iOS zoom */
+  font-family: inherit;
+}
+
+.input::placeholder {
+  color: var(--text-faint);
+}
+
+.sendBtn {
+  background: var(--accent);
+  color: #111;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sendBtn:hover {
+  opacity: 0.9;
+}
+
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── iPad: bottom sheets (768px – 1024px) ───────────────────────────── */
+
+@media (max-width: 1024px) and (min-width: 768px) {
+  .manager {
+    bottom: 0;
+    right: 0;
+    left: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .panel {
+    width: 100%;
+    height: 60vh;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+  }
+
+  .panelMinimized {
+    height: 44px;
+  }
+
+  /* Only show the last non-minimized panel on iPad */
+  .panel:not(:last-child):not(.panelMinimized) {
+    display: none;
+  }
+}
+
+/* ── Mobile: full-screen modal (<768px) ─────────────────────────────── */
+
+@media (max-width: 767px) {
+  .manager {
+    position: fixed;
+    inset: 0;
+    bottom: 0;
+    right: 0;
+    left: 0;
+    top: 0;
+    z-index: 100;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    /* Only show the last panel */
+    justify-content: flex-end;
+  }
+
+  .panel {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+    border: none;
+    box-shadow: none;
+  }
+
+  .panelMinimized {
+    height: 44px;
+  }
+
+  /* On mobile, hide all panels except the most recent one */
+  .panel:not(:last-child) {
+    display: none;
+  }
+}

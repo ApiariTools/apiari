@@ -5,9 +5,10 @@ import BottomTabBar from './components/BottomTabBar/BottomTabBar'
 import EmptyState from './components/EmptyState/EmptyState'
 import WorkerDetailV2 from './components/WorkerDetailV2/WorkerDetailV2'
 import AutoBotDetail from './components/AutoBotDetail/AutoBotDetail'
+import ContextBotManager from './components/ContextBot/ContextBotManager'
 import { Bot, Wrench } from 'lucide-react'
-import { listWorkersV2, listAutoBots, connectWebSocket } from './api'
-import type { WorkerV2, AutoBot } from './types'
+import { listWorkersV2, listAutoBots, connectWebSocket, chatWithContextBot } from './api'
+import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from './types'
 import type { SidebarItem } from './components/Sidebar/Sidebar'
 import './theme.css'
 
@@ -44,11 +45,99 @@ export default function App() {
   const [workers, setWorkers] = useState<WorkerV2[]>([])
   const [autoBots, setAutoBots] = useState<AutoBot[]>([])
   const [loading, setLoading] = useState(true)
+  const [contextSessions, setContextSessions] = useState<ContextBotSession[]>([])
   const workerPollRef = useRef<number | null>(null)
   const autoBotPollRef = useRef<number | null>(null)
 
   const handleSelect = (type: EntityType, id: string) => {
     setSelected({ type, id })
+  }
+
+  // ── Context bot handlers ────────────────────────────────────────────
+
+  function openContextBot(context: ContextBotContext, title: string) {
+    const id = crypto.randomUUID()
+    setContextSessions((prev) => [
+      ...prev,
+      {
+        id,
+        context,
+        title,
+        messages: [],
+        minimized: false,
+        loading: false,
+      },
+    ])
+  }
+
+  async function handleContextBotSend(sessionId: string, message: string) {
+    const session = contextSessions.find((s) => s.id === sessionId)
+    if (!session) return
+
+    // Add user message + set loading
+    setContextSessions((prev) =>
+      prev.map((s) =>
+        s.id === sessionId
+          ? {
+              ...s,
+              loading: true,
+              messages: [
+                ...s.messages,
+                { role: 'user' as const, content: message, timestamp: new Date().toISOString() },
+              ],
+            }
+          : s,
+      ),
+    )
+
+    try {
+      const res = await chatWithContextBot(WORKSPACE, message, session.context, sessionId)
+
+      setContextSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                loading: false,
+                messages: [
+                  ...s.messages,
+                  { role: 'assistant' as const, content: res.response, timestamp: new Date().toISOString() },
+                ],
+              }
+            : s,
+        ),
+      )
+
+      // If backend dispatched a worker, refresh workers and select it
+      if (res.dispatched_worker_id) {
+        try {
+          const list = await listWorkersV2(WORKSPACE)
+          setWorkers(list)
+        } catch {
+          // ignore
+        }
+        setSelected({ type: 'worker', id: res.dispatched_worker_id })
+      }
+    } catch {
+      setContextSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                loading: false,
+                messages: [
+                  ...s.messages,
+                  {
+                    role: 'assistant' as const,
+                    content: 'Sorry, something went wrong. Please try again.',
+                    timestamp: new Date().toISOString(),
+                  },
+                ],
+              }
+            : s,
+        ),
+      )
+    }
   }
 
   // Fetch workers on mount and poll every 5s
@@ -152,12 +241,14 @@ export default function App() {
       <WorkerDetailV2
         workspace={WORKSPACE}
         workerId={selected.id}
+        onOpenContextBot={openContextBot}
       />
     ) : (
       <AutoBotDetail
         workspace={WORKSPACE}
         autoBotId={selected.id}
         onSelectWorker={(id) => setSelected({ type: 'worker', id })}
+        onOpenContextBot={openContextBot}
       />
     )
   ) : (
@@ -174,24 +265,38 @@ export default function App() {
   }
 
   return (
-    <Layout
-      sidebar={
-        <Sidebar
-          selectedType={selected?.type ?? null}
-          selectedId={selected?.id ?? null}
-          onSelect={handleSelect}
-          autoBots={sidebarAutoBots}
-          workers={sidebarWorkers}
-        />
-      }
-      main={mainContent}
-      bottomBar={
-        <BottomTabBar
-          tabs={tabs}
-          activeTab={mobileTab}
-          onTabChange={setMobileTab}
-        />
-      }
-    />
+    <>
+      <Layout
+        sidebar={
+          <Sidebar
+            selectedType={selected?.type ?? null}
+            selectedId={selected?.id ?? null}
+            onSelect={handleSelect}
+            autoBots={sidebarAutoBots}
+            workers={sidebarWorkers}
+          />
+        }
+        main={mainContent}
+        bottomBar={
+          <BottomTabBar
+            tabs={tabs}
+            activeTab={mobileTab}
+            onTabChange={setMobileTab}
+          />
+        }
+      />
+      <ContextBotManager
+        sessions={contextSessions}
+        onSend={handleContextBotSend}
+        onMinimize={(id) =>
+          setContextSessions((prev) =>
+            prev.map((s) => (s.id === id ? { ...s, minimized: !s.minimized } : s)),
+          )
+        }
+        onClose={(id) =>
+          setContextSessions((prev) => prev.filter((s) => s.id !== id))
+        }
+      />
+    </>
   )
 }

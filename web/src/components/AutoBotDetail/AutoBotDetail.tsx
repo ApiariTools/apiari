@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Activity, Clock, Zap, AlertCircle, CheckCircle, XCircle } from 'lucide-react'
-import type { AutoBotDetail as AutoBotDetailData, AutoBotRun } from '../../types'
+import { Activity, Clock, MessageSquare, Zap, AlertCircle, CheckCircle, XCircle } from 'lucide-react'
+import type { AutoBotDetail as AutoBotDetailData, AutoBotRun, ContextBotContext } from '../../types'
 import { getAutoBot, triggerAutoBot, updateAutoBot } from '../../api'
 import { formatRelative } from '../../utils/time'
 import styles from './AutoBotDetail.module.css'
@@ -164,9 +164,10 @@ export interface AutoBotDetailProps {
   workspace: string
   autoBotId: string
   onSelectWorker?: (workerId: string) => void
+  onOpenContextBot?: (context: ContextBotContext, title: string) => void
 }
 
-export default function AutoBotDetail({ workspace, autoBotId, onSelectWorker }: AutoBotDetailProps) {
+export default function AutoBotDetail({ workspace, autoBotId, onSelectWorker, onOpenContextBot }: AutoBotDetailProps) {
   const [data, setData] = useState<AutoBotDetailData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -280,6 +281,33 @@ export default function AutoBotDetail({ workspace, autoBotId, onSelectWorker }: 
               onChange={handleToggleEnabled}
               disabled={togglingEnabled}
             />
+            {onOpenContextBot && (
+              <button
+                className={styles.askBtn}
+                type="button"
+                onClick={() => {
+                  onOpenContextBot(
+                    {
+                      view: 'auto_bot_detail',
+                      entity_id: data.id,
+                      entity_snapshot: {
+                        name: data.name,
+                        status: data.status,
+                        enabled: data.enabled,
+                        trigger_type: data.trigger_type,
+                        cron_schedule: data.cron_schedule,
+                        signal_source: data.signal_source,
+                      },
+                    },
+                    `Viewing: ${data.name}`,
+                  )
+                }}
+                data-testid="ask-btn"
+              >
+                <MessageSquare size={13} />
+                Ask
+              </button>
+            )}
             <button
               className={styles.triggerBtn}
               onClick={handleTrigger}

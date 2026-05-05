@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { ExternalLink } from 'lucide-react'
-import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2 } from '../../types'
+import { ExternalLink, MessageSquare } from 'lucide-react'
+import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, ContextBotContext } from '../../types'
 import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2 } from '../../api'
 import styles from './WorkerDetailV2.module.css'
 
@@ -9,6 +9,7 @@ export interface WorkerDetailV2Props {
   workspace: string
   workerId: string
   onClose?: () => void
+  onOpenContextBot?: (context: ContextBotContext, title: string) => void
 }
 
 // ── Status badge ─────────────────────────────────────────────────────────
@@ -123,7 +124,7 @@ function EventRow({ event_type, content, created_at }: EventRowProps) {
 
 // ── Main component ───────────────────────────────────────────────────────
 
-export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose }: WorkerDetailV2Props) {
+export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose, onOpenContextBot }: WorkerDetailV2Props) {
   const [data, setData] = useState<WorkerDetailV2Data | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -246,6 +247,35 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose 
           <h1 className={styles.goal}>
             {data.goal ?? data.branch ?? data.id}
           </h1>
+          {onOpenContextBot && (
+            <button
+              className={styles.askBtn}
+              type="button"
+              onClick={() => {
+                onOpenContextBot(
+                  {
+                    view: 'worker_detail',
+                    entity_id: data.id,
+                    entity_snapshot: {
+                      state: data.state,
+                      label: data.label,
+                      branch_ready: data.branch_ready,
+                      pr_url: data.pr_url,
+                      revision_count: data.revision_count,
+                      goal: data.goal,
+                      is_stalled: data.is_stalled,
+                      tests_passing: data.tests_passing,
+                    },
+                  },
+                  `Viewing: ${data.goal ?? data.branch ?? data.id}`,
+                )
+              }}
+              data-testid="ask-btn"
+            >
+              <MessageSquare size={13} />
+              Ask
+            </button>
+          )}
         </div>
 
         {data.branch && (

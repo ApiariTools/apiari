@@ -321,3 +321,32 @@ export interface AutoBotRun {
 export interface AutoBotDetail extends AutoBot {
   runs: AutoBotRun[];
 }
+
+// ── Context Bot types ──────────────────────────────────────────────────
+
+export interface ContextBotContext {
+  view: string
+  entity_id: string | null
+  entity_snapshot: Record<string, unknown>
+}
+
+export interface ContextBotChatResponse {
+  response: string
+  session_id: string
+  dispatched_worker_id?: string
+}
+
+export interface ContextBotMessage {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+}
+
+export interface ContextBotSession {
+  id: string                    // UUID, generated client-side
+  context: ContextBotContext
+  title: string                 // e.g. "Viewing: fix-auth" or "Dashboard"
+  messages: ContextBotMessage[]
+  minimized: boolean
+  loading: boolean
+}

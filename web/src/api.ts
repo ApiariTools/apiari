@@ -18,6 +18,8 @@ import type {
   AutoBot,
   AutoBotDetail,
   AutoBotRun,
+  ContextBotContext,
+  ContextBotChatResponse,
 } from "./types";
 
 const BASE = "/api";
@@ -434,6 +436,23 @@ export async function triggerAutoBot(workspace: string, id: string): Promise<voi
 export async function getAutoBotRuns(workspace: string, id: string, limit = 20): Promise<AutoBotRun[]> {
   const data = await get<{ runs: AutoBotRun[] }>(`/workspaces/${workspace}/v2/auto-bots/${id}/runs?limit=${limit}`);
   return data.runs;
+}
+
+// ── Context Bot API ───────────────────────────────────────────────────────
+
+export async function chatWithContextBot(
+  workspace: string,
+  message: string,
+  context: ContextBotContext,
+  sessionId: string,
+): Promise<ContextBotChatResponse> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, session_id: sessionId, context }),
+  });
+  if (!res.ok) throw new Error(`context bot chat: ${res.status}`);
+  return res.json();
 }
 
 export async function sendMessage(

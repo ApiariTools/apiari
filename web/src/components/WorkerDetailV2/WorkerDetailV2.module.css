@@ -30,6 +30,26 @@
   word-break: break-word;
 }
 
+.askBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: var(--font-size-meta);
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.askBtn:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
 .branch {
   font-size: var(--font-size-small);
   color: var(--text-faint);

@@ -150,6 +150,27 @@
   color: var(--text-faint);
 }
 
+/* ── Ask button ──────────────────────────────────────────────────────── */
+
+.askBtn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: var(--font-size-small);
+  padding: 4px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.askBtn:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
 /* ── Trigger Now button ──────────────────────────────────────────────── */
 
 .triggerBtn {
