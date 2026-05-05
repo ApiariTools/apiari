@@ -12,6 +12,15 @@ const repos: Repo[] = [
   { name: "common", path: "/dev/common", has_swarm: false, is_clean: true, branch: "main", workers: [] },
 ];
 
+const reposMultiStatus: Repo[] = [
+  { name: "hive", path: "/dev/hive", has_swarm: true, is_clean: true, branch: "main", workers: [
+    { id: "w-run", branch: "swarm/a", status: "running", agent: "claude", pr_url: null, pr_title: null, description: null, elapsed_secs: 60, dispatched_by: null },
+    { id: "w-wait", branch: "swarm/b", status: "waiting", agent: "claude", pr_url: null, pr_title: null, description: null, elapsed_secs: 30, dispatched_by: null },
+    { id: "w-fail", branch: "swarm/c", status: "failed", agent: "claude", pr_url: null, pr_title: null, description: null, elapsed_secs: null, dispatched_by: null },
+    { id: "w-merge", branch: "swarm/d", status: "merged", agent: "claude", pr_url: null, pr_title: null, description: null, elapsed_secs: null, dispatched_by: null },
+  ]},
+];
+
 const defaultProps = {
   repos,
   onSelectWorker: vi.fn(),
@@ -76,6 +85,86 @@ describe("ReposPanel", () => {
     render(<ReposPanel {...defaultProps} />);
     expect(screen.getByText("Research")).toBeInTheDocument();
     expect(screen.getByText("Use /research <topic> to start")).toBeInTheDocument();
+  });
+
+  it("renders all four stat card labels", () => {
+    render(<ReposPanel {...defaultProps} />);
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(screen.getByText("Merged")).toBeInTheDocument();
+  });
+
+  it("shows correct worker counts in stat cards", () => {
+    render(<ReposPanel {...defaultProps} repos={reposMultiStatus} />);
+    const runningCard = screen.getByText("Running").closest("button")!;
+    const waitingCard = screen.getByText("Waiting").closest("button")!;
+    const failedCard = screen.getByText("Failed").closest("button")!;
+    const mergedCard = screen.getByText("Merged").closest("button")!;
+    expect(runningCard).toHaveTextContent("1");
+    expect(waitingCard).toHaveTextContent("1");
+    expect(failedCard).toHaveTextContent("1");
+    expect(mergedCard).toHaveTextContent("1");
+  });
+
+  it("filters to running workers when Running card clicked", async () => {
+    const user = userEvent.setup();
+    render(<ReposPanel {...defaultProps} repos={reposMultiStatus} />);
+    await user.click(screen.getByText("Running"));
+    expect(screen.getByText("w-run")).toBeInTheDocument();
+    expect(screen.queryByText("w-wait")).not.toBeInTheDocument();
+    expect(screen.queryByText("w-fail")).not.toBeInTheDocument();
+    expect(screen.queryByText("w-merge")).not.toBeInTheDocument();
+  });
+
+  it("filters to waiting workers when Waiting card clicked", async () => {
+    const user = userEvent.setup();
+    render(<ReposPanel {...defaultProps} repos={reposMultiStatus} />);
+    await user.click(screen.getByText("Waiting"));
+    expect(screen.queryByText("w-run")).not.toBeInTheDocument();
+    expect(screen.getByText("w-wait")).toBeInTheDocument();
+    expect(screen.queryByText("w-fail")).not.toBeInTheDocument();
+    expect(screen.queryByText("w-merge")).not.toBeInTheDocument();
+  });
+
+  it("filters to failed workers when Failed card clicked", async () => {
+    const user = userEvent.setup();
+    render(<ReposPanel {...defaultProps} repos={reposMultiStatus} />);
+    await user.click(screen.getByText("Failed"));
+    expect(screen.queryByText("w-run")).not.toBeInTheDocument();
+    expect(screen.queryByText("w-wait")).not.toBeInTheDocument();
+    expect(screen.getByText("w-fail")).toBeInTheDocument();
+    expect(screen.queryByText("w-merge")).not.toBeInTheDocument();
+  });
+
+  it("filters to merged workers when Merged card clicked", async () => {
+    const user = userEvent.setup();
+    render(<ReposPanel {...defaultProps} repos={reposMultiStatus} />);
+    await user.click(screen.getByText("Merged"));
+    expect(screen.queryByText("w-run")).not.toBeInTheDocument();
+    expect(screen.queryByText("w-wait")).not.toBeInTheDocument();
+    expect(screen.queryByText("w-fail")).not.toBeInTheDocument();
+    expect(screen.getByText("w-merge")).toBeInTheDocument();
+  });
+
+  it("clears filter when active card clicked again", async () => {
+    const user = userEvent.setup();
+    render(<ReposPanel {...defaultProps} repos={reposMultiStatus} />);
+    await user.click(screen.getByText("Running"));
+    expect(screen.queryByText("w-wait")).not.toBeInTheDocument();
+    await user.click(screen.getByText("Running"));
+    expect(screen.getByText("w-wait")).toBeInTheDocument();
+    expect(screen.getByText("w-run")).toBeInTheDocument();
+  });
+
+  it("switches filter when different card clicked", async () => {
+    const user = userEvent.setup();
+    render(<ReposPanel {...defaultProps} repos={reposMultiStatus} />);
+    await user.click(screen.getByText("Running"));
+    expect(screen.getByText("w-run")).toBeInTheDocument();
+    await user.click(screen.getByText("Waiting"));
+    expect(screen.queryByText("w-run")).not.toBeInTheDocument();
+    expect(screen.getByText("w-wait")).toBeInTheDocument();
   });
 
   it("shows research tasks when provided", () => {

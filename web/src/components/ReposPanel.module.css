@@ -8,6 +8,49 @@
   padding: 20px 0;
 }
 
+.statCards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  padding: 0 16px 16px;
+}
+
+.statCard {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  transition: border-color 0.15s;
+}
+
+.statCard:hover {
+  border-color: var(--text-faint);
+}
+
+.statCardActive {
+  border-color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.statCount {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.statLabel {
+  font-size: 10px;
+  color: var(--text-faint);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .title {
   font-size: 13px;
   font-weight: 600;

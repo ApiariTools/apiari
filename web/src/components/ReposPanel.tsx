@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import type { Repo, ResearchTask } from "../types";
 import styles from "./ReposPanel.module.css";
@@ -10,17 +11,61 @@ interface Props {
   onClose?: () => void;
 }
 
+type StatusFilter = "running" | "waiting" | "failed" | "merged" | null;
+
 function branchName(branch: string): string {
   return branch.replace(/^swarm\//, "");
 }
 
+function matchesFilter(status: string, filter: StatusFilter): boolean {
+  if (!filter) return true;
+  if (filter === "running") return status === "running" || status === "active";
+  if (filter === "waiting") return status === "waiting";
+  if (filter === "failed") return status === "failed" || status === "error";
+  if (filter === "merged") return status === "merged" || status === "done" || status === "complete";
+  return true;
+}
+
 export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, onClose }: Props) {
+  const [filterStatus, setFilterStatus] = useState<StatusFilter>(null);
+
+  const allWorkers = repos.flatMap((r) => r.workers);
+  const counts = {
+    running: allWorkers.filter((w) => w.status === "running" || w.status === "active").length,
+    waiting: allWorkers.filter((w) => w.status === "waiting").length,
+    failed: allWorkers.filter((w) => w.status === "failed" || w.status === "error").length,
+    merged: allWorkers.filter((w) => w.status === "merged" || w.status === "done" || w.status === "complete").length,
+  };
+
+  const handleCardClick = (key: StatusFilter) => {
+    setFilterStatus((prev) => (prev === key ? null : key));
+  };
+
   return (
     <>
       {mobileOpen && (
         <div className={styles.backdrop} onClick={onClose} />
       )}
       <div className={`${styles.panel} ${mobileOpen ? styles.mobileOpen : ""}`}>
+        <div className={styles.statCards}>
+          {(
+            [
+              { key: "running" as StatusFilter, label: "Running", count: counts.running, color: "var(--green)" },
+              { key: "waiting" as StatusFilter, label: "Waiting", count: counts.waiting, color: "var(--accent)" },
+              { key: "failed" as StatusFilter, label: "Failed", count: counts.failed, color: "var(--red)" },
+              { key: "merged" as StatusFilter, label: "Merged", count: counts.merged, color: "var(--text-faint)" },
+            ] as const
+          ).map(({ key, label, count, color }) => (
+            <button
+              key={key}
+              className={`${styles.statCard} ${filterStatus === key ? styles.statCardActive : ""}`}
+              onClick={() => handleCardClick(key)}
+            >
+              <span className={styles.statCount} style={{ color }}>{count}</span>
+              <span className={styles.statLabel}>{label}</span>
+            </button>
+          ))}
+        </div>
         <div className={styles.title}>Repos</div>
         {repos.map((repo) => (
           <div key={repo.path} className={styles.repoRow}>
@@ -35,9 +80,9 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
                 <span className={styles.dirtyBadge}>modified</span>
               )}
             </div>
-            {repo.workers.length > 0 && (
+            {repo.workers.filter((w) => matchesFilter(w.status, filterStatus)).length > 0 && (
               <div className={styles.workerList}>
-                {repo.workers.map((w) => (
+                {repo.workers.filter((w) => matchesFilter(w.status, filterStatus)).map((w) => (
                   <div
                     key={w.id}
                     className={styles.workerCard}
