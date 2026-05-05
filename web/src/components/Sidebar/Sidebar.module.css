@@ -227,3 +227,11 @@
   color: var(--text-faint);
   font-family: var(--font);
 }
+
+.doneFooter {
+  padding: 4px 16px 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font);
+  opacity: 0.6;
+}

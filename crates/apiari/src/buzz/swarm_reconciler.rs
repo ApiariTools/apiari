@@ -7,10 +7,10 @@
 //! |-----------------------------------|-----------|----------------------------------------------|
 //! | agent running                     | queued    | → running                                    |
 //! | agent waiting (agent-status file) | running   | → waiting                                    |
-//! | agent exited 0 (phase=="complete")| running   | → waiting, set branch_ready=true             |
+//! | agent exited 0 (phase=="completed")| running   | → waiting, set branch_ready=true             |
 //! | agent exited non-0 (phase failed) | running   | → failed                                     |
 //! | pr.url appeared                   | any       | set pr_url property                          |
-//! | phase=="merged"                   | any       | → merged                                     |
+//! | worker vanished from state.json   | active    | check gh pr; → merged or → abandoned         |
 //! | DB=waiting, swarm=running         | waiting   | → running, increment revision_count          |
 //! | last_output_at >10min + running   | —         | set is_stalled=true                          |
 //! | new output event                  | running   | clear is_stalled, update last_output_at      |
@@ -192,8 +192,9 @@ impl SwarmReconciler {
             if let Some(swarm_wt) = swarm_map.get(&worker.id) {
                 self.apply_rules(worker, swarm_wt)?;
             } else {
-                // Worker is in DB but not in swarm — nothing to do (not an error).
+                // Worker is in DB but not in swarm — it disappeared (closed/merged).
                 debug!("[reconciler] worker {} not in swarm state", worker.id);
+                self.apply_disappeared(worker)?;
             }
         }
 
@@ -201,6 +202,56 @@ impl SwarmReconciler {
         // workers are created through the API, not auto-imported from swarm).
         let _ = swarm_map;
         let _ = worker_map;
+
+        Ok(())
+    }
+
+    /// Handle a worker that was in the DB but has disappeared from swarm state.json.
+    ///
+    /// Swarm removes worktrees on close — there is no "merged" phase. We detect
+    /// merges by querying `gh pr view` and fall back to "abandoned" for workers
+    /// without a merged PR (after a brief grace period to avoid false positives).
+    fn apply_disappeared(&self, worker: &Worker) -> Result<()> {
+        // Only act on non-terminal active states.
+        match worker.state {
+            WorkerState::Running | WorkerState::Waiting | WorkerState::Queued => {}
+            _ => return Ok(()), // already terminal, nothing to do
+        }
+
+        // If worker had a PR, check if it merged via gh CLI.
+        if let Some(pr_url) = &worker.pr_url {
+            let output = std::process::Command::new("gh")
+                .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
+                .output();
+            if let Ok(out) = output {
+                let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if state == "MERGED" {
+                    info!(
+                        "[reconciler] {} PR merged, transitioning to merged",
+                        worker.id
+                    );
+                    self.do_transition(worker, WorkerState::Merged)?;
+                    return Ok(());
+                }
+            }
+            // gh failed or returned non-MERGED — treat as "don't know, skip"
+        }
+
+        // No PR or PR not merged — worker disappeared without merging.
+        // Use state_entered_at to avoid false positives on daemon restart.
+        if let Ok(entered) = worker
+            .state_entered_at
+            .parse::<chrono::DateTime<chrono::Utc>>()
+        {
+            let age_minutes = (chrono::Utc::now() - entered).num_minutes();
+            if age_minutes >= 1 {
+                info!(
+                    "[reconciler] {} disappeared from swarm without PR merge, → abandoned",
+                    worker.id
+                );
+                self.do_transition(worker, WorkerState::Abandoned)?;
+            }
+        }
 
         Ok(())
     }
@@ -249,8 +300,8 @@ impl SwarmReconciler {
                     return Ok(());
                 }
 
-                // phase=="complete" (agent exited 0)
-                if phase == "complete" {
+                // phase=="completed" (agent exited 0) — swarm serializes WorkerPhase::Completed as "completed"
+                if phase == "completed" {
                     info!("[reconciler] {} agent completed", worker.id);
                     self.store.update_properties(
                         &self.workspace,
@@ -601,6 +652,7 @@ mod tests {
 
     #[test]
     fn rule_running_complete_sets_branch_ready_and_waiting() {
+        // Legacy "complete" string — no longer matches; state should stay running.
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
         let mut w = default_worker("w1");
@@ -608,6 +660,24 @@ mod tests {
         r.store.upsert(&w).unwrap();
 
         let wt = swarm_wt("w1", "complete", None);
+        r.apply_rules(&w, &wt).unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        // "complete" (missing 'd') no longer triggers the rule
+        assert_eq!(updated.state, WorkerState::Running);
+        assert!(!updated.branch_ready);
+    }
+
+    #[test]
+    fn rule_completed_phase_sets_branch_ready_and_waiting() {
+        // "completed" is the actual string swarm serializes WorkerPhase::Completed as.
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        r.store.upsert(&w).unwrap();
+
+        let wt = swarm_wt("w1", "completed", None);
         r.apply_rules(&w, &wt).unwrap();
 
         let updated = r.store.get("test", "w1").unwrap().unwrap();
@@ -726,5 +796,66 @@ mod tests {
         let r = make_reconciler(&tmp);
         let wts = r.load_swarm_state();
         assert!(wts.is_empty());
+    }
+
+    // ── apply_disappeared tests ─────────────────────────────────────────
+
+    #[test]
+    fn apply_disappeared_no_pr_abandoned_after_grace_period() {
+        // Worker in waiting state with state_entered_at >1min ago, not in swarm → abandoned
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w-gone");
+        w.state = WorkerState::Waiting;
+        // Set state_entered_at to 2 minutes ago
+        w.state_entered_at = (chrono::Utc::now() - chrono::Duration::minutes(2)).to_rfc3339();
+        r.store.upsert(&w).unwrap();
+
+        r.apply_disappeared(&w).unwrap();
+
+        let updated = r.store.get("test", "w-gone").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Abandoned);
+    }
+
+    #[test]
+    fn apply_disappeared_terminal_states_skipped() {
+        // Workers in terminal states should not be touched
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        for terminal_state in [
+            WorkerState::Merged,
+            WorkerState::Failed,
+            WorkerState::Abandoned,
+        ] {
+            let mut w = default_worker("w-terminal");
+            w.state = terminal_state.clone();
+            w.state_entered_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+            r.store.upsert(&w).unwrap();
+
+            r.apply_disappeared(&w).unwrap();
+
+            let updated = r.store.get("test", "w-terminal").unwrap().unwrap();
+            // State must not have changed
+            assert_eq!(updated.state, terminal_state);
+        }
+    }
+
+    #[test]
+    fn apply_disappeared_fresh_worker_not_abandoned() {
+        // Worker in waiting state with state_entered_at <1min ago → NOT abandoned (grace period)
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w-fresh");
+        w.state = WorkerState::Waiting;
+        // Only 10 seconds ago — within grace period
+        w.state_entered_at = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        r.store.upsert(&w).unwrap();
+
+        r.apply_disappeared(&w).unwrap();
+
+        let updated = r.store.get("test", "w-fresh").unwrap().unwrap();
+        // Still waiting — grace period not exceeded
+        assert_eq!(updated.state, WorkerState::Waiting);
     }
 }

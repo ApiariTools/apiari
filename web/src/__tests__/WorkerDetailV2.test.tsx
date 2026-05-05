@@ -173,4 +173,18 @@ describe("WorkerDetailV2", () => {
     expect(screen.getByText("network error")).toBeInTheDocument();
     expect(screen.getByTestId("retry-btn")).toBeInTheDocument();
   });
+
+  it("shows 'Local tests ✓' pill when tests_passing is true", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, tests_passing: true });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const pills = await screen.findByTestId("property-pills");
+    expect(pills).toHaveTextContent("Local tests ✓");
+  });
+
+  it("does NOT show 'Local tests ✓' pill when tests_passing is false", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, tests_passing: false });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const pills = await screen.findByTestId("property-pills");
+    expect(pills).not.toHaveTextContent("Local tests ✓");
+  });
 });

@@ -55,3 +55,40 @@ describe("Sidebar empty states", () => {
     expect(screen.getByText("Triage")).toBeInTheDocument();
   });
 });
+
+describe("Sidebar done workers filtering", () => {
+  it("does not show done-workers footer when doneWorkerCount is 0", () => {
+    render(<Sidebar {...defaultProps} workers={workerItems} doneWorkerCount={0} />);
+    expect(screen.queryByTestId("done-workers-footer")).not.toBeInTheDocument();
+  });
+
+  it("shows 'N completed' footer when doneWorkerCount > 0", () => {
+    render(<Sidebar {...defaultProps} workers={workerItems} doneWorkerCount={3} />);
+    const footer = screen.getByTestId("done-workers-footer");
+    expect(footer).toBeInTheDocument();
+    expect(footer).toHaveTextContent("3 completed");
+  });
+
+  it("shows 'No workers yet' when workers is empty and doneWorkerCount is 0", () => {
+    render(<Sidebar {...defaultProps} doneWorkerCount={0} />);
+    expect(screen.getByText("No workers yet")).toBeInTheDocument();
+  });
+
+  it("does NOT show 'No workers yet' when workers is empty but doneWorkerCount > 0", () => {
+    // Active list is empty but there are done workers — suppress empty message
+    render(<Sidebar {...defaultProps} doneWorkerCount={2} />);
+    expect(screen.queryByText("No workers yet")).not.toBeInTheDocument();
+    expect(screen.getByTestId("done-workers-footer")).toHaveTextContent("2 completed");
+  });
+
+  it("shows active workers but not done workers in the main list", () => {
+    // App.tsx filters done workers before passing to Sidebar — Sidebar just
+    // renders what it receives. Verify active workers appear.
+    const activeItems: SidebarItem[] = [
+      { id: "w-active", name: "Active task", status: "running" },
+    ];
+    render(<Sidebar {...defaultProps} workers={activeItems} doneWorkerCount={2} />);
+    expect(screen.getByText("Active task")).toBeInTheDocument();
+    expect(screen.getByTestId("done-workers-footer")).toHaveTextContent("2 completed");
+  });
+});

@@ -19,6 +19,8 @@ export interface SidebarProps {
   workspace: string
   onWorkspaceChange: (ws: string) => void
   onQuickDispatch?: () => void
+  /** Number of workers hidden because they are in a terminal state (merged/abandoned/failed). */
+  doneWorkerCount?: number
 }
 
 function dotClass(status: string): string {
@@ -124,6 +126,7 @@ export default function Sidebar({
   workspace,
   onWorkspaceChange,
   onQuickDispatch,
+  doneWorkerCount = 0,
 }: SidebarProps) {
   return (
     <nav className={styles.sidebar} aria-label="Sidebar">
@@ -165,7 +168,7 @@ export default function Sidebar({
             </button>
           )}
         </div>
-        {workers.length === 0 ? (
+        {workers.length === 0 && doneWorkerCount === 0 ? (
           <p className={styles.emptyMessage}>No workers yet</p>
         ) : (
           workers.map((worker) => (
@@ -177,6 +180,11 @@ export default function Sidebar({
               onSelect={onSelect}
             />
           ))
+        )}
+        {doneWorkerCount > 0 && (
+          <p className={styles.doneFooter} data-testid="done-workers-footer">
+            {doneWorkerCount} completed
+          </p>
         )}
       </div>
     </nav>

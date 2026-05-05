@@ -354,7 +354,10 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange)
   }, [])
 
-  const sidebarWorkers = workers.map(workerToSidebarItem)
+  const DONE_STATES = ['merged', 'abandoned', 'failed']
+  const activeWorkers = workers.filter((w) => !DONE_STATES.includes(w.state))
+  const doneWorkers = workers.filter((w) => DONE_STATES.includes(w.state))
+  const sidebarWorkers = activeWorkers.map(workerToSidebarItem)
   const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
   const mainContent = !workspace ? (
@@ -405,6 +408,7 @@ export default function App() {
             onSelect={handleSelect}
             autoBots={sidebarAutoBots}
             workers={sidebarWorkers}
+            doneWorkerCount={doneWorkers.length}
             workspaces={workspaces}
             workspace={workspace}
             onWorkspaceChange={(ws) => {
