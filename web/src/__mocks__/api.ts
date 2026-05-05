@@ -157,3 +157,12 @@ export const promoteWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' })
 export const redispatchWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
 export const closeWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
 export const getWorkerDiff = vi.fn().mockResolvedValue(null);
+
+// Auto Bot API mocks
+export const listAutoBots = vi.fn().mockResolvedValue([]);
+export const getAutoBot = vi.fn().mockResolvedValue(null);
+export const createAutoBot = vi.fn().mockResolvedValue(null);
+export const updateAutoBot = vi.fn().mockResolvedValue(null);
+export const deleteAutoBot = vi.fn().mockResolvedValue(undefined);
+export const triggerAutoBot = vi.fn().mockResolvedValue(undefined);
+export const getAutoBotRuns = vi.fn().mockResolvedValue([]);

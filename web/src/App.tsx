@@ -4,9 +4,10 @@ import Sidebar from './components/Sidebar/Sidebar'
 import BottomTabBar from './components/BottomTabBar/BottomTabBar'
 import EmptyState from './components/EmptyState/EmptyState'
 import WorkerDetailV2 from './components/WorkerDetailV2/WorkerDetailV2'
+import AutoBotDetail from './components/AutoBotDetail/AutoBotDetail'
 import { Bot, Wrench } from 'lucide-react'
-import { listWorkersV2, connectWebSocket } from './api'
-import type { WorkerV2 } from './types'
+import { listWorkersV2, listAutoBots, connectWebSocket } from './api'
+import type { WorkerV2, AutoBot } from './types'
 import type { SidebarItem } from './components/Sidebar/Sidebar'
 import './theme.css'
 
@@ -28,18 +29,23 @@ function workerToSidebarItem(w: WorkerV2): SidebarItem {
   }
 }
 
-// Stub auto bots — Phase 3 will replace with real data
-const STUB_AUTO_BOTS: SidebarItem[] = [
-  { id: 'triage', name: 'Triage', status: 'idle', meta: 'signal' },
-  { id: 'standup', name: 'Standup', status: 'running', meta: 'cron' },
-]
+function autoBotToSidebarItem(b: AutoBot): SidebarItem {
+  return {
+    id: b.id,
+    name: b.name,
+    status: b.status,
+    meta: b.trigger_type === 'cron' ? 'cron' : (b.signal_source ?? 'signal'),
+  }
+}
 
 export default function App() {
   const [selected, setSelected] = useState<SelectedEntity | null>(null)
   const [mobileTab, setMobileTab] = useState('workers')
   const [workers, setWorkers] = useState<WorkerV2[]>([])
+  const [autoBots, setAutoBots] = useState<AutoBot[]>([])
   const [loading, setLoading] = useState(true)
-  const pollRef = useRef<number | null>(null)
+  const workerPollRef = useRef<number | null>(null)
+  const autoBotPollRef = useRef<number | null>(null)
 
   const handleSelect = (type: EntityType, id: string) => {
     setSelected({ type, id })
@@ -63,20 +69,48 @@ export default function App() {
 
     fetchWorkers(true)
 
-    pollRef.current = window.setInterval(() => {
+    workerPollRef.current = window.setInterval(() => {
       fetchWorkers(false)
     }, 5000)
 
     return () => {
       cancelled = true
-      if (pollRef.current !== null) {
-        window.clearInterval(pollRef.current)
-        pollRef.current = null
+      if (workerPollRef.current !== null) {
+        window.clearInterval(workerPollRef.current)
+        workerPollRef.current = null
       }
     }
   }, [])
 
-  // WebSocket — update workers on worker_v2_state events
+  // Fetch auto bots on mount and poll every 15s
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchAutoBots() {
+      try {
+        const list = await listAutoBots(WORKSPACE)
+        if (!cancelled) setAutoBots(list)
+      } catch {
+        // ignore errors — sidebar just stays empty
+      }
+    }
+
+    fetchAutoBots()
+
+    autoBotPollRef.current = window.setInterval(() => {
+      fetchAutoBots()
+    }, 15000)
+
+    return () => {
+      cancelled = true
+      if (autoBotPollRef.current !== null) {
+        window.clearInterval(autoBotPollRef.current)
+        autoBotPollRef.current = null
+      }
+    }
+  }, [])
+
+  // WebSocket — update workers and auto bots on relevant events
   useEffect(() => {
     const ws = connectWebSocket((event) => {
       if (event.type === 'worker_v2_state') {
@@ -92,11 +126,26 @@ export default function App() {
           ),
         )
       }
+
+      if (event.type === 'auto_bot_run_started') {
+        const autoBotId = event.auto_bot_id as string
+        setAutoBots((prev) =>
+          prev.map((b) =>
+            b.id === autoBotId ? { ...b, status: 'running' as const } : b,
+          ),
+        )
+      }
+
+      if (event.type === 'auto_bot_run_finished') {
+        // Refresh the full list so status reverts correctly
+        listAutoBots(WORKSPACE).then((list) => setAutoBots(list)).catch(() => {})
+      }
     })
     return () => ws.close()
   }, [])
 
   const sidebarWorkers = workers.map(workerToSidebarItem)
+  const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
   const mainContent = selected ? (
     selected.type === 'worker' ? (
@@ -105,7 +154,11 @@ export default function App() {
         workerId={selected.id}
       />
     ) : (
-      <PlaceholderDetail entity={selected} />
+      <AutoBotDetail
+        workspace={WORKSPACE}
+        autoBotId={selected.id}
+        onSelectWorker={(id) => setSelected({ type: 'worker', id })}
+      />
     )
   ) : (
     <EmptyState />
@@ -117,7 +170,7 @@ export default function App() {
   ]
 
   if (loading) {
-    // Render shell immediately; sidebar will populate once workers arrive
+    // Render shell immediately; sidebar will populate once data arrives
   }
 
   return (
@@ -127,7 +180,7 @@ export default function App() {
           selectedType={selected?.type ?? null}
           selectedId={selected?.id ?? null}
           onSelect={handleSelect}
-          autoBots={STUB_AUTO_BOTS}
+          autoBots={sidebarAutoBots}
           workers={sidebarWorkers}
         />
       }
@@ -140,21 +193,5 @@ export default function App() {
         />
       }
     />
-  )
-}
-
-function PlaceholderDetail({ entity }: { entity: SelectedEntity }) {
-  return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100%',
-      color: 'var(--text-faint)',
-      fontSize: 'var(--font-size-small)',
-      fontFamily: 'var(--font)',
-    }}>
-      Auto Bot: {entity.id}
-    </div>
   )
 }

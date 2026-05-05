@@ -1,0 +1,325 @@
+/* ── Container ───────────────────────────────────────────────────────── */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+
+.header {
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.headerTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.headerLeft {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1;
+  min-width: 0;
+}
+
+.botName {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-strong);
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.botNameDisabled {
+  color: var(--text-faint);
+}
+
+.disabledLabel {
+  font-size: var(--font-size-small);
+  color: var(--text-faint);
+  font-weight: 400;
+}
+
+.triggerLine {
+  font-size: var(--font-size-small);
+  color: var(--text-faint);
+  margin-bottom: var(--space-3);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+/* ── Status pulse dot ────────────────────────────────────────────────── */
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.statusDotIdle {
+  background: var(--text-faint);
+}
+
+.statusDotError {
+  background: var(--status-failed);
+}
+
+.statusDotRunning {
+  background: var(--status-running);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(92, 184, 92, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(92, 184, 92, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(92, 184, 92, 0);
+  }
+}
+
+/* ── Toggle switch ───────────────────────────────────────────────────── */
+
+.toggleLabel {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.toggleInput {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggleTrack {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  background: var(--border-strong);
+  border-radius: 9px;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.toggleTrackEnabled {
+  background: var(--status-running);
+}
+
+.toggleThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggleThumbEnabled {
+  transform: translateX(14px);
+}
+
+.toggleText {
+  font-size: var(--font-size-small);
+  color: var(--text-faint);
+}
+
+/* ── Trigger Now button ──────────────────────────────────────────────── */
+
+.triggerBtn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: var(--font-size-small);
+  padding: 4px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.triggerBtn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.triggerBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Run feed ────────────────────────────────────────────────────────── */
+
+.feed {
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── Run card ────────────────────────────────────────────────────────── */
+
+.runCard {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.runCardHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.runMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+}
+
+.runTriggeredBy {
+  font-size: var(--font-size-small);
+  color: var(--text-faint);
+}
+
+.runTimestamp {
+  font-size: var(--font-size-meta);
+  color: var(--text-faint);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.runSummary {
+  font-size: var(--font-size-small);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.workerLink {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: var(--font-size-small);
+  color: var(--accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.workerLink:hover {
+  text-decoration: underline;
+}
+
+/* ── Outcome badges ──────────────────────────────────────────────────── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: var(--font-size-meta);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.badgeDispatched {
+  color: var(--status-running);
+  background: rgba(92, 184, 92, 0.12);
+}
+
+.badgeNotified {
+  color: #5ba3e8;
+  background: rgba(91, 163, 232, 0.12);
+}
+
+.badgeNoise {
+  color: var(--text-faint);
+  background: rgba(85, 85, 85, 0.12);
+}
+
+.badgeError {
+  color: var(--status-failed);
+  background: rgba(232, 85, 85, 0.12);
+}
+
+.badgeRunning {
+  color: var(--status-running);
+  background: rgba(92, 184, 92, 0.08);
+}
+
+/* ── Spinner ─────────────────────────────────────────────────────────── */
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(92, 184, 92, 0.2);
+  border-top-color: var(--status-running);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────── */
+
+.emptyState {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: var(--font-size-small);
+}
+
+/* ── Loading / error ─────────────────────────────────────────────────── */
+
+.stateCenter {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: var(--font-size-small);
+}

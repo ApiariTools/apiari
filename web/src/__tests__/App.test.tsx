@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import App from "../App";
 import * as api from "../api";
-import type { WorkerV2, WorkerDetailV2 as WorkerDetailV2Data } from "../types";
+import type { WorkerV2, WorkerDetailV2 as WorkerDetailV2Data, AutoBot, AutoBotDetail } from "../types";
 
 vi.mock("../api");
 vi.mock("react-markdown", () => ({
@@ -62,9 +62,53 @@ const mockWorkerDetail: WorkerDetailV2Data = {
   events: [],
 };
 
+const mockAutoBots: AutoBot[] = [
+  {
+    id: "triage",
+    workspace: "default",
+    name: "Triage",
+    color: "#f5c542",
+    trigger_type: "signal",
+    cron_schedule: null,
+    signal_source: "github",
+    signal_filter: null,
+    prompt: "Triage new issues",
+    provider: "claude",
+    model: null,
+    enabled: true,
+    status: "idle",
+    created_at: "2026-05-04T09:00:00Z",
+    updated_at: "2026-05-04T09:00:00Z",
+  },
+  {
+    id: "standup",
+    workspace: "default",
+    name: "Standup",
+    color: "#f5c542",
+    trigger_type: "cron",
+    cron_schedule: "0 9 * * 1-5",
+    signal_source: null,
+    signal_filter: null,
+    prompt: "Generate standup",
+    provider: "claude",
+    model: null,
+    enabled: true,
+    status: "running",
+    created_at: "2026-05-04T09:00:00Z",
+    updated_at: "2026-05-04T09:00:00Z",
+  },
+];
+
+const mockAutoBotDetail: AutoBotDetail = {
+  ...mockAutoBots[0],
+  runs: [],
+};
+
 beforeEach(() => {
   vi.mocked(api.listWorkersV2).mockResolvedValue(mockWorkers);
   vi.mocked(api.getWorkerV2).mockResolvedValue(mockWorkerDetail);
+  vi.mocked(api.listAutoBots).mockResolvedValue(mockAutoBots);
+  vi.mocked(api.getAutoBot).mockResolvedValue(mockAutoBotDetail);
 });
 
 describe("App shell", () => {
@@ -74,10 +118,10 @@ describe("App shell", () => {
     expect(screen.getAllByText("Workers").length).toBeGreaterThan(0);
   });
 
-  it("renders stub auto bots in the sidebar", () => {
+  it("renders auto bots from API in the sidebar", async () => {
     render(<App />);
-    expect(screen.getByText("Triage")).toBeInTheDocument();
-    expect(screen.getByText("Standup")).toBeInTheDocument();
+    expect(await screen.findByText("Triage")).toBeInTheDocument();
+    expect(await screen.findByText("Standup")).toBeInTheDocument();
   });
 
   it("renders workers from API in the sidebar", async () => {
@@ -102,11 +146,13 @@ describe("App shell", () => {
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
   });
 
-  it("shows placeholder detail when an auto bot is selected", async () => {
+  it("shows auto bot detail when an auto bot is selected", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await screen.findByText("Triage");
     await user.click(screen.getByText("Triage"));
-    expect(screen.getByText("Auto Bot: triage")).toBeInTheDocument();
+    // AutoBotDetail renders the bot name as heading
+    expect(await screen.findByTestId("bot-name")).toHaveTextContent("Triage");
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
   });
 

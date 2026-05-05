@@ -15,6 +15,9 @@ import type {
   BotDebugData,
   WorkerV2,
   WorkerDetailV2,
+  AutoBot,
+  AutoBotDetail,
+  AutoBotRun,
 } from "./types";
 
 const BASE = "/api";
@@ -381,6 +384,56 @@ export async function requeueWorkerV2(workspace: string, id: string): Promise<vo
     method: "POST",
   });
   if (!res.ok) throw new Error(`requeue worker: ${res.status}`);
+}
+
+// ── Auto Bot API ─────────────────────────────────────────────────────────
+
+export async function listAutoBots(workspace: string): Promise<AutoBot[]> {
+  const data = await get<{ auto_bots: AutoBot[] }>(`/workspaces/${workspace}/v2/auto-bots`);
+  return data.auto_bots;
+}
+
+export async function getAutoBot(workspace: string, id: string): Promise<AutoBotDetail> {
+  return get<AutoBotDetail>(`/workspaces/${workspace}/v2/auto-bots/${id}`);
+}
+
+export async function createAutoBot(workspace: string, data: Partial<AutoBot>): Promise<AutoBot> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/auto-bots`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`create auto bot: ${res.status}`);
+  return res.json();
+}
+
+export async function updateAutoBot(workspace: string, id: string, data: Partial<AutoBot>): Promise<AutoBot> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/auto-bots/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`update auto bot: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteAutoBot(workspace: string, id: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/auto-bots/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(`delete auto bot: ${res.status}`);
+}
+
+export async function triggerAutoBot(workspace: string, id: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/auto-bots/${id}/trigger`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`trigger auto bot: ${res.status}`);
+}
+
+export async function getAutoBotRuns(workspace: string, id: string, limit = 20): Promise<AutoBotRun[]> {
+  const data = await get<{ runs: AutoBotRun[] }>(`/workspaces/${workspace}/v2/auto-bots/${id}/runs?limit=${limit}`);
+  return data.runs;
 }
 
 export async function sendMessage(

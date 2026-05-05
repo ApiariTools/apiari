@@ -285,3 +285,39 @@ export interface WorkerEvent {
 export interface WorkerDetailV2 extends WorkerV2 {
   events: WorkerEvent[];
 }
+
+// ── Auto Bot types ─────────────────────────────────────────────────────
+
+export interface AutoBot {
+  id: string;
+  workspace: string;
+  name: string;
+  color: string;
+  trigger_type: 'cron' | 'signal';
+  cron_schedule: string | null;
+  signal_source: string | null;
+  signal_filter: string | null;
+  prompt: string;
+  provider: string;
+  model: string | null;
+  enabled: boolean;
+  status: 'idle' | 'running' | 'error';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutoBotRun {
+  id: string;
+  auto_bot_id: string;
+  workspace: string;
+  triggered_by: string;
+  started_at: string;
+  finished_at: string | null;
+  outcome: 'dispatched_worker' | 'notified' | 'noise' | 'error' | null;
+  summary: string | null;
+  worker_id: string | null;
+}
+
+export interface AutoBotDetail extends AutoBot {
+  runs: AutoBotRun[];
+}
