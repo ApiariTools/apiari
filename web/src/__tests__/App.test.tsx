@@ -1,7 +1,71 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import App from "../App";
+import * as api from "../api";
+import type { WorkerV2, WorkerDetailV2 as WorkerDetailV2Data } from "../types";
+
+vi.mock("../api");
+vi.mock("react-markdown", () => ({
+  default: ({ children }: { children: string }) => <span>{children}</span>,
+}));
+
+const mockWorkers: WorkerV2[] = [
+  {
+    id: "w-1",
+    workspace: "default",
+    state: "running",
+    label: "Working",
+    brief: null,
+    repo: "apiari",
+    branch: "swarm/fix-auth",
+    goal: "fix-auth-rate-limit",
+    tests_passing: true,
+    branch_ready: false,
+    pr_url: null,
+    pr_approved: false,
+    is_stalled: false,
+    revision_count: 0,
+    review_mode: "local_first",
+    blocked_reason: null,
+    last_output_at: null,
+    state_entered_at: "2026-05-04T10:00:00Z",
+    created_at: "2026-05-04T09:00:00Z",
+    updated_at: "2026-05-04T10:00:00Z",
+  },
+  {
+    id: "w-2",
+    workspace: "default",
+    state: "waiting",
+    label: "Waiting",
+    brief: null,
+    repo: "apiari",
+    branch: "swarm/update-deps",
+    goal: "update-deps",
+    tests_passing: false,
+    branch_ready: false,
+    pr_url: null,
+    pr_approved: false,
+    is_stalled: false,
+    revision_count: 0,
+    review_mode: "local_first",
+    blocked_reason: null,
+    last_output_at: null,
+    state_entered_at: "2026-05-04T10:00:00Z",
+    created_at: "2026-05-04T09:00:00Z",
+    updated_at: "2026-05-04T10:00:00Z",
+  },
+];
+
+const mockWorkerDetail: WorkerDetailV2Data = {
+  ...mockWorkers[0],
+  events: [],
+};
+
+beforeEach(() => {
+  vi.mocked(api.listWorkersV2).mockResolvedValue(mockWorkers);
+  vi.mocked(api.getWorkerV2).mockResolvedValue(mockWorkerDetail);
+});
 
 describe("App shell", () => {
   it("renders the sidebar with Auto Bots and Workers sections", () => {
@@ -16,11 +80,10 @@ describe("App shell", () => {
     expect(screen.getByText("Standup")).toBeInTheDocument();
   });
 
-  it("renders stub workers in the sidebar", () => {
+  it("renders workers from API in the sidebar", async () => {
     render(<App />);
-    expect(screen.getByText("fix-auth-rate-limit")).toBeInTheDocument();
-    expect(screen.getByText("update-deps")).toBeInTheDocument();
-    expect(screen.getByText("add-tests")).toBeInTheDocument();
+    expect(await screen.findByText("fix-auth-rate-limit")).toBeInTheDocument();
+    expect(await screen.findByText("update-deps")).toBeInTheDocument();
   });
 
   it("shows empty state when nothing is selected", () => {
@@ -29,11 +92,13 @@ describe("App shell", () => {
     expect(screen.getByText("Choose a worker or auto bot from the sidebar")).toBeInTheDocument();
   });
 
-  it("shows placeholder detail when a worker is selected", async () => {
+  it("shows worker detail when a worker is selected", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await screen.findByText("fix-auth-rate-limit");
     await user.click(screen.getByText("fix-auth-rate-limit"));
-    expect(screen.getByText("Worker: apiari-1")).toBeInTheDocument();
+    // WorkerDetailV2 renders the goal as heading
+    expect(await screen.findByText("fix-auth-rate-limit", { selector: "h1" })).toBeInTheDocument();
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
   });
 
@@ -45,14 +110,21 @@ describe("App shell", () => {
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
   });
 
-  it("switches selected item when another is clicked", async () => {
+  it("switches between workers", async () => {
     const user = userEvent.setup();
+    vi.mocked(api.getWorkerV2).mockImplementation(async (_ws, id) => ({
+      ...mockWorkers[id === "w-1" ? 0 : 1],
+      events: [],
+    }));
     render(<App />);
+    await screen.findByText("fix-auth-rate-limit");
     await user.click(screen.getByText("fix-auth-rate-limit"));
-    expect(screen.getByText("Worker: apiari-1")).toBeInTheDocument();
+    expect(await screen.findByText("fix-auth-rate-limit", { selector: "h1" })).toBeInTheDocument();
     await user.click(screen.getByText("update-deps"));
-    expect(screen.getByText("Worker: apiari-2")).toBeInTheDocument();
-    expect(screen.queryByText("Worker: apiari-1")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByText("fix-auth-rate-limit", { selector: "h1" })).not.toBeInTheDocument();
+    });
+    expect(await screen.findByText("update-deps", { selector: "h1" })).toBeInTheDocument();
   });
 
   it("renders the mobile bottom tab bar with Auto Bots and Workers tabs", () => {

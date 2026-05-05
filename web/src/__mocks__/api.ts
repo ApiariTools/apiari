@@ -146,3 +146,14 @@ export const getBotDebugData = vi.fn().mockResolvedValue({
   recent_messages: [],
 });
 export const connectWebSocket = vi.fn().mockReturnValue({ close: vi.fn() });
+
+// v2 Worker API mocks
+export const listWorkersV2 = vi.fn().mockResolvedValue([]);
+export const getWorkerV2 = vi.fn().mockResolvedValue(null);
+export const sendWorkerMessageV2 = vi.fn().mockResolvedValue(undefined);
+export const cancelWorkerV2 = vi.fn().mockResolvedValue(undefined);
+export const requeueWorkerV2 = vi.fn().mockResolvedValue(undefined);
+export const promoteWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
+export const redispatchWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
+export const closeWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
+export const getWorkerDiff = vi.fn().mockResolvedValue(null);

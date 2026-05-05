@@ -235,3 +235,53 @@ export interface BotDebugData {
   recent_decisions: BotTurnDecision[];
   recent_messages: Message[];
 }
+
+// ── v2 Worker types ─────────────────────────────────────────────────────
+
+export interface WorkerBrief {
+  goal: string;
+  context: {
+    relevant_files: string[];
+    recent_changes: string;
+    known_issues: string[];
+    conventions: string;
+  };
+  constraints: string[];
+  repo: string;
+  scope: string[];
+  acceptance_criteria: string[];
+  review_mode: 'local_first' | 'pr_first';
+}
+
+export interface WorkerV2 {
+  id: string;
+  workspace: string;
+  state: 'created' | 'briefed' | 'queued' | 'running' | 'waiting' | 'merged' | 'failed' | 'abandoned';
+  label: string;
+  brief: WorkerBrief | null;
+  repo: string | null;
+  branch: string | null;
+  goal: string | null;
+  tests_passing: boolean;
+  branch_ready: boolean;
+  pr_url: string | null;
+  pr_approved: boolean;
+  is_stalled: boolean;
+  revision_count: number;
+  review_mode: 'local_first' | 'pr_first';
+  blocked_reason: string | null;
+  last_output_at: string | null;
+  state_entered_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkerEvent {
+  event_type: string;
+  content: string;
+  created_at: string;
+}
+
+export interface WorkerDetailV2 extends WorkerV2 {
+  events: WorkerEvent[];
+}

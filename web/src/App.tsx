@@ -1,9 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Layout from './components/Layout/Layout'
 import Sidebar from './components/Sidebar/Sidebar'
 import BottomTabBar from './components/BottomTabBar/BottomTabBar'
 import EmptyState from './components/EmptyState/EmptyState'
+import WorkerDetailV2 from './components/WorkerDetailV2/WorkerDetailV2'
 import { Bot, Wrench } from 'lucide-react'
+import { listWorkersV2, connectWebSocket } from './api'
+import type { WorkerV2 } from './types'
+import type { SidebarItem } from './components/Sidebar/Sidebar'
 import './theme.css'
 
 type EntityType = 'auto_bot' | 'worker'
@@ -13,17 +17,96 @@ interface SelectedEntity {
   id: string
 }
 
+const WORKSPACE = 'default'
+
+function workerToSidebarItem(w: WorkerV2): SidebarItem {
+  return {
+    id: w.id,
+    name: w.goal ?? w.branch ?? w.id,
+    status: w.is_stalled ? 'stalled' : w.state,
+    meta: w.branch ?? undefined,
+  }
+}
+
+// Stub auto bots — Phase 3 will replace with real data
+const STUB_AUTO_BOTS: SidebarItem[] = [
+  { id: 'triage', name: 'Triage', status: 'idle', meta: 'signal' },
+  { id: 'standup', name: 'Standup', status: 'running', meta: 'cron' },
+]
+
 export default function App() {
   const [selected, setSelected] = useState<SelectedEntity | null>(null)
   const [mobileTab, setMobileTab] = useState('workers')
+  const [workers, setWorkers] = useState<WorkerV2[]>([])
+  const [loading, setLoading] = useState(true)
+  const pollRef = useRef<number | null>(null)
 
   const handleSelect = (type: EntityType, id: string) => {
     setSelected({ type, id })
   }
 
-  // Placeholder detail view — will be replaced in Phase 2
+  // Fetch workers on mount and poll every 5s
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchWorkers(initial = false) {
+      try {
+        const list = await listWorkersV2(WORKSPACE)
+        if (!cancelled) {
+          setWorkers(list)
+          if (initial) setLoading(false)
+        }
+      } catch {
+        if (initial && !cancelled) setLoading(false)
+      }
+    }
+
+    fetchWorkers(true)
+
+    pollRef.current = window.setInterval(() => {
+      fetchWorkers(false)
+    }, 5000)
+
+    return () => {
+      cancelled = true
+      if (pollRef.current !== null) {
+        window.clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [])
+
+  // WebSocket — update workers on worker_v2_state events
+  useEffect(() => {
+    const ws = connectWebSocket((event) => {
+      if (event.type === 'worker_v2_state') {
+        const workerId = event.worker_id as string
+        const state = event.state as WorkerV2['state']
+        const label = event.label as string
+        const props = (event.properties ?? {}) as Partial<WorkerV2>
+        setWorkers((prev) =>
+          prev.map((w) =>
+            w.id === workerId
+              ? { ...w, state, label, ...props }
+              : w,
+          ),
+        )
+      }
+    })
+    return () => ws.close()
+  }, [])
+
+  const sidebarWorkers = workers.map(workerToSidebarItem)
+
   const mainContent = selected ? (
-    <PlaceholderDetail entity={selected} />
+    selected.type === 'worker' ? (
+      <WorkerDetailV2
+        workspace={WORKSPACE}
+        workerId={selected.id}
+      />
+    ) : (
+      <PlaceholderDetail entity={selected} />
+    )
   ) : (
     <EmptyState />
   )
@@ -33,6 +116,10 @@ export default function App() {
     { id: 'workers', label: 'Workers', icon: <Wrench size={20} /> },
   ]
 
+  if (loading) {
+    // Render shell immediately; sidebar will populate once workers arrive
+  }
+
   return (
     <Layout
       sidebar={
@@ -41,7 +128,7 @@ export default function App() {
           selectedId={selected?.id ?? null}
           onSelect={handleSelect}
           autoBots={STUB_AUTO_BOTS}
-          workers={STUB_WORKERS}
+          workers={sidebarWorkers}
         />
       }
       main={mainContent}
@@ -67,19 +154,7 @@ function PlaceholderDetail({ entity }: { entity: SelectedEntity }) {
       fontSize: 'var(--font-size-small)',
       fontFamily: 'var(--font)',
     }}>
-      {entity.type === 'worker' ? 'Worker' : 'Auto Bot'}: {entity.id}
+      Auto Bot: {entity.id}
     </div>
   )
 }
-
-// Stub data — remove in Phase 2
-const STUB_AUTO_BOTS = [
-  { id: 'triage', name: 'Triage', status: 'idle', meta: 'signal' },
-  { id: 'standup', name: 'Standup', status: 'running', meta: 'cron' },
-]
-
-const STUB_WORKERS = [
-  { id: 'apiari-1', name: 'fix-auth-rate-limit', status: 'running', meta: 'swarm/fix-auth' },
-  { id: 'apiari-2', name: 'update-deps', status: 'waiting', meta: 'swarm/deps' },
-  { id: 'apiari-3', name: 'add-tests', status: 'failed', meta: 'swarm/tests' },
-]

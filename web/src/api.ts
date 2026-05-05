@@ -13,6 +13,8 @@ import type {
   Signal,
   ProviderCapability,
   BotDebugData,
+  WorkerV2,
+  WorkerDetailV2,
 } from "./types";
 
 const BASE = "/api";
@@ -345,6 +347,40 @@ export async function startResearch(
 export async function getWorkerDiff(workspace: string, workerId: string, remote?: string): Promise<string | null> {
   const data = await get<{ diff: string | null }>(`${wsPath(workspace, remote)}/workers/${workerId}/diff`);
   return data.diff;
+}
+
+// ── v2 Worker API ────────────────────────────────────────────────────────
+
+export async function listWorkersV2(workspace: string): Promise<WorkerV2[]> {
+  const data = await get<{ workers: WorkerV2[] }>(`/workspaces/${workspace}/v2/workers`);
+  return data.workers;
+}
+
+export async function getWorkerV2(workspace: string, id: string): Promise<WorkerDetailV2> {
+  return get<WorkerDetailV2>(`/workspaces/${workspace}/v2/workers/${id}`);
+}
+
+export async function sendWorkerMessageV2(workspace: string, id: string, message: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers/${id}/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) throw new Error(`send worker message: ${res.status}`);
+}
+
+export async function cancelWorkerV2(workspace: string, id: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers/${id}/cancel`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`cancel worker: ${res.status}`);
+}
+
+export async function requeueWorkerV2(workspace: string, id: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers/${id}/requeue`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`requeue worker: ${res.status}`);
 }
 
 export async function sendMessage(
