@@ -256,7 +256,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   const canRequeue = data.state === 'failed' || data.state === 'abandoned'
 
   return (
-    <div className={styles.container}>
+    <div className={styles.container} data-testid="worker-detail-root">
       {/* Header */}
       <div className={styles.header}>
         <div className={styles.headerTop}>
