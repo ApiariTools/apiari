@@ -11,6 +11,7 @@ export function EmptyState({ title, body }: Props) {
     <div className={styles.state}>
       <div className={styles.title}>{title}</div>
       {body ? <div className={styles.body}>{body}</div> : null}
+      {/* <!-- apiari-test --> */}
     </div>
   );
 }
