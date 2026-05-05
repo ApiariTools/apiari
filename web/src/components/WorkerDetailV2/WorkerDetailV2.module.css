@@ -1,24 +1,27 @@
+/* ── Container ──────────────────────────────────────────────────────────── */
+
 .container {
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow: hidden;
   background: var(--bg);
 }
 
-/* ── Header ─────────────────────────────────────────────────────────── */
+/* ── Header ─────────────────────────────────────────────────────────────── */
 
 .header {
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
-.headerTop {
+.headerRow {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
-  margin-bottom: var(--space-2);
 }
 
 .goal {
@@ -28,41 +31,85 @@
   color: var(--text-strong);
   line-height: 1.3;
   word-break: break-word;
+  margin: 0;
 }
 
-.askBtn {
-  display: inline-flex;
+.headerActions {
+  display: flex;
   align-items: center;
-  gap: 5px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  font-size: var(--font-size-meta);
-  padding: 4px 10px;
-  cursor: pointer;
+  gap: var(--space-2);
   flex-shrink: 0;
-  transition: border-color 0.15s, color 0.15s;
+  flex-wrap: wrap;
 }
 
-.askBtn:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.branch {
-  font-size: var(--font-size-small);
-  color: var(--text-faint);
-  font-family: monospace;
-  margin-bottom: var(--space-3);
-}
-
+/* Second row: status + branch + pills inline */
 .headerMeta {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
+
+/* Pills row is now inline in headerMeta — no separate section */
+.pills {
+  display: contents;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: var(--font-size-meta);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.pillGreen {
+  color: var(--status-running);
+  border-color: rgba(92, 184, 92, 0.25);
+}
+
+.pillAmber {
+  color: var(--status-waiting);
+  border-color: rgba(245, 197, 66, 0.25);
+}
+
+.pillOrange {
+  color: var(--status-stalled);
+  border-color: rgba(232, 160, 32, 0.25);
+}
+
+/* Third row: PR link */
+.headerPrRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.prLink {
+  font-size: var(--font-size-small);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-decoration: none;
+}
+
+.prLink:hover {
+  text-decoration: underline;
+}
+
+/* Reviewing in-progress banner */
+.reviewingBanner {
+  font-size: var(--font-size-meta);
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* ── Status badge ────────────────────────────────────────────────────────── */
 
 .statusBadge {
   display: inline-flex;
@@ -73,6 +120,7 @@
   font-size: var(--font-size-meta);
   font-weight: 600;
   letter-spacing: 0.03em;
+  flex-shrink: 0;
 }
 
 .statusDot {
@@ -117,19 +165,14 @@
   background: rgba(85, 85, 85, 0.12);
 }
 
-.prLink {
+/* Branch monospace */
+.branch {
   font-size: var(--font-size-small);
-  color: var(--accent);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  text-decoration: none;
+  color: var(--text-faint);
+  font-family: monospace;
 }
 
-.prLink:hover {
-  text-decoration: underline;
-}
-
+/* Revision pill */
 .revisionPill {
   font-size: var(--font-size-meta);
   color: var(--text-faint);
@@ -139,56 +182,173 @@
   padding: 2px 8px;
 }
 
-/* ── Property pills ─────────────────────────────────────────────────── */
+/* ── Action buttons ──────────────────────────────────────────────────────── */
 
-.pills {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  padding: var(--space-3) var(--space-6);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.pill {
+.askBtn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 10px;
-  border-radius: 100px;
-  font-size: var(--font-size-meta);
-  background: var(--bg-card);
+  background: none;
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: var(--font-size-meta);
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.askBtn:hover {
+  border-color: var(--border-strong);
   color: var(--text);
 }
 
-.pillGreen {
-  color: var(--status-running);
-  border-color: rgba(92, 184, 92, 0.25);
+/* Review button — accent-bordered small solid button */
+.reviewBtn {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--font-size-meta);
+  font-weight: 600;
+  padding: 4px 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, opacity 0.15s;
 }
 
-.pillRed {
+.reviewBtn:hover:not(:disabled) {
+  background: rgba(245, 197, 66, 0.08);
+}
+
+.reviewBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Ghost buttons */
+.ghostBtn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  font-size: var(--font-size-meta);
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.ghostBtn:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.ghostBtnDanger {
+  composes: ghostBtn;
   color: var(--status-failed);
-  border-color: rgba(232, 85, 85, 0.25);
+  border-color: rgba(232, 85, 85, 0.3);
 }
 
-.pillAmber {
-  color: var(--status-waiting);
-  border-color: rgba(245, 197, 66, 0.25);
+.ghostBtnDanger:hover {
+  border-color: var(--status-failed);
+  color: var(--status-failed);
 }
 
-.pillOrange {
-  color: var(--status-stalled);
-  border-color: rgba(232, 160, 32, 0.25);
+/* ── Tab bar ─────────────────────────────────────────────────────────────── */
+
+.tabBar {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  padding: 0 var(--space-5);
 }
 
-/* ── Events thread ──────────────────────────────────────────────────── */
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  margin-right: var(--space-5);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-faint);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  position: relative;
+  top: 1px; /* sit on the bottom border */
+}
 
-.events {
+.tab:hover {
+  color: var(--text);
+}
+
+.tabActive {
+  color: var(--text-strong);
+  border-bottom-color: var(--accent);
+}
+
+.tabBadge {
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--bg-card);
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 0 5px;
+  line-height: 16px;
+}
+
+/* ── Tab content area (scrollable) ──────────────────────────────────────── */
+
+.tabContent {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ── Timeline panel ──────────────────────────────────────────────────────── */
+
+.timelinePanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* State transition divider */
+.stateDivider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  color: var(--text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.stateDivider::before,
+.stateDivider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.stateDividerText {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Events list */
+.events {
+  padding: var(--space-3) var(--space-5);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -200,13 +360,24 @@
   align-items: flex-start;
 }
 
+.eventRowTool {
+  align-items: center;
+}
+
 .eventTime {
   font-size: var(--font-size-meta);
   color: var(--text-faint);
+  font-family: monospace;
   white-space: nowrap;
   padding-top: 2px;
-  min-width: 52px;
+  min-width: 46px;
   flex-shrink: 0;
+}
+
+.eventToolSep {
+  color: var(--text-faint);
+  flex-shrink: 0;
+  font-size: var(--font-size-meta);
 }
 
 .eventBody {
@@ -217,7 +388,7 @@
 /* assistant_text */
 .eventAssistant {
   color: var(--text);
-  font-size: var(--font-size-base);
+  font-size: 15px;
   line-height: 1.6;
 }
 
@@ -246,10 +417,10 @@
 
 /* user_message */
 .eventUserLabel {
-  font-size: var(--font-size-small);
+  font-size: var(--font-size-meta);
   font-weight: 600;
   color: var(--accent);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .eventUserContent {
@@ -260,200 +431,56 @@
   word-break: break-word;
 }
 
-/* tool_use */
+/* tool_use — single inline faint line, no box */
 .eventTool {
   font-size: 12px;
   color: var(--text-faint);
   font-family: monospace;
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  display: inline-block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   max-width: 100%;
-  overflow-x: auto;
 }
 
 /* empty state */
 .eventsEmpty {
+  padding: var(--space-5) var(--space-5);
+  color: var(--text-faint);
+  font-size: var(--font-size-small);
+  text-align: center;
+}
+
+/* ── Reviews panel ───────────────────────────────────────────────────────── */
+
+.reviewsPanel {
   flex: 1;
   display: flex;
+  flex-direction: column;
+  padding: var(--space-4) var(--space-5);
+}
+
+.reviewsEmpty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: var(--text-faint);
-  font-size: var(--font-size-small);
+  gap: var(--space-4);
 }
 
-/* ── Action bar ─────────────────────────────────────────────────────── */
+.reviewsEmptyText {
+  color: var(--text-faint);
+  font-size: var(--font-size-small);
+  margin: 0;
+}
 
-.actionBar {
-  border-top: 1px solid var(--border);
-  padding: var(--space-3) var(--space-6);
+.reviewsList {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  flex-shrink: 0;
+  gap: var(--space-4);
 }
 
-.inputRow {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-2);
-}
-
-.textarea {
-  flex: 1;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-strong);
-  font-size: 16px;
-  font-family: var(--font);
-  padding: var(--space-2) var(--space-3);
-  resize: none;
-  min-height: 38px;
-  max-height: 90px;
-  line-height: 1.5;
-  outline: none;
-  transition: border-color 0.15s;
-}
-
-.textarea:focus {
-  border-color: var(--border-strong);
-}
-
-.textarea::placeholder {
-  color: var(--text-faint);
-}
-
-.sendBtn {
-  background: var(--accent);
-  color: #111;
-  border: none;
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--font-size-small);
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  height: 38px;
-  flex-shrink: 0;
-}
-
-.sendBtn:hover {
-  opacity: 0.88;
-}
-
-.sendBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.secondaryActions {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.actionBtn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  font-size: var(--font-size-small);
-  padding: 4px 12px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
-}
-
-.actionBtn:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.actionBtnDanger {
-  composes: actionBtn;
-  color: var(--status-failed);
-  border-color: rgba(232, 85, 85, 0.3);
-}
-
-.actionBtnDanger:hover {
-  border-color: var(--status-failed);
-  color: var(--status-failed);
-}
-
-/* ── Loading / error states ─────────────────────────────────────────── */
-
-.stateCenter {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-faint);
-  font-size: var(--font-size-small);
-}
-
-/* Skeleton shimmer */
-
-@keyframes shimmer {
-  0%   { background-position: -400px 0; }
-  100% { background-position: 400px 0; }
-}
-
-.skeletonWrapper {
-  flex: 1;
-  padding: var(--space-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.skeletonLine {
-  background: linear-gradient(
-    90deg,
-    var(--bg-hover) 25%,
-    var(--bg-card) 50%,
-    var(--bg-hover) 75%
-  );
-  background-size: 800px 100%;
-  animation: shimmer 1.4s infinite linear;
-  border-radius: var(--radius-sm);
-}
-
-.skeletonTitle {
-  height: 22px;
-  width: 55%;
-}
-
-.skeletonMeta {
-  height: 14px;
-  width: 30%;
-}
-
-.skeletonBody {
-  height: 14px;
-  width: 70%;
-}
-
-/* ── Reviews section ────────────────────────────────────────────────── */
-
-.reviewsSection {
-  border-top: 1px solid var(--border);
-  padding: var(--space-4) var(--space-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  flex-shrink: 0;
-}
-
-.reviewsSectionTitle {
-  font-size: var(--font-size-small);
-  font-weight: 600;
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
+/* Review card */
 .reviewCard {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -512,6 +539,7 @@
   margin: 0;
 }
 
+/* Issue list */
 .issueList {
   list-style: none;
   margin: 0;
@@ -525,7 +553,14 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  flex-wrap: wrap;
+}
+
+.issueDetail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .severityBadge {
@@ -550,13 +585,13 @@
 .severityNitpick {
   color: var(--text-faint);
   background: rgba(85, 85, 85, 0.12);
+  border: 1px solid var(--border);
 }
 
 .issueFile {
   font-size: 12px;
   font-family: monospace;
   color: var(--text-faint);
-  flex-shrink: 0;
 }
 
 .issueDesc {
@@ -565,6 +600,7 @@
   line-height: 1.5;
 }
 
+/* Worker message box */
 .workerMessageBox {
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid var(--border);
@@ -589,7 +625,183 @@
   word-break: break-word;
 }
 
-/* Error state */
+/* ── Brief panel ─────────────────────────────────────────────────────────── */
+
+.briefPanel {
+  flex: 1;
+  padding: var(--space-4) var(--space-5);
+}
+
+.briefEmpty {
+  color: var(--text-faint);
+  font-size: var(--font-size-small);
+  padding: var(--space-4) 0;
+}
+
+.briefBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.briefSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.briefLabel {
+  font-size: var(--font-size-meta);
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.briefRule {
+  height: 1px;
+  background: var(--border);
+}
+
+.briefContent {
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.briefContent p {
+  margin: 0;
+}
+
+.briefList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.briefList li {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.briefList li::before {
+  content: '•';
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+/* ── Action bar (input) ──────────────────────────────────────────────────── */
+
+.actionBar {
+  border-top: 1px solid var(--border);
+  padding: var(--space-3) var(--space-5);
+  flex-shrink: 0;
+}
+
+.inputRow {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.textarea {
+  flex: 1;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-strong);
+  font-size: 16px;
+  font-family: var(--font);
+  padding: var(--space-2) var(--space-3);
+  resize: none;
+  min-height: 38px;
+  max-height: 120px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.textarea:focus {
+  border-color: var(--border-strong);
+}
+
+.textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.textarea:disabled {
+  cursor: not-allowed;
+}
+
+.sendBtn {
+  background: var(--accent);
+  color: #111;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--font-size-small);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  height: 38px;
+  flex-shrink: 0;
+}
+
+.sendBtn:hover:not(:disabled) {
+  opacity: 0.88;
+}
+
+.sendBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Loading / error states ──────────────────────────────────────────────── */
+
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeletonWrapper {
+  flex: 1;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.skeletonLine {
+  background: linear-gradient(
+    90deg,
+    var(--bg-hover) 25%,
+    var(--bg-card) 50%,
+    var(--bg-hover) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: var(--radius-sm);
+}
+
+.skeletonTitle {
+  height: 22px;
+  width: 55%;
+}
+
+.skeletonMeta {
+  height: 14px;
+  width: 30%;
+}
+
+.skeletonBody {
+  height: 14px;
+  width: 70%;
+}
 
 .errorCenter {
   flex: 1;

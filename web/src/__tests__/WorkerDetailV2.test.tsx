@@ -78,13 +78,14 @@ describe("WorkerDetailV2", () => {
     expect(pills).toHaveTextContent("local first");
   });
 
-  it("renders action bar with send button", async () => {
+  it("renders action bar with send button on Timeline tab", async () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    // Timeline is the default tab; running state still shows the bar (just disabled)
     expect(await screen.findByTestId("action-bar")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
   });
 
-  it("renders events thread with all event types", async () => {
+  it("renders events thread with all event types on Timeline tab", async () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const thread = await screen.findByTestId("events-thread");
     expect(thread).toBeInTheDocument();
@@ -144,6 +145,8 @@ describe("WorkerDetailV2", () => {
   });
 
   it("calls sendWorkerMessageV2 when send is clicked", async () => {
+    // Use waiting state so the input is enabled
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "waiting", label: "Waiting" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const textarea = await screen.findByPlaceholderText("Send a message to the worker...");
     fireEvent.change(textarea, { target: { value: "hello worker" } });
@@ -189,7 +192,87 @@ describe("WorkerDetailV2", () => {
     expect(pills).not.toHaveTextContent("Local tests ✓");
   });
 
-  // ── Review feature tests ──────────────────────────────────────────────
+  // ── Tab switching tests ───────────────────────────────────────────────────
+
+  it("renders three tabs: Timeline, Reviews, Brief", async () => {
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    expect(screen.getByTestId("tab-timeline")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-reviews")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-brief")).toBeInTheDocument();
+  });
+
+  it("switches to Reviews tab on click and shows reviews section", async () => {
+    const mockReview: WorkerReview = {
+      id: 1,
+      reviewer: "General",
+      verdict: "request_changes",
+      summary: "Missing error handling.",
+      issues: [],
+      worker_message: null,
+      created_at: "2026-05-04T10:00:00Z",
+    };
+    vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    fireEvent.click(screen.getByTestId("tab-reviews"));
+    expect(await screen.findByTestId("reviews-section")).toBeInTheDocument();
+    expect(screen.getByText("Missing error handling.")).toBeInTheDocument();
+  });
+
+  it("switches to Brief tab and shows 'No brief recorded' when brief is null", async () => {
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    fireEvent.click(screen.getByTestId("tab-brief"));
+    expect(await screen.findByText("No brief recorded for this worker.")).toBeInTheDocument();
+  });
+
+  it("Brief tab renders goal from brief object", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      brief: {
+        goal: "My brief goal",
+        context: { relevant_files: [], recent_changes: "", known_issues: [], conventions: "" },
+        constraints: ["Must be fast"],
+        repo: "apiari",
+        scope: [],
+        acceptance_criteria: ["Works end to end"],
+        review_mode: "local_first",
+      },
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    fireEvent.click(screen.getByTestId("tab-brief"));
+    expect(await screen.findByText("My brief goal")).toBeInTheDocument();
+    expect(screen.getByText("Must be fast")).toBeInTheDocument();
+    expect(screen.getByText("Works end to end")).toBeInTheDocument();
+  });
+
+  // ── Input state tests ─────────────────────────────────────────────────────
+
+  it("input is disabled when state is running", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "running", label: "Working" });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("action-bar");
+    const textarea = screen.getByPlaceholderText("Worker is running…");
+    expect(textarea).toBeDisabled();
+  });
+
+  it("input is hidden when state is merged", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "merged", label: "Merged" });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    expect(screen.queryByTestId("action-bar")).not.toBeInTheDocument();
+  });
+
+  it("input is hidden when state is abandoned", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "abandoned", label: "Abandoned" });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    expect(screen.queryByTestId("action-bar")).not.toBeInTheDocument();
+  });
+
+  // ── Review feature tests ──────────────────────────────────────────────────
 
   it("shows 'Request Review' button when waiting and branch_ready", async () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({
@@ -242,7 +325,7 @@ describe("WorkerDetailV2", () => {
     });
   });
 
-  it("renders reviews section when reviews exist", async () => {
+  it("renders reviews section when reviews exist (via Reviews tab)", async () => {
     const mockReview: WorkerReview = {
       id: 1,
       reviewer: "General",
@@ -260,6 +343,8 @@ describe("WorkerDetailV2", () => {
     };
     vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    fireEvent.click(screen.getByTestId("tab-reviews"));
     const section = await screen.findByTestId("reviews-section");
     expect(section).toBeInTheDocument();
     expect(section).toHaveTextContent("General");
@@ -282,8 +367,27 @@ describe("WorkerDetailV2", () => {
     };
     vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    fireEvent.click(screen.getByTestId("tab-reviews"));
     const section = await screen.findByTestId("reviews-section");
     expect(section).toHaveTextContent("Approved");
     expect(section).not.toHaveTextContent("Sent to worker");
+  });
+
+  it("shows review count badge on Reviews tab when reviews exist", async () => {
+    const mockReview: WorkerReview = {
+      id: 1,
+      reviewer: "General",
+      verdict: "approve",
+      summary: "Looks good.",
+      issues: [],
+      worker_message: null,
+      created_at: "2026-05-04T10:00:00Z",
+    };
+    vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    const reviewTab = screen.getByTestId("tab-reviews");
+    expect(reviewTab).toHaveTextContent("1");
   });
 });
