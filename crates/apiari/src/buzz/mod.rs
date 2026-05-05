@@ -14,3 +14,4 @@ pub mod swarm_reconciler;
 pub mod task;
 pub mod watcher;
 pub mod worker;
+pub mod worker_hooks;

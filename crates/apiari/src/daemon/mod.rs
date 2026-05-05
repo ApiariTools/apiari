@@ -2960,6 +2960,56 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
         info!("[{}] auto bot runner started", slot.name);
     }
 
+    // Spawn worker hook executors — one per workspace.
+    for slot in &slots {
+        let conn = match rusqlite::Connection::open(&slot.db_path) {
+            Ok(c) => {
+                if let Err(e) = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                {
+                    warn!("[{}] worker_hook_executor: pragma failed: {e}", slot.name);
+                }
+                std::sync::Arc::new(std::sync::Mutex::new(c))
+            }
+            Err(e) => {
+                warn!(
+                    "[{}] worker_hook_executor: failed to open db: {e}",
+                    slot.name
+                );
+                continue;
+            }
+        };
+        // Ensure worker tables exist
+        {
+            let c = conn.lock().unwrap();
+            if let Err(e) = crate::buzz::worker::ensure_schema(&c) {
+                warn!("[{}] worker_hook_executor: schema error: {e}", slot.name);
+                continue;
+            }
+        }
+        let hook_store = std::sync::Arc::new(crate::buzz::worker_hooks::WorkerHookStore::new(
+            Arc::clone(&conn),
+        ));
+        let worker_store = match crate::buzz::worker::WorkerStore::new(Arc::clone(&conn)) {
+            Ok(s) => std::sync::Arc::new(s),
+            Err(e) => {
+                warn!(
+                    "[{}] worker_hook_executor: WorkerStore init error: {e}",
+                    slot.name
+                );
+                continue;
+            }
+        };
+        let executor = std::sync::Arc::new(crate::buzz::worker_hooks::WorkerHookExecutor::new(
+            hook_store,
+            worker_store,
+            None, // event_tx not wired here (no broadcast channel in scope)
+            slot.name.clone(),
+            slot.config.root.clone(),
+        ));
+        executor.spawn();
+        info!("[{}] worker hook executor started", slot.name);
+    }
+
     // Deduplicate Telegram connections by bot_token
     let (tx, mut rx) = mpsc::channel::<ChannelEvent>(64);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);

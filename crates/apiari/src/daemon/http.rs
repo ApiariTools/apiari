@@ -144,6 +144,13 @@ pub enum WsUpdate {
         run_id: String,
         outcome: String,
     },
+    /// A worker hook fired.
+    WorkerHookFired {
+        workspace: String,
+        worker_id: String,
+        hook_id: i64,
+        action: String,
+    },
 }
 
 /// A test signal to inject (dev mode).
@@ -5057,6 +5064,125 @@ fn load_workspace_root(workspace: &str) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
+// ── v2 Worker-hooks API routes ─────────────────────────────────────────
+
+/// Open a WorkerHookStore against the given db_path.
+fn open_worker_hook_store_from_path(
+    db_path: &std::path::Path,
+) -> color_eyre::Result<crate::buzz::worker_hooks::WorkerHookStore> {
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| color_eyre::eyre::eyre!("failed to open worker_hook db: {e}"))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+    // Ensure the worker_hooks table exists (schema created by worker::ensure_schema).
+    {
+        let c = conn.lock().unwrap();
+        crate::buzz::worker::ensure_schema(&c)?;
+    }
+    Ok(crate::buzz::worker_hooks::WorkerHookStore::new(conn))
+}
+
+/// GET /api/workspaces/{ws}/v2/worker-hooks — list hooks.
+async fn v2_list_worker_hooks(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_worker_hook_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match store.list(&workspace) {
+        Ok(hooks) => Json(serde_json::json!({"hooks": hooks})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST body for creating a worker hook.
+#[derive(Debug, serde::Deserialize)]
+struct CreateWorkerHookBody {
+    #[serde(default)]
+    trigger_state: Option<String>,
+    #[serde(default)]
+    trigger_property: Option<String>,
+    #[serde(default)]
+    trigger_value: Option<String>,
+    #[serde(default)]
+    duration_minutes: Option<i64>,
+    action: String,
+    #[serde(default)]
+    auto_bot_id: Option<i64>,
+}
+
+/// POST /api/workspaces/{ws}/v2/worker-hooks — create hook.
+async fn v2_create_worker_hook(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+    Json(body): Json<CreateWorkerHookBody>,
+) -> impl IntoResponse {
+    let store = match open_worker_hook_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    let new_hook = crate::buzz::worker_hooks::NewWorkerHook {
+        workspace: workspace.clone(),
+        trigger_state: body.trigger_state,
+        trigger_property: body.trigger_property,
+        trigger_value: body.trigger_value,
+        duration_minutes: body.duration_minutes,
+        action: body.action,
+        auto_bot_id: body.auto_bot_id,
+    };
+    match store.insert(&new_hook) {
+        Ok(hook) => (StatusCode::CREATED, Json(serde_json::json!({"hook": hook}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/workspaces/{ws}/v2/worker-hooks/{id} — delete hook.
+async fn v2_delete_worker_hook(
+    Path((workspace, hook_id)): Path<(String, i64)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_worker_hook_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match store.delete(&workspace, hook_id) {
+        Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 // ── v2 Context-bot API routes ──────────────────────────────────────────
 
 /// Context snapshot sent with each context bot message.
@@ -5429,6 +5555,15 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/v2/auto-bots/{bot_id}/trigger",
             post(v2_trigger_auto_bot),
+        )
+        // v2 worker-hooks routes
+        .route(
+            "/api/workspaces/{workspace}/v2/worker-hooks",
+            get(v2_list_worker_hooks).post(v2_create_worker_hook),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/worker-hooks/{hook_id}",
+            axum::routing::delete(v2_delete_worker_hook),
         )
         // v2 context-bot routes
         .route(
