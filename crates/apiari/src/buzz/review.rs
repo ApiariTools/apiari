@@ -246,45 +246,64 @@ struct RawReviewResponse {
 }
 
 /// Extract and parse the last ```json ... ``` block (or bare `{...}` blob) from claude's output.
+///
+/// We use brace-balancing (not ``` delimiter scanning) to find the end of the JSON object,
+/// because issue descriptions often contain triple-backtick code examples inside the JSON
+/// strings which would cause naive ``` scanning to terminate early.
 pub fn parse_review_json(
     output: &str,
 ) -> Result<(String, String, Vec<ReviewIssue>, Option<String>)> {
-    // Try last ```json ... ``` block first.
-    let json_str = if let Some(last) = output.rfind("```json") {
-        let rest = &output[last + 7..];
-        if let Some(end) = rest.find("```") {
-            rest[..end].trim().to_string()
-        } else {
-            return Err(eyre!("unclosed ```json block in review output"));
+    // Find the last ```json opening, then brace-balance from the first `{` after it.
+    // Fall back to brace-balancing the entire output if no code fence found.
+    let search_from = if let Some(last) = output.rfind("```json") {
+        last + 7
+    } else {
+        0
+    };
+
+    let slice = &output[search_from..];
+    let json_str = if let Some(rel) = slice.find('{') {
+        let from = &slice[rel..];
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut end_idx = None;
+
+        for (i, ch) in from.char_indices() {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' && in_string {
+                escape = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = !in_string;
+                continue;
+            }
+            if in_string {
+                continue;
+            }
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = Some(i + ch.len_utf8());
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        match end_idx {
+            Some(end) => from[..end].trim().to_string(),
+            None => return Err(eyre!("no valid JSON block found in review output")),
         }
     } else {
-        // Fall back to last bare `{...}` blob.
-        let trimmed = output.trim();
-        if let Some(start) = trimmed.rfind('{') {
-            // Find matching closing brace.
-            let slice = &trimmed[start..];
-            let mut depth = 0usize;
-            let mut end_idx = None;
-            for (i, ch) in slice.char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end_idx = Some(i + ch.len_utf8());
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            match end_idx {
-                Some(end) => slice[..end].trim().to_string(),
-                None => return Err(eyre!("no valid JSON block found in review output")),
-            }
-        } else {
-            return Err(eyre!("no JSON block found in review output"));
-        }
+        return Err(eyre!("no JSON block found in review output"));
     };
 
     let parsed: RawReviewResponse =
@@ -454,8 +473,21 @@ pub async fn run_review(
 
     // ── 6. Parse JSON ──────────────────────────────────────────────────
 
-    let (verdict, summary, issues, worker_message) =
-        parse_review_json(&raw_output).wrap_err("failed to parse review output")?;
+    info!(
+        "[review/{workspace}] claude output ({} chars): {}",
+        raw_output.len(),
+        raw_output.chars().take(500).collect::<String>()
+    );
+
+    let (verdict, summary, issues, worker_message) = parse_review_json(&raw_output)
+        .map_err(|e| {
+            warn!(
+                "[review/{workspace}] parse failed for {}: {e}\nFull output:\n{raw_output}",
+                worker.id
+            );
+            e
+        })
+        .wrap_err("failed to parse review output")?;
 
     // ── 7. Store in DB ─────────────────────────────────────────────────
 
@@ -610,6 +642,35 @@ Here is my review:
         let output = "The changes look fine to me. No issues found.";
         let result = parse_review_json(output);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_review_json_code_in_description() {
+        // The issue description contains a triple-backtick code block inside the JSON string.
+        // Naive ``` scanning would terminate the block early; brace-balancing must handle it.
+        let output = r#"
+Analysis: JSX comments are stripped at compile time.
+
+```json
+{
+  "verdict": "request_changes",
+  "summary": "Wrong comment syntax used.",
+  "issues": [
+    {
+      "severity": "blocking",
+      "file": "src/Foo.tsx",
+      "description": "Replace with:\n```jsx\ndangerouslySetInnerHTML={{ __html: '<!-- test -->' }}\n```\nThis inserts real HTML."
+    }
+  ],
+  "worker_message": "Fix the comment."
+}
+```
+"#;
+        let (verdict, _summary, issues, msg) = parse_review_json(output).unwrap();
+        assert_eq!(verdict, "request_changes");
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].description.contains("dangerouslySetInnerHTML"));
+        assert!(msg.is_some());
     }
 
     #[test]
