@@ -467,11 +467,12 @@ mod tests {
                 assert!(td.task_md.as_ref().unwrap().contains("Do the thing"));
                 assert!(td.context_md.is_none());
                 assert!(td.plan_md.as_ref().unwrap().contains("Step one"));
-                assert!(td
-                    .shaping_md
-                    .as_ref()
-                    .unwrap()
-                    .contains("Coordinator Shaping"));
+                assert!(
+                    td.shaping_md
+                        .as_ref()
+                        .unwrap()
+                        .contains("Coordinator Shaping")
+                );
             }
             _ => panic!("expected CreateWorker"),
         }

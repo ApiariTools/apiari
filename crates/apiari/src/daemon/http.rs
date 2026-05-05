@@ -62,7 +62,7 @@ pub enum WsUpdate {
         graph: GraphView,
     },
     /// A task was updated.
-    TaskUpdated { task: TaskView },
+    TaskUpdated { task: Box<TaskView> },
     /// A signal was processed.
     SignalProcessed { source: String, title: String },
     /// The graph was edited and saved.
@@ -121,6 +121,14 @@ pub enum WsUpdate {
         action: String,
         fires_at: String,
         status: String,
+    },
+    /// A v2 worker state or property change.
+    WorkerV2State {
+        workspace: String,
+        worker_id: String,
+        state: String,
+        label: String,
+        properties: serde_json::Value,
     },
 }
 
@@ -1489,8 +1497,9 @@ async fn get_workspace_worker_environment(
     Path(workspace): Path<String>,
 ) -> Result<Json<WorkerEnvironmentStatusView>, StatusCode> {
     let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
-    let status = crate::daemon::worker_environment_status_for_workspace(&workspace, &ws.config, None)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let status =
+        crate::daemon::worker_environment_status_for_workspace(&workspace, &ws.config, None)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(WorkerEnvironmentStatusView {
         repo: status.repo,
         ready: status.ready,
@@ -1666,8 +1675,7 @@ fn worker_repo_name(
 ) -> Option<String> {
     worker
         .repo_path
-        .as_ref()
-        .map(|path| path.as_path())
+        .as_deref()
         .unwrap_or(fallback_root)
         .file_name()
         .and_then(|name| name.to_str())
@@ -3929,7 +3937,10 @@ async fn workflow_run_handler(
             let _ = store.create_task(&task);
             // Broadcast task creation to web UI
             let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                task: task_to_view_with_attempt(&task, latest_attempt_view_for_task(&store, &task.id)),
+                task: Box::new(task_to_view_with_attempt(
+                    &task,
+                    latest_attempt_view_for_task(&store, &task.id),
+                )),
             });
         }
 
@@ -3957,10 +3968,10 @@ async fn workflow_run_handler(
                 let mut updated_task = task.clone();
                 updated_task.metadata = metadata;
                 let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                    task: task_to_view_with_attempt(
+                    task: Box::new(task_to_view_with_attempt(
                         &updated_task,
                         latest_attempt_view_for_task(&store, &updated_task.id),
-                    ),
+                    )),
                 });
             }
 
@@ -4034,10 +4045,10 @@ async fn workflow_run_handler(
             let mut final_task = task.clone();
             final_task.stage = crate::buzz::task::TaskStage::Merged;
             let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                task: task_to_view_with_attempt(
+                task: Box::new(task_to_view_with_attempt(
                     &final_task,
                     latest_attempt_view_for_task(&store, &final_task.id),
-                ),
+                )),
             });
         }
 
@@ -4313,6 +4324,27 @@ pub async fn start_http_server(
         .route("/api/signals", get(get_signals))
         .route("/api/conversations", get(get_conversations))
         .route("/api/bees", get(get_bees).put(save_bees))
+        // v2 worker routes
+        .route(
+            "/api/workspaces/{workspace}/v2/workers",
+            get(v2_list_workers).post(v2_create_worker),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/workers/{worker_id}",
+            get(v2_get_worker),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/workers/{worker_id}/send",
+            post(v2_send_message),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/workers/{worker_id}/cancel",
+            post(v2_cancel_worker),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/workers/{worker_id}/requeue",
+            post(v2_requeue_worker),
+        )
         .route("/api/ws", get(ws_handler))
         .route("/ws", get(ws_handler))
         .layer(DefaultBodyLimit::max(25 * 1024 * 1024))
@@ -4426,7 +4458,10 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
                                     .ok()
                                     .and_then(|store| latest_attempt_view_for_task(&store, &task.id));
                                 let _ = updates_tx.send(WsUpdate::TaskUpdated {
-                                    task: task_to_view_with_attempt(task, latest_attempt),
+                                    task: Box::new(task_to_view_with_attempt(
+                                        task,
+                                        latest_attempt,
+                                    )),
                                 });
                             }
                         let _ = updates_tx.send(WsUpdate::SignalProcessed {
@@ -4447,6 +4482,439 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
     }
 
     Ok(())
+}
+
+// ── v2 Worker API ─────────────────────────────────────────────────────────
+
+fn open_worker_store_from_path(
+    db_path: &std::path::Path,
+) -> color_eyre::Result<crate::buzz::worker::WorkerStore> {
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| color_eyre::eyre::eyre!("failed to open worker db: {e}"))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+    crate::buzz::worker::WorkerStore::new(conn)
+}
+
+/// GET /api/workspaces/{ws}/v2/workers — list workers with computed labels.
+async fn v2_list_workers(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_worker_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match store.list(&workspace) {
+        Ok(workers) => Json(serde_json::json!({"workers": workers})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// GET /api/workspaces/{ws}/v2/workers/{id} — single worker detail.
+async fn v2_get_worker(
+    Path((workspace, id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_worker_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+    match store.get(&workspace, &id) {
+        Ok(Some(w)) => Json(w).into_response(),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct V2CreateWorkerBody {
+    brief: serde_json::Value,
+    repo: String,
+}
+
+/// POST /api/workspaces/{ws}/v2/workers — create a worker from a brief.
+async fn v2_create_worker(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+    Json(body): Json<V2CreateWorkerBody>,
+) -> impl IntoResponse {
+    let store = match open_worker_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let ws = match load_workspace_by_name(&workspace) {
+        Some(w) => w,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("workspace '{workspace}' not found")})),
+            )
+                .into_response();
+        }
+    };
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    let goal = body
+        .brief
+        .get("goal")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let review_mode = body
+        .brief
+        .get("review_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local_first")
+        .to_string();
+
+    let worker = crate::buzz::worker::Worker {
+        id: id.clone(),
+        workspace: workspace.clone(),
+        state: crate::buzz::worker::WorkerState::Briefed,
+        brief: Some(body.brief.clone()),
+        repo: Some(body.repo.clone()),
+        branch: None,
+        goal,
+        tests_passing: false,
+        branch_ready: false,
+        pr_url: None,
+        pr_approved: false,
+        is_stalled: false,
+        revision_count: 0,
+        review_mode,
+        blocked_reason: None,
+        last_output_at: None,
+        state_entered_at: now.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+        label: String::new(),
+    };
+
+    if let Err(e) = store.upsert(&worker) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    // Write brief as prompt file for swarm
+    let prompt_file = std::env::temp_dir().join(format!("worker-{id}.txt"));
+    let prompt_content = format_brief_as_prompt(&body.brief);
+    if let Err(e) = std::fs::write(&prompt_file, &prompt_content) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("failed to write prompt file: {e}")})),
+        )
+            .into_response();
+    }
+
+    // Dispatch to swarm
+    let output = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(&ws.config.root)
+        .arg("create")
+        .arg("--repo")
+        .arg(&body.repo)
+        .arg("--prompt-file")
+        .arg(&prompt_file)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Queued);
+            let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
+                workspace: workspace.clone(),
+                worker_id: id.clone(),
+                state: "queued".to_string(),
+                label: "Queued".to_string(),
+                properties: serde_json::json!({}),
+            });
+            Json(serde_json::json!({"ok": true, "worker_id": id})).into_response()
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("swarm create failed: {stderr}")})),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+fn format_brief_as_prompt(brief: &serde_json::Value) -> String {
+    let goal = brief
+        .get("goal")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no goal specified)");
+    let mut parts = vec![format!("# Goal\n\n{goal}")];
+
+    if let Some(context) = brief.get("context") {
+        parts.push(format!("# Context\n\n{context}"));
+    }
+    if let Some(constraints) = brief.get("constraints").and_then(|v| v.as_array()) {
+        let items: Vec<String> = constraints
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| format!("- {s}")))
+            .collect();
+        if !items.is_empty() {
+            parts.push(format!("# Constraints\n\n{}", items.join("\n")));
+        }
+    }
+    if let Some(criteria) = brief.get("acceptance_criteria").and_then(|v| v.as_array()) {
+        let items: Vec<String> = criteria
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| format!("- {s}")))
+            .collect();
+        if !items.is_empty() {
+            parts.push(format!("# Acceptance Criteria\n\n{}", items.join("\n")));
+        }
+    }
+
+    parts.join("\n\n")
+}
+
+#[derive(Debug, Deserialize)]
+struct V2SendMessageBody {
+    message: String,
+}
+
+/// POST /api/workspaces/{ws}/v2/workers/{id}/send — send message to worker.
+async fn v2_send_message(
+    Path((workspace, id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    Json(body): Json<V2SendMessageBody>,
+) -> impl IntoResponse {
+    let store = match open_worker_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let worker = match store.get(&workspace, &id) {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "worker not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let ws = match load_workspace_by_name(&workspace) {
+        Some(w) => w,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("workspace '{workspace}' not found")})),
+            )
+                .into_response();
+        }
+    };
+
+    let output = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(&ws.config.root)
+        .arg("send")
+        .arg(&id)
+        .arg(&body.message)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("swarm send failed: {stderr}")})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
+            )
+                .into_response();
+        }
+    }
+
+    // waiting → running when human sends a message; increment revision
+    if worker.state == crate::buzz::worker::WorkerState::Waiting {
+        let _ = store.update_properties(
+            &workspace,
+            &id,
+            crate::buzz::worker::WorkerPropertyUpdate {
+                increment_revision: true,
+                ..Default::default()
+            },
+        );
+        let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Running);
+
+        if let Ok(Some(updated)) = store.get(&workspace, &id) {
+            let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
+                workspace: workspace.clone(),
+                worker_id: id.clone(),
+                state: updated.state.as_str().to_string(),
+                label: updated.label.clone(),
+                properties: serde_json::json!({
+                    "revision_count": updated.revision_count,
+                    "is_stalled": updated.is_stalled,
+                }),
+            });
+        }
+    }
+
+    Json(serde_json::json!({"ok": true})).into_response()
+}
+
+/// POST /api/workspaces/{ws}/v2/workers/{id}/cancel — abandon a worker.
+async fn v2_cancel_worker(
+    Path((workspace, id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_worker_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    match store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Abandoned) {
+        Ok(()) => {
+            if let Ok(Some(updated)) = store.get(&workspace, &id) {
+                let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
+                    workspace: workspace.clone(),
+                    worker_id: id.clone(),
+                    state: updated.state.as_str().to_string(),
+                    label: updated.label.clone(),
+                    properties: serde_json::json!({}),
+                });
+            }
+            Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/workspaces/{ws}/v2/workers/{id}/requeue — re-queue failed/abandoned worker.
+async fn v2_requeue_worker(
+    Path((workspace, id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_worker_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let worker_opt = store.get(&workspace, &id);
+
+    let _ = store.update_properties(
+        &workspace,
+        &id,
+        crate::buzz::worker::WorkerPropertyUpdate {
+            is_stalled: Some(false),
+            blocked_reason: Some(None),
+            ..Default::default()
+        },
+    );
+
+    match store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Queued) {
+        Ok(()) => {
+            // Reset revision count by upserting with count=0
+            if let Ok(Some(mut w)) = worker_opt {
+                w.state = crate::buzz::worker::WorkerState::Queued;
+                w.revision_count = 0;
+                w.is_stalled = false;
+                w.blocked_reason = None;
+                let _ = store.upsert(&w);
+            }
+            if let Ok(Some(updated)) = store.get(&workspace, &id) {
+                let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
+                    workspace: workspace.clone(),
+                    worker_id: id.clone(),
+                    state: updated.state.as_str().to_string(),
+                    label: updated.label.clone(),
+                    properties: serde_json::json!({"revision_count": updated.revision_count}),
+                });
+            }
+            Json(serde_json::json!({"ok": true})).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]

@@ -84,7 +84,7 @@ pub enum WorkspaceAuthority {
 }
 
 /// Per-bee execution policy — controls whether a bee may directly implement code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BeeExecutionPolicy {
     /// Read-only. No Bash, no edits, no worker dispatch.
@@ -92,13 +92,8 @@ pub enum BeeExecutionPolicy {
     /// Investigate and dispatch workers, but do not implement directly.
     DispatchOnly,
     /// May implement directly with provider-native write access.
+    #[default]
     Autonomous,
-}
-
-impl Default for BeeExecutionPolicy {
-    fn default() -> Self {
-        Self::Autonomous
-    }
 }
 
 impl BeeExecutionPolicy {
@@ -1164,17 +1159,17 @@ fn hive_workspace_references_service(hive_config: &HiveWorkspaceFile, service: &
 }
 
 fn hydrate_legacy_service_watchers(config: &mut WorkspaceConfig, hive_config: &HiveWorkspaceFile) {
-    if config.watchers.sentry.is_none() && hive_workspace_references_service(hive_config, "sentry")
+    if config.watchers.sentry.is_none()
+        && hive_workspace_references_service(hive_config, "sentry")
+        && let Some(sentry) = load_legacy_sentry_credentials(&config.root)
     {
-        if let Some(sentry) = load_legacy_sentry_credentials(&config.root) {
-            config.watchers.sentry = Some(SentryWatcherConfig {
-                org: sentry.org,
-                project: sentry.project,
-                token: sentry.token,
-                interval_secs: default_watcher_interval(),
-                active_hours: None,
-            });
-        }
+        config.watchers.sentry = Some(SentryWatcherConfig {
+            org: sentry.org,
+            project: sentry.project,
+            token: sentry.token,
+            interval_secs: default_watcher_interval(),
+            active_hours: None,
+        });
     }
 }
 
@@ -1762,7 +1757,10 @@ execution_policy = "dispatch_only"
 
         assert_eq!(config.root, PathBuf::from("/Users/josh/Developer/apiari"));
         assert_eq!(config.swarm.default_agent, "codex");
-        assert_eq!(config.swarm.default_dispatch_repo.as_deref(), Some("apiari"));
+        assert_eq!(
+            config.swarm.default_dispatch_repo.as_deref(),
+            Some("apiari")
+        );
         let bees = config.resolved_bees();
         assert_eq!(bees.len(), 3);
         assert_eq!(bees[0].name, "Bee");

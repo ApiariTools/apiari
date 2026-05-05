@@ -763,11 +763,7 @@ mod tests {
         std::fs::create_dir_all(repo.join("web/node_modules/.bin")).unwrap();
         std::fs::create_dir_all(&worktree).unwrap();
 
-        std::fs::write(
-            repo.join(".swarm/worktree-links"),
-            "web/node_modules\n",
-        )
-        .unwrap();
+        std::fs::write(repo.join(".swarm/worktree-links"), "web/node_modules\n").unwrap();
         std::fs::write(
             repo.join("web/node_modules/.bin/tsc"),
             "#!/bin/sh\nexit 0\n",
@@ -775,11 +771,20 @@ mod tests {
         .unwrap();
 
         let linked = symlink_worktree_files(&repo, &worktree);
-        assert!(linked.iter().any(|path| path == Path::new("web/node_modules")));
+        assert!(
+            linked
+                .iter()
+                .any(|path| path == Path::new("web/node_modules"))
+        );
 
         let linked_path = worktree.join("web/node_modules");
         assert!(linked_path.exists());
-        assert!(std::fs::symlink_metadata(&linked_path).unwrap().file_type().is_symlink());
+        assert!(
+            std::fs::symlink_metadata(&linked_path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert!(linked_path.join(".bin/tsc").exists());
     }
 

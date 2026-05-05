@@ -2905,6 +2905,30 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
         }
     }
 
+    // Spawn v2 swarm reconcilers — one per workspace.
+    for slot in &slots {
+        let conn = match rusqlite::Connection::open(&slot.db_path) {
+            Ok(c) => {
+                if let Err(e) = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                {
+                    warn!("[{}] reconciler: pragma failed: {e}", slot.name);
+                }
+                std::sync::Arc::new(std::sync::Mutex::new(c))
+            }
+            Err(e) => {
+                warn!("[{}] reconciler: failed to open db: {e}", slot.name);
+                continue;
+            }
+        };
+        let reconciler_config = crate::buzz::swarm_reconciler::SwarmReconcilerConfig {
+            workspace: slot.name.clone(),
+            workspace_root: slot.config.root.clone(),
+            event_tx: None,
+        };
+        crate::buzz::swarm_reconciler::spawn_reconciler(reconciler_config, conn);
+        info!("[{}] swarm reconciler started", slot.name);
+    }
+
     // Deduplicate Telegram connections by bot_token
     let (tx, mut rx) = mpsc::channel::<ChannelEvent>(64);
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
@@ -3102,7 +3126,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                 if let Some(ref tx) = slot.web_updates_tx {
                                     if let Some(task) = &result.engine_result.task {
                                         let _ = tx.send(http::WsUpdate::TaskUpdated {
-                                            task: http::task_to_view(task),
+                                            task: Box::new(http::task_to_view(task)),
                                         });
                                     }
                                     let _ = tx.send(http::WsUpdate::SignalProcessed {
@@ -3491,7 +3515,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                         if let Some(ref web_tx) = slot.web_updates_tx {
                                                             if let Some(ref task) = engine_result.task {
                                                                 let _ = web_tx.send(http::WsUpdate::TaskUpdated {
-                                                                    task: http::task_to_view(task),
+                                                                    task: Box::new(http::task_to_view(task)),
                                                                 });
                                                             }
                                                             let _ = web_tx.send(http::WsUpdate::SignalProcessed {
@@ -5835,7 +5859,10 @@ fn likely_files_from_repo(repo_root: &Path, text: &str) -> Vec<String> {
     scored.into_iter().take(3).map(|(_, path)| path).collect()
 }
 
-pub(crate) fn find_repo_root_path(ws_config: &WorkspaceConfig, repo: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn find_repo_root_path(
+    ws_config: &WorkspaceConfig,
+    repo: &str,
+) -> Result<Option<PathBuf>> {
     let repos = apiari_swarm::core::git::detect_repos(&ws_config.root)?;
     Ok(repos
         .into_iter()
@@ -5870,20 +5897,8 @@ fn prompt_likely_needs_web_toolchain_for_repo(text: Option<&str>, repo_root: &Pa
         Some(text) => {
             let lower = text.to_ascii_lowercase();
             [
-                "mobile",
-                "ui",
-                "frontend",
-                "css",
-                "layout",
-                "panel",
-                "cards",
-                "button",
-                "header",
-                "chat",
-                "docs",
-                "workers",
-                "repos",
-                "overview",
+                "mobile", "ui", "frontend", "css", "layout", "panel", "cards", "button", "header",
+                "chat", "docs", "workers", "repos", "overview",
             ]
             .iter()
             .any(|needle| lower.contains(needle))
@@ -6091,7 +6106,8 @@ fn dispatch_shaping_markdown(shape: &DispatchTaskShape) -> String {
     let likely_files = if shape.likely_files.is_empty() {
         "- No confident target files identified yet.".to_string()
     } else {
-        shape.likely_files
+        shape
+            .likely_files
             .iter()
             .map(|path| format!("- `{path}`"))
             .collect::<Vec<_>>()
@@ -6100,7 +6116,8 @@ fn dispatch_shaping_markdown(shape: &DispatchTaskShape) -> String {
     let anti_goals = if shape.anti_goals.is_empty() {
         "- No explicit anti-goals were extracted from the request.".to_string()
     } else {
-        shape.anti_goals
+        shape
+            .anti_goals
             .iter()
             .map(|goal| format!("- {goal}"))
             .collect::<Vec<_>>()
