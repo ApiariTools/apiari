@@ -377,6 +377,7 @@ export default function App() {
         workspace={workspace}
         workerId={selected.id}
         onOpenContextBot={openContextBot}
+        onNavigateToWorker={(id) => navigateTo('worker', id)}
       />
     ) : (
       <AutoBotDetail

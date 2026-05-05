@@ -4770,7 +4770,9 @@ async fn v2_cancel_worker(
     }
 }
 
-/// POST /api/workspaces/{ws}/v2/workers/{id}/requeue — re-queue failed/abandoned worker.
+/// POST /api/workspaces/{ws}/v2/workers/{id}/requeue — re-queue a worker by spawning a fresh
+/// swarm agent. If the worker has a `request_changes` review, its feedback is prepended to
+/// the new prompt so the agent knows what to fix.
 async fn v2_requeue_worker(
     Path((workspace, id)): Path<(String, String)>,
     State(state): State<HttpState>,
@@ -4786,54 +4788,209 @@ async fn v2_requeue_worker(
         }
     };
 
-    // Reset revision_count and transition to queued
-    if let Err(e) = store.update_properties(
-        &workspace,
-        &id,
-        crate::buzz::worker::WorkerPropertyUpdate {
-            is_stalled: Some(false),
-            blocked_reason: Some(None),
-            ..Default::default()
-        },
-    ) {
+    // Load the original worker record.
+    let worker = match store.get(&workspace, &id) {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "worker not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let brief = match &worker.brief {
+        Some(b) => b.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "worker has no brief — cannot requeue"})),
+            )
+                .into_response();
+        }
+    };
+
+    let repo = match &worker.repo {
+        Some(r) => r.clone(),
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "worker has no repo — cannot requeue"})),
+            )
+                .into_response();
+        }
+    };
+
+    let ws = match load_workspace_by_name(&workspace) {
+        Some(w) => w,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": format!("workspace '{workspace}' not found")})),
+            )
+                .into_response();
+        }
+    };
+
+    // Check for the most recent request_changes review and inject its feedback.
+    let review_feedback: Option<String> = open_review_store_from_path(&state.db_path)
+        .ok()
+        .and_then(|rs| rs.list_for_worker(&workspace, &id).ok())
+        .and_then(|reviews| {
+            reviews
+                .into_iter()
+                .find(|r| r.verdict == "request_changes" && r.worker_message.is_some())
+                .and_then(|r| r.worker_message)
+        });
+
+    // Build prompt: original brief + optional review feedback section.
+    let mut prompt = format_brief_as_prompt(&brief);
+    if let Some(ref feedback) = review_feedback {
+        prompt.push_str(&format!(
+            "\n\n# Review Feedback (Previous Attempt)\n\nA reviewer inspected your last attempt and requested changes. Address all of the following before marking the work done:\n\n{feedback}"
+        ));
+    }
+
+    // Write to temp file (prompt can be large).
+    let tmp_id = uuid::Uuid::new_v4().to_string();
+    let prompt_file = std::env::temp_dir().join(format!("worker-requeue-{tmp_id}.txt"));
+    if let Err(e) = std::fs::write(&prompt_file, &prompt) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
+            Json(serde_json::json!({"error": format!("failed to write prompt file: {e}")})),
         )
             .into_response();
     }
 
-    // Reset revision_count via raw SQL-style via upsert is complex; use transition + separate reset
-    // We do this by getting the worker and upserting with revision_count=0
-    let worker_opt = store.get(&workspace, &id);
+    // Dispatch new swarm worker.
+    let output = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(&ws.config.root)
+        .arg("create")
+        .arg("--repo")
+        .arg(&repo)
+        .arg("--prompt-file")
+        .arg(&prompt_file)
+        .output()
+        .await;
 
-    match store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Queued) {
-        Ok(()) => {
-            // Reset revision_count by upserting the record with count=0
-            if let Ok(Some(mut w)) = worker_opt {
-                w.state = crate::buzz::worker::WorkerState::Queued;
-                w.revision_count = 0;
-                w.is_stalled = false;
-                w.blocked_reason = None;
-                let _ = store.upsert(&w);
-            }
-            if let Ok(Some(updated)) = store.get(&workspace, &id) {
-                let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
-                    workspace: workspace.clone(),
-                    worker_id: id.clone(),
-                    state: updated.state.as_str().to_string(),
-                    label: updated.label.clone(),
-                    properties: serde_json::json!({"revision_count": updated.revision_count}),
-                });
-            }
-            Json(serde_json::json!({"ok": true})).into_response()
+    let _ = std::fs::remove_file(&prompt_file);
+
+    let new_swarm_id = match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .map(|l| strip_ansi(l).trim().to_string())
+                .find(|l| {
+                    !l.is_empty()
+                        && l.contains('-')
+                        && !l.contains(' ')
+                        && !l.contains('=')
+                        && !l.contains(':')
+                })
+                .unwrap_or_default()
         }
-        Err(e) => (
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("swarm create failed: {stderr}")})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    if new_swarm_id.is_empty() {
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": e.to_string()})),
+            Json(serde_json::json!({"error": "swarm create did not return a worker ID"})),
         )
-            .into_response(),
+            .into_response();
     }
+
+    // Create DB record for new worker, carrying over the brief and incrementing revision.
+    let now = chrono::Utc::now().to_rfc3339();
+    let goal = brief.get("goal").and_then(|v| v.as_str()).map(String::from);
+    let review_mode = brief
+        .get("review_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local_first")
+        .to_string();
+    let new_worker = crate::buzz::worker::Worker {
+        id: new_swarm_id.clone(),
+        workspace: workspace.clone(),
+        state: crate::buzz::worker::WorkerState::Queued,
+        brief: Some(brief),
+        repo: Some(repo),
+        branch: None,
+        goal,
+        tests_passing: false,
+        branch_ready: false,
+        pr_url: None,
+        pr_approved: false,
+        is_stalled: false,
+        revision_count: worker.revision_count + 1,
+        review_mode,
+        blocked_reason: None,
+        last_output_at: None,
+        state_entered_at: now.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+        label: String::new(),
+    };
+    let _ = store.upsert(&new_worker);
+
+    // Abandon the old worker so it no longer shows as active.
+    let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Abandoned);
+
+    // Notify WebSocket listeners.
+    let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
+        workspace: workspace.clone(),
+        worker_id: new_swarm_id.clone(),
+        state: "queued".to_string(),
+        label: "Queued".to_string(),
+        properties: serde_json::json!({"revision_count": new_worker.revision_count}),
+    });
+    let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
+        workspace: workspace.clone(),
+        worker_id: id.clone(),
+        state: "abandoned".to_string(),
+        label: "Abandoned".to_string(),
+        properties: serde_json::json!({}),
+    });
+
+    tracing::info!(
+        "[requeue/{workspace}] {id} → {new_swarm_id} (revision {}{})",
+        new_worker.revision_count,
+        if review_feedback.is_some() {
+            ", with review feedback"
+        } else {
+            ""
+        }
+    );
+
+    Json(serde_json::json!({
+        "ok": true,
+        "new_worker_id": new_swarm_id,
+        "with_review_feedback": review_feedback.is_some(),
+    }))
+    .into_response()
 }
 
 // ── v2 Worker review API routes ────────────────────────────────────────

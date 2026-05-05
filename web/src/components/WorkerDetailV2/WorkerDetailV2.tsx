@@ -10,6 +10,7 @@ export interface WorkerDetailV2Props {
   workerId: string
   onClose?: () => void
   onOpenContextBot?: (context: ContextBotContext, title: string) => void
+  onNavigateToWorker?: (id: string) => void
 }
 
 type Tab = 'timeline' | 'reviews' | 'brief'
@@ -389,7 +390,7 @@ function BriefTab({ brief, goal }: { brief: WorkerBrief | null; goal: string | n
 
 // ── Main component ───────────────────────────────────────────────────────
 
-export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose, onOpenContextBot }: WorkerDetailV2Props) {
+export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose, onOpenContextBot, onNavigateToWorker }: WorkerDetailV2Props) {
   const [data, setData] = useState<WorkerDetailV2Data | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -511,8 +512,12 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
   const handleRequeue = async () => {
     try {
-      await requeueWorkerV2(workspace, workerId)
-      await load(false)
+      const result = await requeueWorkerV2(workspace, workerId)
+      if (result.new_worker_id && onNavigateToWorker) {
+        onNavigateToWorker(result.new_worker_id)
+      } else {
+        await load(false)
+      }
     } catch (e) {
       console.error('requeue failed', e)
     }
@@ -573,7 +578,9 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   }
 
   const canCancel = ['running', 'waiting', 'queued'].includes(data.state)
-  const canRequeue = data.state === 'failed' || data.state === 'abandoned'
+  const hasRequestChangesReview = reviews.some(r => r.verdict === 'request_changes')
+  const canRequeue = data.state === 'failed' || data.state === 'abandoned' ||
+    (data.state === 'waiting' && hasRequestChangesReview)
   const canReview = data.state === 'waiting' && data.branch_ready
   const isTerminal = data.state === 'merged' || data.state === 'abandoned'
   const inputDisabled = data.state !== 'waiting' && data.state !== 'queued'

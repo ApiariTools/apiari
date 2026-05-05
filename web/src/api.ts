@@ -383,11 +383,12 @@ export async function cancelWorkerV2(workspace: string, id: string): Promise<voi
   if (!res.ok) throw new Error(`cancel worker: ${res.status}`);
 }
 
-export async function requeueWorkerV2(workspace: string, id: string): Promise<void> {
+export async function requeueWorkerV2(workspace: string, id: string): Promise<{ new_worker_id?: string; with_review_feedback?: boolean }> {
   const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers/${id}/requeue`, {
     method: "POST",
   });
   if (!res.ok) throw new Error(`requeue worker: ${res.status}`);
+  return res.json();
 }
 
 export async function createWorkerV2(
