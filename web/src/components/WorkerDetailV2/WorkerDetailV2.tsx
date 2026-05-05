@@ -403,6 +403,9 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   const pollRef = useRef<number | null>(null)
   const reviewingTimeoutRef = useRef<number | null>(null)
   const prevReviewCountRef = useRef<number>(0)
+  const reviewingRef = useRef(false)
+
+  useEffect(() => { reviewingRef.current = reviewing }, [reviewing])
 
   const loadReviews = useCallback(async () => {
     try {
@@ -411,7 +414,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
       setReviews(r)
       prevReviewCountRef.current = r.length
       // If a new review arrived while reviewing, clear reviewing state
-      if (reviewing && r.length > prevCount) {
+      if (reviewingRef.current && r.length > prevCount) {
         setReviewing(false)
         if (reviewingTimeoutRef.current !== null) {
           window.clearTimeout(reviewingTimeoutRef.current)
@@ -422,7 +425,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     } catch {
       // silently ignore
     }
-  }, [workspace, workerId, reviewing])
+  }, [workspace, workerId])
 
   const load = useCallback(async (initial = false) => {
     try {
