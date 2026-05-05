@@ -5273,9 +5273,11 @@ async fn v2_request_review(
 
                 // Auto-requeue when the worker message couldn't be delivered.
                 // This happens when the agent process has exited (e.g. after a reboot).
-                if !outcome.send_succeeded
-                    && outcome.review.verdict == "request_changes"
-                    && let Some(ref msg) = outcome.review.worker_message
+                if crate::buzz::review::should_auto_requeue(
+                    &outcome.review.verdict,
+                    outcome.send_succeeded,
+                    &outcome.review.worker_message,
+                ) && let Some(ref msg) = outcome.review.worker_message
                 {
                     tracing::info!(
                         "[review/{workspace}] send failed — auto-requeueing {}",
