@@ -1,0 +1,189 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.panel {
+  width: 540px;
+  max-width: calc(100vw - 32px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  padding: 24px;
+  overflow-y: auto;
+  max-height: calc(100vh - 64px);
+}
+
+.label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.intentTextarea {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-strong);
+  font-family: var(--font);
+  font-size: 16px;
+  padding: 12px;
+  resize: none;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 120ms;
+}
+
+.intentTextarea::placeholder {
+  color: var(--text-faint);
+}
+
+.intentTextarea:focus {
+  border-color: var(--text-faint);
+}
+
+.repoSection {
+  margin-top: 20px;
+}
+
+.pills {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pill {
+  height: 32px;
+  padding: 0 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: border-color 100ms, background 100ms, color 100ms;
+}
+
+.pill:hover {
+  color: var(--text-strong);
+}
+
+.pillSelected {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(245, 197, 66, 0.1);
+}
+
+.pillSelected:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(245, 197, 66, 0.15);
+}
+
+.reviewSection {
+  margin-top: 20px;
+}
+
+.footer {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.errorMsg {
+  width: 100%;
+  font-size: 12px;
+  color: var(--red);
+  margin-top: 8px;
+  text-align: right;
+}
+
+.cancelBtn {
+  height: 32px;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: var(--radius);
+  transition: color 100ms;
+}
+
+.cancelBtn:hover {
+  color: var(--text-strong);
+}
+
+.shortcutHint {
+  font-size: 12px;
+  color: var(--text-faint);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: var(--font);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.dispatchBtn {
+  height: 32px;
+  padding: 0 16px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  color: #111;
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 100ms;
+}
+
+.dispatchBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dispatchBtn:not(:disabled):hover {
+  opacity: 0.9;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(0, 0, 0, 0.3);
+  border-top-color: #111;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

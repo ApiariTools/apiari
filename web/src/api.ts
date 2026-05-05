@@ -253,6 +253,30 @@ export async function getWorkerDiff(workspace: string, workerId: string, remote?
   return data.diff;
 }
 
+export async function createWorkerV2(
+  workspace: string,
+  data: {
+    brief: {
+      goal: string;
+      repo: string;
+      review_mode: string;
+      context: Record<string, unknown>;
+      constraints: unknown[];
+      scope: unknown[];
+      acceptance_criteria: unknown[];
+    };
+    repo: string;
+  },
+): Promise<{ id: string }> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`create worker: ${res.status}`);
+  return res.json();
+}
+
 export async function sendMessage(
   workspace: string,
   bot: string,

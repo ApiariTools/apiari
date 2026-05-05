@@ -49,3 +49,5 @@ export const cancelFollowup = vi.fn().mockResolvedValue({ ok: true });
 export const getResearchTasks = vi.fn().mockResolvedValue([]);
 export const startResearch = vi.fn().mockResolvedValue({ id: "research-1", topic: "test", status: "running" });
 export const connectWebSocket = vi.fn().mockReturnValue({ close: vi.fn() });
+export const createWorkerV2 = vi.fn().mockResolvedValue({ id: "worker-1" });
+export const getWorkerDiff = vi.fn().mockResolvedValue(null);

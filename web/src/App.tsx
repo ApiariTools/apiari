@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { TopBar } from "./components/TopBar";
 import { CommandPalette } from "./components/CommandPalette";
+import QuickDispatch from "./components/QuickDispatch/QuickDispatch";
 import { BotNav } from "./components/BotNav";
 import { ChatPanel } from "./components/ChatPanel";
 import { ReposPanel } from "./components/ReposPanel";
@@ -80,6 +81,7 @@ export default function App() {
   const [loadingStatus, setLoadingStatus] = useState<string | undefined>();
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [quickDispatchOpen, setQuickDispatchOpen] = useState(false);
   const [otherWorkspaceBots, setOtherWorkspaceBots] = useState<CrossWorkspaceBot[]>([]);
   const [docsOpen, setDocsOpen] = useState(false);
   const [simulatorOpen, setSimulatorOpen] = useState(false);
@@ -447,6 +449,23 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, []);
 
+  // N key: open quick dispatch (when not focused in an input)
+  useEffect(() => {
+    function handleNKey(e: KeyboardEvent) {
+      if (
+        e.key === "n" &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLTextAreaElement)
+      ) {
+        setQuickDispatchOpen(true);
+      }
+    }
+    window.addEventListener("keydown", handleNKey);
+    return () => window.removeEventListener("keydown", handleNKey);
+  }, []);
+
   const handleSelectWorkspace = useCallback((ws: string, wsRemote?: string) => {
     setWorkspace(ws);
     setRemote(wsRemote);
@@ -645,6 +664,16 @@ export default function App() {
         />
       </div>
       <SimulatorPanel open={simulatorOpen} onClose={() => setSimulatorOpen(false)} />
+      {quickDispatchOpen && (
+        <QuickDispatch
+          workspace={workspace}
+          onClose={() => setQuickDispatchOpen(false)}
+          onDispatched={() => {
+            setQuickDispatchOpen(false);
+            if (workspace) api.getWorkers(workspace, remote).then(setWorkers);
+          }}
+        />
+      )}
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
