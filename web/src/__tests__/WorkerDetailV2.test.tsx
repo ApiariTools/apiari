@@ -390,4 +390,59 @@ describe("WorkerDetailV2", () => {
     const reviewTab = screen.getByTestId("tab-reviews");
     expect(reviewTab).toHaveTextContent("1");
   });
+
+  // ── Timeline event display tests ─────────────────────────────────────────
+
+  it("merges consecutive assistant_text events into a single block", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      events: [
+        { event_type: "assistant_text", content: "I'll add the `", created_at: "2026-05-04T10:01:00Z" },
+        { event_type: "assistant_text", content: "<!-- apiari-test -->", created_at: "2026-05-04T10:01:00Z" },
+        { event_type: "assistant_text", content: " HTML comment", created_at: "2026-05-04T10:01:00Z" },
+        { event_type: "assistant_text", content: ".", created_at: "2026-05-04T10:01:00Z" },
+      ],
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const thread = await screen.findByTestId("events-thread");
+    // All four fragments should appear as a single concatenated text
+    expect(thread).toHaveTextContent("I'll add the `<!-- apiari-test --> HTML comment.");
+    // Only one child row should exist for assistant_text (not four separate rows)
+    const rows = thread.querySelectorAll('[class*="eventRow"]');
+    expect(rows).toHaveLength(1);
+  });
+
+  it("formats tool_use events readably instead of showing raw JSON", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      events: [
+        {
+          event_type: "tool_use",
+          content: 'Bash: {"command":"cd /path && git status","description":"Check git status"}',
+          created_at: "2026-05-04T10:01:00Z",
+        },
+        {
+          event_type: "tool_use",
+          content: 'Read: {"file_path":"/Users/josh/Developer/apiari/web/src/App.tsx"}',
+          created_at: "2026-05-04T10:02:00Z",
+        },
+        {
+          event_type: "tool_use",
+          content: 'Glob: {"pattern":".task/**/*"}',
+          created_at: "2026-05-04T10:03:00Z",
+        },
+      ],
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const thread = await screen.findByTestId("events-thread");
+    // Bash: shows command (not raw JSON)
+    expect(thread).toHaveTextContent("Bash · cd /path && git status");
+    // Read: shows filename only (not full path or raw JSON)
+    expect(thread).toHaveTextContent("Read · App.tsx");
+    // Glob: shows pattern (not raw JSON)
+    expect(thread).toHaveTextContent("Glob · .task/**/*");
+    // Raw JSON should not appear
+    expect(thread).not.toHaveTextContent('"command"');
+    expect(thread).not.toHaveTextContent('"file_path"');
+  });
 });

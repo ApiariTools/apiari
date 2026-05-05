@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { ExternalLink, MessageSquare } from 'lucide-react'
-import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, WorkerBrief, ContextBotContext } from '../../types'
+import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, WorkerBrief, ContextBotContext, WorkerEvent } from '../../types'
 import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
 import styles from './WorkerDetailV2.module.css'
 
@@ -105,6 +105,48 @@ function stateDividerLabel(state: string): string {
   }
 }
 
+// ── Event helpers ─────────────────────────────────────────────────────────
+
+function mergeConsecutiveText(events: WorkerEvent[]): WorkerEvent[] {
+  const merged: WorkerEvent[] = []
+  for (const evt of events) {
+    const last = merged[merged.length - 1]
+    if (evt.event_type === 'assistant_text' && last?.event_type === 'assistant_text') {
+      last.content += evt.content
+    } else {
+      merged.push({ ...evt })
+    }
+  }
+  return merged
+}
+
+function formatToolCall(content: string): string {
+  // content is like: "Bash: {\"command\":\"...\",\"description\":\"...\"}"
+  // or: "Read: {\"file_path\":\"/path/to/file\"}"
+  const colonIdx = content.indexOf(':')
+  if (colonIdx === -1) return content
+
+  const toolName = content.slice(0, colonIdx).trim()
+  const jsonStr = content.slice(colonIdx + 1).trim()
+
+  try {
+    const args = JSON.parse(jsonStr)
+    // Extract the most meaningful argument for each tool
+    const arg =
+      args.command?.slice(0, 60) ||      // Bash
+      args.file_path?.split('/').pop() || // Read, Write, Edit
+      args.pattern ||                     // Glob
+      args.query ||                       // WebSearch
+      args.url ||                         // WebFetch
+      args.prompt?.slice(0, 40) ||        // other
+      ''
+    const suffix = arg ? ` · ${arg}` : ''
+    return `${toolName}${suffix}`
+  } catch {
+    return toolName
+  }
+}
+
 // ── Event row ────────────────────────────────────────────────────────────
 
 interface EventRowProps {
@@ -115,6 +157,19 @@ interface EventRowProps {
 
 function EventRow({ event_type, content, created_at }: EventRowProps) {
   const time = formatTime(created_at)
+
+  if (event_type === 'assistant_text') {
+    const trimmed = content.trim()
+    if (!trimmed) return null
+    return (
+      <div className={styles.eventRow}>
+        <span className={styles.eventTime}>{time}</span>
+        <div className={`${styles.eventBody} ${styles.eventAssistant}`}>
+          <ReactMarkdown>{trimmed}</ReactMarkdown>
+        </div>
+      </div>
+    )
+  }
 
   if (event_type === 'user_message') {
     return (
@@ -133,12 +188,12 @@ function EventRow({ event_type, content, created_at }: EventRowProps) {
       <div className={`${styles.eventRow} ${styles.eventRowTool}`}>
         <span className={styles.eventTime}>{time}</span>
         <span className={styles.eventToolSep}>·</span>
-        <span className={styles.eventTool}>{content}</span>
+        <span className={styles.eventTool}>{formatToolCall(content)}</span>
       </div>
     )
   }
 
-  // assistant_text (default)
+  // fallback for unknown event types
   return (
     <div className={styles.eventRow}>
       <span className={styles.eventTime}>{time}</span>
@@ -612,7 +667,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
             {data.events && data.events.length > 0 ? (
               <div className={styles.events} data-testid="events-thread">
-                {data.events.map((ev, i) => (
+                {mergeConsecutiveText(data.events).map((ev, i) => (
                   <EventRow
                     key={i}
                     event_type={ev.event_type}
