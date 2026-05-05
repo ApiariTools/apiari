@@ -412,31 +412,44 @@ pub async fn run_review(
     let prompt = build_review_prompt(goal, &constraints, &context, &diff);
 
     // ── 5. Run claude CLI ──────────────────────────────────────────────
+    // Pipe prompt via stdin — the diff can be large and shell arg limits vary.
 
-    let output = tokio::process::Command::new("claude")
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut child = tokio::process::Command::new("claude")
         .arg("--print")
         .arg("--max-turns")
         .arg("10")
         .arg("--allowedTools")
         .arg("Read,Bash")
-        .arg(&prompt)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .current_dir(&worktree_path)
-        .output()
-        .await;
+        .spawn()
+        .map_err(|e| eyre!("failed to spawn claude: {e}"))?;
 
-    let raw_output = match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-            warn!(
-                "[review/{workspace}] claude exited non-zero for worker {}: {stderr}",
-                worker.id
-            );
-            return Err(eyre!("claude exited non-zero: {stderr}"));
-        }
-        Err(e) => {
-            return Err(eyre!("failed to run claude: {e}"));
-        }
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|e| eyre!("failed to write prompt to claude stdin: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|e| eyre!("failed to wait for claude: {e}"))?;
+
+    let raw_output = if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).to_string()
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        warn!(
+            "[review/{workspace}] claude exited non-zero for worker {}: {stderr}",
+            worker.id
+        );
+        return Err(eyre!("claude exited non-zero: {stderr}"));
     };
 
     // ── 6. Parse JSON ──────────────────────────────────────────────────
