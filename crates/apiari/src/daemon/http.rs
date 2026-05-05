@@ -4272,7 +4272,9 @@ async fn v2_get_worker(
 
     // Read events from .swarm/agents/{id}/events.jsonl
     let events = if let Some(ws) = load_workspace_by_name(&workspace) {
-        let events_path = ws.config.root
+        let events_path = ws
+            .config
+            .root
             .join(".swarm")
             .join("agents")
             .join(&id)
@@ -4311,7 +4313,10 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
                     }))
                 }
                 "tool_use" => {
-                    let tool = val.get("tool").and_then(|t| t.as_str()).unwrap_or("unknown");
+                    let tool = val
+                        .get("tool")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("unknown");
                     let input = val.get("input").map(|i| i.to_string()).unwrap_or_default();
                     let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
                     Some(serde_json::json!({
@@ -4321,7 +4326,8 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
                     }))
                 }
                 "user_message" => {
-                    let content = val.get("text")
+                    let content = val
+                        .get("text")
                         .or_else(|| val.get("message"))
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
@@ -4454,7 +4460,11 @@ async fn v2_create_worker(
                 .map(|l| strip_ansi(l).trim().to_string())
                 .find(|l| {
                     // Worker IDs look like "apiari-a06f": no spaces, no '=', contains '-'
-                    !l.is_empty() && l.contains('-') && !l.contains(' ') && !l.contains('=') && !l.contains(':')
+                    !l.is_empty()
+                        && l.contains('-')
+                        && !l.contains(' ')
+                        && !l.contains('=')
+                        && !l.contains(':')
                 })
                 .unwrap_or_default();
             let final_id = if !swarm_id.is_empty() && swarm_id != id {
@@ -4563,6 +4573,24 @@ fn format_brief_as_prompt(brief: &serde_json::Value) -> String {
         "# When Done\n\nCommit your changes and push the branch. Do NOT open a PR — the reviewer will inspect the branch locally first."
     };
     parts.push(review_instructions.to_string());
+
+    // Reporting — tell workers to write a structured report file so the daemon
+    // can pick up test results without parsing free-form text.
+    parts.push(
+        "# Reporting\n\n\
+        After running tests, write a status report to `.swarm/agents/$WORKER_ID/report.json` \
+        (where `$WORKER_ID` is the id of this worktree, e.g. `apiari-df40`). \
+        Use this exact format:\n\n\
+        ```json\n\
+        {\"tests_passing\": true, \"branch_ready\": true}\n\
+        ```\n\n\
+        Set `tests_passing` to `true` only if all tests pass. \
+        Set `branch_ready` to `true` once the branch is pushed and ready for review. \
+        The file path is relative to the workspace root: \
+        `/path/to/workspace/.swarm/agents/<worker-id>/report.json`. \
+        You can find the worker id from the worktree path or the `id` field in `.swarm/state.json`."
+            .to_string(),
+    );
 
     parts.join("\n\n")
 }

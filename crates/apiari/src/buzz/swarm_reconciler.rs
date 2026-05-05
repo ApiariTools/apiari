@@ -68,6 +68,24 @@ struct SwarmPr {
 
 // ── Per-worker last-seen event timestamp tracking ──────────────────────
 
+/// Read `.swarm/agents/{worker_id}/report.json` written by the worker to
+/// explicitly report properties like `tests_passing` and `branch_ready`.
+///
+/// Format: `{"tests_passing": true, "branch_ready": true}`
+fn read_worker_report(swarm_dir: &Path, worker_id: &str) -> Option<WorkerReport> {
+    let path = swarm_dir.join("agents").join(worker_id).join("report.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WorkerReport {
+    #[serde(default)]
+    tests_passing: Option<bool>,
+    #[serde(default)]
+    branch_ready: Option<bool>,
+}
+
 /// Read the most-recent `assistant_text` or `user_message` event timestamp
 /// from `.swarm/agents/{worker_id}/events.jsonl`.
 fn last_output_timestamp(swarm_dir: &Path, worker_id: &str) -> Option<chrono::DateTime<Utc>> {
@@ -280,6 +298,47 @@ impl SwarmReconciler {
             WorkerState::Merged | WorkerState::Failed | WorkerState::Abandoned => {}
             // Pre-dispatch states — swarm hasn't started yet
             WorkerState::Created | WorkerState::Briefed => {}
+        }
+
+        // Apply any explicit property overrides from the worker's report.json
+        self.apply_report(worker)?;
+
+        Ok(())
+    }
+
+    /// Read `.swarm/agents/{id}/report.json` and apply reported properties to DB
+    /// if they differ from current state.
+    fn apply_report(&self, worker: &Worker) -> Result<()> {
+        let Some(report) = read_worker_report(&self.swarm_dir, &worker.id) else {
+            return Ok(());
+        };
+
+        let tests_changed = report
+            .tests_passing
+            .is_some_and(|v| v != worker.tests_passing);
+        let branch_changed = report
+            .branch_ready
+            .is_some_and(|v| v != worker.branch_ready);
+
+        if tests_changed || branch_changed {
+            info!(
+                "[reconciler] {} applying report: tests_passing={:?} branch_ready={:?}",
+                worker.id, report.tests_passing, report.branch_ready
+            );
+            self.store.update_properties(
+                &self.workspace,
+                &worker.id,
+                WorkerPropertyUpdate {
+                    tests_passing: report.tests_passing,
+                    branch_ready: if branch_changed {
+                        report.branch_ready
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                },
+            )?;
+            self.emit_event(worker)?;
         }
 
         Ok(())
