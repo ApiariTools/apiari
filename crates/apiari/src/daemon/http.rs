@@ -4446,11 +4446,17 @@ async fn v2_create_worker(
 
     match output {
         Ok(out) if out.status.success() => {
-            // Swarm prints its assigned ID on stdout (e.g. "apiari-a06f").
-            // Re-key the DB record so the reconciler can match by ID.
-            let swarm_id = String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .to_string();
+            // Swarm prints ANSI-colored log lines then the assigned ID as the last line.
+            // Strip ANSI escape codes, then find the first line that looks like a worker ID.
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let swarm_id = stdout
+                .lines()
+                .map(|l| strip_ansi(l).trim().to_string())
+                .find(|l| {
+                    // Worker IDs look like "apiari-a06f": no spaces, no '=', contains '-'
+                    !l.is_empty() && l.contains('-') && !l.contains(' ') && !l.contains('=') && !l.contains(':')
+                })
+                .unwrap_or_default();
             let final_id = if !swarm_id.is_empty() && swarm_id != id {
                 // Delete the UUID record and upsert under the swarm-assigned ID
                 // so the reconciler can match it by ID.
@@ -4494,6 +4500,27 @@ async fn v2_create_worker(
         )
             .into_response(),
     }
+}
+
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip escape sequence: ESC [ ... m
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for ch in chars.by_ref() {
+                    if ch.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn format_brief_as_prompt(brief: &serde_json::Value) -> String {
