@@ -76,6 +76,11 @@
   color: var(--text-faint);
 }
 
+.tagAttempt {
+  background: rgba(15, 118, 110, 0.12);
+  color: #73d8cb;
+}
+
 .tagWarn {
   background: rgba(217, 119, 6, 0.14);
   color: #f5c542;
@@ -84,6 +89,13 @@
 .tagWarnSoft {
   background: rgba(217, 119, 6, 0.08);
   color: #d9a94a;
+}
+
+.attemptDetail {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-faint);
 }
 
 @keyframes pulse {

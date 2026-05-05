@@ -23,6 +23,14 @@ function branchName(branch: string): string {
   return branch.replace(/^swarm\//, "");
 }
 
+function labelForAttemptRole(role?: string | null): string | null {
+  if (!role) return null;
+  if (role === "implementation") return "Implementation";
+  if (role === "reviewer") return "Reviewer";
+  if (role === "investigator") return "Investigator";
+  return role;
+}
+
 export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: Props) {
   return (
     <ToolPanel
@@ -37,6 +45,14 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
           className={styles.card}
           onClick={() => onSelectWorker(w.id)}
         >
+          {(() => {
+            const lifecycleState = w.task_lifecycle_state ?? w.task_stage;
+            const latestAttempt = w.latest_attempt ?? null;
+            const latestAttemptLabel = latestAttempt
+              ? `${labelForAttemptRole(latestAttempt.role) ?? "Attempt"} ${latestAttempt.state}`
+              : null;
+            return (
+              <>
           <div className={styles.top}>
             <span
               className={`${styles.dot} ${w.status === "running" || w.status === "active" ? styles.running : ""}`}
@@ -63,9 +79,14 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
                 Stalled
               </span>
             )}
-            {w.task_stage && (
+            {lifecycleState && (
               <span className={styles.tag}>
-                {w.task_stage}
+                {lifecycleState}
+              </span>
+            )}
+            {latestAttemptLabel && (
+              <span className={`${styles.tag} ${styles.tagAttempt}`}>
+                {latestAttemptLabel}
               </span>
             )}
             {w.has_uncommitted_changes && (
@@ -102,6 +123,12 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
               </span>
             )}
           </div>
+          {latestAttempt?.detail ? (
+            <div className={styles.attemptDetail}>{latestAttempt.detail}</div>
+          ) : null}
+              </>
+            );
+          })()}
         </div>
       ))}
     </ToolPanel>
