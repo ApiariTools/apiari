@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "../api";
-import type { Bot, CrossWorkspaceBot, Followup, Repo, ResearchTask, Task, Worker, Workspace } from "../types";
+import type { Bot, CrossWorkspaceBot, Followup, Repo, ResearchTask, Task, Worker, WorkerEnvironmentStatus, Workspace } from "../types";
 
 interface Props {
   workspace: string;
@@ -12,6 +12,7 @@ interface Props {
 export function useWorkspaceResourcesState({ workspace, remote, workspaces, paletteOpen }: Props) {
   const [bots, setBots] = useState<Bot[]>([]);
   const [workers, setWorkers] = useState<Worker[]>([]);
+  const [workerEnvironment, setWorkerEnvironment] = useState<WorkerEnvironmentStatus | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
@@ -23,6 +24,10 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
 
   const refreshWorkers = useCallback(
     () => api.getWorkers(workspace, remote).then(setWorkers),
+    [workspace, remote],
+  );
+  const refreshWorkerEnvironment = useCallback(
+    () => api.getWorkerEnvironment(workspace, remote).then(setWorkerEnvironment),
     [workspace, remote],
   );
   const refreshTasks = useCallback(
@@ -38,18 +43,22 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
     if (!workspace) return;
     api.getBots(workspace, remote).then(setBots);
     refreshWorkers();
+    refreshWorkerEnvironment();
     refreshTasks();
     refreshRepos();
     api.getUnread(workspace, remote).then(setUnread);
     api.getResearchTasks(workspace, remote).then(setResearchTasks);
     api.getFollowups(workspace, remote).then(setFollowups);
-  }, [workspace, remote, refreshRepos, refreshTasks, refreshWorkers]);
+  }, [workspace, remote, refreshRepos, refreshTasks, refreshWorkerEnvironment, refreshWorkers]);
 
   useEffect(() => {
     if (!workspace) return;
     const workerInterval = setInterval(() => {
       refreshWorkers();
     }, 5000);
+    const workerEnvironmentInterval = setInterval(() => {
+      refreshWorkerEnvironment();
+    }, 15000);
     const taskInterval = setInterval(() => {
       refreshTasks();
     }, 5000);
@@ -65,12 +74,13 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
 
     return () => {
       clearInterval(workerInterval);
+      clearInterval(workerEnvironmentInterval);
       clearInterval(taskInterval);
       clearInterval(repoInterval);
       clearInterval(researchInterval);
       clearInterval(followupInterval);
     };
-  }, [workspace, remote, refreshRepos, refreshTasks, refreshWorkers]);
+  }, [workspace, remote, refreshRepos, refreshTasks, refreshWorkerEnvironment, refreshWorkers]);
 
   useEffect(() => {
     api.getUsage().then(setUsage).catch(() => {});
@@ -141,6 +151,7 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
     bots,
     setBots,
     workers,
+    workerEnvironment,
     setWorkers,
     tasks,
     setTasks,
@@ -157,6 +168,7 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
     otherWorkspaceBots,
     otherWorkspaceUnreads,
     refreshWorkers,
+    refreshWorkerEnvironment,
     refreshTasks,
     refreshRepos,
   };

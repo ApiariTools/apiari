@@ -3,6 +3,7 @@ import type {
   Bot,
   Worker,
   WorkerDetail,
+  WorkerEnvironmentStatus,
   Task,
   Message,
   Repo,
@@ -42,6 +43,13 @@ export function getBots(workspace: string, remote?: string): Promise<Bot[]> {
 
 export function getWorkers(workspace: string, remote?: string): Promise<Worker[]> {
   return get(`${wsPath(workspace, remote)}/workers`);
+}
+
+export function getWorkerEnvironment(
+  workspace: string,
+  remote?: string,
+): Promise<WorkerEnvironmentStatus> {
+  return get(`${wsPath(workspace, remote)}/worker-environment`);
 }
 
 export function getTasks(workspace: string, remote?: string): Promise<Task[]> {

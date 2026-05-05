@@ -18,7 +18,7 @@ use std::{
 };
 
 use color_eyre::eyre::{Result, WrapErr};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, timeout};
 use tokio::{io::AsyncWriteExt, process::Command, sync::mpsc};
 use tokio_util::sync::CancellationToken;
@@ -523,6 +523,34 @@ async fn run_coordinator_task(
                             }
                             continue;
                         }
+                        Ok(DirectDispatchDecision::NeedsEnvironmentFix {
+                            response_text,
+                            detail,
+                        }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_environment_blocked",
+                                &detail,
+                            );
+                            typing_cancel.cancel();
+                            let msg = OutboundMessage {
+                                chat_id,
+                                text: response_text.clone(),
+                                buttons: vec![],
+                                topic_id,
+                            };
+                            let _ = channel.send_message(&msg).await;
+                            if let Some(ref server) = socket_server {
+                                server.broadcast_activity(
+                                    "telegram",
+                                    &slot_name,
+                                    "assistant_message",
+                                    &response_text,
+                                );
+                            }
+                            continue;
+                        }
                         Ok(DirectDispatchDecision::Skipped(reason)) => {
                             let _ = store.log_bot_turn_decision(
                                 &bee_name,
@@ -919,6 +947,68 @@ async fn run_coordinator_task(
                                     Err(e) => {
                                         warn!(
                                             "[{ws_name}] failed to save clarification response: {e}"
+                                        );
+                                        None
+                                    }
+                                }
+                            };
+                            if let Err(e) = store.set_bot_status(&bee_name, "idle", "", None) {
+                                warn!("[{ws_name}] failed to clear bot status: {e}");
+                            }
+                            if let Some(id) = assistant_message_id {
+                                send_web_message_update(
+                                    &web_updates_tx,
+                                    id,
+                                    &ws_name,
+                                    &bee_name,
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    &assistant_created_at,
+                                );
+                            }
+                            send_web_bot_status(
+                                &web_updates_tx,
+                                &ws_name,
+                                &bee_name,
+                                "idle",
+                                "",
+                                None,
+                            );
+                            let _ = responder.send(socket::DaemonResponse::Token {
+                                workspace: ws_name.clone(),
+                                text: response_text,
+                            });
+                            let _ = responder.send(socket::DaemonResponse::Done {
+                                workspace: ws_name.clone(),
+                            });
+                            continue;
+                        }
+                        Ok(DirectDispatchDecision::NeedsEnvironmentFix {
+                            response_text,
+                            detail,
+                        }) => {
+                            let _ = store.log_bot_turn_decision(
+                                &bee_name,
+                                Some(coordinator.provider()),
+                                "dispatch_environment_blocked",
+                                &detail,
+                            );
+                            let assistant_created_at = chrono::Utc::now().to_rfc3339();
+                            let assistant_message_id = {
+                                let conv = ConversationStore::new(store.conn(), &conv_scope);
+                                match conv.save_message(
+                                    "assistant",
+                                    &response_text,
+                                    None,
+                                    Some("system"),
+                                    Some(coordinator.provider()),
+                                    None,
+                                ) {
+                                    Ok(id) => Some(id),
+                                    Err(e) => {
+                                        warn!(
+                                            "[{ws_name}] failed to save environment-blocked response: {e}"
                                         );
                                         None
                                     }
@@ -5568,6 +5658,22 @@ enum DirectDispatchDecision {
         response_text: String,
         detail: String,
     },
+    NeedsEnvironmentFix {
+        response_text: String,
+        detail: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct WorkerEnvironmentStatus {
+    pub repo: Option<String>,
+    pub ready: bool,
+    pub git_worktree_metadata_writable: bool,
+    pub frontend_toolchain_required: bool,
+    pub frontend_toolchain_ready: bool,
+    pub worktree_links_ready: bool,
+    pub blockers: Vec<String>,
+    pub suggested_fixes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -5728,11 +5834,164 @@ fn likely_files_from_repo(repo_root: &Path, text: &str) -> Vec<String> {
     scored.into_iter().take(3).map(|(_, path)| path).collect()
 }
 
-fn find_repo_root_path(ws_config: &WorkspaceConfig, repo: &str) -> Result<Option<PathBuf>> {
+pub(crate) fn find_repo_root_path(ws_config: &WorkspaceConfig, repo: &str) -> Result<Option<PathBuf>> {
     let repos = apiari_swarm::core::git::detect_repos(&ws_config.root)?;
     Ok(repos
         .into_iter()
         .find(|path| apiari_swarm::core::git::repo_name(path) == repo))
+}
+
+fn repo_worktree_links(repo_root: &Path) -> Vec<String> {
+    let manifest = repo_root.join(".swarm").join("worktree-links");
+    std::fs::read_to_string(manifest)
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn repo_has_frontend(repo_root: &Path) -> bool {
+    repo_root.join("web").join("package.json").exists()
+}
+
+fn prompt_likely_needs_web_toolchain_for_repo(text: Option<&str>, repo_root: &Path) -> bool {
+    if !repo_has_frontend(repo_root) {
+        return false;
+    }
+
+    match text {
+        Some(text) => {
+            let lower = text.to_ascii_lowercase();
+            [
+                "mobile",
+                "ui",
+                "frontend",
+                "css",
+                "layout",
+                "panel",
+                "cards",
+                "button",
+                "header",
+                "chat",
+                "docs",
+                "workers",
+                "repos",
+                "overview",
+            ]
+            .iter()
+            .any(|needle| lower.contains(needle))
+        }
+        None => true,
+    }
+}
+
+fn repo_frontend_toolchain_available(repo_root: &Path) -> bool {
+    repo_root
+        .join("web")
+        .join("node_modules")
+        .join(".bin")
+        .join("tsc")
+        .exists()
+}
+
+pub(crate) fn worker_environment_status_for_workspace(
+    workspace_name: &str,
+    ws_config: &WorkspaceConfig,
+    prompt: Option<&str>,
+) -> Result<WorkerEnvironmentStatus> {
+    let repo = resolve_auto_dispatch_repo(workspace_name, ws_config)?;
+    let Some(repo_name) = repo else {
+        return Ok(WorkerEnvironmentStatus {
+            repo: None,
+            ready: false,
+            git_worktree_metadata_writable: false,
+            frontend_toolchain_required: false,
+            frontend_toolchain_ready: false,
+            worktree_links_ready: false,
+            blockers: vec![
+                "No default repo could be resolved for worker dispatch in this workspace."
+                    .to_string(),
+            ],
+            suggested_fixes: vec![
+                "Keep a single repo under the workspace root or configure [dispatch].default_dispatch_repo."
+                    .to_string(),
+            ],
+        });
+    };
+    let Some(repo_root) = find_repo_root_path(ws_config, &repo_name)? else {
+        return Ok(WorkerEnvironmentStatus {
+            repo: Some(repo_name),
+            ready: false,
+            git_worktree_metadata_writable: false,
+            frontend_toolchain_required: false,
+            frontend_toolchain_ready: false,
+            worktree_links_ready: false,
+            blockers: vec!["Resolved dispatch repo was not found on disk.".to_string()],
+            suggested_fixes: vec!["Check the workspace root and repo layout.".to_string()],
+        });
+    };
+
+    let mut blockers = Vec::new();
+    let mut suggested_fixes = Vec::new();
+
+    let git_worktree_metadata_writable =
+        match apiari_swarm::core::git::ensure_repo_worktree_parent_writable(&repo_root) {
+            Ok(()) => true,
+            Err(err) => {
+                blockers.push(format!(
+                    "Git worktree metadata is not writable, so workers cannot commit or push ({err})."
+                ));
+                suggested_fixes.push(
+                    "Run the daemon in an environment that can write under the repo's .git/worktrees metadata path."
+                        .to_string(),
+                );
+                false
+            }
+        };
+
+    let frontend_toolchain_required =
+        prompt_likely_needs_web_toolchain_for_repo(prompt, &repo_root);
+    let frontend_toolchain_ready = repo_frontend_toolchain_available(&repo_root);
+    let worktree_links = repo_worktree_links(&repo_root);
+    let worktree_links_ready = worktree_links
+        .iter()
+        .any(|entry| entry == "web/node_modules" || entry.starts_with("web/node_modules/"));
+
+    if frontend_toolchain_required {
+        if !frontend_toolchain_ready {
+            blockers.push(
+                "Frontend toolchain is missing in the repo root (`web/node_modules/.bin/tsc` not found)."
+                    .to_string(),
+            );
+            suggested_fixes.push("Run `cd web && npm install` in the repo root.".to_string());
+        } else if !worktree_links_ready {
+            blockers.push(
+                "Frontend toolchain exists in the repo root, but worker worktrees do not inherit `web/node_modules`, so frontend verification will fail."
+                    .to_string(),
+            );
+            suggested_fixes.push(
+                "Add `web/node_modules` to `.swarm/worktree-links` so worker worktrees inherit the frontend toolchain."
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(WorkerEnvironmentStatus {
+        repo: Some(repo_name),
+        ready: blockers.is_empty(),
+        git_worktree_metadata_writable,
+        frontend_toolchain_required,
+        frontend_toolchain_ready,
+        worktree_links_ready,
+        blockers,
+        suggested_fixes,
+    })
 }
 
 fn shape_dispatch_task(
@@ -5838,7 +6097,7 @@ fn dispatch_shaping_markdown(shape: &DispatchTaskShape) -> String {
     )
 }
 
-fn resolve_auto_dispatch_repo(
+pub(crate) fn resolve_auto_dispatch_repo(
     workspace_name: &str,
     ws_config: &WorkspaceConfig,
 ) -> Result<Option<String>> {
@@ -5933,6 +6192,22 @@ async fn try_direct_dispatch_for_dispatch_only(
                     .to_string(),
         });
     };
+
+    let environment =
+        worker_environment_status_for_workspace(workspace_name, ws_config, Some(text))?;
+    if !environment.ready {
+        return Ok(DirectDispatchDecision::NeedsEnvironmentFix {
+            detail: format!(
+                "{decision_detail}; repo={repo}; blockers={}",
+                environment.blockers.join(" | ")
+            ),
+            response_text: format!(
+                "I didn’t dispatch a worker because the workspace worker environment is not ready for this task.\n\nBlockers:\n- {}\n\nSuggested fixes:\n- {}",
+                environment.blockers.join("\n- "),
+                environment.suggested_fixes.join("\n- ")
+            ),
+        });
+    }
 
     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
     let task_shape = shape_dispatch_task(ws_config, &repo, text)?;
@@ -7074,6 +7349,61 @@ default_agent = "codex"
                 assert!(detail.contains("likely_files=none"));
             }
             other => panic!("expected NeedsClarification, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_try_direct_dispatch_for_dispatch_only_blocks_on_unready_worker_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("apiari");
+        fs::create_dir_all(repo_root.join("web/node_modules/.bin")).unwrap();
+        fs::write(
+            repo_root.join("web/package.json"),
+            r#"{"name":"web","scripts":{"build":"tsc -b && vite build"}}"#,
+        )
+        .unwrap();
+        fs::write(repo_root.join("web/node_modules/.bin/tsc"), "").unwrap();
+
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo_root)
+            .status()
+            .unwrap();
+
+        let ws_config: WorkspaceConfig = toml::from_str(&format!(
+            r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "codex"
+
+[swarm]
+default_agent = "codex"
+"#,
+            repo_root.display()
+        ))
+        .unwrap();
+
+        match super::try_direct_dispatch_for_dispatch_only(
+            "apiari",
+            &ws_config,
+            "Codex",
+            "Reduce the vertical padding in the worker cards on small screens so the Workers list is more compact on mobile.",
+            false,
+        )
+        .await
+        .unwrap()
+        {
+            super::DirectDispatchDecision::NeedsEnvironmentFix {
+                response_text,
+                detail,
+            } => {
+                assert!(response_text.contains("worker environment is not ready"));
+                assert!(response_text.contains("web/node_modules"));
+                assert!(detail.contains("blockers="));
+            }
+            other => panic!("expected NeedsEnvironmentFix, got {other:?}"),
         }
     }
 

@@ -146,6 +146,7 @@ export function useWorkspaceConsoleState() {
   const {
     bots,
     workers,
+    workerEnvironment,
     tasks,
     repos,
     reposWithFreshWorkers,
@@ -477,6 +478,7 @@ export function useWorkspaceConsoleState() {
     docName,
     bots,
     workers,
+    workerEnvironment,
     tasks,
     repos,
     reposWithFreshWorkers,

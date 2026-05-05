@@ -68,6 +68,7 @@ export default function App() {
         workspace={state.workspace}
         remote={state.remote}
         workers={state.workers}
+        workerEnvironment={state.workerEnvironment}
         workerId={state.workerId}
         selectedWorker={state.selectedWorker}
         workerDetail={state.workerDetail}

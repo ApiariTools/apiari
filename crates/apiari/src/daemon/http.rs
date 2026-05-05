@@ -831,6 +831,18 @@ struct RepoListItem {
 }
 
 #[derive(Debug, Serialize)]
+struct WorkerEnvironmentStatusView {
+    repo: Option<String>,
+    ready: bool,
+    git_worktree_metadata_writable: bool,
+    frontend_toolchain_required: bool,
+    frontend_toolchain_ready: bool,
+    worktree_links_ready: bool,
+    blockers: Vec<String>,
+    suggested_fixes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
 struct BotStatusView {
     status: String,
     streaming_content: String,
@@ -1469,6 +1481,25 @@ async fn list_workspace_repos(Path(workspace): Path<String>) -> Json<Vec<RepoLis
     let repos = build_repo_list_items(&ws.config, &workspace_workers);
 
     Json(repos)
+}
+
+/// GET /api/workspaces/:workspace/worker-environment — worker readiness for this workspace.
+async fn get_workspace_worker_environment(
+    Path(workspace): Path<String>,
+) -> Result<Json<WorkerEnvironmentStatusView>, StatusCode> {
+    let ws = load_workspace_by_name(&workspace).ok_or(StatusCode::NOT_FOUND)?;
+    let status = crate::daemon::worker_environment_status_for_workspace(&workspace, &ws.config, None)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(WorkerEnvironmentStatusView {
+        repo: status.repo,
+        ready: status.ready,
+        git_worktree_metadata_writable: status.git_worktree_metadata_writable,
+        frontend_toolchain_required: status.frontend_toolchain_required,
+        frontend_toolchain_ready: status.frontend_toolchain_ready,
+        worktree_links_ready: status.worktree_links_ready,
+        blockers: status.blockers,
+        suggested_fixes: status.suggested_fixes,
+    }))
 }
 
 /// GET /api/workspaces/:workspace/tasks — list tasks for a workspace.
@@ -4182,6 +4213,10 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/repos",
             get(list_workspace_repos),
+        )
+        .route(
+            "/api/workspaces/{workspace}/worker-environment",
+            get(get_workspace_worker_environment),
         )
         .route(
             "/api/workspaces/{workspace}/workers",

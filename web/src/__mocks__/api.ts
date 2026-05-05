@@ -27,6 +27,16 @@ export const getBots = vi.fn().mockResolvedValue([
 ]);
 
 export const getWorkers = vi.fn().mockResolvedValue([]);
+export const getWorkerEnvironment = vi.fn().mockResolvedValue({
+  repo: "apiari",
+  ready: true,
+  git_worktree_metadata_writable: true,
+  frontend_toolchain_required: true,
+  frontend_toolchain_ready: true,
+  worktree_links_ready: true,
+  blockers: [],
+  suggested_fixes: [],
+});
 
 export const getTasks = vi.fn().mockResolvedValue([
   {

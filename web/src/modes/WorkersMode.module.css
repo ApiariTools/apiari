@@ -41,6 +41,50 @@
   font-weight: 700;
 }
 
+.environmentCard {
+  margin-top: var(--space-3);
+  padding: 12px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--surface-muted);
+}
+
+.environmentReady {
+  background: linear-gradient(180deg, rgba(54, 179, 126, 0.08), transparent 100%), var(--surface-muted);
+}
+
+.environmentBlocked {
+  background: linear-gradient(180deg, rgba(217, 119, 6, 0.1), transparent 100%), var(--surface-muted);
+}
+
+.environmentHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-strong);
+}
+
+.environmentMeta {
+  margin-top: 6px;
+  color: var(--text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.environmentSection {
+  margin-top: 10px;
+  color: var(--text-faint);
+  font-size: var(--font-size-tiny);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.environmentList {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--text);
+}
+
 .desktopFrame {
   flex: 1;
   display: grid;

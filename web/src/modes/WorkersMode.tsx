@@ -3,7 +3,7 @@ import { EmptyState } from "../primitives/EmptyState";
 import { InspectorPane } from "../primitives/InspectorPane";
 import { PageHeader } from "../primitives/PageHeader";
 import { ModeScaffold } from "../primitives/ModeScaffold";
-import type { Worker, WorkerDetail as WorkerDetailData } from "../types";
+import type { Worker, WorkerDetail as WorkerDetailData, WorkerEnvironmentStatus } from "../types";
 import { Suspense, lazy } from "react";
 import styles from "./WorkersMode.module.css";
 
@@ -19,6 +19,7 @@ interface Props {
   workspace: string;
   remote?: string;
   workers: Worker[];
+  workerEnvironment: WorkerEnvironmentStatus | null;
   workerId: string | null;
   selectedWorker: Worker | null;
   workerDetail: WorkerDetailData | null;
@@ -34,6 +35,7 @@ export function WorkersMode({
   workspace,
   remote,
   workers,
+  workerEnvironment,
   workerId,
   selectedWorker,
   workerDetail,
@@ -122,24 +124,59 @@ export function WorkersMode({
           title="Workers"
           summary={`Track autonomous work across the workspace. ${activeCount} active${reviewCount ? ` · ${reviewCount} in review` : ""}.`}
           meta={(
-            <div className={styles.metaRow}>
-              <div className={styles.metaCard}>
-                <span className={styles.metaLabel}>Running</span>
-                <span className={styles.metaValue}>{activeCount}</span>
+            <>
+              <div className={styles.metaRow}>
+                <div className={styles.metaCard}>
+                  <span className={styles.metaLabel}>Running</span>
+                  <span className={styles.metaValue}>{activeCount}</span>
+                </div>
+                <div className={styles.metaCard}>
+                  <span className={styles.metaLabel}>Review</span>
+                  <span className={styles.metaValue}>{reviewCount}</span>
+                </div>
+                <div className={styles.metaCard}>
+                  <span className={styles.metaLabel}>Open PRs</span>
+                  <span className={styles.metaValue}>{openPrCount}</span>
+                </div>
+                <div className={styles.metaCard}>
+                  <span className={styles.metaLabel}>Codex</span>
+                  <span className={styles.metaValue}>{codexCount}</span>
+                </div>
               </div>
-              <div className={styles.metaCard}>
-                <span className={styles.metaLabel}>Review</span>
-                <span className={styles.metaValue}>{reviewCount}</span>
-              </div>
-              <div className={styles.metaCard}>
-                <span className={styles.metaLabel}>Open PRs</span>
-                <span className={styles.metaValue}>{openPrCount}</span>
-              </div>
-              <div className={styles.metaCard}>
-                <span className={styles.metaLabel}>Codex</span>
-                <span className={styles.metaValue}>{codexCount}</span>
-              </div>
-            </div>
+              {workerEnvironment && (
+                <div
+                  className={`${styles.environmentCard} ${workerEnvironment.ready ? styles.environmentReady : styles.environmentBlocked}`}
+                >
+                  <div className={styles.environmentHeader}>
+                    <strong>Worker environment</strong>
+                    <span>{workerEnvironment.ready ? "Ready" : "Blocked"}</span>
+                  </div>
+                  {workerEnvironment.repo ? (
+                    <div className={styles.environmentMeta}>repo {workerEnvironment.repo}</div>
+                  ) : null}
+                  {!workerEnvironment.ready && workerEnvironment.blockers.length > 0 ? (
+                    <>
+                      <div className={styles.environmentSection}>Blockers</div>
+                      <ul className={styles.environmentList}>
+                        {workerEnvironment.blockers.map((blocker) => (
+                          <li key={blocker}>{blocker}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                  {!workerEnvironment.ready && workerEnvironment.suggested_fixes.length > 0 ? (
+                    <>
+                      <div className={styles.environmentSection}>Suggested fixes</div>
+                      <ul className={styles.environmentList}>
+                        {workerEnvironment.suggested_fixes.map((fix) => (
+                          <li key={fix}>{fix}</li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                </div>
+              )}
+            </>
           )}
         />
       )}

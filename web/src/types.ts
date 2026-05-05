@@ -41,6 +41,17 @@ export interface Worker {
   resolved_comments?: number;
 }
 
+export interface WorkerEnvironmentStatus {
+  repo?: string | null;
+  ready: boolean;
+  git_worktree_metadata_writable: boolean;
+  frontend_toolchain_required: boolean;
+  frontend_toolchain_ready: boolean;
+  worktree_links_ready: boolean;
+  blockers: string[];
+  suggested_fixes: string[];
+}
+
 export interface Task {
   id: string;
   title: string;

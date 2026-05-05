@@ -85,6 +85,33 @@ pub fn ensure_worktree_metadata_writable(worktree_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Check whether the repo metadata location used for linked worktrees is writable.
+pub fn ensure_repo_worktree_parent_writable(repo_path: &Path) -> Result<()> {
+    let git_dir = git_dir(repo_path)?;
+    let probe_root = if git_dir.join("worktrees").exists() {
+        git_dir.join("worktrees")
+    } else {
+        git_dir.clone()
+    };
+    let probe = probe_root.join(format!(
+        ".apiari-worktree-parent-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+
+    std::fs::write(&probe, b"probe").map_err(|e| {
+        eyre!(
+            "cannot write repo worktree metadata in {}: {e}",
+            probe_root.display()
+        )
+    })?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
+}
+
 /// Check whether the worktree has uncommitted changes.
 pub fn has_uncommitted_changes(path: &Path) -> Result<bool> {
     let output = Command::new("git")
