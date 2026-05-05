@@ -12,6 +12,7 @@ const blockedEnvironment: WorkerEnvironmentStatus = {
   frontend_toolchain_required: true,
   frontend_toolchain_ready: true,
   worktree_links_ready: false,
+  setup_commands_ready: false,
   blockers: [
     "Git worktree metadata is not writable, so workers cannot commit or push.",
     "Frontend toolchain exists in the repo root, but worker worktrees do not inherit `web/node_modules`, so frontend verification will fail.",

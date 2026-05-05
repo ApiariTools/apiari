@@ -1,2 +1,0 @@
-# Inherit frontend toolchain into worker worktrees so web verification can run.
-web/node_modules

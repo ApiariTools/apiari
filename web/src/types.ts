@@ -48,6 +48,7 @@ export interface WorkerEnvironmentStatus {
   frontend_toolchain_required: boolean;
   frontend_toolchain_ready: boolean;
   worktree_links_ready: boolean;
+  setup_commands_ready: boolean;
   blockers: string[];
   suggested_fixes: string[];
 }

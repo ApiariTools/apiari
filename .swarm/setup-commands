@@ -1,0 +1,2 @@
+# Prepare frontend worktrees so workers can verify and package changes locally.
+cd web && npm ci

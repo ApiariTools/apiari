@@ -34,6 +34,7 @@ export const getWorkerEnvironment = vi.fn().mockResolvedValue({
   frontend_toolchain_required: true,
   frontend_toolchain_ready: true,
   worktree_links_ready: true,
+  setup_commands_ready: true,
   blockers: [],
   suggested_fixes: [],
 });

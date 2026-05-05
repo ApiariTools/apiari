@@ -5672,6 +5672,7 @@ pub(crate) struct WorkerEnvironmentStatus {
     pub frontend_toolchain_required: bool,
     pub frontend_toolchain_ready: bool,
     pub worktree_links_ready: bool,
+    pub setup_commands_ready: bool,
     pub blockers: Vec<String>,
     pub suggested_fixes: Vec<String>,
 }
@@ -5914,6 +5915,7 @@ pub(crate) fn worker_environment_status_for_workspace(
             frontend_toolchain_required: false,
             frontend_toolchain_ready: false,
             worktree_links_ready: false,
+            setup_commands_ready: false,
             blockers: vec![
                 "No default repo could be resolved for worker dispatch in this workspace."
                     .to_string(),
@@ -5932,6 +5934,7 @@ pub(crate) fn worker_environment_status_for_workspace(
             frontend_toolchain_required: false,
             frontend_toolchain_ready: false,
             worktree_links_ready: false,
+            setup_commands_ready: false,
             blockers: vec!["Resolved dispatch repo was not found on disk.".to_string()],
             suggested_fixes: vec!["Check the workspace root and repo layout.".to_string()],
         });
@@ -5962,21 +5965,33 @@ pub(crate) fn worker_environment_status_for_workspace(
     let worktree_links_ready = worktree_links
         .iter()
         .any(|entry| entry == "web/node_modules" || entry.starts_with("web/node_modules/"));
+    let setup_commands = apiari_swarm::core::git::read_worktree_setup_commands(&repo_root);
+    let setup_commands_ready = setup_commands.iter().any(|command| {
+        let lower = command.to_ascii_lowercase();
+        lower.contains("npm install")
+            || lower.contains("npm ci")
+            || lower.contains("pnpm install")
+            || lower.contains("yarn install")
+            || lower.contains("bun install")
+    });
 
     if frontend_toolchain_required {
-        if !frontend_toolchain_ready {
+        if !frontend_toolchain_ready && !setup_commands_ready {
             blockers.push(
-                "Frontend toolchain is missing in the repo root (`web/node_modules/.bin/tsc` not found)."
-                    .to_string(),
-            );
-            suggested_fixes.push("Run `cd web && npm install` in the repo root.".to_string());
-        } else if !worktree_links_ready {
-            blockers.push(
-                "Frontend toolchain exists in the repo root, but worker worktrees do not inherit `web/node_modules`, so frontend verification will fail."
+                "Frontend toolchain is missing in the repo root and no worktree setup command will install it."
                     .to_string(),
             );
             suggested_fixes.push(
-                "Add `web/node_modules` to `.swarm/worktree-links` so worker worktrees inherit the frontend toolchain."
+                "Add a frontend setup command to `.swarm/setup-commands`, for example `cd web && npm ci`."
+                    .to_string(),
+            );
+        } else if !worktree_links_ready && !setup_commands_ready {
+            blockers.push(
+                "Frontend toolchain exists in the repo root, but workers neither inherit it nor install it locally, so frontend verification will fail."
+                    .to_string(),
+            );
+            suggested_fixes.push(
+                "Either add `web/node_modules` to `.swarm/worktree-links` or add a setup command like `cd web && npm ci` to `.swarm/setup-commands`."
                     .to_string(),
             );
         }
@@ -5989,6 +6004,7 @@ pub(crate) fn worker_environment_status_for_workspace(
         frontend_toolchain_required,
         frontend_toolchain_ready,
         worktree_links_ready,
+        setup_commands_ready,
         blockers,
         suggested_fixes,
     })
@@ -7405,6 +7421,54 @@ default_agent = "codex"
             }
             other => panic!("expected NeedsEnvironmentFix, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_worker_environment_status_accepts_setup_commands_for_frontend_repo() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("apiari");
+        fs::create_dir_all(repo_root.join(".swarm")).unwrap();
+        fs::create_dir_all(repo_root.join("web")).unwrap();
+        fs::write(
+            repo_root.join("web/package.json"),
+            r#"{"name":"web","scripts":{"build":"tsc -b && vite build"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            repo_root.join(".swarm/setup-commands"),
+            "cd web && npm ci\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo_root)
+            .status()
+            .unwrap();
+
+        let ws_config: WorkspaceConfig = toml::from_str(&format!(
+            r#"
+root = "{}"
+
+[coordinator]
+name = "Bee"
+provider = "claude"
+"#,
+            repo_root.display()
+        ))
+        .unwrap();
+
+        let status = super::worker_environment_status_for_workspace(
+            "apiari",
+            &ws_config,
+            Some("Tighten the worker cards on mobile."),
+        )
+        .unwrap();
+
+        assert_eq!(status.repo.as_deref(), Some("apiari"));
+        assert!(status.setup_commands_ready);
+        assert!(status.frontend_toolchain_required);
+        assert!(!status.blockers.iter().any(|b| b.contains("node_modules")));
     }
 
     #[test]

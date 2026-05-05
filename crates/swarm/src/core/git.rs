@@ -294,6 +294,47 @@ pub fn symlink_worktree_files(repo_path: &Path, worktree_path: &Path) -> Vec<Pat
     linked
 }
 
+/// Read repo-defined setup commands for new worktrees from `.swarm/setup-commands`.
+pub fn read_worktree_setup_commands(repo_path: &Path) -> Vec<String> {
+    let manifest = repo_path.join(".swarm").join("setup-commands");
+    std::fs::read_to_string(manifest)
+        .ok()
+        .map(|contents| {
+            contents
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Run repo-defined setup commands inside a new worktree.
+pub fn run_worktree_setup_commands(worktree_path: &Path, commands: &[String]) -> Result<()> {
+    for command in commands {
+        let output = Command::new("/bin/sh")
+            .args(["-lc", command])
+            .current_dir(worktree_path)
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("command exited with status {}", output.status)
+            };
+            return Err(eyre!("setup command `{command}` failed: {detail}"));
+        }
+    }
+
+    Ok(())
+}
+
 /// Remove a worktree.
 pub fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
     let output = Command::new("git")
@@ -740,5 +781,38 @@ mod tests {
         assert!(linked_path.exists());
         assert!(std::fs::symlink_metadata(&linked_path).unwrap().file_type().is_symlink());
         assert!(linked_path.join(".bin/tsc").exists());
+    }
+
+    #[test]
+    fn read_worktree_setup_commands_ignores_comments_and_blank_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".swarm")).unwrap();
+        std::fs::write(
+            repo.join(".swarm/setup-commands"),
+            "# comment\n\nmise trust\ncd web && npm ci\n",
+        )
+        .unwrap();
+
+        let commands = read_worktree_setup_commands(&repo);
+        assert_eq!(commands, vec!["mise trust", "cd web && npm ci"]);
+    }
+
+    #[test]
+    fn run_worktree_setup_commands_executes_commands_in_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+
+        run_worktree_setup_commands(
+            &wt,
+            &["mkdir -p .setup && printf 'ok' > .setup/result".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(wt.join(".setup/result")).unwrap(),
+            "ok"
+        );
     }
 }

@@ -838,6 +838,7 @@ struct WorkerEnvironmentStatusView {
     frontend_toolchain_required: bool,
     frontend_toolchain_ready: bool,
     worktree_links_ready: bool,
+    setup_commands_ready: bool,
     blockers: Vec<String>,
     suggested_fixes: Vec<String>,
 }
@@ -1497,6 +1498,7 @@ async fn get_workspace_worker_environment(
         frontend_toolchain_required: status.frontend_toolchain_required,
         frontend_toolchain_ready: status.frontend_toolchain_ready,
         worktree_links_ready: status.worktree_links_ready,
+        setup_commands_ready: status.setup_commands_ready,
         blockers: status.blockers,
         suggested_fixes: status.suggested_fixes,
     }))

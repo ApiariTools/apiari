@@ -1320,6 +1320,21 @@ async fn handle_request(
                 );
             }
 
+            let setup_commands = git::read_worktree_setup_commands(&repo_path);
+            let setup_failure = if setup_commands.is_empty() {
+                None
+            } else {
+                tracing::info!(
+                    worker_id = %worktree_id,
+                    count = setup_commands.len(),
+                    "Running worktree setup commands"
+                );
+                match git::run_worktree_setup_commands(&worktree_path, &setup_commands) {
+                    Ok(()) => None,
+                    Err(err) => Some(format!("Worker setup failed: {err}")),
+                }
+            };
+
             let is_reviewer = role.as_deref() == Some("reviewer");
 
             // For reviewer workers: fetch and checkout the PR branch in the worktree.
@@ -1372,7 +1387,8 @@ async fn handle_request(
                 }
             }
 
-            let preflight_failure = worker_preflight_failure(&prompt, &worktree_path);
+            let preflight_failure =
+                setup_failure.clone().or_else(|| worker_preflight_failure(&prompt, &worktree_path));
             let initial_phase = if preflight_failure.is_some() {
                 WorkerPhase::Failed
             } else {
