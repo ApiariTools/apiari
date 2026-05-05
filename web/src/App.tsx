@@ -21,6 +21,41 @@ interface SelectedEntity {
   id: string
 }
 
+// Map between URL segment and EntityType
+const URL_SEGMENT_TO_TYPE: Record<string, EntityType> = {
+  'worker': 'worker',
+  'auto-bot': 'auto_bot',
+}
+
+const TYPE_TO_URL_SEGMENT: Record<EntityType, string> = {
+  'worker': 'worker',
+  'auto_bot': 'auto-bot',
+}
+
+function updateHash(ws: string, type?: EntityType, id?: string) {
+  if (type && id) {
+    window.location.hash = `/${ws}/${TYPE_TO_URL_SEGMENT[type]}/${id}`
+  } else {
+    window.location.hash = `/${ws}`
+  }
+}
+
+function parseHash(hash: string): { ws: string; type?: EntityType; id?: string } | null {
+  // hash looks like "#/workspace" or "#/workspace/worker/id" or "#/workspace/auto-bot/id"
+  const stripped = hash.replace(/^#\//, '')
+  if (!stripped) return null
+  const parts = stripped.split('/')
+  const ws = parts[0]
+  if (!ws) return null
+  const segment = parts[1]
+  const id = parts[2]
+  if (segment && id) {
+    const type = URL_SEGMENT_TO_TYPE[segment]
+    if (type) return { ws, type, id }
+  }
+  return { ws }
+}
+
 function workerToSidebarItem(w: WorkerV2): SidebarItem {
   return {
     id: w.id,
@@ -57,21 +92,37 @@ export default function App() {
   // Keep workspaceRef in sync so the WS handler always sees the latest value
   workspaceRef.current = workspace
 
-  // Fetch workspace list on mount
+  // Fetch workspace list on mount, then restore from hash if valid
   useEffect(() => {
     getWorkspaces()
       .then((ws) => {
         const names = ws.map((w) => w.name)
         setWorkspaces(names)
-        if (names.length > 0) setWorkspace(names[0])
+        if (names.length === 0) return
+
+        const parsed = parseHash(window.location.hash)
+        if (parsed && names.includes(parsed.ws)) {
+          setWorkspace(parsed.ws)
+          if (parsed.type && parsed.id) {
+            setSelected({ type: parsed.type, id: parsed.id })
+          }
+        } else {
+          setWorkspace(names[0])
+          updateHash(names[0])
+        }
       })
       .catch(() => {
         // fallback: keep workspace empty
       })
   }, [])
 
-  const handleSelect = (type: EntityType, id: string) => {
+  const navigateTo = (type: EntityType, id: string) => {
     setSelected({ type, id })
+    updateHash(workspace, type, id)
+  }
+
+  const handleSelect = (type: EntityType, id: string) => {
+    navigateTo(type, id)
   }
 
   // ── Context bot handlers ────────────────────────────────────────────
@@ -137,7 +188,7 @@ export default function App() {
         } catch {
           // ignore
         }
-        setSelected({ type: 'worker', id: res.dispatched_worker_id })
+        navigateTo('worker', res.dispatched_worker_id)
       }
     } catch {
       setContextSessions((prev) =>
@@ -287,6 +338,22 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKey)
   }, [])
 
+  // hashchange — enables browser back/forward navigation
+  useEffect(() => {
+    function handleHashChange() {
+      const parsed = parseHash(window.location.hash)
+      if (!parsed) return
+      if (parsed.ws) setWorkspace(parsed.ws)
+      if (parsed.type && parsed.id) {
+        setSelected({ type: parsed.type, id: parsed.id })
+      } else {
+        setSelected(null)
+      }
+    }
+    window.addEventListener('hashchange', handleHashChange)
+    return () => window.removeEventListener('hashchange', handleHashChange)
+  }, [])
+
   const sidebarWorkers = workers.map(workerToSidebarItem)
   const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
@@ -305,7 +372,7 @@ export default function App() {
       <AutoBotDetail
         workspace={workspace}
         autoBotId={selected.id}
-        onSelectWorker={(id) => setSelected({ type: 'worker', id })}
+        onSelectWorker={(id) => navigateTo('worker', id)}
         onOpenContextBot={openContextBot}
       />
     )
@@ -314,8 +381,8 @@ export default function App() {
       workspace={workspace}
       workers={workers}
       autoBots={autoBots}
-      onSelectWorker={(id) => setSelected({ type: 'worker', id })}
-      onSelectAutoBot={(id) => setSelected({ type: 'auto_bot', id })}
+      onSelectWorker={(id) => navigateTo('worker', id)}
+      onSelectAutoBot={(id) => navigateTo('auto_bot', id)}
     />
   )
 
@@ -343,6 +410,7 @@ export default function App() {
             onWorkspaceChange={(ws) => {
               setWorkspace(ws)
               setSelected(null)
+              updateHash(ws)
             }}
             onQuickDispatch={() => setQuickDispatchOpen(true)}
           />
@@ -373,11 +441,11 @@ export default function App() {
           workers={workers}
           autoBots={autoBots}
           onSelectWorker={(id) => {
-            setSelected({ type: 'worker', id })
+            navigateTo('worker', id)
             setPaletteOpen(false)
           }}
           onSelectAutoBot={(id) => {
-            setSelected({ type: 'auto_bot', id })
+            navigateTo('auto_bot', id)
             setPaletteOpen(false)
           }}
           onClose={() => setPaletteOpen(false)}
@@ -389,7 +457,7 @@ export default function App() {
           onClose={() => setQuickDispatchOpen(false)}
           onDispatched={(workerId) => {
             setQuickDispatchOpen(false)
-            setSelected({ type: 'worker', id: workerId })
+            navigateTo('worker', workerId)
             listWorkersV2(workspace).then(setWorkers).catch(() => {})
           }}
         />
