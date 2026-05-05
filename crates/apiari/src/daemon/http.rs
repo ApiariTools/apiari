@@ -942,6 +942,8 @@ struct WorkerTaskPacketView {
     #[serde(skip_serializing_if = "Option::is_none")]
     plan_md: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    shaping_md: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     progress_md: Option<String>,
 }
 
@@ -3152,6 +3154,7 @@ fn read_worker_task_packet(worktree_path: &std::path::Path) -> Option<WorkerTask
     let task_md = read_optional("TASK.md");
     let context_md = read_optional("CONTEXT.md");
     let plan_md = read_optional("PLAN.md");
+    let shaping_md = read_optional("SHAPING.md");
     let progress_md = read_optional("PROGRESS.md");
     let worker_mode = task_md.as_ref().and_then(|content| {
         content.lines().find_map(|line| {
@@ -3163,7 +3166,12 @@ fn read_worker_task_packet(worktree_path: &std::path::Path) -> Option<WorkerTask
         })
     });
 
-    if task_md.is_none() && context_md.is_none() && plan_md.is_none() && progress_md.is_none() {
+    if task_md.is_none()
+        && context_md.is_none()
+        && plan_md.is_none()
+        && shaping_md.is_none()
+        && progress_md.is_none()
+    {
         return None;
     }
 
@@ -3172,6 +3180,7 @@ fn read_worker_task_packet(worktree_path: &std::path::Path) -> Option<WorkerTask
         task_md,
         context_md,
         plan_md,
+        shaping_md,
         progress_md,
     })
 }
@@ -5440,6 +5449,11 @@ state_path = "{}"
             "# Context\n\n- Repository: `apiari`\n",
         )
         .unwrap();
+        fs::write(
+            worktree_dir.join("SHAPING.md"),
+            "# Coordinator Shaping\n\n## Goal\n- Investigate repo slug resolution\n",
+        )
+        .unwrap();
 
         let detail =
             get_workspace_worker_detail(Path(("apiari".to_string(), "common-sdk-fix".to_string())))
@@ -5466,6 +5480,13 @@ state_path = "{}"
                 .as_ref()
                 .and_then(|packet| packet.worker_mode.as_deref()),
             Some("implementation")
+        );
+        assert_eq!(
+            detail
+                .task_packet
+                .as_ref()
+                .and_then(|packet| packet.shaping_md.as_deref()),
+            Some("# Coordinator Shaping\n\n## Goal\n- Investigate repo slug resolution\n")
         );
     }
 

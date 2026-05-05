@@ -1367,6 +1367,9 @@ async fn handle_request(
                 if let Some(ref c) = payload.plan_md {
                     let _ = std::fs::write(task_path.join("PLAN.md"), c);
                 }
+                if let Some(ref c) = payload.shaping_md {
+                    let _ = std::fs::write(task_path.join("SHAPING.md"), c);
+                }
             }
 
             let preflight_failure = worker_preflight_failure(&prompt, &worktree_path);

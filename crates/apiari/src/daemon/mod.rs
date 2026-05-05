@@ -5812,6 +5812,32 @@ fn dispatch_clarification_question(shape: &DispatchTaskShape) -> String {
     )
 }
 
+fn dispatch_shaping_markdown(shape: &DispatchTaskShape) -> String {
+    let likely_files = if shape.likely_files.is_empty() {
+        "- No confident target files identified yet.".to_string()
+    } else {
+        shape.likely_files
+            .iter()
+            .map(|path| format!("- `{path}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let anti_goals = if shape.anti_goals.is_empty() {
+        "- No explicit anti-goals were extracted from the request.".to_string()
+    } else {
+        shape.anti_goals
+            .iter()
+            .map(|goal| format!("- {goal}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    format!(
+        "# Coordinator Shaping\n\n## Goal\n- {}\n\n## Confidence\n- {}\n\n## Likely Files\n{}\n\n## Anti-Goals\n{}\n",
+        shape.goal, shape.confidence, likely_files, anti_goals
+    )
+}
+
 fn resolve_auto_dispatch_repo(
     workspace_name: &str,
     ws_config: &WorkspaceConfig,
@@ -5922,11 +5948,13 @@ async fn try_direct_dispatch_for_dispatch_only(
     }
     let worker_mode =
         crate::buzz::coordinator::swarm_client::infer_worker_mode(&task_shape.shaped_prompt);
-    let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir_with_mode(
-        &repo,
-        &task_shape.shaped_prompt,
-        worker_mode,
-    );
+    let task_dir =
+        crate::buzz::coordinator::swarm_client::build_worker_task_dir_with_mode_and_shaping(
+            &repo,
+            &task_shape.shaped_prompt,
+            worker_mode,
+            Some(dispatch_shaping_markdown(&task_shape)),
+        );
     let worker_id = swarm
         .create_worker_with_task_dir(
             &repo,

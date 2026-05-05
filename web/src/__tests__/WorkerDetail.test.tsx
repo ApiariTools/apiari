@@ -50,6 +50,8 @@ const detail: WorkerDetailData = {
     worker_mode: "implementation",
     task_md: "# Task\n\nTighten the mobile cards.",
     context_md: "# Context\n\n- Prior worker drifted into the wrong panel.",
+    shaping_md:
+      "# Coordinator Shaping\n\n## Goal\n- Tighten worker cards on mobile.\n\n## Likely Files\n- `web/src/components/WorkersPanel.module.css`",
     plan_md: "# Plan\n\n1. Find the right panel.\n2. Make the change.",
     progress_md: "Checked two likely surfaces before editing.",
   },
@@ -186,6 +188,9 @@ describe("WorkerDetail", () => {
     expect(screen.getAllByText(/implementation/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Inherited task/)).toBeInTheDocument();
     expect(screen.getByText(/Inherited context/)).toBeInTheDocument();
+    expect(screen.getByText(/Coordinator shaping/)).toBeInTheDocument();
+    expect(screen.getByText(/Tighten worker cards on mobile/)).toBeInTheDocument();
+    expect(screen.getByText(/web\/src\/components\/WorkersPanel\.module\.css/)).toBeInTheDocument();
     expect(screen.getByText(/Execution plan/)).toBeInTheDocument();
     expect(screen.getByText(/Worker notes/)).toBeInTheDocument();
   });

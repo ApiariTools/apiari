@@ -98,6 +98,8 @@ pub struct TaskDirPayload {
     pub context_md: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_md: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shaping_md: Option<String>,
 }
 
 /// Response sent by the daemon back to clients.
@@ -443,6 +445,7 @@ mod tests {
             task_md: Some("# Task\nDo the thing.".into()),
             context_md: None,
             plan_md: Some("# Plan\n1. Step one".into()),
+            shaping_md: Some("# Coordinator Shaping\n- Goal: do the thing".into()),
         };
         let req = DaemonRequest::CreateWorker {
             prompt: "test".into(),
@@ -464,6 +467,11 @@ mod tests {
                 assert!(td.task_md.as_ref().unwrap().contains("Do the thing"));
                 assert!(td.context_md.is_none());
                 assert!(td.plan_md.as_ref().unwrap().contains("Step one"));
+                assert!(td
+                    .shaping_md
+                    .as_ref()
+                    .unwrap()
+                    .contains("Coordinator Shaping"));
             }
             _ => panic!("expected CreateWorker"),
         }

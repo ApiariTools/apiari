@@ -286,6 +286,15 @@ pub fn build_worker_task_dir_with_mode(
     prompt: &str,
     mode: WorkerMode,
 ) -> TaskDirPayload {
+    build_worker_task_dir_with_mode_and_shaping(repo, prompt, mode, None)
+}
+
+pub fn build_worker_task_dir_with_mode_and_shaping(
+    repo: &str,
+    prompt: &str,
+    mode: WorkerMode,
+    shaping_md: Option<String>,
+) -> TaskDirPayload {
     let anti_goals = anti_goals_from_prompt(prompt);
     let anti_goals_md = if anti_goals.is_empty() {
         "- Do not modify unrelated files or adjacent panels just because they look similar.\n- If you cannot identify the exact target confidently, stop and say so in `.swarm/output.md` instead of guessing.\n".to_string()
@@ -333,6 +342,7 @@ pub fn build_worker_task_dir_with_mode(
             context_extra,
         )),
         plan_md: Some(plan_text),
+        shaping_md,
     }
 }
 
@@ -382,6 +392,7 @@ mod tests {
                 .unwrap()
                 .contains("most likely code surface")
         );
+        assert!(task_dir.shaping_md.is_none());
     }
 
     #[test]
@@ -396,6 +407,24 @@ mod tests {
             task_md.contains(
                 "Do not change BotNav, ReposPanel, WorkersPanel, chat, docs, or routing."
             )
+        );
+    }
+
+    #[test]
+    fn build_worker_task_dir_preserves_optional_shaping_packet() {
+        let task_dir = build_worker_task_dir_with_mode_and_shaping(
+            "apiari",
+            "Tighten worker cards on mobile.",
+            WorkerMode::Implementation,
+            Some("# Coordinator Shaping\n\n## Goal\n- Tighten worker cards.".to_string()),
+        );
+
+        assert!(
+            task_dir
+                .shaping_md
+                .as_ref()
+                .unwrap()
+                .contains("Coordinator Shaping")
         );
     }
 

@@ -397,6 +397,12 @@ export function WorkerDetail({
                   <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.context_md}</Markdown>
                 </>
               ) : null}
+              {taskPacket?.shaping_md ? (
+                <>
+                  <p><strong>Coordinator shaping</strong></p>
+                  <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.shaping_md}</Markdown>
+                </>
+              ) : null}
               {taskPacket?.plan_md ? (
                 <>
                   <p><strong>Execution plan</strong></p>

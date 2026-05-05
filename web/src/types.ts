@@ -108,6 +108,7 @@ export interface WorkerDetail extends Worker {
     task_md?: string | null;
     context_md?: string | null;
     plan_md?: string | null;
+    shaping_md?: string | null;
     progress_md?: string | null;
   } | null;
 }
