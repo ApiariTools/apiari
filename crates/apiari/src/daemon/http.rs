@@ -4324,11 +4324,31 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
                         .get("tool")
                         .and_then(|t| t.as_str())
                         .unwrap_or("unknown");
-                    let input = val.get("input").map(|i| i.to_string()).unwrap_or_default();
+                    let raw_input = val.get("input");
+                    // input may be a JSON object or a JSON-encoded string — normalize to string
+                    let input_str = match raw_input {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(other) => other.to_string(),
+                        None => String::new(),
+                    };
+                    // Try to parse input_str as JSON object for structured access
+                    let input_obj: Option<serde_json::Map<String, serde_json::Value>> =
+                        serde_json::from_str(&input_str)
+                            .ok()
+                            .and_then(|v: serde_json::Value| {
+                                if let serde_json::Value::Object(m) = v {
+                                    Some(m)
+                                } else {
+                                    None
+                                }
+                            });
                     let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
                     Some(serde_json::json!({
                         "event_type": "tool_use",
-                        "content": format!("{tool}: {input}"),
+                        "tool": tool,
+                        "input": input_obj,
+                        "input_raw": input_str,
+                        "content": format!("{tool}: {input_str}"),
                         "created_at": created_at,
                     }))
                 }

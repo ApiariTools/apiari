@@ -418,16 +418,22 @@ describe("WorkerDetailV2", () => {
       events: [
         {
           event_type: "tool_use",
+          tool: "Bash",
+          input: { command: "cd /path && git status", description: "Check git status" },
           content: 'Bash: {"command":"cd /path && git status","description":"Check git status"}',
           created_at: "2026-05-04T10:01:00Z",
         },
         {
           event_type: "tool_use",
+          tool: "Read",
+          input: { file_path: "/Users/josh/Developer/apiari/web/src/App.tsx" },
           content: 'Read: {"file_path":"/Users/josh/Developer/apiari/web/src/App.tsx"}',
           created_at: "2026-05-04T10:02:00Z",
         },
         {
           event_type: "tool_use",
+          tool: "Glob",
+          input: { pattern: ".task/**/*" },
           content: 'Glob: {"pattern":".task/**/*"}',
           created_at: "2026-05-04T10:03:00Z",
         },
@@ -435,14 +441,99 @@ describe("WorkerDetailV2", () => {
     });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const thread = await screen.findByTestId("events-thread");
-    // Bash: shows command (not raw JSON)
-    expect(thread).toHaveTextContent("Bash · cd /path && git status");
-    // Read: shows filename only (not full path or raw JSON)
-    expect(thread).toHaveTextContent("Read · App.tsx");
-    // Glob: shows pattern (not raw JSON)
-    expect(thread).toHaveTextContent("Glob · .task/**/*");
+    // All three consecutive tool calls are grouped into a single collapsed row
+    const group = await screen.findByTestId("tool-group");
+    expect(group).toBeInTheDocument();
+    // Collapsed preview shows first 3 formatted tool names
+    expect(group).toHaveTextContent("Bash · cd /path && git status");
+    expect(group).toHaveTextContent("Read · App.tsx");
+    expect(group).toHaveTextContent("Glob · .task/**/*");
     // Raw JSON should not appear
     expect(thread).not.toHaveTextContent('"command"');
     expect(thread).not.toHaveTextContent('"file_path"');
+  });
+
+  it("groups consecutive tool_use events into a single collapsible row", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      events: [
+        { event_type: "assistant_text", content: "Starting work.", created_at: "2026-05-04T10:00:00Z" },
+        {
+          event_type: "tool_use",
+          tool: "Read",
+          input: { file_path: "/src/foo.ts" },
+          content: "Read: /src/foo.ts",
+          created_at: "2026-05-04T10:01:00Z",
+        },
+        {
+          event_type: "tool_use",
+          tool: "Edit",
+          input: { file_path: "/src/foo.ts" },
+          content: "Edit: /src/foo.ts",
+          created_at: "2026-05-04T10:02:00Z",
+        },
+        { event_type: "assistant_text", content: "Done!", created_at: "2026-05-04T10:03:00Z" },
+      ],
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const thread = await screen.findByTestId("events-thread");
+    // The two tool calls should be merged into one group row
+    const groups = thread.querySelectorAll('[data-testid="tool-group"]');
+    expect(groups).toHaveLength(1);
+    // The group shows both tools in preview
+    expect(groups[0]).toHaveTextContent("Read · foo.ts");
+    expect(groups[0]).toHaveTextContent("Edit · foo.ts");
+  });
+
+  it("expands tool group on click to show individual tools", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      events: [
+        {
+          event_type: "tool_use",
+          tool: "Bash",
+          input: { command: "npm test" },
+          content: "Bash: npm test",
+          created_at: "2026-05-04T10:01:00Z",
+        },
+        {
+          event_type: "tool_use",
+          tool: "Read",
+          input: { file_path: "/src/index.ts" },
+          content: "Read: /src/index.ts",
+          created_at: "2026-05-04T10:02:00Z",
+        },
+      ],
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const group = await screen.findByTestId("tool-group");
+    // Collapsed by default — shows ▶
+    expect(group).toHaveTextContent("▶");
+    // Click to expand
+    fireEvent.click(group);
+    // Now shows ▼ and individual tool items
+    expect(group).toHaveTextContent("▼");
+    expect(group).toHaveTextContent("2 tool calls");
+    expect(group).toHaveTextContent("· Bash · npm test");
+    expect(group).toHaveTextContent("· Read · index.ts");
+  });
+
+  it("single tool_use event is still grouped (collapsed group of 1)", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      events: [
+        {
+          event_type: "tool_use",
+          tool: "Bash",
+          input: { command: "cargo build" },
+          content: "Bash: cargo build",
+          created_at: "2026-05-04T10:01:00Z",
+        },
+      ],
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const group = await screen.findByTestId("tool-group");
+    expect(group).toBeInTheDocument();
+    expect(group).toHaveTextContent("Bash · cargo build");
   });
 });

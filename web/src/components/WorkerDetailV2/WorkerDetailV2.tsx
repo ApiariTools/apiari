@@ -120,31 +120,46 @@ function mergeConsecutiveText(events: WorkerEvent[]): WorkerEvent[] {
   return merged
 }
 
-function formatToolCall(content: string): string {
-  // content is like: "Bash: {\"command\":\"...\",\"description\":\"...\"}"
-  // or: "Read: {\"file_path\":\"/path/to/file\"}"
-  const colonIdx = content.indexOf(':')
-  if (colonIdx === -1) return content
+function formatToolCall(evt: { content: string; tool?: string; input?: Record<string, unknown> }): string {
+  const toolName = evt.tool ?? evt.content.split(':')[0].trim()
+  const args = evt.input ?? {}
 
-  const toolName = content.slice(0, colonIdx).trim()
-  const jsonStr = content.slice(colonIdx + 1).trim()
+  const arg =
+    (typeof args.command === 'string' ? args.command.slice(0, 80) : null) ??
+    (typeof args.file_path === 'string' ? args.file_path.split('/').pop() : null) ??
+    (typeof args.pattern === 'string' ? args.pattern : null) ??
+    (typeof args.query === 'string' ? args.query.slice(0, 60) : null) ??
+    (typeof args.url === 'string' ? args.url.slice(0, 60) : null) ??
+    (typeof args.prompt === 'string' ? args.prompt.slice(0, 40) : null) ??
+    (typeof args.description === 'string' && !args.command ? args.description.slice(0, 60) : null) ??
+    null
 
-  try {
-    const args = JSON.parse(jsonStr)
-    // Extract the most meaningful argument for each tool
-    const arg =
-      args.command?.slice(0, 60) ||      // Bash
-      args.file_path?.split('/').pop() || // Read, Write, Edit
-      args.pattern ||                     // Glob
-      args.query ||                       // WebSearch
-      args.url ||                         // WebFetch
-      args.prompt?.slice(0, 40) ||        // other
-      ''
-    const suffix = arg ? ` · ${arg}` : ''
-    return `${toolName}${suffix}`
-  } catch {
-    return toolName
+  return arg ? `${toolName} · ${arg}` : toolName
+}
+
+interface ToolGroup {
+  event_type: 'tool_group'
+  tools: WorkerEvent[]
+  created_at: string
+}
+
+type DisplayEvent = WorkerEvent | ToolGroup
+
+function groupConsecutiveTools(events: WorkerEvent[]): DisplayEvent[] {
+  const result: DisplayEvent[] = []
+  for (const evt of events) {
+    if (evt.event_type === 'tool_use') {
+      const last = result[result.length - 1]
+      if (last && last.event_type === 'tool_group') {
+        last.tools.push(evt)
+      } else {
+        result.push({ event_type: 'tool_group', tools: [evt], created_at: evt.created_at })
+      }
+    } else {
+      result.push(evt)
+    }
   }
+  return result
 }
 
 // ── Event row ────────────────────────────────────────────────────────────
@@ -153,9 +168,11 @@ interface EventRowProps {
   event_type: string
   content: string
   created_at: string
+  tool?: string
+  input?: Record<string, unknown>
 }
 
-function EventRow({ event_type, content, created_at }: EventRowProps) {
+function EventRow({ event_type, content, created_at, tool, input }: EventRowProps) {
   const time = formatTime(created_at)
 
   if (event_type === 'assistant_text') {
@@ -188,7 +205,7 @@ function EventRow({ event_type, content, created_at }: EventRowProps) {
       <div className={`${styles.eventRow} ${styles.eventRowTool}`}>
         <span className={styles.eventTime}>{time}</span>
         <span className={styles.eventToolSep}>·</span>
-        <span className={styles.eventTool}>{formatToolCall(content)}</span>
+        <span className={styles.eventTool}>{formatToolCall({ content, tool, input })}</span>
       </div>
     )
   }
@@ -199,6 +216,50 @@ function EventRow({ event_type, content, created_at }: EventRowProps) {
       <span className={styles.eventTime}>{time}</span>
       <div className={`${styles.eventBody} ${styles.eventAssistant}`}>
         <ReactMarkdown>{content}</ReactMarkdown>
+      </div>
+    </div>
+  )
+}
+
+// ── Tool group row ────────────────────────────────────────────────────────
+
+interface ToolGroupRowProps {
+  group: ToolGroup
+  expanded: boolean
+  onToggle: () => void
+}
+
+function ToolGroupRow({ group, expanded, onToggle }: ToolGroupRowProps) {
+  const time = formatTime(group.created_at)
+  const { tools } = group
+  const MAX_PREVIEW = 3
+  const preview = tools.slice(0, MAX_PREVIEW).map(t => formatToolCall(t))
+  const extra = tools.length - MAX_PREVIEW
+
+  return (
+    <div className={styles.toolGroup} onClick={onToggle} data-testid="tool-group">
+      <span className={styles.eventTime}>{time}</span>
+      <div>
+        <div className={styles.toolGroupSummary}>
+          <span className={styles.toolGroupExpander}>{expanded ? '▼' : '▶'}</span>
+          {expanded ? (
+            <span>{tools.length} tool call{tools.length !== 1 ? 's' : ''}</span>
+          ) : (
+            <>
+              <span>{preview.join(' · ')}</span>
+              {extra > 0 && <span>+{extra} more</span>}
+            </>
+          )}
+        </div>
+        {expanded && (
+          <div className={styles.toolGroupList}>
+            {tools.map((t, i) => (
+              <div key={i} className={styles.toolGroupItem}>
+                · {formatToolCall(t)}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -335,6 +396,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   const [reviews, setReviews] = useState<WorkerReview[]>([])
   const [reviewing, setReviewing] = useState(false)
   const [activeTab, setActiveTab] = useState<Tab>('timeline')
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
   const eventsEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pollRef = useRef<number | null>(null)
@@ -667,14 +729,40 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
             {data.events && data.events.length > 0 ? (
               <div className={styles.events} data-testid="events-thread">
-                {mergeConsecutiveText(data.events).map((ev, i) => (
-                  <EventRow
-                    key={i}
-                    event_type={ev.event_type}
-                    content={ev.content}
-                    created_at={ev.created_at}
-                  />
-                ))}
+                {groupConsecutiveTools(mergeConsecutiveText(data.events)).map((ev, i) => {
+                  if (ev.event_type === 'tool_group') {
+                    const group = ev as ToolGroup
+                    return (
+                      <ToolGroupRow
+                        key={i}
+                        group={group}
+                        expanded={expandedGroups.has(i)}
+                        onToggle={() => {
+                          setExpandedGroups(prev => {
+                            const next = new Set(prev)
+                            if (next.has(i)) {
+                              next.delete(i)
+                            } else {
+                              next.add(i)
+                            }
+                            return next
+                          })
+                        }}
+                      />
+                    )
+                  }
+                  const e = ev as WorkerEvent
+                  return (
+                    <EventRow
+                      key={i}
+                      event_type={e.event_type}
+                      content={e.content}
+                      created_at={e.created_at}
+                      tool={e.tool}
+                      input={e.input}
+                    />
+                  )
+                })}
                 <div ref={eventsEndRef} />
               </div>
             ) : (

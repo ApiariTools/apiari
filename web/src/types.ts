@@ -280,6 +280,8 @@ export interface WorkerEvent {
   event_type: string;
   content: string;
   created_at: string;
+  tool?: string;
+  input?: Record<string, unknown>;
 }
 
 export interface WorkerDetailV2 extends WorkerV2 {
