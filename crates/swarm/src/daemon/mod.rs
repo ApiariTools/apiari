@@ -713,8 +713,7 @@ pub(crate) async fn run_daemon(
                                             worker.review_verdict = Some(verdict);
                                             state_dirty = true;
                                         }
-                                    } else {
-                                        if worker.pr.is_none()
+                                    } else if worker.pr.is_none()
                                             && let Some(url) =
                                                 crate::core::state::parse_pr_opened(
                                                     &worker.accumulated_text,
@@ -766,7 +765,6 @@ pub(crate) async fn run_daemon(
                                             worker.ready_branch = Some(branch);
                                             state_dirty = true;
                                         }
-                                    }
                                     break;
                                 }
                             }
@@ -1387,8 +1385,9 @@ async fn handle_request(
                 }
             }
 
-            let preflight_failure =
-                setup_failure.clone().or_else(|| worker_preflight_failure(&prompt, &worktree_path));
+            let preflight_failure = setup_failure
+                .clone()
+                .or_else(|| worker_preflight_failure(&prompt, &worktree_path));
             let initial_phase = if preflight_failure.is_some() {
                 WorkerPhase::Failed
             } else {
