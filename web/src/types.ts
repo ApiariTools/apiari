@@ -286,6 +286,24 @@ export interface WorkerDetailV2 extends WorkerV2 {
   events: WorkerEvent[];
 }
 
+// ── Worker Review types ────────────────────────────────────────────────
+
+export interface ReviewIssue {
+  severity: 'blocking' | 'suggestion' | 'nitpick'
+  file: string
+  description: string
+}
+
+export interface WorkerReview {
+  id: number
+  reviewer: string
+  verdict: 'approve' | 'request_changes' | 'comment'
+  summary: string
+  issues: ReviewIssue[]
+  worker_message: string | null
+  created_at: string
+}
+
 // ── Auto Bot types ─────────────────────────────────────────────────────
 
 export interface AutoBot {

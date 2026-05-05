@@ -151,6 +151,13 @@ pub enum WsUpdate {
         hook_id: i64,
         action: String,
     },
+    /// A worker review completed.
+    WorkerReview {
+        workspace: String,
+        worker_id: String,
+        verdict: String,
+        reviewer: String,
+    },
 }
 
 /// A test signal to inject (dev mode).
@@ -4809,6 +4816,160 @@ async fn v2_requeue_worker(
     }
 }
 
+// ── v2 Worker review API routes ────────────────────────────────────────
+
+/// Open a ReviewStore against the given db_path.
+fn open_review_store_from_path(
+    db_path: &std::path::Path,
+) -> color_eyre::Result<crate::buzz::review::ReviewStore> {
+    let conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| color_eyre::eyre::eyre!("failed to open review db: {e}"))?;
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+    crate::buzz::review::ReviewStore::new(conn)
+}
+
+/// POST /api/workspaces/{ws}/v2/workers/{id}/review — trigger a review (202 Accepted).
+async fn v2_request_review(
+    Path((workspace, id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_worker_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let worker = match store.get(&workspace, &id) {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "worker not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    // Only allow review when worker is in waiting state and branch is ready.
+    if worker.state != crate::buzz::worker::WorkerState::Waiting || !worker.branch_ready {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "review only available when worker is waiting and branch_ready=true"})),
+        )
+            .into_response();
+    }
+
+    let workspace_root = load_workspace_root(&workspace);
+    let db_path = state.db_path.as_ref().clone();
+    let updates_tx = state.updates_tx.clone();
+
+    // Run review in background — caller gets 202 immediately.
+    tokio::spawn(async move {
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => {
+                let _ = c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
+                std::sync::Arc::new(std::sync::Mutex::new(c))
+            }
+            Err(e) => {
+                tracing::error!("[review/{workspace}] failed to open DB: {e}");
+                return;
+            }
+        };
+
+        // Build a Value sender from the WsUpdate broadcast so review.rs can emit events.
+        let (val_tx, _) = tokio::sync::broadcast::channel::<serde_json::Value>(16);
+        let val_tx_clone = val_tx.clone();
+
+        // Forward val_tx messages to updates_tx as WorkerReview variants.
+        let updates_tx_clone = updates_tx.clone();
+        let workspace_clone = workspace.clone();
+        let worker_id_clone = worker.id.clone();
+        tokio::spawn(async move {
+            let mut rx = val_tx_clone.subscribe();
+            while let Ok(event) = rx.recv().await {
+                if let Some(verdict) = event.get("verdict").and_then(|v| v.as_str()) {
+                    let _ = updates_tx_clone.send(WsUpdate::WorkerReview {
+                        workspace: workspace_clone.clone(),
+                        worker_id: worker_id_clone.clone(),
+                        verdict: verdict.to_string(),
+                        reviewer: event
+                            .get("reviewer")
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("General")
+                            .to_string(),
+                    });
+                }
+            }
+        });
+
+        match crate::buzz::review::run_review(
+            &workspace,
+            &worker,
+            &workspace_root,
+            conn,
+            Some(val_tx),
+        )
+        .await
+        {
+            Ok(review) => {
+                tracing::info!(
+                    "[review/{workspace}] review {} done verdict={}",
+                    review.id,
+                    review.verdict
+                );
+            }
+            Err(e) => {
+                tracing::error!("[review/{workspace}] review failed for {}: {e}", worker.id);
+            }
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({"status": "review_started"})),
+    )
+        .into_response()
+}
+
+/// GET /api/workspaces/{ws}/v2/workers/{id}/reviews — list reviews for a worker.
+async fn v2_list_worker_reviews(
+    Path((workspace, id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let store = match open_review_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    match store.list_for_worker(&workspace, &id) {
+        Ok(reviews) => Json(serde_json::json!({"reviews": reviews})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
+}
+
 // ── v2 Auto-bot API routes ─────────────────────────────────────────────
 
 /// Open an AutoBotStore against the given db_path.
@@ -5681,6 +5842,14 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/v2/workers/{worker_id}/requeue",
             post(v2_requeue_worker),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/workers/{worker_id}/review",
+            post(v2_request_review),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/workers/{worker_id}/reviews",
+            get(v2_list_worker_reviews),
         )
         // v2 auto-bot routes
         .route(

@@ -435,6 +435,160 @@
   width: 70%;
 }
 
+/* ── Reviews section ────────────────────────────────────────────────── */
+
+.reviewsSection {
+  border-top: 1px solid var(--border);
+  padding: var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.reviewsSectionTitle {
+  font-size: var(--font-size-small);
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.reviewCard {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reviewCardHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.reviewerName {
+  font-size: var(--font-size-small);
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.verdictBadge {
+  font-size: var(--font-size-meta);
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.verdictApprove {
+  color: var(--status-merged);
+  background: rgba(124, 92, 191, 0.12);
+}
+
+.verdictRequestChanges {
+  color: var(--status-failed);
+  background: rgba(232, 85, 85, 0.12);
+}
+
+.verdictComment {
+  color: var(--status-waiting);
+  background: rgba(245, 197, 66, 0.12);
+}
+
+.reviewTime {
+  font-size: var(--font-size-meta);
+  color: var(--text-faint);
+  margin-left: auto;
+}
+
+.reviewSummary {
+  font-size: var(--font-size-base);
+  color: var(--text);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.issueList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.issueItem {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.severityBadge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.severityBlocking {
+  color: var(--status-failed);
+  background: rgba(232, 85, 85, 0.12);
+}
+
+.severitySuggestion {
+  color: var(--status-waiting);
+  background: rgba(245, 197, 66, 0.12);
+}
+
+.severityNitpick {
+  color: var(--text-faint);
+  background: rgba(85, 85, 85, 0.12);
+}
+
+.issueFile {
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.issueDesc {
+  font-size: var(--font-size-small);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.workerMessageBox {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.workerMessageLabel {
+  font-size: var(--font-size-meta);
+  color: var(--text-faint);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.workerMessageText {
+  font-size: var(--font-size-small);
+  color: var(--text);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Error state */
 
 .errorCenter {

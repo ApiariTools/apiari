@@ -8,6 +8,7 @@ pub mod conversation;
 pub mod coordinator;
 pub mod daemon;
 pub mod orchestrator;
+pub mod review;
 pub mod schedule;
 pub mod signal;
 pub mod swarm_reconciler;

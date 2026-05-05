@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import WorkerDetailV2 from "../components/WorkerDetailV2/WorkerDetailV2";
 import * as api from "../api";
-import type { WorkerDetailV2 as WorkerDetailV2Data } from "../types";
+import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerReview } from "../types";
 
 vi.mock("../api");
 vi.mock("react-markdown", () => ({
@@ -51,6 +51,7 @@ const mockWorker: WorkerDetailV2Data = {
 
 beforeEach(() => {
   vi.mocked(api.getWorkerV2).mockResolvedValue(mockWorker);
+  vi.mocked(api.listWorkerReviews).mockResolvedValue([]);
 });
 
 describe("WorkerDetailV2", () => {
@@ -186,5 +187,103 @@ describe("WorkerDetailV2", () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const pills = await screen.findByTestId("property-pills");
     expect(pills).not.toHaveTextContent("Local tests ✓");
+  });
+
+  // ── Review feature tests ──────────────────────────────────────────────
+
+  it("shows 'Request Review' button when waiting and branch_ready", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "waiting",
+      label: "Ready for local review",
+      branch_ready: true,
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    expect(await screen.findByTestId("review-btn")).toBeInTheDocument();
+    expect(screen.getByTestId("review-btn")).toHaveTextContent("Request Review");
+  });
+
+  it("hides 'Request Review' button when state is running", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "running",
+      label: "Working",
+      branch_ready: false,
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    expect(screen.queryByTestId("review-btn")).not.toBeInTheDocument();
+  });
+
+  it("hides 'Request Review' button when waiting but branch_ready=false", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "waiting",
+      label: "Waiting",
+      branch_ready: false,
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    expect(screen.queryByTestId("review-btn")).not.toBeInTheDocument();
+  });
+
+  it("calls requestWorkerReview when review button clicked", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "waiting",
+      label: "Ready for local review",
+      branch_ready: true,
+    });
+    vi.mocked(api.requestWorkerReview).mockResolvedValue(undefined);
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    fireEvent.click(await screen.findByTestId("review-btn"));
+    await waitFor(() => {
+      expect(api.requestWorkerReview).toHaveBeenCalledWith("default", "w-abc");
+    });
+  });
+
+  it("renders reviews section when reviews exist", async () => {
+    const mockReview: WorkerReview = {
+      id: 1,
+      reviewer: "General",
+      verdict: "request_changes",
+      summary: "Missing error handling in the main function.",
+      issues: [
+        {
+          severity: "blocking",
+          file: "src/main.rs",
+          description: "Unwrap on line 42 will panic.",
+        },
+      ],
+      worker_message: "Please fix the unwrap on line 42.",
+      created_at: "2026-05-04T10:00:00Z",
+    };
+    vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const section = await screen.findByTestId("reviews-section");
+    expect(section).toBeInTheDocument();
+    expect(section).toHaveTextContent("General");
+    expect(section).toHaveTextContent("Changes requested");
+    expect(section).toHaveTextContent("Missing error handling");
+    expect(section).toHaveTextContent("blocking");
+    expect(section).toHaveTextContent("src/main.rs");
+    expect(section).toHaveTextContent("Please fix the unwrap");
+  });
+
+  it("renders approve verdict badge correctly", async () => {
+    const mockReview: WorkerReview = {
+      id: 2,
+      reviewer: "General",
+      verdict: "approve",
+      summary: "All changes look correct.",
+      issues: [],
+      worker_message: null,
+      created_at: "2026-05-04T10:00:00Z",
+    };
+    vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const section = await screen.findByTestId("reviews-section");
+    expect(section).toHaveTextContent("Approved");
+    expect(section).not.toHaveTextContent("Sent to worker");
   });
 });

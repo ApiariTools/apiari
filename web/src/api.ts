@@ -16,6 +16,7 @@ import type {
   WorkerBrief,
   WorkerV2,
   WorkerDetailV2,
+  WorkerReview,
   AutoBot,
   AutoBotDetail,
   AutoBotRun,
@@ -400,6 +401,18 @@ export async function createWorkerV2(
   });
   if (!res.ok) throw new Error(`create worker: ${res.status}`);
   return res.json();
+}
+
+export async function requestWorkerReview(workspace: string, workerId: string): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers/${workerId}/review`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`request review: ${res.status}`);
+}
+
+export async function listWorkerReviews(workspace: string, workerId: string): Promise<WorkerReview[]> {
+  const data = await get<{ reviews: WorkerReview[] }>(`/workspaces/${workspace}/v2/workers/${workerId}/reviews`);
+  return data.reviews;
 }
 
 // ── Auto Bot API ─────────────────────────────────────────────────────────

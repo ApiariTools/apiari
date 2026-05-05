@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { ExternalLink, MessageSquare } from 'lucide-react'
-import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, ContextBotContext } from '../../types'
-import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2 } from '../../api'
+import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, ContextBotContext } from '../../types'
+import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
 import styles from './WorkerDetailV2.module.css'
 
 export interface WorkerDetailV2Props {
@@ -131,9 +131,20 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [reviews, setReviews] = useState<WorkerReview[]>([])
+  const [reviewing, setReviewing] = useState(false)
   const eventsEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const pollRef = useRef<number | null>(null)
+
+  const loadReviews = useCallback(async () => {
+    try {
+      const r = await listWorkerReviews(workspace, workerId)
+      setReviews(r)
+    } catch {
+      // silently ignore
+    }
+  }, [workspace, workerId])
 
   const load = useCallback(async (initial = false) => {
     try {
@@ -153,6 +164,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     setLoading(true)
     setError(null)
     load(true)
+    loadReviews()
 
     pollRef.current = window.setInterval(() => {
       load(false)
@@ -164,7 +176,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
         pollRef.current = null
       }
     }
-  }, [load])
+  }, [load, loadReviews])
 
   // Auto-scroll to bottom when events arrive
   useEffect(() => {
@@ -222,6 +234,22 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     }
   }
 
+  const handleRequestReview = async () => {
+    if (reviewing) return
+    setReviewing(true)
+    try {
+      await requestWorkerReview(workspace, workerId)
+      // Re-fetch reviews after a short delay to catch fast completions
+      window.setTimeout(() => {
+        loadReviews()
+      }, 2000)
+    } catch (e) {
+      console.error('review request failed', e)
+    } finally {
+      setReviewing(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className={styles.container}>
@@ -254,6 +282,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
   const canCancel = ['running', 'waiting', 'queued'].includes(data.state)
   const canRequeue = data.state === 'failed' || data.state === 'abandoned'
+  const canReview = data.state === 'waiting' && data.branch_ready
 
   return (
     <div className={styles.container}>
@@ -340,6 +369,16 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
         <div className={styles.eventsEmpty}>No activity yet</div>
       )}
 
+      {/* Reviews section */}
+      {reviews.length > 0 && (
+        <div className={styles.reviewsSection} data-testid="reviews-section">
+          <div className={styles.reviewsSectionTitle}>Reviews</div>
+          {reviews.map((review) => (
+            <ReviewCard key={review.id} review={review} />
+          ))}
+        </div>
+      )}
+
       {/* Action bar */}
       <div className={styles.actionBar} data-testid="action-bar">
         <div className={styles.inputRow}>
@@ -366,8 +405,19 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
           </button>
         </div>
 
-        {(canCancel || canRequeue) && (
+        {(canCancel || canRequeue || canReview) && (
           <div className={styles.secondaryActions}>
+            {canReview && (
+              <button
+                className={styles.actionBtn}
+                onClick={handleRequestReview}
+                disabled={reviewing}
+                type="button"
+                data-testid="review-btn"
+              >
+                {reviewing ? 'Reviewing…' : 'Request Review'}
+              </button>
+            )}
             {canCancel && (
               <button
                 className={styles.actionBtnDanger}
@@ -389,6 +439,70 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Review card ──────────────────────────────────────────────────────────
+
+function verdictClass(verdict: string): string {
+  switch (verdict) {
+    case 'approve': return styles.verdictApprove
+    case 'request_changes': return styles.verdictRequestChanges
+    case 'comment': return styles.verdictComment
+    default: return styles.verdictComment
+  }
+}
+
+function verdictLabel(verdict: string): string {
+  switch (verdict) {
+    case 'approve': return 'Approved'
+    case 'request_changes': return 'Changes requested'
+    case 'comment': return 'Comment'
+    default: return verdict
+  }
+}
+
+function severityClass(severity: string): string {
+  switch (severity) {
+    case 'blocking': return styles.severityBlocking
+    case 'suggestion': return styles.severitySuggestion
+    case 'nitpick': return styles.severityNitpick
+    default: return styles.severityNitpick
+  }
+}
+
+function ReviewCard({ review }: { review: WorkerReview }) {
+  const time = formatTime(review.created_at)
+  return (
+    <div className={styles.reviewCard} data-testid="review-card">
+      <div className={styles.reviewCardHeader}>
+        <span className={styles.reviewerName}>{review.reviewer}</span>
+        <span className={`${styles.verdictBadge} ${verdictClass(review.verdict)}`}>
+          {verdictLabel(review.verdict)}
+        </span>
+        <span className={styles.reviewTime}>{time}</span>
+      </div>
+      <p className={styles.reviewSummary}>{review.summary}</p>
+      {review.issues.length > 0 && (
+        <ul className={styles.issueList}>
+          {review.issues.map((issue, i) => (
+            <li key={i} className={styles.issueItem}>
+              <span className={`${styles.severityBadge} ${severityClass(issue.severity)}`}>
+                {issue.severity}
+              </span>
+              <span className={styles.issueFile}>{issue.file}</span>
+              <span className={styles.issueDesc}>{issue.description}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {review.worker_message && (
+        <div className={styles.workerMessageBox}>
+          <div className={styles.workerMessageLabel}>Sent to worker</div>
+          <div className={styles.workerMessageText}>{review.worker_message}</div>
+        </div>
+      )}
     </div>
   )
 }
