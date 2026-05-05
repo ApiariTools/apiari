@@ -126,6 +126,7 @@ export function WorkerDetail({
 
   const taskTitle = detail?.task_title ?? worker.task_title;
   const taskStage = detail?.task_stage ?? worker.task_stage;
+  const taskLifecycleState = detail?.task_lifecycle_state ?? worker.task_lifecycle_state ?? taskStage;
   const taskRepo = detail?.task_repo ?? worker.task_repo;
   const latestAttempt = detail?.latest_attempt ?? worker.latest_attempt ?? null;
   const executionNote = detail?.execution_note ?? worker.execution_note;
@@ -274,7 +275,7 @@ export function WorkerDetail({
           )}
           {taskStage && (
             <span className={styles.reviewBadge} data-state="pending">
-              {taskStage}
+              {taskLifecycleState}
             </span>
           )}
           {worker.status === "stalled" && (
@@ -357,7 +358,10 @@ export function WorkerDetail({
           {infoTab === "task" && (
             <div className={styles.prose}>
               {taskTitle && <p><strong>Task:</strong> {taskTitle}</p>}
-              {taskStage && <p><strong>Lifecycle:</strong> {taskStage}</p>}
+              {taskLifecycleState && <p><strong>Lifecycle:</strong> {taskLifecycleState}</p>}
+              {taskStage && taskLifecycleState !== taskStage ? (
+                <p><strong>Internal stage:</strong> {taskStage}</p>
+              ) : null}
               {taskRepo && <p><strong>Repo:</strong> {taskRepo}</p>}
               {latestAttempt?.role ? (
                 <p><strong>Latest attempt:</strong> {latestAttempt.role} {latestAttempt.state}</p>

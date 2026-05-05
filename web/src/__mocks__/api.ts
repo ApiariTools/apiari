@@ -33,6 +33,7 @@ export const getTasks = vi.fn().mockResolvedValue([
     id: "task-1",
     title: "Tighten mobile card spacing",
     stage: "Human Review",
+    lifecycle_state: "Human Review",
     source: "manual",
     worker_id: "worker-1",
     pr_url: "https://github.com/example/apiari/pull/12",

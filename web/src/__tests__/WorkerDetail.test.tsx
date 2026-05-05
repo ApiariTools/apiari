@@ -24,6 +24,7 @@ const worker: Worker = {
   task_id: "task-1",
   task_title: "Tighten worker lifecycle",
   task_stage: "Human Review",
+  task_lifecycle_state: "Blocked",
   task_repo: "apiari",
   latest_attempt: {
     worker_id: "worker-1",
@@ -167,7 +168,9 @@ describe("WorkerDetail", () => {
     expect(screen.getByText(/Task:/)).toBeInTheDocument();
     expect(screen.getByText(/Tighten worker lifecycle/)).toBeInTheDocument();
     expect(screen.getByText(/Lifecycle:/)).toBeInTheDocument();
-    expect(screen.getAllByText(/Human Review/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Blocked/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Internal stage:/)).toBeInTheDocument();
+    expect(screen.getByText(/Human Review/)).toBeInTheDocument();
     expect(
       screen.getByText((_, el) => el?.textContent === "Repo: apiari"),
     ).toBeInTheDocument();

@@ -26,6 +26,7 @@ export interface Worker {
   task_id?: string | null;
   task_title?: string | null;
   task_stage?: string | null;
+  task_lifecycle_state?: string | null;
   task_repo?: string | null;
   latest_attempt?: TaskAttemptSummary | null;
   pr_url: string | null;
@@ -44,6 +45,7 @@ export interface Task {
   id: string;
   title: string;
   stage: string;
+  lifecycle_state: string;
   source?: string | null;
   worker_id?: string | null;
   pr_url?: string | null;

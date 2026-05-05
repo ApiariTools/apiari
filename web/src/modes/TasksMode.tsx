@@ -12,7 +12,16 @@ interface Props {
   onSelectWorker: (id: string) => void;
 }
 
-const ACTIVE_STAGES = ["Triage", "In Progress", "In AI Review", "Human Review"] as const;
+const ACTIVE_STAGES = [
+  "Triage",
+  "Ready",
+  "Running",
+  "Blocked",
+  "PR Open",
+  "AI Review",
+  "Changes Requested",
+  "Human Review",
+] as const;
 const TERMINAL_STAGES = ["Merged", "Dismissed"] as const;
 
 function formatTaskTime(value?: string | null) {
@@ -29,6 +38,8 @@ function formatTaskTime(value?: string | null) {
 
 function toneForStage(stage: string): "accent" | "success" | "neutral" | "danger" {
   if (stage === "Human Review") return "accent";
+  if (stage === "Blocked" || stage === "Changes Requested") return "danger";
+  if (stage === "PR Open" || stage === "AI Review") return "accent";
   if (stage === "Merged") return "success";
   if (stage === "Dismissed") return "danger";
   return "neutral";
@@ -50,12 +61,18 @@ function labelForAttemptRole(role?: string | null): string | null {
 }
 
 export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
-  const activeTasks = tasks.filter((task) => !TERMINAL_STAGES.includes(task.stage as (typeof TERMINAL_STAGES)[number]));
+  const taskState = (task: Task) => task.lifecycle_state || task.stage;
+  const activeTasks = tasks.filter(
+    (task) =>
+      !TERMINAL_STAGES.includes(taskState(task) as (typeof TERMINAL_STAGES)[number]),
+  );
   const terminalTasks = tasks
-    .filter((task) => TERMINAL_STAGES.includes(task.stage as (typeof TERMINAL_STAGES)[number]))
+    .filter((task) =>
+      TERMINAL_STAGES.includes(taskState(task) as (typeof TERMINAL_STAGES)[number]),
+    )
     .sort((a, b) => (b.resolved_at || b.updated_at).localeCompare(a.resolved_at || a.updated_at))
     .slice(0, 8);
-  const humanReviewCount = tasks.filter((task) => task.stage === "Human Review").length;
+  const humanReviewCount = tasks.filter((task) => taskState(task) === "Human Review").length;
   const openPrCount = tasks.filter((task) => Boolean(task.pr_url)).length;
 
   return (
@@ -89,7 +106,7 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
           <>
             <section className={styles.board}>
               {ACTIVE_STAGES.map((stage) => {
-                const stageTasks = activeTasks.filter((task) => task.stage === stage);
+                const stageTasks = activeTasks.filter((task) => taskState(task) === stage);
                 return (
                   <div key={stage} className={styles.column}>
                     <div className={styles.columnHeader}>
@@ -105,10 +122,13 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                             ? workers.find((worker) => worker.id === task.worker_id)
                             : null;
                           const latestAttempt = task.latest_attempt ?? null;
+                          const lifecycleState = taskState(task);
                           return (
                             <article key={task.id} className={styles.card}>
                               <div className={styles.cardTop}>
-                                <StatusBadge tone={toneForStage(task.stage)}>{task.stage}</StatusBadge>
+                                <StatusBadge tone={toneForStage(lifecycleState)}>
+                                  {lifecycleState}
+                                </StatusBadge>
                                 {task.repo ? <span className={styles.repo}>{task.repo}</span> : null}
                               </div>
                               <h3 className={styles.title}>{task.title}</h3>
@@ -162,11 +182,15 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                   <span>{terminalTasks.length} shown</span>
                 </div>
                 <div className={styles.historyList}>
-                  {terminalTasks.map((task) => (
+                  {terminalTasks.map((task) => {
+                    const lifecycleState = taskState(task);
+                    return (
                     <article key={task.id} className={styles.historyCard}>
                       <div className={styles.historyTop}>
                         <strong>{task.title}</strong>
-                        <StatusBadge tone={toneForStage(task.stage)}>{task.stage}</StatusBadge>
+                        <StatusBadge tone={toneForStage(lifecycleState)}>
+                          {lifecycleState}
+                        </StatusBadge>
                       </div>
                       <div className={styles.metaRow}>
                         {task.repo ? <span>repo: {task.repo}</span> : null}
@@ -178,7 +202,8 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                         </div>
                       ) : null}
                     </article>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             ) : null}

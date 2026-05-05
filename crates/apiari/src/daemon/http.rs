@@ -189,6 +189,7 @@ pub struct TaskView {
     pub id: String,
     pub title: String,
     pub stage: String,
+    pub lifecycle_state: String,
     pub source: Option<String>,
     pub worker_id: Option<String>,
     pub pr_url: Option<String>,
@@ -360,6 +361,44 @@ fn latest_attempt_view_for_worker(
         .map(|attempt| task_attempt_to_view(&attempt))
 }
 
+fn reviewer_changes_requested(attempt: &TaskAttemptView) -> bool {
+    if attempt.role != "reviewer" {
+        return false;
+    }
+    attempt
+        .detail
+        .as_deref()
+        .is_some_and(|detail| detail.contains("CHANGES_REQUESTED"))
+}
+
+fn derive_task_lifecycle_state(task: &Task, latest_attempt: Option<&TaskAttemptView>) -> String {
+    match task.stage {
+        crate::buzz::task::TaskStage::Triage => "Triage".to_string(),
+        crate::buzz::task::TaskStage::InProgress => {
+            match latest_attempt.map(|attempt| attempt.state.as_str()) {
+                Some("blocked") | Some("waiting") => "Blocked".to_string(),
+                Some("failed") | Some("cancelled") => "Ready".to_string(),
+                Some("running") | Some("created") | Some("preparing") => "Running".to_string(),
+                Some("succeeded") if task.pr_url.is_some() => "PR Open".to_string(),
+                _ if task.worker_id.is_some() => "Running".to_string(),
+                _ => "Ready".to_string(),
+            }
+        }
+        crate::buzz::task::TaskStage::InAiReview => {
+            if latest_attempt.is_some_and(reviewer_changes_requested) {
+                "Changes Requested".to_string()
+            } else if task.pr_url.is_some() {
+                "AI Review".to_string()
+            } else {
+                "PR Open".to_string()
+            }
+        }
+        crate::buzz::task::TaskStage::HumanReview => "Human Review".to_string(),
+        crate::buzz::task::TaskStage::Merged => "Merged".to_string(),
+        crate::buzz::task::TaskStage::Dismissed => "Dismissed".to_string(),
+    }
+}
+
 pub fn task_to_view(task: &Task) -> TaskView {
     task_to_view_with_attempt(task, None)
 }
@@ -388,6 +427,7 @@ fn task_to_view_with_attempt(task: &Task, latest_attempt: Option<TaskAttemptView
         id: task.id.clone(),
         title: task.title.clone(),
         stage: task.stage.as_str().to_string(),
+        lifecycle_state: derive_task_lifecycle_state(task, latest_attempt.as_ref()),
         source: task.source.clone(),
         worker_id: task.worker_id.clone(),
         pr_url: task.pr_url.clone(),
@@ -2648,6 +2688,8 @@ struct WorkerView {
     #[serde(skip_serializing_if = "Option::is_none")]
     task_stage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    task_lifecycle_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     task_repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_attempt: Option<TaskAttemptView>,
@@ -2899,6 +2941,7 @@ fn worker_view_from_task(workspace: &str, task: &crate::buzz::task::Task) -> Opt
     let latest_attempt = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
         .ok()
         .and_then(|store| latest_attempt_view_for_task(&store, &task.id));
+    let task_lifecycle_state = derive_task_lifecycle_state(task, latest_attempt.as_ref());
     Some(WorkerView {
         id: worker_id,
         workspace: workspace.to_string(),
@@ -2915,6 +2958,7 @@ fn worker_view_from_task(workspace: &str, task: &crate::buzz::task::Task) -> Opt
         task_id: Some(task.id.clone()),
         task_title: Some(task.title.clone()),
         task_stage: Some(task.stage.as_str().to_string()),
+        task_lifecycle_state: Some(task_lifecycle_state),
         task_repo: task.repo.clone(),
         latest_attempt,
         pr_url: task.pr_url.clone(),
@@ -2943,9 +2987,16 @@ fn worker_view_from_state(
     let overlay_pr_url = overlay.as_ref().and_then(|task| task.pr_url.clone());
     let overlay_pr_title = overlay.as_ref().and_then(|task| task.pr_title.clone());
     let overlay_status = overlay.as_ref().and_then(|task| task.status.clone());
+    let task_record = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+        .ok()
+        .and_then(|store| store.find_task_by_worker(workspace, &worker.id).ok())
+        .flatten();
     let latest_attempt = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
         .ok()
         .and_then(|store| latest_attempt_view_for_worker(&store, workspace, &worker.id));
+    let task_lifecycle_state = task_record
+        .as_ref()
+        .map(|task| derive_task_lifecycle_state(task, latest_attempt.as_ref()));
 
     WorkerView {
         id: worker.id.clone(),
@@ -2963,6 +3014,7 @@ fn worker_view_from_state(
         task_id: overlay_task_id,
         task_title: overlay_task_title,
         task_stage: overlay_task_stage,
+        task_lifecycle_state,
         task_repo: overlay_task_repo,
         latest_attempt,
         pr_url: worker
@@ -4681,6 +4733,7 @@ mod tests {
                 task_id: None,
                 task_title: None,
                 task_stage: None,
+                task_lifecycle_state: None,
                 task_repo: None,
                 latest_attempt: None,
                 pr_url: None,
@@ -4706,6 +4759,7 @@ mod tests {
                 task_id: None,
                 task_title: None,
                 task_stage: None,
+                task_lifecycle_state: None,
                 task_repo: None,
                 latest_attempt: None,
                 pr_url: None,
@@ -5940,5 +5994,77 @@ model = "sonnet"
                 .and_then(|value| value.as_str())
                 .is_some_and(|id| id.starts_with("research-"))
         );
+    }
+
+    #[test]
+    fn task_view_derives_ready_from_failed_in_progress_attempt() {
+        let task = crate::buzz::task::Task {
+            id: "task-ready".to_string(),
+            workspace: "apiari".to_string(),
+            title: "Retry mobile cards".to_string(),
+            stage: crate::buzz::task::TaskStage::InProgress,
+            source: Some("manual".to_string()),
+            source_url: None,
+            worker_id: Some("worker-1".to_string()),
+            pr_url: None,
+            pr_number: None,
+            repo: Some("apiari".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            resolved_at: None,
+            metadata: serde_json::json!({}),
+        };
+        let attempt = TaskAttemptView {
+            worker_id: "worker-1".to_string(),
+            role: "implementation".to_string(),
+            state: "failed".to_string(),
+            branch: None,
+            pr_url: None,
+            pr_number: None,
+            detail: Some("Worker closed without PR".to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            completed_at: Some(chrono::Utc::now().to_rfc3339()),
+        };
+
+        let view = task_to_view_with_attempt(&task, Some(attempt));
+        assert_eq!(view.stage, "In Progress");
+        assert_eq!(view.lifecycle_state, "Ready");
+    }
+
+    #[test]
+    fn task_view_derives_changes_requested_from_reviewer_verdict() {
+        let task = crate::buzz::task::Task {
+            id: "task-review".to_string(),
+            workspace: "apiari".to_string(),
+            title: "Review cards".to_string(),
+            stage: crate::buzz::task::TaskStage::InAiReview,
+            source: Some("manual".to_string()),
+            source_url: None,
+            worker_id: Some("reviewer-1".to_string()),
+            pr_url: Some("https://example.com/pr/12".to_string()),
+            pr_number: Some(12),
+            repo: Some("apiari".to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            resolved_at: None,
+            metadata: serde_json::json!({}),
+        };
+        let attempt = TaskAttemptView {
+            worker_id: "reviewer-1".to_string(),
+            role: "reviewer".to_string(),
+            state: "succeeded".to_string(),
+            branch: None,
+            pr_url: Some("https://example.com/pr/12".to_string()),
+            pr_number: Some(12),
+            detail: Some("Review verdict: CHANGES_REQUESTED".to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            completed_at: Some(chrono::Utc::now().to_rfc3339()),
+        };
+
+        let view = task_to_view_with_attempt(&task, Some(attempt));
+        assert_eq!(view.stage, "In AI Review");
+        assert_eq!(view.lifecycle_state, "Changes Requested");
     }
 }
