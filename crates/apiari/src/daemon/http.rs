@@ -4993,6 +4993,169 @@ async fn v2_requeue_worker(
     .into_response()
 }
 
+// ── Auto-requeue ───────────────────────────────────────────────────────
+
+/// Spawn a fresh swarm worker for `worker` with `review_feedback` injected into the prompt.
+/// Called automatically when `swarm send` fails after a review (e.g. agent process is dead).
+async fn auto_requeue_with_feedback(
+    workspace: &str,
+    worker: &crate::buzz::worker::Worker,
+    review_feedback: &str,
+    workspace_root: &std::path::Path,
+    db_path: &std::path::Path,
+    updates_tx: tokio::sync::broadcast::Sender<WsUpdate>,
+) {
+    let brief = match &worker.brief {
+        Some(b) => b.clone(),
+        None => {
+            tracing::warn!(
+                "[auto-requeue/{workspace}] {} has no brief — skipping",
+                worker.id
+            );
+            return;
+        }
+    };
+    let repo = match &worker.repo {
+        Some(r) => r.clone(),
+        None => {
+            tracing::warn!(
+                "[auto-requeue/{workspace}] {} has no repo — skipping",
+                worker.id
+            );
+            return;
+        }
+    };
+
+    let mut prompt = format_brief_as_prompt(&brief);
+    prompt.push_str(&format!(
+        "\n\n# Review Feedback (Previous Attempt)\n\nA reviewer inspected your last attempt and requested changes. Address all of the following before marking the work done:\n\n{review_feedback}"
+    ));
+
+    let tmp_id = uuid::Uuid::new_v4().to_string();
+    let prompt_file = std::env::temp_dir().join(format!("worker-auto-requeue-{tmp_id}.txt"));
+    if let Err(e) = std::fs::write(&prompt_file, &prompt) {
+        tracing::warn!("[auto-requeue/{workspace}] failed to write prompt file: {e}");
+        return;
+    }
+
+    let output = tokio::process::Command::new("swarm")
+        .arg("--dir")
+        .arg(workspace_root)
+        .arg("create")
+        .arg("--repo")
+        .arg(&repo)
+        .arg("--prompt-file")
+        .arg(&prompt_file)
+        .output()
+        .await;
+
+    let _ = std::fs::remove_file(&prompt_file);
+
+    let new_id = match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .map(|l| strip_ansi(l).trim().to_string())
+                .find(|l| {
+                    !l.is_empty()
+                        && l.contains('-')
+                        && !l.contains(' ')
+                        && !l.contains('=')
+                        && !l.contains(':')
+                })
+                .unwrap_or_default()
+        }
+        Ok(out) => {
+            tracing::warn!(
+                "[auto-requeue/{workspace}] swarm create failed for {}: {}",
+                worker.id,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("[auto-requeue/{workspace}] failed to run swarm: {e}");
+            return;
+        }
+    };
+
+    if new_id.is_empty() {
+        tracing::warn!(
+            "[auto-requeue/{workspace}] swarm create returned no ID for {}",
+            worker.id
+        );
+        return;
+    }
+
+    // Create DB record for the new worker.
+    let store = match open_worker_store_from_path(db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("[auto-requeue/{workspace}] failed to open worker store: {e}");
+            return;
+        }
+    };
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let goal = brief.get("goal").and_then(|v| v.as_str()).map(String::from);
+    let review_mode = brief
+        .get("review_mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local_first")
+        .to_string();
+    let new_worker = crate::buzz::worker::Worker {
+        id: new_id.clone(),
+        workspace: workspace.to_string(),
+        state: crate::buzz::worker::WorkerState::Queued,
+        brief: Some(brief),
+        repo: Some(repo),
+        branch: None,
+        goal,
+        tests_passing: false,
+        branch_ready: false,
+        pr_url: None,
+        pr_approved: false,
+        is_stalled: false,
+        revision_count: worker.revision_count + 1,
+        review_mode,
+        blocked_reason: None,
+        last_output_at: None,
+        state_entered_at: now.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+        label: String::new(),
+    };
+    let _ = store.upsert(&new_worker);
+    let _ = store.transition(
+        workspace,
+        &worker.id,
+        crate::buzz::worker::WorkerState::Abandoned,
+    );
+
+    let _ = updates_tx.send(WsUpdate::WorkerV2State {
+        workspace: workspace.to_string(),
+        worker_id: new_id.clone(),
+        state: "queued".to_string(),
+        label: "Queued".to_string(),
+        properties: serde_json::json!({"revision_count": new_worker.revision_count}),
+    });
+    let _ = updates_tx.send(WsUpdate::WorkerV2State {
+        workspace: workspace.to_string(),
+        worker_id: worker.id.clone(),
+        state: "abandoned".to_string(),
+        label: "Abandoned".to_string(),
+        properties: serde_json::json!({}),
+    });
+
+    tracing::info!(
+        "[auto-requeue/{workspace}] {} → {} (revision {}, with review feedback)",
+        worker.id,
+        new_id,
+        new_worker.revision_count
+    );
+}
+
 // ── v2 Worker review API routes ────────────────────────────────────────
 
 /// Open a ReviewStore against the given db_path.
@@ -5101,12 +5264,33 @@ async fn v2_request_review(
         )
         .await
         {
-            Ok(review) => {
+            Ok(outcome) => {
                 tracing::info!(
                     "[review/{workspace}] review {} done verdict={}",
-                    review.id,
-                    review.verdict
+                    outcome.review.id,
+                    outcome.review.verdict
                 );
+
+                // Auto-requeue when the worker message couldn't be delivered.
+                // This happens when the agent process has exited (e.g. after a reboot).
+                if !outcome.send_succeeded
+                    && outcome.review.verdict == "request_changes"
+                    && let Some(ref msg) = outcome.review.worker_message
+                {
+                    tracing::info!(
+                        "[review/{workspace}] send failed — auto-requeueing {}",
+                        worker.id
+                    );
+                    auto_requeue_with_feedback(
+                        &workspace,
+                        &worker,
+                        msg,
+                        &workspace_root,
+                        &db_path,
+                        updates_tx.clone(),
+                    )
+                    .await;
+                }
             }
             Err(e) => {
                 tracing::error!("[review/{workspace}] review failed for {}: {e}", worker.id);
