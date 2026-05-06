@@ -259,6 +259,14 @@ describe("WorkerDetailV2", () => {
     expect(textarea).not.toBeDisabled();
   });
 
+  it("input is disabled when state is failed", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "failed", label: "Failed" });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("action-bar");
+    const textarea = screen.getByPlaceholderText("Worker is not running");
+    expect(textarea).toBeDisabled();
+  });
+
   it("input is hidden when state is merged", async () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "merged", label: "Merged" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);

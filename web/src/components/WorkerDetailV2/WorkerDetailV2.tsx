@@ -611,7 +611,9 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     (data.state === 'waiting' && hasRequestChangesReview)
   const canReview = data.state === 'waiting' && data.branch_ready
   const isTerminal = data.state === 'merged' || data.state === 'abandoned'
-  const inputDisabled = isTerminal
+  // Only allow sending when the agent process is actually running
+  const canSend = ['running', 'waiting', 'queued'].includes(data.state)
+  const inputDisabled = !canSend
 
   return (
     <div className={styles.container}>
@@ -883,7 +885,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             <input
               ref={textareaRef}
               className={styles.instructionInput}
-              placeholder={data.state === 'running' ? 'Send async instruction…' : inputDisabled ? 'Worker finished' : 'Send an instruction…'}
+              placeholder={data.state === 'running' ? 'Send async instruction…' : canSend ? 'Send an instruction…' : 'Worker is not running'}
               disabled={inputDisabled}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
             />
