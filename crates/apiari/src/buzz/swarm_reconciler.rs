@@ -365,21 +365,25 @@ impl SwarmReconciler {
             self.emit_event(worker)?;
         }
 
-        // 2. Periodically check if PR was closed by the user on GitHub.
-        //    If CLOSED, tear down the worktree and mark as Done.
+        // 2. Periodically check if PR was merged or closed on GitHub.
+        //    If MERGED or CLOSED, tear down the worktree and mark as Done.
         let is_active = matches!(
             worker.state,
-            WorkerState::Running | WorkerState::Waiting | WorkerState::Stalled | WorkerState::Queued
+            WorkerState::Running
+                | WorkerState::Waiting
+                | WorkerState::Stalled
+                | WorkerState::Queued
         );
         if is_active
             && let Some(pr_url) = &worker.pr_url
             && self.should_check_pr_now(&worker.id)
-            && let Some(state) = self.query_pr_state(pr_url)
-            && state == "CLOSED"
+            && let Some(pr_state) = self.query_pr_state(pr_url)
+            && (pr_state == "CLOSED" || pr_state == "MERGED")
         {
             info!(
-                "[reconciler] {} PR closed → closing worktree + marking done",
-                worker.id
+                "[reconciler] {} PR {} → closing worktree + marking done",
+                worker.id,
+                pr_state.to_lowercase()
             );
             self.close_swarm_worker(&worker.id);
             self.do_transition(worker, WorkerState::Done)?;
