@@ -421,6 +421,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
   const [reviews, setReviews] = useState<WorkerReview[]>([])
   const [reviewing, setReviewing] = useState(false)
   const [activeTab, setActiveTab] = useState<Tab>('timeline')
@@ -505,12 +506,14 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     if (!message || sending) return
 
     setSending(true)
+    setSendError(null)
     try {
       await sendWorkerMessageV2(workspace, workerId, message)
       input.value = ''
       await load(false)
     } catch (e) {
       console.error('send failed', e)
+      setSendError(e instanceof Error ? e.message : 'Failed to send message')
     } finally {
       setSending(false)
     }
@@ -895,6 +898,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
               <ArrowUp size={14} />
             </button>
           </div>
+          {sendError && <div className={styles.sendError}>{sendError}</div>}
         </div>
       )}
     </div>

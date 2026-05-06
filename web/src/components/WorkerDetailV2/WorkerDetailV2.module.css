@@ -981,6 +981,12 @@
   opacity: 0.5;
 }
 
+.sendError {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--red, #e85555);
+}
+
 .sendIconBtn {
   display: inline-flex;
   align-items: center;
