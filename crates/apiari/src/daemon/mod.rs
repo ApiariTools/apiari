@@ -5897,30 +5897,52 @@ fn prompt_keywords(text: &str) -> Vec<String> {
     keywords
 }
 
+fn list_repo_files(repo_root: &Path) -> Vec<String> {
+    // Try rg first (faster), fall back to find
+    let rg_out = std::process::Command::new("rg")
+        .args(["--files"])
+        .current_dir(repo_root)
+        .output();
+    if let Ok(out) = rg_out {
+        if out.status.success() {
+            return String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+        }
+    }
+    // Fall back to find
+    let find_out = std::process::Command::new("find")
+        .args([".", "-type", "f", "-not", "-path", "./.git/*"])
+        .current_dir(repo_root)
+        .output();
+    if let Ok(out) = find_out {
+        if out.status.success() {
+            return String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|l| l.trim().trim_start_matches("./").to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 fn likely_files_from_repo(repo_root: &Path, text: &str) -> Vec<String> {
     let keywords = prompt_keywords(text);
     if keywords.is_empty() {
         return Vec::new();
     }
 
-    let output = std::process::Command::new("rg")
-        .args(["--files"])
-        .current_dir(repo_root)
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
+    let files = list_repo_files(repo_root);
+    if files.is_empty() {
         return Vec::new();
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
     let mut scored = Vec::new();
-    for line in stdout.lines() {
-        let path = line.trim();
-        if path.is_empty() {
-            continue;
-        }
+    for path in &files {
+        let path = path.as_str();
         let lower = path.to_ascii_lowercase();
         let mut score = 0_i32;
         for keyword in &keywords {

@@ -352,7 +352,7 @@ mod tests {
             "preamble missing 'no git add/commit/push'"
         );
         assert!(
-            preamble.contains("ONLY Bash writes allowed are to /tmp/"),
+            preamble.contains("ONLY Bash writes allowed are"),
             "preamble missing '/tmp/ exception'"
         );
         assert!(

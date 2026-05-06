@@ -179,7 +179,7 @@ services = ["sentry"]
         migrate_one("mgm", &path).unwrap();
 
         let migrated = std::fs::read_to_string(&path).unwrap();
-        assert!(migrated.contains("config_version = 3"));
+        assert!(migrated.contains("config_version = 4"));
         assert!(migrated.contains("[watchers.sentry]"));
         assert!(migrated.contains("org = \"josh-holtz\""));
         assert!(path.with_file_name("mgm.toml.bak").exists());
@@ -201,7 +201,7 @@ root = "/tmp/apiari"
         migrate_one("apiari", &path).unwrap();
 
         let migrated = std::fs::read_to_string(&path).unwrap();
-        assert!(migrated.contains("config_version = 3"));
+        assert!(migrated.contains("config_version = 4"));
         assert!(path.with_file_name("apiari.toml.bak").exists());
     }
 
