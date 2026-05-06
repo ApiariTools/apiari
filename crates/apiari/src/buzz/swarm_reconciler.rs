@@ -154,9 +154,12 @@ pub struct SwarmReconcilerConfig {
 /// The actual reconciler logic — separated from the task for testability.
 pub struct SwarmReconciler {
     workspace: String,
+    workspace_root: PathBuf,
     swarm_dir: PathBuf,
     store: WorkerStore,
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    /// Tracks when we last checked each worker's PR state via `gh pr view`.
+    last_pr_check: std::sync::Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl SwarmReconciler {
@@ -168,9 +171,11 @@ impl SwarmReconciler {
         let store = WorkerStore::new(conn)?;
         Ok(Self {
             workspace: config.workspace,
+            workspace_root: config.workspace_root,
             swarm_dir,
             store,
             event_tx: config.event_tx,
+            last_pr_check: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -234,11 +239,63 @@ impl SwarmReconciler {
         Ok(())
     }
 
+    /// Returns `true` if enough time has passed since the last PR state check for
+    /// this worker (rate-limits `gh pr view` calls to at most once per 5 minutes).
+    fn should_check_pr_now(&self, worker_id: &str) -> bool {
+        let threshold = std::time::Duration::from_secs(5 * 60);
+        let now = std::time::Instant::now();
+        let mut map = self.last_pr_check.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(last) = map.get(worker_id)
+            && now.duration_since(*last) < threshold
+        {
+            return false;
+        }
+        map.insert(worker_id.to_string(), now);
+        true
+    }
+
+    /// Query PR state via `gh pr view`. Returns `"MERGED"`, `"CLOSED"`, `"OPEN"`, or `None`.
+    fn query_pr_state(&self, pr_url: &str) -> Option<String> {
+        let out = std::process::Command::new("gh")
+            .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
+            .output()
+            .ok()?;
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if s.is_empty() { None } else { Some(s) }
+        } else {
+            None
+        }
+    }
+
+    /// Run `swarm --dir {workspace_root} close {worker_id}` to tear down the worktree.
+    fn close_swarm_worker(&self, worker_id: &str) {
+        let root = self.workspace_root.to_string_lossy().to_string();
+        match std::process::Command::new("swarm")
+            .args(["--dir", &root, "close", worker_id])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                info!("[reconciler] closed swarm worktree for {worker_id}");
+            }
+            Ok(out) => {
+                warn!(
+                    "[reconciler] swarm close {} failed: {}",
+                    worker_id,
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            Err(e) => {
+                warn!("[reconciler] failed to run swarm close for {worker_id}: {e}");
+            }
+        }
+    }
+
     /// Handle a worker that was in the DB but has disappeared from swarm state.json.
     ///
     /// Swarm removes worktrees on close — there is no "merged" phase. We detect
-    /// merges by querying `gh pr view` and fall back to "abandoned" for workers
-    /// without a merged PR (after a brief grace period to avoid false positives).
+    /// merges/closures by querying `gh pr view` and fall back to "abandoned" for
+    /// workers without a merged/closed PR (after a brief grace period).
     fn apply_disappeared(&self, worker: &Worker) -> Result<()> {
         // Only act on non-terminal active states.
         match worker.state {
@@ -256,8 +313,12 @@ impl SwarmReconciler {
                 .output();
             if let Ok(out) = output {
                 let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if state == "MERGED" {
-                    info!("[reconciler] {} PR merged → done", worker.id);
+                if state == "MERGED" || state == "CLOSED" {
+                    info!(
+                        "[reconciler] {} PR {} → done",
+                        worker.id,
+                        state.to_lowercase()
+                    );
                     self.do_transition(worker, WorkerState::Done)?;
                     return Ok(());
                 }
@@ -304,7 +365,28 @@ impl SwarmReconciler {
             self.emit_event(worker)?;
         }
 
-        // 2. State-specific transitions
+        // 2. Periodically check if PR was closed by the user on GitHub.
+        //    If CLOSED, tear down the worktree and mark as Done.
+        let is_active = matches!(
+            worker.state,
+            WorkerState::Running | WorkerState::Waiting | WorkerState::Stalled | WorkerState::Queued
+        );
+        if is_active
+            && let Some(pr_url) = &worker.pr_url
+            && self.should_check_pr_now(&worker.id)
+            && let Some(state) = self.query_pr_state(pr_url)
+            && state == "CLOSED"
+        {
+            info!(
+                "[reconciler] {} PR closed → closing worktree + marking done",
+                worker.id
+            );
+            self.close_swarm_worker(&worker.id);
+            self.do_transition(worker, WorkerState::Done)?;
+            return Ok(());
+        }
+
+        // 3. State-specific transitions
         match worker.state {
             WorkerState::Queued => {
                 if phase == "running" {
@@ -590,9 +672,11 @@ mod tests {
 
         SwarmReconciler {
             workspace: "test".to_string(),
+            workspace_root: workspace_root.clone(),
             swarm_dir: workspace_root.join(".swarm"),
             store,
             event_tx: None,
+            last_pr_check: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -859,5 +943,18 @@ mod tests {
         let updated = r.store.get("test", "w-fresh").unwrap().unwrap();
         // Still waiting — grace period not exceeded
         assert_eq!(updated.state, WorkerState::Waiting);
+    }
+
+    #[test]
+    fn should_check_pr_now_rate_limits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        // First call: always returns true
+        assert!(r.should_check_pr_now("w1"));
+        // Immediate second call: rate-limited, returns false
+        assert!(!r.should_check_pr_now("w1"));
+        // Different worker: returns true
+        assert!(r.should_check_pr_now("w2"));
     }
 }
