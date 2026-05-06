@@ -160,6 +160,16 @@ export function WorkerDetail({
               )}
             </div>
           ))}
+          {sending && (
+            <div className={styles.msg}>
+              <div className={styles.msgMeta}>
+                <strong>{worker.id}</strong>
+              </div>
+              <div className={styles.thinking}>
+                <span className={styles.thinkingDots}><span /><span /><span /></span>
+              </div>
+            </div>
+          )}
           <div ref={bottomRef} />
         </div>
         <ChatInput
