@@ -2570,6 +2570,80 @@ mod tests {
     }
 
     #[test]
+    fn apply_pr_poll_results_auto_closes_closed_pr() {
+        let mut workspaces = HashMap::new();
+        let ws_path = PathBuf::from("/tmp/ws");
+        let ws = test_workspace("/tmp/ws", vec!["w-1"]);
+        workspaces.insert(ws_path.clone(), ws);
+
+        let results = vec![PrPollResult {
+            worker_id: "w-1".to_string(),
+            workspace_path: ws_path.clone(),
+            pr: PrInfo {
+                number: 42,
+                title: "closed pr".to_string(),
+                state: "CLOSED".to_string(),
+                url: "https://github.com/test/repo/pull/42".to_string(),
+            },
+            is_new: false,
+        }];
+
+        let mut state_dirty = false;
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        apply_pr_poll_results(results, &mut workspaces, &mut state_dirty, &event_tx);
+
+        // Worker should be removed from workspace
+        assert!(workspaces.get(&ws_path).unwrap().workers.is_empty());
+        assert!(state_dirty);
+
+        // Should have broadcast a StateChanged event
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            DaemonResponse::StateChanged { worktree_id, phase } => {
+                assert_eq!(worktree_id, "w-1");
+                assert_eq!(phase, WorkerPhase::Completed);
+            }
+            other => panic!("expected StateChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn apply_pr_poll_results_skips_close_for_closed_pr_when_disabled() {
+        let mut workspaces = HashMap::new();
+        let ws_path = PathBuf::from("/tmp/ws");
+        let mut ws = test_workspace("/tmp/ws", vec!["w-1"]);
+        ws.close_on_pr_merge = false;
+        workspaces.insert(ws_path.clone(), ws);
+
+        let results = vec![PrPollResult {
+            worker_id: "w-1".to_string(),
+            workspace_path: ws_path.clone(),
+            pr: PrInfo {
+                number: 42,
+                title: "closed pr".to_string(),
+                state: "CLOSED".to_string(),
+                url: "https://github.com/test/repo/pull/42".to_string(),
+            },
+            is_new: false,
+        }];
+
+        let mut state_dirty = false;
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        apply_pr_poll_results(results, &mut workspaces, &mut state_dirty, &event_tx);
+
+        // Worker should still exist — not auto-closed
+        let worker = workspaces
+            .get(&ws_path)
+            .unwrap()
+            .workers
+            .get("w-1")
+            .expect("worker should still exist");
+        assert_eq!(worker.pr.as_ref().unwrap().state, "CLOSED");
+        assert_eq!(worker.phase, WorkerPhase::Running);
+        assert!(state_dirty);
+    }
+
+    #[test]
     fn poll_prs_background_returns_empty_for_no_repo() {
         // PrPollJob with nonexistent repo_path — gh will fail, should return empty
         let jobs = vec![PrPollJob {

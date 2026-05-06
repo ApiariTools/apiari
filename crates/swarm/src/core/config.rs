@@ -9,7 +9,7 @@ pub struct SwarmConfig {
     pub default_agent: Option<String>,
 
     /// When true (the default), workers are automatically closed when their PR
-    /// is merged. Set to false to keep the worker alive after merge.
+    /// is merged or closed without merge. Set to false to keep the worker alive.
     #[serde(default = "default_true")]
     pub close_on_pr_merge: bool,
 }

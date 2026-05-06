@@ -218,13 +218,17 @@ impl SwarmReconciler {
             _ => return Ok(()), // already terminal, nothing to do
         }
 
-        // If worker had a PR, check if it merged via gh CLI.
+        // If worker had a PR, check if it merged or was closed via gh CLI.
         if let Some(pr_url) = &worker.pr_url {
             let output = std::process::Command::new("gh")
                 .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
                 .output();
             if let Ok(out) = output {
-                let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let state = if out.status.success() {
+                    String::from_utf8_lossy(&out.stdout).trim().to_string()
+                } else {
+                    String::new()
+                };
                 if state == "MERGED" {
                     info!(
                         "[reconciler] {} PR merged, transitioning to merged",
@@ -240,8 +244,8 @@ impl SwarmReconciler {
                     self.do_transition(worker, WorkerState::Abandoned)?;
                     return Ok(());
                 }
+                // gh exited non-zero or returned unrecognized state — don't know, skip
             }
-            // gh failed or returned non-MERGED/non-CLOSED — treat as "don't know, skip"
         }
 
         // No PR or PR not merged — worker disappeared without merging.
@@ -864,5 +868,119 @@ mod tests {
         let updated = r.store.get("test", "w-fresh").unwrap().unwrap();
         // Still waiting — grace period not exceeded
         assert_eq!(updated.state, WorkerState::Waiting);
+    }
+
+    #[test]
+    fn apply_disappeared_closed_pr_transitions_to_abandoned() {
+        // Write a fake `gh` script that outputs "CLOSED" with exit 0
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_gh = tmp.path().join("gh");
+        std::fs::write(&fake_gh, "#!/bin/sh\necho CLOSED\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w-closed");
+        w.state = WorkerState::Running;
+        w.pr_url = Some("https://github.com/test/repo/pull/99".to_string());
+        w.state_entered_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        r.store.upsert(&w).unwrap();
+
+        // Prepend fake gh dir to PATH so our script is found first
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        // SAFETY: single-threaded test
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!("{}:{}", tmp.path().display(), original_path),
+            );
+        }
+
+        r.apply_disappeared(&w).unwrap();
+
+        // SAFETY: single-threaded test
+        unsafe { std::env::set_var("PATH", &original_path) };
+
+        let updated = r.store.get("test", "w-closed").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Abandoned);
+    }
+
+    #[test]
+    fn apply_disappeared_merged_pr_transitions_to_merged() {
+        // Write a fake `gh` script that outputs "MERGED" with exit 0
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_gh = tmp.path().join("gh");
+        std::fs::write(&fake_gh, "#!/bin/sh\necho MERGED\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w-merged");
+        w.state = WorkerState::Running;
+        w.pr_url = Some("https://github.com/test/repo/pull/100".to_string());
+        w.state_entered_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        r.store.upsert(&w).unwrap();
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        // SAFETY: single-threaded test
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!("{}:{}", tmp.path().display(), original_path),
+            );
+        }
+
+        r.apply_disappeared(&w).unwrap();
+
+        // SAFETY: single-threaded test
+        unsafe { std::env::set_var("PATH", &original_path) };
+
+        let updated = r.store.get("test", "w-merged").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Merged);
+    }
+
+    #[test]
+    fn apply_disappeared_gh_failure_falls_through_to_grace_period() {
+        // Write a fake `gh` script that exits non-zero
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_gh = tmp.path().join("gh");
+        std::fs::write(&fake_gh, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w-gh-fail");
+        w.state = WorkerState::Running;
+        w.pr_url = Some("https://github.com/test/repo/pull/101".to_string());
+        // Fresh enough to be within grace period
+        w.state_entered_at = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        r.store.upsert(&w).unwrap();
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        // SAFETY: single-threaded test
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!("{}:{}", tmp.path().display(), original_path),
+            );
+        }
+
+        r.apply_disappeared(&w).unwrap();
+
+        // SAFETY: single-threaded test
+        unsafe { std::env::set_var("PATH", &original_path) };
+
+        // gh failed → fell through to grace-period logic → still Running (too fresh)
+        let updated = r.store.get("test", "w-gh-fail").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Running);
     }
 }
