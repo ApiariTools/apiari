@@ -80,30 +80,6 @@ fn apply_token_controls_settings(
     serde_json::to_string(&obj).ok().or_else(|| base.clone())
 }
 
-/// Build env vars for Codex subprocesses from token controls.
-fn build_codex_env_vars(controls: &crate::config::TokenControls) -> Vec<(String, String)> {
-    let mut vars = Vec::new();
-    if let Some(v) = controls.max_thinking_tokens {
-        vars.push(("MAX_THINKING_TOKENS".to_owned(), v.to_string()));
-    }
-    if let Some(v) = controls.autocompact_pct {
-        vars.push(("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE".to_owned(), v.to_string()));
-    }
-    if let Some(v) = controls.bash_max_output {
-        vars.push(("BASH_MAX_OUTPUT_LENGTH".to_owned(), v.to_string()));
-    }
-    vars
-}
-
-/// Build config_overrides for Codex subprocesses from token controls.
-fn build_codex_config_overrides(controls: &crate::config::TokenControls) -> Vec<(String, String)> {
-    let mut overrides = Vec::new();
-    if let Some(v) = controls.max_output_tokens {
-        overrides.push(("model.maxTokens".to_owned(), v.to_string()));
-    }
-    overrides
-}
-
 /// Reduce first-turn workspace context for Codex/Gemini.
 ///
 /// Claude can tolerate the full expanded skills prompt because it has a
@@ -715,9 +691,6 @@ impl Coordinator {
             .as_ref()
             .and_then(|hooks| hooks.pre_turn());
 
-        let codex_env_vars = build_codex_env_vars(&self.token_controls);
-        let codex_config_overrides = build_codex_config_overrides(&self.token_controls);
-
         let mut execution = if let Some(ref sid) = self.session_id
             && matches!(
                 self.execution_policy,
@@ -732,7 +705,6 @@ impl Coordinator {
                         images: image_paths.to_vec(),
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
-                        env_vars: codex_env_vars,
                         ..Default::default()
                     },
                 )
@@ -759,8 +731,6 @@ impl Coordinator {
                             crate::config::BeeExecutionPolicy::Autonomous
                         ),
                         working_dir: self.working_dir.clone(),
-                        env_vars: codex_env_vars,
-                        config_overrides: codex_config_overrides,
                         ..Default::default()
                     },
                 )
@@ -1914,26 +1884,5 @@ mod tests {
         let opts = coord.build_options(&store).unwrap();
         assert_eq!(opts.effort.as_deref(), Some("low"));
         assert_eq!(opts.max_tokens, Some(2048));
-    }
-
-    #[test]
-    fn test_build_codex_config_overrides_includes_max_tokens() {
-        let controls = crate::config::TokenControls {
-            max_output_tokens: Some(4096),
-            ..Default::default()
-        };
-        let overrides = build_codex_config_overrides(&controls);
-        assert!(
-            overrides
-                .iter()
-                .any(|(k, v)| k == "model.maxTokens" && v == "4096")
-        );
-    }
-
-    #[test]
-    fn test_build_codex_env_vars_empty_when_no_controls() {
-        let controls = crate::config::TokenControls::default();
-        let vars = build_codex_env_vars(&controls);
-        assert!(vars.is_empty());
     }
 }
