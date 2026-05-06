@@ -6329,13 +6329,13 @@ pub async fn start_http_server(
     let state = HttpState {
         graph: Arc::new(RwLock::new(graph)),
         yaml_path: Arc::new(yaml_path),
-        db_path: Arc::new(db_path),
-        workspace: Arc::new(workspace),
+        db_path: Arc::new(db_path.clone()),
+        workspace: Arc::new(workspace.clone()),
         updates_tx: updates_tx.clone(),
         signal_tx,
         chat_tx,
         cancel_tx,
-        worker_manager: Arc::new(WorkerManager::new()),
+        worker_manager: Arc::new(WorkerManager::new(db_path, workspace)),
     };
 
     let app = Router::new()
@@ -7273,7 +7273,10 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
-            worker_manager: Arc::new(WorkerManager::new()),
+            worker_manager: Arc::new(WorkerManager::new(
+                crate::config::db_path(),
+                "apiari".to_string(),
+            )),
         };
 
         let response = send_workspace_chat(
@@ -8156,7 +8159,10 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
-            worker_manager: Arc::new(WorkerManager::new()),
+            worker_manager: Arc::new(WorkerManager::new(
+                crate::config::db_path(),
+                "apiari".to_string(),
+            )),
         };
 
         let followups = list_workspace_followups(Path("apiari".to_string())).await.0;
@@ -8222,7 +8228,10 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
-            worker_manager: Arc::new(WorkerManager::new()),
+            worker_manager: Arc::new(WorkerManager::new(
+                crate::config::db_path(),
+                "apiari".to_string(),
+            )),
         };
 
         let response = cancel_workspace_bot(
@@ -8477,7 +8486,10 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
-            worker_manager: Arc::new(WorkerManager::new()), // empty live map
+            worker_manager: Arc::new(WorkerManager::new(
+                db_path.to_path_buf(),
+                "apiari".to_string(),
+            )),
         }
     }
 
@@ -9119,7 +9131,10 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
-            worker_manager: Arc::new(WorkerManager::new()),
+            worker_manager: Arc::new(WorkerManager::new(
+                crate::config::db_path(),
+                "apiari".to_string(),
+            )),
         };
 
         let resp = v2_cancel_worker(Path(("ws".to_string(), "w-1".to_string())), State(state))

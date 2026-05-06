@@ -30,12 +30,16 @@ struct LiveWorker {
 /// Manages all in-flight workers: git worktrees + agent processes.
 pub struct WorkerManager {
     live: Arc<Mutex<HashMap<String, LiveWorker>>>,
+    db_path: PathBuf,
+    workspace: String,
 }
 
 impl WorkerManager {
-    pub fn new() -> Self {
+    pub fn new(db_path: PathBuf, workspace: String) -> Self {
         Self {
             live: Arc::new(Mutex::new(HashMap::new())),
+            db_path,
+            workspace,
         }
     }
 
@@ -137,6 +141,20 @@ impl WorkerManager {
             &kind,
             &repo_path,
             &worktree_path,
+        );
+
+        // Write worker record to SQLite so HTTP handlers (v2_send_message etc.)
+        // can find it. Without this the worker exists in state.json but is
+        // invisible to all API endpoints.
+        upsert_worker_db_record(
+            &self.db_path,
+            &self.workspace,
+            &worker_id,
+            &repo_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            &prompt_copy,
         );
 
         // Spawn agent + supervisor task.
@@ -303,6 +321,53 @@ impl WorkerManager {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+/// Insert a minimal Worker row into SQLite so HTTP handlers can find the worker.
+/// The v2_send_message handler reads from this DB — if the row is missing the
+/// worker is invisible to the API even though it's in state.json.
+fn upsert_worker_db_record(
+    db_path: &Path,
+    workspace: &str,
+    worker_id: &str,
+    repo: &str,
+    prompt: &str,
+) {
+    let Ok(store) = crate::buzz::worker::WorkerStore::open(db_path) else {
+        tracing::warn!(worker_id, "failed to open worker store for DB upsert");
+        return;
+    };
+    let goal = prompt
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or(prompt);
+    let now = Utc::now().to_rfc3339();
+    let worker = crate::buzz::worker::Worker {
+        id: worker_id.to_string(),
+        workspace: workspace.to_string(),
+        state: crate::buzz::worker::WorkerState::Running,
+        brief: Some(serde_json::json!({"goal": goal})),
+        repo: Some(repo.to_string()),
+        branch: None,
+        goal: Some(goal.to_string()),
+        tests_passing: false,
+        branch_ready: false,
+        pr_url: None,
+        pr_approved: false,
+        is_stalled: false,
+        revision_count: 0,
+        review_mode: "local_first".to_string(),
+        blocked_reason: None,
+        display_title: None,
+        last_output_at: None,
+        state_entered_at: now.clone(),
+        created_at: now.clone(),
+        updated_at: now,
+        label: String::new(),
+    };
+    if let Err(e) = store.upsert(&worker) {
+        tracing::warn!(worker_id, error = %e, "failed to write worker to DB");
+    }
+}
 
 fn resolve_repo(work_dir: &Path, repo: &str) -> Result<PathBuf> {
     // Check configured repos in workspace config.
@@ -812,7 +877,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_to_unknown_worker_returns_error() {
-        let mgr = WorkerManager::new();
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
         let err = mgr.send_message("ghost-1234", "hello").await.unwrap_err();
         assert!(
             err.to_string().contains("ghost-1234"),
@@ -822,20 +887,20 @@ mod tests {
 
     #[tokio::test]
     async fn close_unknown_worker_returns_error() {
-        let mgr = WorkerManager::new();
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
         let err = mgr.close_worker("ghost-1234").await.unwrap_err();
         assert!(err.to_string().contains("ghost-1234"));
     }
 
     #[tokio::test]
     async fn is_live_returns_false_for_unknown_worker() {
-        let mgr = WorkerManager::new();
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
         assert!(!mgr.is_live("ghost-1234"));
     }
 
     #[tokio::test]
     async fn new_manager_starts_with_no_live_workers() {
-        let mgr = WorkerManager::new();
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
         // Any random ID should not be live.
         assert!(!mgr.is_live("a"));
         assert!(!mgr.is_live(""));
