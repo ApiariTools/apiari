@@ -1,11 +1,12 @@
 .bar {
   width: 100%;
-  height: var(--bottom-bar-height);
   background: var(--bg-card);
   border-top: 1px solid var(--border);
   display: flex;
   flex-direction: row;
   align-items: stretch;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  min-height: var(--bottom-bar-height);
 }
 
 .tab {
@@ -20,6 +21,7 @@
   color: var(--text-faint);
   cursor: pointer;
   padding: 0;
+  height: var(--bottom-bar-height);
   font-family: var(--font);
   transition: color 100ms;
 }

@@ -107,6 +107,6 @@
   }
 
   .main {
-    padding-bottom: var(--bottom-bar-height);
+    padding-bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px));
   }
 }
