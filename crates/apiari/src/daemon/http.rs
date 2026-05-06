@@ -28,7 +28,7 @@ use crate::buzz::{
     orchestrator::graph::{WorkflowGraph, walker::GraphCursor},
     task::{Task, TaskAttempt, store::TaskStore},
 };
-use crate::daemon::swarm_ipc;
+use crate::daemon::worker_manager::WorkerManager;
 
 // ── Shared state ───────────────────────────────────────────────────────
 
@@ -51,6 +51,8 @@ pub struct HttpState {
     chat_tx: mpsc::UnboundedSender<WebChatRequest>,
     /// Channel for cancellation requests from the web UI.
     cancel_tx: mpsc::UnboundedSender<WebCancelRequest>,
+    /// In-process worker manager — creates worktrees and spawns agents directly.
+    pub worker_manager: Arc<WorkerManager>,
 }
 
 /// A WebSocket update message sent to all connected clients.
@@ -1736,17 +1738,20 @@ fn worker_task_title(worker: &SwarmWorktreeState) -> String {
 
 /// POST /api/workspaces/:workspace/workers/:worker_id/send — send a message to a worker.
 async fn send_workspace_worker_message(
+    State(state): State<HttpState>,
     Path((workspace, worker_id)): Path<(String, String)>,
     Json(body): Json<WorkspaceWorkerMessageBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let ws = load_workspace_by_name(&workspace).ok_or_else(|| {
+    let _ = load_workspace_by_name(&workspace).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             format!("workspace '{workspace}' not found"),
         )
     })?;
 
-    swarm_ipc::swarm_send(&ws.config.root, &worker_id, &body.message)
+    state
+        .worker_manager
+        .send_message(&worker_id, &body.message)
         .await
         .map(|_| Json(serde_json::json!({ "ok": true })))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
@@ -1879,6 +1884,7 @@ async fn promote_workspace_worker(
 /// POST /api/workspaces/:workspace/workers/:worker_id/redispatch — create a replacement worker and reattach the task.
 async fn redispatch_workspace_worker(
     Path((workspace, worker_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
 ) -> Result<Json<WorkerActionView>, (StatusCode, String)> {
     let ws = load_workspace_by_name(&workspace).ok_or_else(|| {
         (
@@ -1905,15 +1911,16 @@ async fn redispatch_workspace_worker(
         worker_task_title(&worker)
     };
 
-    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws.config.root.clone());
     let worker_mode = crate::buzz::coordinator::swarm_client::infer_worker_mode(&prompt);
     let task_dir = crate::buzz::coordinator::swarm_client::build_worker_task_dir_with_mode(
         &repo,
         &prompt,
         worker_mode,
     );
-    let replacement_id = swarm
+    let replacement_id = state
+        .worker_manager
         .create_worker_with_task_dir(
+            &ws.config.root,
             &repo,
             &prompt,
             &ws.config.swarm.default_agent,
@@ -1952,22 +1959,18 @@ async fn redispatch_workspace_worker(
 /// POST /api/workspaces/:workspace/workers/:worker_id/close — close a worker and optionally dismiss its task.
 async fn close_workspace_worker(
     Path((workspace, worker_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
     Json(body): Json<CloseWorkerBody>,
 ) -> Result<Json<WorkerActionView>, (StatusCode, String)> {
-    let ws = load_workspace_by_name(&workspace).ok_or_else(|| {
+    let _ = load_workspace_by_name(&workspace).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             format!("workspace '{workspace}' not found"),
         )
     })?;
 
-    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws.config.root.clone());
-    swarm.close_worker(&worker_id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to close worker: {e}"),
-        )
-    })?;
+    // Best-effort close — worker may have already exited.
+    let _ = state.worker_manager.close_worker(&worker_id).await;
 
     if body.dismiss_task
         && let Ok(store) = crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
@@ -3265,26 +3268,12 @@ struct WorkerMessageBody {
 
 /// POST /api/worker/send — send a message to a swarm worker.
 async fn send_worker_message(
+    State(state): State<HttpState>,
     Json(body): Json<WorkerMessageBody>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    // Find the workspace root
-    let workspaces = crate::config::discover_workspaces().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to discover workspaces: {e}"),
-        )
-    })?;
-    let ws = workspaces
-        .iter()
-        .find(|w| w.name == body.workspace)
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                format!("workspace '{}' not found", body.workspace),
-            )
-        })?;
-
-    swarm_ipc::swarm_send(&ws.config.root, &body.worker_id, &body.text)
+    state
+        .worker_manager
+        .send_message(&body.worker_id, &body.text)
         .await
         .map(|_| Json(serde_json::json!({ "ok": true })))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
@@ -4444,7 +4433,15 @@ async fn v2_create_worker(
 
     // Dispatch to swarm via embedded daemon IPC.
     let _ = std::fs::remove_file(&prompt_file); // prompt content is passed directly
-    let swarm_result = swarm_ipc::swarm_create(&ws.config.root, &body.repo, &prompt_content).await;
+    let swarm_result = state
+        .worker_manager
+        .create_worker(
+            &ws.config.root,
+            &body.repo,
+            &prompt_content,
+            &ws.config.swarm.default_agent,
+        )
+        .await;
 
     match swarm_result {
         Ok(swarm_id) => {
@@ -4797,7 +4794,16 @@ async fn v2_send_message(
 
         let _ = std::fs::remove_file(&prompt_file);
 
-        let new_swarm_id = match swarm_ipc::swarm_create(&ws.config.root, &repo, &prompt).await {
+        let new_swarm_id = match state
+            .worker_manager
+            .create_worker(
+                &ws.config.root,
+                &repo,
+                &prompt,
+                &ws.config.swarm.default_agent,
+            )
+            .await
+        {
             Ok(id) => id,
             Err(e) => {
                 return (
@@ -4853,7 +4859,7 @@ async fn v2_send_message(
     }
 
     // Agent is alive — send message via embedded daemon IPC.
-    if let Err(e) = swarm_ipc::swarm_send(&ws.config.root, &id, &body.message).await {
+    if let Err(e) = state.worker_manager.send_message(&id, &body.message).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -5029,7 +5035,16 @@ async fn v2_requeue_worker(
 
     let _ = std::fs::remove_file(&prompt_file);
 
-    let new_swarm_id = match swarm_ipc::swarm_create(&ws.config.root, &repo, &prompt).await {
+    let new_swarm_id = match state
+        .worker_manager
+        .create_worker(
+            &ws.config.root,
+            &repo,
+            &prompt,
+            &ws.config.swarm.default_agent,
+        )
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             return (
@@ -5123,6 +5138,7 @@ async fn auto_requeue_with_feedback(
     workspace_root: &std::path::Path,
     db_path: &std::path::Path,
     updates_tx: tokio::sync::broadcast::Sender<WsUpdate>,
+    worker_manager: Arc<WorkerManager>,
 ) {
     let brief = match &worker.brief {
         Some(b) => b.clone(),
@@ -5150,7 +5166,10 @@ async fn auto_requeue_with_feedback(
         "\n\n# Review Feedback (Previous Attempt)\n\nA reviewer inspected your last attempt and requested changes. Address all of the following before marking the work done:\n\n{review_feedback}"
     ));
 
-    let new_id = match swarm_ipc::swarm_create(workspace_root, &repo, &prompt).await {
+    let new_id = match worker_manager
+        .create_worker(workspace_root, &repo, &prompt, "codex")
+        .await
+    {
         Ok(id) => id,
         Err(e) => {
             tracing::warn!(
@@ -5341,6 +5360,7 @@ async fn v2_request_review(
         .unwrap_or_default();
     let db_path = state.db_path.as_ref().clone();
     let updates_tx = state.updates_tx.clone();
+    let worker_manager = Arc::clone(&state.worker_manager);
 
     // Run review in background — caller gets 202 immediately.
     tokio::spawn(async move {
@@ -5426,6 +5446,7 @@ async fn v2_request_review(
                         &workspace_root,
                         &db_path,
                         updates_tx.clone(),
+                        Arc::clone(&worker_manager),
                     )
                     .await;
                 }
@@ -6149,7 +6170,9 @@ async fn v2_context_bot_chat(
 
                 let brief = format!("Context bot dispatch:\n\n{goal}\n\nWorkspace: {workspace}");
                 let _ = tokio::fs::remove_file(&prompt_path).await;
-                if swarm_ipc::swarm_create(&workspace_root, repo, &brief)
+                if state
+                    .worker_manager
+                    .create_worker(&workspace_root, repo, &brief, "codex")
                     .await
                     .is_ok()
                 {
@@ -6313,6 +6336,7 @@ pub async fn start_http_server(
         signal_tx,
         chat_tx,
         cancel_tx,
+        worker_manager: Arc::new(WorkerManager::new()),
     };
 
     let app = Router::new()
@@ -7250,6 +7274,7 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
+            worker_manager: Arc::new(WorkerManager::new()),
         };
 
         let response = send_workspace_chat(
@@ -8132,6 +8157,7 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
+            worker_manager: Arc::new(WorkerManager::new()),
         };
 
         let followups = list_workspace_followups(Path("apiari".to_string())).await.0;
@@ -8197,6 +8223,7 @@ model = "sonnet"
             signal_tx,
             chat_tx,
             cancel_tx,
+            worker_manager: Arc::new(WorkerManager::new()),
         };
 
         let response = cancel_workspace_bot(
