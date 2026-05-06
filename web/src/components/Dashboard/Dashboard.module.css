@@ -1,117 +1,137 @@
+/* ── Container ───────────────────────────────────────────────────────────── */
+
 .container {
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
-  padding: var(--space-6);
+  padding: var(--space-7) var(--space-7) var(--space-8);
   background: var(--bg);
   gap: var(--space-6);
 }
 
-/* ── Greeting ────────────────────────────────────────────────────────── */
+/* ── Header ──────────────────────────────────────────────────────────────── */
 
-.greeting {
-  font-size: 14px;
-  color: var(--text-faint);
-  line-height: 1.5;
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
 
-/* ── Stat cards ──────────────────────────────────────────────────────── */
+.headerIcon {
+  color: var(--text-faint);
+}
 
-.stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+.headerTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ── Alert banners ───────────────────────────────────────────────────────── */
+
+.alerts {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-3);
 }
 
-@media (max-width: 768px) {
-  .stats {
-    grid-template-columns: repeat(2, 1fr);
-  }
+/* ── Built-in worker summary ─────────────────────────────────────────────── */
+
+.builtinSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
-.statCard {
+.statPills {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.statPill {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  padding: var(--space-4) var(--space-5);
+  min-width: 90px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
-.statCount {
+.statPillNum {
   font-size: 28px;
   font-weight: 700;
   line-height: 1;
+  letter-spacing: -0.03em;
 }
 
-.statLabel {
+.statPillLabel {
   font-size: 12px;
   color: var(--text-faint);
 }
 
-.countRunning { color: var(--status-running); }
-.countWaiting { color: var(--status-waiting); }
-.countFailed  { color: var(--status-failed); }
-.countMerged  { color: var(--status-merged); }
-
-/* ── Sections ────────────────────────────────────────────────────────── */
-
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.emptyMsg {
+  font-size: 13px;
+  color: var(--text-faint);
 }
 
-.sectionLabel {
+/* Attention list */
+.attentionList {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.attentionHeading {
   font-size: 11px;
   font-weight: 600;
   color: var(--text-faint);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 0 0 var(--space-2);
+  letter-spacing: 0.06em;
+  padding: var(--space-3) var(--space-4) var(--space-2);
 }
 
-/* ── Item rows ───────────────────────────────────────────────────────── */
-
-.itemRow {
+.attentionRow {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+  padding: 8px var(--space-4);
+  background: none;
   border: none;
-  background: transparent;
+  border-top: 1px solid var(--border);
   width: 100%;
   text-align: left;
   cursor: pointer;
-  transition: background 100ms;
   font-family: var(--font);
-  min-height: 36px;
+  transition: background 100ms;
 }
 
-.itemRow:hover {
+.attentionRow:hover {
   background: var(--bg-hover);
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
+.attentionDot {
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.dotRunning { background: var(--status-running); }
-.dotWaiting { background: var(--status-waiting); }
-.dotStalled { background: var(--status-stalled); }
-.dotFailed  { background: var(--status-failed); }
-.dotMerged  { background: var(--status-merged); }
-.dotIdle    { background: var(--text-faint); }
-
-.itemName {
+.attentionName {
   flex: 1;
-  font-size: var(--font-size-small);
+  font-size: 13px;
   color: var(--text-strong);
   white-space: nowrap;
   overflow: hidden;
@@ -119,26 +139,55 @@
   min-width: 0;
 }
 
-.itemMeta {
-  font-size: var(--font-size-meta);
-  color: var(--text-faint);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.itemTimestamp {
-  font-size: var(--font-size-meta);
-  color: var(--text-faint);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.revPill {
+.attentionId {
   font-size: 11px;
+  font-family: var(--font-mono);
   color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+/* ── Widget grid ─────────────────────────────────────────────────────────── */
+
+.widgetGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: var(--space-4) var(--space-4) var(--space-6);
+    gap: var(--space-4);
+    padding-bottom: calc(var(--bottom-bar-height) + var(--space-4));
+  }
+
+  .widgetGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Empty widget state ──────────────────────────────────────────────────── */
+
+.widgetsEmpty {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 100px;
-  padding: 1px 8px;
-  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.widgetsEmptyText {
+  font-size: 14px;
+  color: var(--text-faint);
+  margin: 0;
+}
+
+.widgetsEmptyHint {
+  font-size: 13px;
+  color: var(--text-faint);
+  opacity: 0.6;
+  margin: 0;
 }

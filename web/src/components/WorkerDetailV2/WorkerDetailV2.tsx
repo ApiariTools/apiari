@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ExternalLink, MessageSquare, ArrowUp } from 'lucide-react'
+import { ExternalLink, MessageSquare, ArrowUp, ChevronLeft } from 'lucide-react'
 import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, WorkerBrief, ContextBotContext, WorkerEvent } from '../../types'
 import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
 import styles from './WorkerDetailV2.module.css'
@@ -10,6 +10,7 @@ export interface WorkerDetailV2Props {
   workspace: string
   workerId: string
   onClose?: () => void
+  onBack?: () => void
   onOpenContextBot?: (context: ContextBotContext, title: string) => void
   onNavigateToWorker?: (id: string) => void
 }
@@ -456,7 +457,7 @@ function BriefTab({ brief, goal }: { brief: WorkerBrief | null; goal: string | n
 
 // ── Main component ───────────────────────────────────────────────────────
 
-export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose, onOpenContextBot, onNavigateToWorker }: WorkerDetailV2Props) {
+export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose, onBack, onOpenContextBot, onNavigateToWorker }: WorkerDetailV2Props) {
   const [data, setData] = useState<WorkerDetailV2Data | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -654,6 +655,11 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     <div className={styles.container}>
       {/* ── Header (fixed) ── */}
       <div className={styles.header}>
+        {onBack && (
+          <button className={styles.backBtn} onClick={onBack} type="button" aria-label="Back">
+            <ChevronLeft size={16} /> Workers
+          </button>
+        )}
         <div className={styles.headerRow}>
           <h1 className={styles.goal}>
             {data.goal ?? data.branch ?? data.id}

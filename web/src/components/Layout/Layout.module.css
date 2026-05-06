@@ -37,6 +37,30 @@
   order: -1;
 }
 
+/* iPad hamburger button */
+.hamburger {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 90;
+  width: 34px;
+  height: 34px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.hamburger:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
 /* Desktop: sidebar always visible */
 @media (min-width: 1025px) {
   .sidebar {
@@ -60,6 +84,10 @@
 
   .bottomBar {
     display: none;
+  }
+
+  .hamburger {
+    display: flex;
   }
 }
 

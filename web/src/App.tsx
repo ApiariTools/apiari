@@ -8,7 +8,7 @@ import AutoBotDetail from './components/AutoBotDetail/AutoBotDetail'
 import ContextBotManager from './components/ContextBot/ContextBotManager'
 import CommandPalette from './components/CommandPalette/CommandPalette'
 import QuickDispatch from './components/QuickDispatch/QuickDispatch'
-import { Bot, Wrench } from 'lucide-react'
+import { Bot, Wrench, LayoutDashboard } from 'lucide-react'
 import { getWorkspaces, listWorkersV2, listAutoBots, connectWebSocket, chatWithContextBot } from './api'
 import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from './types'
 import type { SidebarItem } from './components/Sidebar/Sidebar'
@@ -57,11 +57,16 @@ function parseHash(hash: string): { ws: string; type?: EntityType; id?: string }
 }
 
 function workerToSidebarItem(w: WorkerV2): SidebarItem {
+  const goal = w.goal ?? w.branch ?? w.id
+  const shortGoal = goal.length > 40 ? goal.slice(0, 40).replace(/\s+\S*$/, '') + '…' : goal
+  const tags: SidebarItem['tags'] = []
+  if (w.pr_url) tags.push({ label: 'PR', color: w.pr_approved ? 'green' : 'amber' })
   return {
     id: w.id,
-    name: w.goal ?? w.branch ?? w.id,
+    name: shortGoal,
     status: w.is_stalled ? 'stalled' : w.state,
-    meta: w.branch ?? undefined,
+    meta: w.id,
+    tags,
   }
 }
 
@@ -78,7 +83,7 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<string[]>([])
   const [workspace, setWorkspace] = useState<string>('')
   const [selected, setSelected] = useState<SelectedEntity | null>(null)
-  const [mobileTab, setMobileTab] = useState('workers')
+  const [mobileTab, setMobileTab] = useState('dashboard')
   const [workers, setWorkers] = useState<WorkerV2[]>([])
   const [autoBots, setAutoBots] = useState<AutoBot[]>([])
   const [loading, setLoading] = useState(true)
@@ -367,6 +372,41 @@ export default function App() {
       color: 'var(--status-running)',
     }))
 
+  const mobileList = mobileTab !== 'auto_bots' ? (
+    <div style={{ fontFamily: 'var(--font)', overflowY: 'auto', height: '100%' }}>
+      {workspaces.length > 1 && (
+        <div style={{ padding: '10px 14px 0', borderBottom: '1px solid var(--border)' }}>
+          <select
+            value={workspace}
+            onChange={(e) => { setWorkspace(e.target.value); setSelected(null); updateHash(e.target.value) }}
+            style={{ width: '100%', background: 'var(--bg-card)', color: 'var(--text-strong)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 8px', fontSize: '13px', marginBottom: '10px' }}
+          >
+            {workspaces.map((ws) => <option key={ws} value={ws}>{ws}</option>)}
+          </select>
+        </div>
+      )}
+      {sidebarWorkers.length === 0 ? (
+        <div style={{ padding: '24px 14px', color: 'var(--text-faint)', fontSize: '13px' }}>No active workers</div>
+      ) : sidebarWorkers.map((w) => (
+        <button key={w.id} onClick={() => handleSelect('worker', w.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', padding: '12px 14px', cursor: 'pointer' }}>
+          <div style={{ color: 'var(--text-strong)', fontSize: '13px', marginBottom: '3px' }}>{w.name}</div>
+          <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>{w.status}{w.meta ? ` · ${w.meta}` : ''}</div>
+        </button>
+      ))}
+    </div>
+  ) : (
+    <div style={{ fontFamily: 'var(--font)', overflowY: 'auto', height: '100%' }}>
+      {sidebarAutoBots.length === 0 ? (
+        <div style={{ padding: '24px 14px', color: 'var(--text-faint)', fontSize: '13px' }}>No auto bots</div>
+      ) : sidebarAutoBots.map((b) => (
+        <button key={b.id} onClick={() => handleSelect('auto_bot', b.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', padding: '12px 14px', cursor: 'pointer' }}>
+          <div style={{ color: 'var(--text-strong)', fontSize: '13px', marginBottom: '3px' }}>{b.name}</div>
+          <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>{b.status}{b.meta ? ` · ${b.meta}` : ''}</div>
+        </button>
+      ))}
+    </div>
+  )
+
   const mainContent = !workspace ? (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-faint)', fontFamily: 'var(--font)', fontSize: '14px' }}>
       Loading workspaces...
@@ -397,9 +437,48 @@ export default function App() {
     />
   )
 
+  // Mobile: route by tab + selection state
+  const mobileMainContent = !workspace ? mainContent : (() => {
+    // A selected entity always takes the full screen on mobile
+    if (selected?.type === 'worker') {
+      return (
+        <WorkerDetailV2
+          workspace={workspace}
+          workerId={selected.id}
+          onBack={() => { setSelected(null); updateHash(workspace) }}
+          onOpenContextBot={openContextBot}
+          onNavigateToWorker={(id) => navigateTo('worker', id)}
+        />
+      )
+    }
+    if (selected?.type === 'auto_bot') {
+      return (
+        <AutoBotDetail
+          workspace={workspace}
+          autoBotId={selected.id}
+          onSelectWorker={(id) => navigateTo('worker', id)}
+          onOpenContextBot={openContextBot}
+        />
+      )
+    }
+    // No selection — show tab content
+    if (mobileTab === 'workers') return mobileList
+    if (mobileTab === 'auto_bots') return mobileList
+    return (
+      <Dashboard
+        workspace={workspace}
+        workers={workers}
+        autoBots={autoBots}
+        onSelectWorker={(id) => navigateTo('worker', id)}
+        onSelectAutoBot={(id) => navigateTo('auto_bot', id)}
+      />
+    )
+  })()
+
   const tabs = [
-    { id: 'auto_bots', label: 'Auto Bots', icon: <Bot size={20} /> },
+    { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={20} /> },
     { id: 'workers', label: 'Workers', icon: <Wrench size={20} /> },
+    { id: 'auto_bots', label: 'Auto Bots', icon: <Bot size={20} /> },
   ]
 
   if (loading) {
@@ -414,6 +493,7 @@ export default function App() {
             selectedType={selected?.type ?? null}
             selectedId={selected?.id ?? null}
             onSelect={handleSelect}
+            onHome={() => { setSelected(null); updateHash(workspace) }}
             autoBots={sidebarAutoBots}
             workers={sidebarWorkers}
             doneWorkerCount={doneWorkers.length}
@@ -428,12 +508,12 @@ export default function App() {
             activityItems={activityItems}
           />
         }
-        main={mainContent}
+        main={mobileMainContent}
         bottomBar={
           <BottomTabBar
             tabs={tabs}
             activeTab={mobileTab}
-            onTabChange={setMobileTab}
+            onTabChange={(id) => { setMobileTab(id); setSelected(null); updateHash(workspace) }}
           />
         }
       />

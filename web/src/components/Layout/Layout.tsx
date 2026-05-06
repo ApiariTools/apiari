@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Menu } from 'lucide-react'
 import styles from './Layout.module.css'
 
 interface LayoutProps {
@@ -30,6 +31,16 @@ export default function Layout({ sidebar, main, bottomBar }: LayoutProps) {
           />
         </div>
       )}
+
+      {/* iPad hamburger */}
+      <button
+        className={styles.hamburger}
+        onClick={() => setSidebarOpen(true)}
+        aria-label="Open sidebar"
+        type="button"
+      >
+        <Menu size={18} />
+      </button>
 
       {/* Main content */}
       <div className={styles.main}>
