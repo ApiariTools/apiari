@@ -344,6 +344,27 @@
   white-space: nowrap;
 }
 
+.liveIndicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--space-3) var(--space-5) var(--space-4);
+}
+
+.liveDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  opacity: 0.4;
+  animation: liveBounce 1.2s ease-in-out infinite;
+}
+
+@keyframes liveBounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-4px); opacity: 0.9; }
+}
+
 /* Events list */
 .events {
   padding: var(--space-5) var(--space-6) var(--space-7);
@@ -451,6 +472,16 @@
   font-weight: 600;
   color: var(--accent);
   margin-bottom: 4px;
+}
+
+.eventLink {
+  color: var(--accent);
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
+.eventLink:hover {
+  opacity: 1;
 }
 
 .eventUserContent {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { ExternalLink, MessageSquare } from 'lucide-react'
+import remarkGfm from 'remark-gfm'
+import { ExternalLink, MessageSquare, ArrowUp } from 'lucide-react'
 import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, WorkerBrief, ContextBotContext, WorkerEvent } from '../../types'
 import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
 import styles from './WorkerDetailV2.module.css'
@@ -14,6 +15,17 @@ export interface WorkerDetailV2Props {
 }
 
 type Tab = 'timeline' | 'reviews' | 'brief'
+
+// ── Linkify plain text ────────────────────────────────────────────────────
+
+function linkify(text: string): React.ReactNode[] {
+  const parts = text.split(/(https?:\/\/[^\s]+)/g)
+  return parts.map((part, i) =>
+    /^https?:\/\//.test(part)
+      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className={styles.eventLink}>{part}</a>
+      : part
+  )
+}
 
 // ── Status badge ─────────────────────────────────────────────────────────
 
@@ -80,7 +92,9 @@ function formatTime(iso: string): string {
 
 function formatRelative(iso: string): string {
   try {
-    const d = new Date(iso)
+    // Append Z if no timezone info so it's parsed as UTC, not local time
+    const normalized = /[Z+\-]\d*$/.test(iso.trim()) ? iso : iso.trim() + 'Z'
+    const d = new Date(normalized)
     if (isNaN(d.getTime())) return ''
     const diffMs = Date.now() - d.getTime()
     const diffMins = Math.floor(diffMs / 60000)
@@ -184,7 +198,7 @@ function EventRow({ event_type, content, created_at, tool, input }: EventRowProp
       <div className={styles.eventRow}>
         <span className={styles.eventTime}>{time}</span>
         <div className={`${styles.eventBody} ${styles.eventAssistant}`}>
-          <ReactMarkdown>{trimmed}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmed}</ReactMarkdown>
         </div>
       </div>
     )
@@ -196,7 +210,7 @@ function EventRow({ event_type, content, created_at, tool, input }: EventRowProp
         <span className={styles.eventTime}>{time}</span>
         <div className={styles.eventBody}>
           <div className={styles.eventUserLabel}>You</div>
-          <div className={styles.eventUserContent}>{content}</div>
+          <div className={styles.eventUserContent}>{linkify(content)}</div>
         </div>
       </div>
     )
@@ -206,8 +220,18 @@ function EventRow({ event_type, content, created_at, tool, input }: EventRowProp
     return (
       <div className={`${styles.eventRow} ${styles.eventRowTool}`}>
         <span className={styles.eventTime}>{time}</span>
-        <span className={styles.eventToolSep}>·</span>
         <span className={styles.eventTool}>{formatToolCall({ content, tool, input })}</span>
+      </div>
+    )
+  }
+
+  if (event_type === 'system') {
+    return (
+      <div className={styles.eventRow}>
+        <span className={styles.eventTime}>{time}</span>
+        <div className={`${styles.eventBody} ${styles.eventSystem}`}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
       </div>
     )
   }
@@ -231,38 +255,72 @@ interface ToolGroupRowProps {
   onToggle: () => void
 }
 
+function terminalLines(t: WorkerEvent): { tool: string; lines: string[] } {
+  const toolName = t.tool ?? t.content.split(':')[0].trim()
+  const args = t.input ?? {}
+
+  if (toolName === 'Bash' && typeof args.command === 'string') {
+    return { tool: toolName, lines: [`$ ${args.command}`] }
+  }
+  if ((toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') && typeof args.file_path === 'string') {
+    return { tool: toolName, lines: [args.file_path] }
+  }
+  if (toolName === 'Grep') {
+    const parts: string[] = []
+    if (typeof args.pattern === 'string') parts.push(args.pattern)
+    if (typeof args.path === 'string') parts.push(args.path)
+    return { tool: toolName, lines: parts.length ? parts : [t.content] }
+  }
+  if (toolName === 'Glob' && typeof args.pattern === 'string') {
+    return { tool: toolName, lines: [args.pattern] }
+  }
+  if (toolName === 'WebFetch' && typeof args.url === 'string') {
+    return { tool: toolName, lines: [args.url] }
+  }
+  if (toolName === 'WebSearch' && typeof args.query === 'string') {
+    return { tool: toolName, lines: [args.query] }
+  }
+  if (toolName === 'Agent' && typeof args.description === 'string') {
+    return { tool: toolName, lines: [args.description] }
+  }
+
+  // generic fallback: show non-empty string values from input
+  const fallbackLines = Object.entries(args)
+    .filter(([, v]) => typeof v === 'string' && (v as string).length > 0)
+    .map(([k, v]) => `${k}: ${(v as string).slice(0, 200)}`)
+  return { tool: toolName, lines: fallbackLines.length ? fallbackLines : [t.content] }
+}
+
 function ToolGroupRow({ group, expanded, onToggle }: ToolGroupRowProps) {
   const time = formatTime(group.created_at)
   const { tools } = group
-  const MAX_PREVIEW = 3
-  const preview = tools.slice(0, MAX_PREVIEW).map(t => formatToolCall(t))
-  const extra = tools.length - MAX_PREVIEW
 
   return (
-    <div className={styles.toolGroup} onClick={onToggle} data-testid="tool-group">
-      <span className={styles.eventTime}>{time}</span>
-      <div>
+    <div className={styles.toolGroup} data-testid="tool-group">
+      <div className={styles.toolGroupHeader} onClick={onToggle}>
+        <span className={styles.eventTime}>{time}</span>
         <div className={styles.toolGroupSummary}>
           <span className={styles.toolGroupExpander}>{expanded ? '▼' : '▶'}</span>
-          {expanded ? (
-            <span>{tools.length} tool call{tools.length !== 1 ? 's' : ''}</span>
-          ) : (
-            <>
-              <span>{preview.join(' · ')}</span>
-              {extra > 0 && <span>+{extra} more</span>}
-            </>
-          )}
+          <span>{tools.length} tool call{tools.length !== 1 ? 's' : ''}</span>
         </div>
-        {expanded && (
-          <div className={styles.toolGroupList}>
-            {tools.map((t, i) => (
-              <div key={i} className={styles.toolGroupItem}>
-                · {formatToolCall(t)}
-              </div>
-            ))}
-          </div>
-        )}
       </div>
+      {expanded && (
+        <div className={styles.toolTerminal}>
+          {tools.map((t, i) => {
+            const { tool, lines } = terminalLines(t)
+            return (
+              <div key={i} className={styles.terminalEntry}>
+                <span className={styles.terminalTool}>{tool}</span>
+                <div className={styles.terminalArgs}>
+                  {lines.map((line, j) => (
+                    <span key={j} className={styles.terminalLine}>{line}</span>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -296,9 +354,17 @@ function severityClass(severity: string): string {
   }
 }
 
+function reviewCardClass(verdict: string): string {
+  switch (verdict) {
+    case 'approve': return styles.reviewCardApprove
+    case 'request_changes': return styles.reviewCardRequestChanges
+    default: return styles.reviewCardComment
+  }
+}
+
 function ReviewCard({ review }: { review: WorkerReview }) {
   return (
-    <div className={styles.reviewCard} data-testid="review-card">
+    <div className={`${styles.reviewCard} ${reviewCardClass(review.verdict)}`} data-testid="review-card">
       <div className={styles.reviewCardHeader}>
         <span className={styles.reviewerName}>{review.reviewer}</span>
         <span className={`${styles.verdictBadge} ${verdictClass(review.verdict)}`}>
@@ -400,7 +466,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   const [activeTab, setActiveTab] = useState<Tab>('timeline')
   const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
   const eventsEndRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<number | null>(null)
   const reviewingTimeoutRef = useRef<number | null>(null)
   const prevReviewCountRef = useRef<number>(0)
@@ -473,16 +539,15 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   }, [data?.events?.length, activeTab])
 
   const handleSend = async () => {
-    const textarea = textareaRef.current
-    if (!textarea) return
-    const message = textarea.value.trim()
+    const input = textareaRef.current
+    if (!input) return
+    const message = input.value.trim()
     if (!message || sending) return
 
     setSending(true)
     try {
       await sendWorkerMessageV2(workspace, workerId, message)
-      textarea.value = ''
-      textarea.style.height = 'auto'
+      input.value = ''
       await load(false)
     } catch (e) {
       console.error('send failed', e)
@@ -596,7 +661,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
           <div className={styles.headerActions}>
             {onOpenContextBot && (
               <button
-                className={styles.askBtn}
+                className={styles.iconBtn}
                 type="button"
                 onClick={() => {
                   onOpenContextBot(
@@ -617,10 +682,10 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                     `Viewing: ${data.goal ?? data.branch ?? data.id}`,
                   )
                 }}
+                title="Ask about this worker"
                 data-testid="ask-btn"
               >
-                <MessageSquare size={13} />
-                Ask
+                <MessageSquare size={15} />
               </button>
             )}
             {canReview && (
@@ -631,12 +696,12 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                 type="button"
                 data-testid="review-btn"
               >
-                {reviewing ? 'Reviewing…' : 'Request Review'}
+                {reviewing ? 'Reviewing…' : 'Review'}
               </button>
             )}
             {canCancel && (
               <button
-                className={styles.ghostBtnDanger}
+                className={styles.textBtnDanger}
                 onClick={handleCancel}
                 type="button"
               >
@@ -645,7 +710,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             )}
             {canRequeue && (
               <button
-                className={styles.ghostBtn}
+                className={styles.textBtn}
                 onClick={handleRequeue}
                 type="button"
               >
@@ -678,7 +743,8 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
               rel="noopener noreferrer"
               className={styles.prLink}
             >
-              PR <ExternalLink size={12} />
+              {(() => { const n = data.pr_url.match(/\/pull\/(\d+)/)?.[1]; return n ? `#${n}` : 'PR' })()}
+              {' '}<ExternalLink size={12} />
             </a>
           </div>
         )}
@@ -781,7 +847,14 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             )}
 
             {/* Bottom divider: current state */}
-            {(['waiting', 'running', 'failed'].includes(data.state) || isTerminal) && (
+            {data.state === 'running' && (
+              <div className={styles.liveIndicator}>
+                <span className={styles.liveDot} style={{ animationDelay: '0ms' }} />
+                <span className={styles.liveDot} style={{ animationDelay: '150ms' }} />
+                <span className={styles.liveDot} style={{ animationDelay: '300ms' }} />
+              </div>
+            )}
+            {data.state !== 'running' && (['waiting', 'failed'].includes(data.state) || isTerminal) && (
               <div className={styles.stateDivider}>
                 <span className={styles.stateDividerText}>
                   {stateDividerLabel(data.state, reviews.length > 0)}
@@ -835,32 +908,26 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
         )}
       </div>
 
-      {/* ── Input bar (Timeline tab only, hidden when terminal) ── */}
+      {/* ── Instruction bar (Timeline tab only, hidden when terminal) ── */}
       {activeTab === 'timeline' && !isTerminal && (
         <div className={styles.actionBar} data-testid="action-bar">
           <div className={styles.inputRow}>
-            <textarea
+            <input
               ref={textareaRef}
-              className={styles.textarea}
-              placeholder={inputDisabled ? 'Worker is running…' : 'Send a message to the worker...'}
-              rows={1}
-              enterKeyHint="enter"
+              className={styles.instructionInput}
+              placeholder={inputDisabled ? 'Worker is running…' : 'Send an instruction…'}
               disabled={inputDisabled}
-              onKeyDown={handleKeyDown}
-              onChange={(e) => {
-                e.target.style.height = 'auto'
-                e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
-              }}
-              style={inputDisabled ? { opacity: 0.4 } : undefined}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
             />
             <button
-              className={styles.sendBtn}
+              className={styles.sendIconBtn}
               onMouseDown={(e) => e.preventDefault()}
               onClick={handleSend}
               disabled={sending || inputDisabled}
               type="button"
+              title="Send"
             >
-              Send
+              <ArrowUp size={14} />
             </button>
           </div>
         </div>
