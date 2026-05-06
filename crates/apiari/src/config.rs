@@ -1332,10 +1332,8 @@ fn extract_github_slug(repo_path: &Path) -> Option<String> {
 fn parse_github_slug(url: &str) -> Option<String> {
     let path = if let Some(rest) = url.strip_prefix("https://github.com/") {
         rest
-    } else if let Some(rest) = url.strip_prefix("git@github.com:") {
-        rest
     } else {
-        return None;
+        url.strip_prefix("git@github.com:")?
     };
 
     let path = path.strip_suffix(".git").unwrap_or(path);
