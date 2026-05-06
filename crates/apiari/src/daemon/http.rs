@@ -4928,6 +4928,7 @@ async fn v2_send_message(
             revision_count: new_revision,
             review_mode,
             blocked_reason: None,
+            display_title: worker.display_title.clone(),
             last_output_at: None,
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: worker.created_at.clone(),
