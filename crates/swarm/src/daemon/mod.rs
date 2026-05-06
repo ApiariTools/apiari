@@ -1989,16 +1989,17 @@ fn apply_pr_poll_results(
                 });
             }
 
-            let is_merged = result.pr.state == "MERGED";
+            let should_auto_close = matches!(result.pr.state.as_str(), "MERGED" | "CLOSED");
             worker.pr = Some(result.pr);
             *state_dirty = true;
 
-            // Auto-close workers whose PR has been merged (if enabled for this workspace)
-            if is_merged && ws.close_on_pr_merge {
+            // Auto-close workers whose PR has reached a terminal state (if enabled).
+            if should_auto_close && ws.close_on_pr_merge {
                 tracing::info!(
                     worker_id = %worker.id,
                     pr_number = worker.pr.as_ref().unwrap().number,
-                    "Auto-closing worker, PR merged",
+                    pr_state = %worker.pr.as_ref().unwrap().state,
+                    "Auto-closing worker, PR closed",
                 );
                 worker.message_tx = None;
                 worker.phase = WorkerPhase::Completed;
@@ -2531,6 +2532,42 @@ mod tests {
     }
 
     #[test]
+    fn apply_pr_poll_results_auto_closes_closed_pr() {
+        let mut workspaces = HashMap::new();
+        let ws_path = PathBuf::from("/tmp/ws");
+        let ws = test_workspace("/tmp/ws", vec!["w-1"]);
+        workspaces.insert(ws_path.clone(), ws);
+
+        let results = vec![PrPollResult {
+            worker_id: "w-1".to_string(),
+            workspace_path: ws_path.clone(),
+            pr: PrInfo {
+                number: 43,
+                title: "closed pr".to_string(),
+                state: "CLOSED".to_string(),
+                url: "https://github.com/test/repo/pull/43".to_string(),
+            },
+            is_new: false,
+        }];
+
+        let mut state_dirty = false;
+        let (event_tx, mut event_rx) = broadcast::channel(16);
+        apply_pr_poll_results(results, &mut workspaces, &mut state_dirty, &event_tx);
+
+        assert!(workspaces.get(&ws_path).unwrap().workers.is_empty());
+        assert!(state_dirty);
+
+        let event = event_rx.try_recv().unwrap();
+        match event {
+            DaemonResponse::StateChanged { worktree_id, phase } => {
+                assert_eq!(worktree_id, "w-1");
+                assert_eq!(phase, WorkerPhase::Completed);
+            }
+            other => panic!("expected StateChanged, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn apply_pr_poll_results_skips_close_when_disabled() {
         let mut workspaces = HashMap::new();
         let ws_path = PathBuf::from("/tmp/ws");
@@ -2562,6 +2599,41 @@ mod tests {
             .get("w-1")
             .expect("worker should still exist");
         assert_eq!(worker.pr.as_ref().unwrap().state, "MERGED");
+        assert_eq!(worker.phase, WorkerPhase::Running);
+        assert!(state_dirty);
+    }
+
+    #[test]
+    fn apply_pr_poll_results_skips_closed_pr_close_when_disabled() {
+        let mut workspaces = HashMap::new();
+        let ws_path = PathBuf::from("/tmp/ws");
+        let mut ws = test_workspace("/tmp/ws", vec!["w-1"]);
+        ws.close_on_pr_merge = false;
+        workspaces.insert(ws_path.clone(), ws);
+
+        let results = vec![PrPollResult {
+            worker_id: "w-1".to_string(),
+            workspace_path: ws_path.clone(),
+            pr: PrInfo {
+                number: 43,
+                title: "closed pr".to_string(),
+                state: "CLOSED".to_string(),
+                url: "https://github.com/test/repo/pull/43".to_string(),
+            },
+            is_new: false,
+        }];
+
+        let mut state_dirty = false;
+        let (event_tx, _event_rx) = broadcast::channel(16);
+        apply_pr_poll_results(results, &mut workspaces, &mut state_dirty, &event_tx);
+
+        let worker = workspaces
+            .get(&ws_path)
+            .unwrap()
+            .workers
+            .get("w-1")
+            .expect("worker should still exist");
+        assert_eq!(worker.pr.as_ref().unwrap().state, "CLOSED");
         assert_eq!(worker.phase, WorkerPhase::Running);
         assert!(state_dirty);
     }
