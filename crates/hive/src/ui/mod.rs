@@ -614,42 +614,38 @@ async fn event_loop(
                         if app.is_dispatch_selected() {
                             // ── Content: Dispatch review ──
                             match key.code {
-                                KeyCode::Char('y') => {
+                                KeyCode::Char('y')
                                     if app
                                         .active_dispatch
                                         .as_ref()
-                                        .is_some_and(|d| d.status == DispatchStatus::Ready)
-                                    {
-                                        if app.daemon_connected {
-                                            // Daemon executes the dispatch.
-                                            let _ =
-                                                user_tx.send(UserMessage::ConfirmDispatch).await;
-                                            app.flash("Confirming dispatch...");
-                                        } else {
-                                            // Local fallback: dispatch using pipeline artifacts.
-                                            let dispatch = app.active_dispatch.take().unwrap();
-                                            let count = dispatch.per_repo.len();
-                                            app.sidebar_selection = SidebarItem::Chat;
-                                            if count > 0 {
-                                                app.flash(format!(
-                                                    "Dispatching {count} worker(s)..."
-                                                ));
-                                                let ws = app.workspace_root.clone();
-                                                let atx = action_tx.clone();
-                                                let title = dispatch.title.clone();
-                                                let task_md = dispatch.task_md.clone();
-                                                for r in dispatch.per_repo {
-                                                    spawn_pipeline_dispatch(
-                                                        ws.clone(),
-                                                        title.clone(),
-                                                        task_md.clone(),
-                                                        r,
-                                                        atx.clone(),
-                                                    );
-                                                }
-                                            } else {
-                                                app.flash("No pipeline results to confirm");
+                                        .is_some_and(|d| d.status == DispatchStatus::Ready) =>
+                                {
+                                    if app.daemon_connected {
+                                        // Daemon executes the dispatch.
+                                        let _ = user_tx.send(UserMessage::ConfirmDispatch).await;
+                                        app.flash("Confirming dispatch...");
+                                    } else {
+                                        // Local fallback: dispatch using pipeline artifacts.
+                                        let dispatch = app.active_dispatch.take().unwrap();
+                                        let count = dispatch.per_repo.len();
+                                        app.sidebar_selection = SidebarItem::Chat;
+                                        if count > 0 {
+                                            app.flash(format!("Dispatching {count} worker(s)..."));
+                                            let ws = app.workspace_root.clone();
+                                            let atx = action_tx.clone();
+                                            let title = dispatch.title.clone();
+                                            let task_md = dispatch.task_md.clone();
+                                            for r in dispatch.per_repo {
+                                                spawn_pipeline_dispatch(
+                                                    ws.clone(),
+                                                    title.clone(),
+                                                    task_md.clone(),
+                                                    r,
+                                                    atx.clone(),
+                                                );
                                             }
+                                        } else {
+                                            app.flash("No pipeline results to confirm");
                                         }
                                     }
                                 }
@@ -682,14 +678,13 @@ async fn event_loop(
                                 // Half-page scroll.
                                 KeyCode::Char('u') => app.scroll_dispatch_up(viewport_height),
                                 KeyCode::Char('d') => app.scroll_dispatch_down(viewport_height),
-                                KeyCode::Enter => {
+                                KeyCode::Enter
                                     if app
                                         .active_dispatch
                                         .as_ref()
-                                        .is_some_and(|d| d.status == DispatchStatus::Ready)
-                                    {
-                                        app.dispatch_toggle_section();
-                                    }
+                                        .is_some_and(|d| d.status == DispatchStatus::Ready) =>
+                                {
+                                    app.dispatch_toggle_section();
                                 }
                                 KeyCode::Char('c') => app.dispatch_toggle_all_sections(),
                                 KeyCode::Tab | KeyCode::BackTab => app.focus = Panel::Workers,
@@ -729,30 +724,27 @@ async fn event_loop(
                                             app.focus = Panel::Workers;
                                         }
                                     }
-                                    KeyCode::Enter => {
-                                        if !app.input.is_empty() && !app.streaming {
-                                            let text = app.take_input();
-                                            let _ = history::save_message(
-                                                &app.workspace_root,
-                                                &history::ChatMessage {
-                                                    role: "user".into(),
-                                                    content: text.clone(),
-                                                    ts: chrono::Utc::now(),
-                                                },
-                                            );
-                                            app.chat_history
-                                                .push(ChatLine::User(text.clone(), app::now_ts()));
-                                            app.streaming = true;
-                                            let send_text = if app.daemon_connected {
-                                                text
-                                            } else {
-                                                let recent =
-                                                    history::load_history(&app.workspace_root, 20);
-                                                build_prompt_with_history(&recent, &text)
-                                            };
-                                            let _ =
-                                                user_tx.send(UserMessage::Chat(send_text)).await;
-                                        }
+                                    KeyCode::Enter if !app.input.is_empty() && !app.streaming => {
+                                        let text = app.take_input();
+                                        let _ = history::save_message(
+                                            &app.workspace_root,
+                                            &history::ChatMessage {
+                                                role: "user".into(),
+                                                content: text.clone(),
+                                                ts: chrono::Utc::now(),
+                                            },
+                                        );
+                                        app.chat_history
+                                            .push(ChatLine::User(text.clone(), app::now_ts()));
+                                        app.streaming = true;
+                                        let send_text = if app.daemon_connected {
+                                            text
+                                        } else {
+                                            let recent =
+                                                history::load_history(&app.workspace_root, 20);
+                                            build_prompt_with_history(&recent, &text)
+                                        };
+                                        let _ = user_tx.send(UserMessage::Chat(send_text)).await;
                                     }
                                     KeyCode::Backspace => app.backspace(),
                                     // Vim-style scroll

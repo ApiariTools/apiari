@@ -53,10 +53,8 @@ async fn event_loop(
             if app.has_overlay() {
                 match key.code {
                     KeyCode::Char('?') => app.toggle_help(),
-                    KeyCode::Char('e') => {
-                        if app.overlay == app::Overlay::EventDetail {
-                            app.dismiss_overlay();
-                        }
+                    KeyCode::Char('e') if app.overlay == app::Overlay::EventDetail => {
+                        app.dismiss_overlay();
                     }
                     KeyCode::Esc | KeyCode::Char('q') => app.dismiss_overlay(),
                     _ => {}
@@ -71,11 +69,9 @@ async fn event_loop(
                     KeyCode::Tab | KeyCode::BackTab => app.toggle_panel(),
                     KeyCode::Char('?') => app.toggle_help(),
                     KeyCode::Char('e') => app.toggle_event_detail(),
-                    KeyCode::Esc => {
+                    KeyCode::Esc if app.panel == app::Panel::Worktrees => {
                         // Esc moves focus back to sessions panel
-                        if app.panel == app::Panel::Worktrees {
-                            app.panel = app::Panel::Sessions;
-                        }
+                        app.panel = app::Panel::Sessions;
                     }
                     _ => {}
                 }

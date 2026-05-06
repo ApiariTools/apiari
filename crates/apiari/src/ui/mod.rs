@@ -804,34 +804,28 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
     if app.prefix_active {
         app.prefix_active = false;
         match key.code {
-            KeyCode::Char('n') => {
-                if app.setup.is_none() {
-                    let next = app.active_tab + 1;
-                    if next >= app.workspaces.len() {
-                        // Past last tab → enter add-workspace mode
-                        return KeyAction::AddWorkspace;
-                    }
-                    app.switch_tab(next);
+            KeyCode::Char('n') if app.setup.is_none() => {
+                let next = app.active_tab + 1;
+                if next >= app.workspaces.len() {
+                    // Past last tab → enter add-workspace mode
+                    return KeyAction::AddWorkspace;
                 }
+                app.switch_tab(next);
             }
-            KeyCode::Char('p') => {
-                if app.setup.is_none() {
-                    let prev = if app.active_tab == 0 {
-                        app.workspaces.len().saturating_sub(1)
-                    } else {
-                        app.active_tab - 1
-                    };
-                    app.switch_tab(prev);
-                }
+            KeyCode::Char('p') if app.setup.is_none() => {
+                let prev = if app.active_tab == 0 {
+                    app.workspaces.len().saturating_sub(1)
+                } else {
+                    app.active_tab - 1
+                };
+                app.switch_tab(prev);
             }
-            KeyCode::Char(c @ '1'..='9') => {
-                if app.setup.is_none() {
-                    let idx = (c as usize) - ('1' as usize);
-                    if idx >= app.workspaces.len() {
-                        return KeyAction::AddWorkspace;
-                    }
-                    app.switch_tab(idx);
+            KeyCode::Char(c @ '1'..='9') if app.setup.is_none() => {
+                let idx = (c as usize) - ('1' as usize);
+                if idx >= app.workspaces.len() {
+                    return KeyAction::AddWorkspace;
                 }
+                app.switch_tab(idx);
             }
             KeyCode::Char('z') => app.toggle_zoom(),
             _ => {}
@@ -856,10 +850,10 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAction {
         // Snooze has its own key handling (j/k/enter/esc)
         if matches!(app.pending_action, Some(PendingAction::SnoozeSignal(_))) {
             match key.code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if app.snooze_selection + 1 < app::SNOOZE_OPTIONS.len() {
-                        app.snooze_selection += 1;
-                    }
+                KeyCode::Char('j') | KeyCode::Down
+                    if app.snooze_selection + 1 < app::SNOOZE_OPTIONS.len() =>
+                {
+                    app.snooze_selection += 1;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     app.snooze_selection = app.snooze_selection.saturating_sub(1);
@@ -1281,20 +1275,20 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 app.needs_redraw = true;
             }
         }
-        KeyCode::Char('h') | KeyCode::Left => {
-            if app.zoomed_panel.is_some() || app.terminal_width < 50 {
-                app.prev_panel();
-                if app.zoomed_panel.is_some() {
-                    app.zoomed_panel = Some(app.focused_panel);
-                }
+        KeyCode::Char('h') | KeyCode::Left
+            if app.zoomed_panel.is_some() || app.terminal_width < 50 =>
+        {
+            app.prev_panel();
+            if app.zoomed_panel.is_some() {
+                app.zoomed_panel = Some(app.focused_panel);
             }
         }
-        KeyCode::Char('l') | KeyCode::Right => {
-            if app.zoomed_panel.is_some() || app.terminal_width < 50 {
-                app.next_panel();
-                if app.zoomed_panel.is_some() {
-                    app.zoomed_panel = Some(app.focused_panel);
-                }
+        KeyCode::Char('l') | KeyCode::Right
+            if app.zoomed_panel.is_some() || app.terminal_width < 50 =>
+        {
+            app.next_panel();
+            if app.zoomed_panel.is_some() {
+                app.zoomed_panel = Some(app.focused_panel);
             }
         }
         KeyCode::Char('t') => {
@@ -1306,10 +1300,8 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
         KeyCode::Char('p') => app.enter_pr_list(),
         KeyCode::Char('S') => app.enter_signal_list(),
         KeyCode::Char('B') => app.cycle_bee(),
-        KeyCode::Char('r') => {
-            if app.has_review_queue() {
-                app.enter_review_list();
-            }
+        KeyCode::Char('r') if app.has_review_queue() => {
+            app.enter_review_list();
         }
         KeyCode::Char('o') => {
             // Workers panel: open live output stream for selected worker
@@ -1363,12 +1355,10 @@ fn handle_dashboard_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyAc
                 ws.chat_scroll.scroll_to_bottom();
             }
         }
-        KeyCode::Char('d') => {
-            if app.focused_panel == Panel::Signals {
-                app.signals_debug_mode = !app.signals_debug_mode;
-                app.clamp_selections();
-                app.needs_redraw = true;
-            }
+        KeyCode::Char('d') if app.focused_panel == Panel::Signals => {
+            app.signals_debug_mode = !app.signals_debug_mode;
+            app.clamp_selections();
+            app.needs_redraw = true;
         }
         KeyCode::Char('s') => {
             return KeyAction::OpenSettings;
@@ -1882,11 +1872,9 @@ fn handle_signal_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
 
     match key.code {
         KeyCode::Esc => app.back_to_dashboard(),
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.signal_list_selection + 1 < signal_count {
-                app.signal_list_selection += 1;
-                app.needs_redraw = true;
-            }
+        KeyCode::Char('j') | KeyCode::Down if app.signal_list_selection + 1 < signal_count => {
+            app.signal_list_selection += 1;
+            app.needs_redraw = true;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.signal_list_selection = app.signal_list_selection.saturating_sub(1);
@@ -1900,10 +1888,8 @@ fn handle_signal_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
             app.signal_list_selection = signal_count.saturating_sub(1);
             app.needs_redraw = true;
         }
-        KeyCode::Enter => {
-            if app.signal_list_selection < signal_count {
-                app.enter_signal_detail(app.signal_list_selection);
-            }
+        KeyCode::Enter if app.signal_list_selection < signal_count => {
+            app.enter_signal_detail(app.signal_list_selection);
         }
         KeyCode::Char('o') => {
             if let Some(url) = app.selected_url() {
@@ -1943,11 +1929,9 @@ fn handle_review_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
 
     match key.code {
         KeyCode::Esc => app.back_to_dashboard(),
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.review_list_selection + 1 < review_count {
-                app.review_list_selection += 1;
-                app.needs_redraw = true;
-            }
+        KeyCode::Char('j') | KeyCode::Down if app.review_list_selection + 1 < review_count => {
+            app.review_list_selection += 1;
+            app.needs_redraw = true;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.review_list_selection = app.review_list_selection.saturating_sub(1);
@@ -1961,19 +1945,17 @@ fn handle_review_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> Key
             app.review_list_selection = review_count.saturating_sub(1);
             app.needs_redraw = true;
         }
-        KeyCode::Enter => {
-            if app.review_list_selection < review_count {
-                // Find the original index in ws.signals for the nth review signal
-                if let Some(orig_idx) = app.current_ws().and_then(|ws| {
-                    ws.signals
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| s.source.ends_with("_review_queue"))
-                        .map(|(i, _)| i)
-                        .nth(app.review_list_selection)
-                }) {
-                    app.enter_signal_detail(orig_idx);
-                }
+        KeyCode::Enter if app.review_list_selection < review_count => {
+            // Find the original index in ws.signals for the nth review signal
+            if let Some(orig_idx) = app.current_ws().and_then(|ws| {
+                ws.signals
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, s)| s.source.ends_with("_review_queue"))
+                    .map(|(i, _)| i)
+                    .nth(app.review_list_selection)
+            }) {
+                app.enter_signal_detail(orig_idx);
             }
         }
         KeyCode::Char('a') => {
@@ -2025,11 +2007,9 @@ fn handle_pr_list_key(app: &mut App, key: crossterm::event::KeyEvent) -> KeyActi
 
     match key.code {
         KeyCode::Esc => app.back_to_dashboard(),
-        KeyCode::Char('j') | KeyCode::Down => {
-            if app.pr_list_selection + 1 < pr_count {
-                app.pr_list_selection += 1;
-                app.needs_redraw = true;
-            }
+        KeyCode::Char('j') | KeyCode::Down if app.pr_list_selection + 1 < pr_count => {
+            app.pr_list_selection += 1;
+            app.needs_redraw = true;
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.pr_list_selection = app.pr_list_selection.saturating_sub(1);

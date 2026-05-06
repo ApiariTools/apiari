@@ -345,11 +345,9 @@ impl App {
                                 }
                             }
                         }
-                        "tool_result" => {
-                            if e.is_error {
-                                let msg = e.output.as_deref().unwrap_or("error");
-                                lines.push(format!("  ✗ {}", msg.lines().next().unwrap_or("")));
-                            }
+                        "tool_result" if e.is_error => {
+                            let msg = e.output.as_deref().unwrap_or("error");
+                            lines.push(format!("  ✗ {}", msg.lines().next().unwrap_or("")));
                         }
                         "error" => {
                             if let Some(ref msg) = e.message {
