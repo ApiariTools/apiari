@@ -372,39 +372,21 @@ export default function App() {
       color: 'var(--status-running)',
     }))
 
-  const mobileList = mobileTab !== 'auto_bots' ? (
-    <div style={{ fontFamily: 'var(--font)', overflowY: 'auto', height: '100%' }}>
-      {workspaces.length > 1 && (
-        <div style={{ padding: '10px 14px 0', borderBottom: '1px solid var(--border)' }}>
-          <select
-            value={workspace}
-            onChange={(e) => { setWorkspace(e.target.value); setSelected(null); updateHash(e.target.value) }}
-            style={{ width: '100%', background: 'var(--bg-card)', color: 'var(--text-strong)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 8px', fontSize: '13px', marginBottom: '10px' }}
-          >
-            {workspaces.map((ws) => <option key={ws} value={ws}>{ws}</option>)}
-          </select>
-        </div>
-      )}
-      {sidebarWorkers.length === 0 ? (
-        <div style={{ padding: '24px 14px', color: 'var(--text-faint)', fontSize: '13px' }}>No active workers</div>
-      ) : sidebarWorkers.map((w) => (
-        <button key={w.id} onClick={() => handleSelect('worker', w.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', padding: '12px 14px', cursor: 'pointer' }}>
-          <div style={{ color: 'var(--text-strong)', fontSize: '13px', marginBottom: '3px' }}>{w.name}</div>
-          <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>{w.status}{w.meta ? ` · ${w.meta}` : ''}</div>
-        </button>
-      ))}
-    </div>
-  ) : (
-    <div style={{ fontFamily: 'var(--font)', overflowY: 'auto', height: '100%' }}>
-      {sidebarAutoBots.length === 0 ? (
-        <div style={{ padding: '24px 14px', color: 'var(--text-faint)', fontSize: '13px' }}>No auto bots</div>
-      ) : sidebarAutoBots.map((b) => (
-        <button key={b.id} onClick={() => handleSelect('auto_bot', b.id)} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', padding: '12px 14px', cursor: 'pointer' }}>
-          <div style={{ color: 'var(--text-strong)', fontSize: '13px', marginBottom: '3px' }}>{b.name}</div>
-          <div style={{ color: 'var(--text-faint)', fontSize: '11px' }}>{b.status}{b.meta ? ` · ${b.meta}` : ''}</div>
-        </button>
-      ))}
-    </div>
+  const mobileList = (
+    <Sidebar
+      selectedType={selected?.type ?? null}
+      selectedId={selected?.id ?? null}
+      onSelect={handleSelect}
+      onHome={() => { setSelected(null); setMobileTab('dashboard'); updateHash(workspace) }}
+      autoBots={sidebarAutoBots}
+      workers={sidebarWorkers}
+      doneWorkerCount={doneWorkers.length}
+      workspaces={workspaces}
+      workspace={workspace}
+      onWorkspaceChange={(ws) => { setWorkspace(ws); setSelected(null); updateHash(ws) }}
+      onQuickDispatch={() => setQuickDispatchOpen(true)}
+      activityItems={activityItems}
+    />
   )
 
   const mainContent = !workspace ? (

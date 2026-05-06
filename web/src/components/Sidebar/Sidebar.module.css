@@ -2,7 +2,6 @@
   width: var(--sidebar-width);
   height: 100%;
   background: var(--bg-card);
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
@@ -19,9 +18,9 @@
 .workspaceTrigger {
   display: flex;
   align-items: center;
-  height: 44px;
+  height: 52px;
   width: 100%;
-  padding: 0 12px;
+  padding: 0 16px;
   background: transparent;
   border: none;
   cursor: pointer;
@@ -98,9 +97,7 @@
 }
 
 .selectorDivider {
-  height: 1px;
-  background: var(--border);
-  flex-shrink: 0;
+  display: none;
 }
 
 /* ── Sections ────────────────────────────────────────────────────────────── */
@@ -118,7 +115,7 @@
 }
 
 .sectionLabel {
-  padding: 16px 12px 6px;
+  padding: 20px 16px 8px;
   font-size: 11px;
   font-family: var(--font);
   color: var(--text-faint);
@@ -152,8 +149,8 @@
 .item {
   display: flex;
   align-items: center;
-  height: 32px;
-  padding: 0 8px 0 12px;
+  height: 36px;
+  padding: 0 12px 0 16px;
   cursor: pointer;
   border: none;
   border-left: 2px solid transparent;
@@ -212,14 +209,39 @@
 
 /* ── Item labels ─────────────────────────────────────────────────────────── */
 
-.name {
+.itemIcon {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.itemSelected .itemIcon {
+  color: var(--accent);
+}
+
+.itemContent {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.itemTall {
+  height: auto;
+  min-height: 36px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  align-items: flex-start;
+}
+
+.name {
   font-size: var(--font-size-small);
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  line-height: 1.3;
 }
 
 .nameSelected {
@@ -228,13 +250,48 @@
 }
 
 .meta {
-  font-size: var(--font-size-meta);
+  font-size: 11px;
+  font-family: var(--font-mono);
   color: var(--text-faint);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 80px;
   flex-shrink: 0;
+}
+
+.itemMeta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.metaId {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.tag {
+  font-size: 11px;
+  padding: 0 5px;
+  border-radius: 3px;
+  line-height: 16px;
+  flex-shrink: 0;
+}
+
+.tagGreen {
+  color: var(--status-running);
+  background: rgba(92, 184, 92, 0.12);
+}
+
+.tagAmber {
+  color: var(--status-waiting);
+  background: rgba(245, 197, 66, 0.1);
+}
+
+.tagFaint {
+  color: var(--text-faint);
+  background: var(--bg-hover);
 }
 
 /* ── Divider ─────────────────────────────────────────────────────────────── */
@@ -242,7 +299,8 @@
 .divider {
   height: 1px;
   background: var(--border);
-  margin: 4px 0;
+  margin: 8px 0;
+  opacity: 0.5;
 }
 
 /* ── Empty / done states ─────────────────────────────────────────────────── */
@@ -266,8 +324,7 @@
 
 .activityStrip {
   margin-top: auto;
-  border-top: 1px solid var(--border);
-  padding: 8px 12px;
+  padding: 8px 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -293,4 +350,11 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    padding-bottom: var(--bottom-bar-height);
+  }
 }
