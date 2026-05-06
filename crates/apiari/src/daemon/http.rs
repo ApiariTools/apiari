@@ -5069,6 +5069,7 @@ async fn v2_requeue_worker(
         state_entered_at: now.clone(),
         created_at: worker.created_at.clone(),
         updated_at: now,
+        display_title: worker.display_title.clone(),
         label: String::new(),
     };
     let _ = store.upsert(&updated_worker);
@@ -5233,6 +5234,7 @@ async fn auto_requeue_with_feedback(
         state_entered_at: now.clone(),
         created_at: worker.created_at.clone(),
         updated_at: now,
+        display_title: worker.display_title.clone(),
         label: String::new(),
     };
     let _ = store.upsert(&updated_worker);
@@ -6841,7 +6843,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
@@ -6857,7 +6859,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
         ]);
 
@@ -6915,7 +6917,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
@@ -6931,7 +6933,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
         ]);
 
