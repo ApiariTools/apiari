@@ -352,7 +352,7 @@ fn read_buzz_signals(path: &std::path::Path) -> Option<BuzzSummary> {
     }
 
     // Sort by timestamp descending (newest first), limit to recent 50.
-    signals.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    signals.sort_by_key(|s| std::cmp::Reverse(s.timestamp));
     signals.truncate(50);
 
     let critical_count = signals

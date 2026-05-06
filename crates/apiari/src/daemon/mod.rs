@@ -13,14 +13,19 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
 };
 
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
+
 use color_eyre::eyre::{Result, WrapErr};
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
+#[cfg(target_os = "macos")]
 use tokio::time::{Duration, timeout};
-use tokio::{io::AsyncWriteExt, process::Command, sync::mpsc};
+#[cfg(target_os = "macos")]
+use tokio::{io::AsyncWriteExt, process::Command};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use uuid::Uuid;

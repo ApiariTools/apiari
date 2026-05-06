@@ -2396,11 +2396,9 @@ impl App {
             View::WorkerDetail(_) | View::WorkerChat(_) | View::PrList => {
                 self.focused_panel = Panel::Workers
             }
-            View::SignalDetail(_) | View::SignalList => {
+            View::SignalDetail(_) | View::SignalList if self.focused_panel != Panel::Reviews => {
                 // Return to whichever signal panel was focused before drill-in
-                if self.focused_panel != Panel::Reviews {
-                    self.focused_panel = Panel::Signals;
-                }
+                self.focused_panel = Panel::Signals;
             }
             View::ReviewList => self.focused_panel = Panel::Reviews,
             _ => {
@@ -2999,7 +2997,7 @@ impl App {
                         }
                     }
                     // Re-sort so newest items are first
-                    ws.feed.sort_by(|a, b| b.when.cmp(&a.when));
+                    ws.feed.sort_by_key(|x| std::cmp::Reverse(x.when));
                 }
                 _ => {
                     ws.chat_history.push(ChatLine::System(text.to_string()));
@@ -3554,7 +3552,7 @@ impl App {
                 // the freshest entry for each watcher survives.  This
                 // prevents stale heartbeat items from persisting across
                 // refresh cycles.
-                feed.sort_by(|a, b| b.when.cmp(&a.when));
+                feed.sort_by_key(|x| std::cmp::Reverse(x.when));
                 let mut seen_heartbeats = std::collections::HashSet::new();
                 feed.retain(|item| {
                     if matches!(&item.kind, FeedKind::Heartbeat) {
@@ -5318,7 +5316,7 @@ mod tests {
         ];
 
         // Replicate the dedup logic from apply_extras_update
-        feed.sort_by(|a, b| b.when.cmp(&a.when));
+        feed.sort_by_key(|x| std::cmp::Reverse(x.when));
         let mut seen_heartbeats = std::collections::HashSet::new();
         feed.retain(|item| {
             if matches!(&item.kind, FeedKind::Heartbeat) {

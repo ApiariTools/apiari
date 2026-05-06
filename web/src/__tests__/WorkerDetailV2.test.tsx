@@ -298,6 +298,42 @@ describe("WorkerDetailV2", () => {
     expect(screen.queryByTestId("review-btn")).not.toBeInTheDocument();
   });
 
+  it("shows 'Reviewed' state divider (not 'Waiting for review') when waiting and reviews exist", async () => {
+    const mockReview: WorkerReview = {
+      id: 1,
+      reviewer: "General",
+      verdict: "approve",
+      summary: "Looks good.",
+      issues: [],
+      worker_message: null,
+      created_at: "2026-05-04T10:00:00Z",
+    };
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "waiting",
+      label: "Waiting for review",
+      branch_ready: true,
+    });
+    vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    expect(screen.queryByText("Waiting for review", { selector: '[class*="stateDividerText"]' })).not.toBeInTheDocument();
+    expect(screen.getByText("Reviewed")).toBeInTheDocument();
+  });
+
+  it("shows 'Waiting for review' state divider when waiting and no reviews exist", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "waiting",
+      label: "Waiting",
+      branch_ready: true,
+    });
+    vi.mocked(api.listWorkerReviews).mockResolvedValue([]);
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    expect(screen.getByText("Waiting for review")).toBeInTheDocument();
+  });
+
   it("hides 'Request Review' button when waiting but branch_ready=false", async () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({
       ...mockWorker,
