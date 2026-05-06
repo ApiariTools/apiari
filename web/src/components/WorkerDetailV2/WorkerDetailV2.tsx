@@ -608,7 +608,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     (data.state === 'waiting' && hasRequestChangesReview)
   const canReview = data.state === 'waiting' && data.branch_ready
   const isTerminal = data.state === 'merged' || data.state === 'abandoned'
-  const inputDisabled = data.state !== 'waiting' && data.state !== 'queued'
+  const inputDisabled = isTerminal
 
   return (
     <div className={styles.container}>
@@ -880,7 +880,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             <input
               ref={textareaRef}
               className={styles.instructionInput}
-              placeholder={inputDisabled ? 'Worker is running…' : 'Send an instruction…'}
+              placeholder={data.state === 'running' ? 'Send async instruction…' : inputDisabled ? 'Worker finished' : 'Send an instruction…'}
               disabled={inputDisabled}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
             />

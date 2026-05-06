@@ -251,12 +251,12 @@ describe("WorkerDetailV2", () => {
 
   // ── Input state tests ─────────────────────────────────────────────────────
 
-  it("input is disabled when state is running", async () => {
+  it("input is enabled with async placeholder when state is running", async () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "running", label: "Working" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("action-bar");
-    const textarea = screen.getByPlaceholderText("Worker is running…");
-    expect(textarea).toBeDisabled();
+    const textarea = screen.getByPlaceholderText("Send async instruction…");
+    expect(textarea).not.toBeDisabled();
   });
 
   it("input is hidden when state is merged", async () => {
