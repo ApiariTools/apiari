@@ -95,10 +95,10 @@ function formatRelative(iso: string): string {
 
 // ── State divider label ──────────────────────────────────────────────────
 
-function stateDividerLabel(state: string): string {
+function stateDividerLabel(state: string, hasReviews = false): string {
   switch (state) {
     case 'running': return 'Worker running'
-    case 'waiting': return 'Waiting for review'
+    case 'waiting': return hasReviews ? 'Reviewed' : 'Waiting for review'
     case 'failed': return 'Worker failed'
     case 'merged': return 'Merged'
     case 'abandoned': return 'Abandoned'
@@ -774,7 +774,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             {(['waiting', 'running', 'failed'].includes(data.state) || isTerminal) && (
               <div className={styles.stateDivider}>
                 <span className={styles.stateDividerText}>
-                  {stateDividerLabel(data.state)}
+                  {stateDividerLabel(data.state, reviews.length > 0)}
                 </span>
               </div>
             )}
