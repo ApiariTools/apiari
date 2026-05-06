@@ -262,6 +262,7 @@ export interface WorkerV2 {
   repo: string | null;
   branch: string | null;
   goal: string | null;
+  display_title?: string | null;
   tests_passing: boolean;
   branch_ready: boolean;
   pr_url: string | null;
