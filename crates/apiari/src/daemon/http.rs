@@ -16,7 +16,7 @@ use axum::{
         IntoResponse,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -157,6 +157,13 @@ pub enum WsUpdate {
         worker_id: String,
         verdict: String,
         reviewer: String,
+    },
+    /// A dashboard widget slot was updated.
+    WidgetUpdated {
+        workspace: String,
+        slot: String,
+        widget: serde_json::Value,
+        updated_at: String,
     },
 }
 
@@ -4365,6 +4372,15 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
                         "created_at": created_at,
                     }))
                 }
+                "system" => {
+                    let content = val.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                    let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    Some(serde_json::json!({
+                        "event_type": "system",
+                        "content": content,
+                        "created_at": created_at,
+                    }))
+                }
                 _ => None,
             }
         })
@@ -4924,60 +4940,53 @@ async fn v2_requeue_worker(
             .into_response();
     }
 
-    // Create DB record for new worker, carrying over the brief and incrementing revision.
+    // Rekey the existing DB record to the new swarm ID, preserving all reviews and history.
+    // The task is the same task — only the underlying swarm worktree changed.
+    let _ = store.rekey(&id, &new_swarm_id);
+
     let now = chrono::Utc::now().to_rfc3339();
-    let goal = brief.get("goal").and_then(|v| v.as_str()).map(String::from);
     let review_mode = brief
         .get("review_mode")
         .and_then(|v| v.as_str())
         .unwrap_or("local_first")
         .to_string();
-    let new_worker = crate::buzz::worker::Worker {
+    let new_revision = worker.revision_count + 1;
+    let updated_worker = crate::buzz::worker::Worker {
         id: new_swarm_id.clone(),
         workspace: workspace.clone(),
         state: crate::buzz::worker::WorkerState::Queued,
         brief: Some(brief),
         repo: Some(repo),
         branch: None,
-        goal,
+        goal: worker.goal.clone(),
         tests_passing: false,
         branch_ready: false,
         pr_url: None,
         pr_approved: false,
         is_stalled: false,
-        revision_count: worker.revision_count + 1,
+        revision_count: new_revision,
         review_mode,
         blocked_reason: None,
         last_output_at: None,
         state_entered_at: now.clone(),
-        created_at: now.clone(),
+        created_at: worker.created_at.clone(),
         updated_at: now,
         label: String::new(),
     };
-    let _ = store.upsert(&new_worker);
+    let _ = store.upsert(&updated_worker);
 
-    // Abandon the old worker so it no longer shows as active.
-    let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Abandoned);
-
-    // Notify WebSocket listeners.
+    // Notify WebSocket listeners — single update for the rekeyed worker.
     let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
         workspace: workspace.clone(),
         worker_id: new_swarm_id.clone(),
         state: "queued".to_string(),
         label: "Queued".to_string(),
-        properties: serde_json::json!({"revision_count": new_worker.revision_count}),
-    });
-    let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
-        workspace: workspace.clone(),
-        worker_id: id.clone(),
-        state: "abandoned".to_string(),
-        label: "Abandoned".to_string(),
-        properties: serde_json::json!({}),
+        properties: serde_json::json!({"revision_count": new_revision}),
     });
 
     tracing::info!(
         "[requeue/{workspace}] {id} → {new_swarm_id} (revision {}{})",
-        new_worker.revision_count,
+        new_revision,
         if review_feedback.is_some() {
             ", with review feedback"
         } else {
@@ -5088,7 +5097,7 @@ async fn auto_requeue_with_feedback(
         return;
     }
 
-    // Create DB record for the new worker.
+    // Rekey the existing DB record to the new swarm ID, preserving all reviews and history.
     let store = match open_worker_store_from_path(db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -5097,62 +5106,52 @@ async fn auto_requeue_with_feedback(
         }
     };
 
+    let _ = store.rekey(&worker.id, &new_id);
+
     let now = chrono::Utc::now().to_rfc3339();
-    let goal = brief.get("goal").and_then(|v| v.as_str()).map(String::from);
     let review_mode = brief
         .get("review_mode")
         .and_then(|v| v.as_str())
         .unwrap_or("local_first")
         .to_string();
-    let new_worker = crate::buzz::worker::Worker {
+    let new_revision = worker.revision_count + 1;
+    let updated_worker = crate::buzz::worker::Worker {
         id: new_id.clone(),
         workspace: workspace.to_string(),
         state: crate::buzz::worker::WorkerState::Queued,
         brief: Some(brief),
         repo: Some(repo),
         branch: None,
-        goal,
+        goal: worker.goal.clone(),
         tests_passing: false,
         branch_ready: false,
         pr_url: None,
         pr_approved: false,
         is_stalled: false,
-        revision_count: worker.revision_count + 1,
+        revision_count: new_revision,
         review_mode,
         blocked_reason: None,
         last_output_at: None,
         state_entered_at: now.clone(),
-        created_at: now.clone(),
+        created_at: worker.created_at.clone(),
         updated_at: now,
         label: String::new(),
     };
-    let _ = store.upsert(&new_worker);
-    let _ = store.transition(
-        workspace,
-        &worker.id,
-        crate::buzz::worker::WorkerState::Abandoned,
-    );
+    let _ = store.upsert(&updated_worker);
 
     let _ = updates_tx.send(WsUpdate::WorkerV2State {
         workspace: workspace.to_string(),
         worker_id: new_id.clone(),
         state: "queued".to_string(),
         label: "Queued".to_string(),
-        properties: serde_json::json!({"revision_count": new_worker.revision_count}),
-    });
-    let _ = updates_tx.send(WsUpdate::WorkerV2State {
-        workspace: workspace.to_string(),
-        worker_id: worker.id.clone(),
-        state: "abandoned".to_string(),
-        label: "Abandoned".to_string(),
-        properties: serde_json::json!({}),
+        properties: serde_json::json!({"revision_count": new_revision}),
     });
 
     tracing::info!(
         "[auto-requeue/{workspace}] {} → {} (revision {}, with review feedback)",
         worker.id,
         new_id,
-        new_worker.revision_count
+        new_revision
     );
 }
 
@@ -5167,6 +5166,56 @@ fn open_review_store_from_path(
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
     let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
     crate::buzz::review::ReviewStore::new(conn)
+}
+
+/// Append a single synthetic event to `.swarm/agents/{worker_id}/events.jsonl`
+/// so the worker timeline records the review outcome.
+fn append_review_timeline_event(
+    workspace_root: &std::path::Path,
+    worker_id: &str,
+    verdict: &str,
+    summary: &str,
+    send_succeeded: bool,
+) {
+    let text = match verdict {
+        "approve" => format!("✓ Review approved — {summary}"),
+        "request_changes" => {
+            let suffix = if send_succeeded {
+                "Feedback sent to worker."
+            } else {
+                "Worker auto-requeued with feedback."
+            };
+            format!("✗ Review requested changes — {summary}\n\n{suffix}")
+        }
+        _ => format!("💬 Review comment — {summary}"),
+    };
+
+    let event = serde_json::json!({
+        "type": "system",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "text": text,
+    });
+
+    let dir = workspace_root.join(".swarm").join("agents").join(worker_id);
+    let path = dir.join("events.jsonl");
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("[review] failed to create agent dir for {worker_id}: {e}");
+        return;
+    }
+
+    let line = format!("{}\n", event);
+    if let Err(e) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(line.as_bytes())
+        })
+    {
+        tracing::warn!("[review] failed to write timeline event for {worker_id}: {e}");
+    }
 }
 
 /// POST /api/workspaces/{ws}/v2/workers/{id}/review — trigger a review (202 Accepted).
@@ -5269,6 +5318,15 @@ async fn v2_request_review(
                     "[review/{workspace}] review {} done verdict={}",
                     outcome.review.id,
                     outcome.review.verdict
+                );
+
+                // Append a synthetic timeline event so the timeline reflects the review outcome.
+                append_review_timeline_event(
+                    &workspace_root,
+                    &worker.id,
+                    &outcome.review.verdict,
+                    &outcome.review.summary,
+                    outcome.send_succeeded,
                 );
 
                 // Auto-requeue when the worker message couldn't be delivered.
@@ -6042,6 +6100,120 @@ async fn v2_context_bot_chat(
     .into_response()
 }
 
+// ── Dashboard widget handlers ──────────────────────────────────────────
+
+/// GET /api/workspaces/{workspace}/v2/widgets — return all active widget slots.
+async fn v2_list_widgets(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let db_path = state.db_path.as_ref().clone();
+    let store = match crate::buzz::signal::store::SignalStore::open(&db_path, &workspace) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("[widgets] open store: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!([])),
+            )
+                .into_response();
+        }
+    };
+    match store.get_widgets() {
+        Ok(rows) => {
+            let widgets: Vec<serde_json::Value> = rows
+                .into_iter()
+                .filter_map(|(slot, widget_json, updated_at)| {
+                    let mut v: serde_json::Value = serde_json::from_str(&widget_json).ok()?;
+                    v["slot"] = serde_json::Value::String(slot);
+                    v["updated_at"] = serde_json::Value::String(updated_at);
+                    Some(v)
+                })
+                .collect();
+            Json(widgets).into_response()
+        }
+        Err(e) => {
+            error!("[widgets] get_widgets: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!([])),
+            )
+                .into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertWidgetBody {
+    #[serde(flatten)]
+    widget: serde_json::Value,
+    #[serde(default)]
+    ttl_minutes: Option<i64>,
+}
+
+/// PUT /api/workspaces/{workspace}/v2/widgets/{slot} — upsert a widget slot.
+async fn v2_upsert_widget(
+    Path((workspace, slot)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    Json(body): Json<UpsertWidgetBody>,
+) -> impl IntoResponse {
+    let db_path = state.db_path.as_ref().clone();
+    let store = match crate::buzz::signal::store::SignalStore::open(&db_path, &workspace) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("[widgets] open store: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // Serialize just the widget fields (without ttl_minutes).
+    let mut widget_value = body.widget.clone();
+    // Ensure slot is embedded.
+    widget_value["slot"] = serde_json::Value::String(slot.clone());
+    let widget_json = match serde_json::to_string(&widget_value) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("[widgets] serialize: {e}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    if let Err(e) = store.upsert_widget(&slot, &widget_json, body.ttl_minutes) {
+        error!("[widgets] upsert: {e}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    let _ = state.updates_tx.send(WsUpdate::WidgetUpdated {
+        workspace,
+        slot,
+        widget: widget_value,
+        updated_at,
+    });
+
+    StatusCode::OK.into_response()
+}
+
+/// DELETE /api/workspaces/{workspace}/v2/widgets/{slot} — delete a widget slot.
+async fn v2_delete_widget(
+    Path((workspace, slot)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let db_path = state.db_path.as_ref().clone();
+    let store = match crate::buzz::signal::store::SignalStore::open(&db_path, &workspace) {
+        Ok(s) => s,
+        Err(e) => {
+            error!("[widgets] open store: {e}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    if let Err(e) = store.delete_widget(&slot) {
+        error!("[widgets] delete: {e}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 // ── Server setup ───────────────────────────────────────────────────────
 
 /// Start the HTTP server. Returns channels for the daemon to consume.
@@ -6246,6 +6418,15 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/v2/context-bot/chat",
             post(v2_context_bot_chat),
+        )
+        // v2 dashboard widget routes
+        .route(
+            "/api/workspaces/{workspace}/v2/widgets",
+            get(v2_list_widgets),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/widgets/{slot}",
+            put(v2_upsert_widget).delete(v2_delete_widget),
         )
         .route("/api/ws", get(ws_handler))
         .route("/ws", get(ws_handler))
