@@ -4950,6 +4950,42 @@ async fn v2_request_review(
                     review.id,
                     review.verdict
                 );
+                let msg = match review.verdict.as_str() {
+                    "approve" => format!("✓ Review approved — {}", review.summary),
+                    "request_changes" => format!(
+                        "✗ Review requested changes — {}\n\nFeedback sent to worker.",
+                        review.summary
+                    ),
+                    "comment" => format!("💬 Review comment — {}", review.summary),
+                    other => format!("[review: {other}] — {}", review.summary),
+                };
+                let timestamp = chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                    .to_string();
+                let event_json = serde_json::json!({
+                    "type": "user_message",
+                    "timestamp": timestamp,
+                    "text": msg,
+                });
+                let events_path = workspace_root
+                    .join(".swarm")
+                    .join("agents")
+                    .join(&worker.id)
+                    .join("events.jsonl");
+                if let Some(parent) = events_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let line = format!("{}\n", event_json);
+                if let Err(e) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&events_path)
+                    .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()))
+                {
+                    tracing::warn!(
+                        "[review/{workspace}] failed to append review event to timeline: {e}"
+                    );
+                }
             }
             Err(e) => {
                 tracing::error!("[review/{workspace}] review failed for {}: {e}", worker.id);
