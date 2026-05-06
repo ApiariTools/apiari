@@ -20,6 +20,7 @@ pub async fn ensure_swarm_running(work_dir: &Path) {
 
 /// Create a new swarm worker. Returns the assigned worktree_id (e.g. "apiari-a1b2").
 pub async fn swarm_create(work_dir: &Path, repo: &str, prompt: &str) -> Result<String> {
+    ensure_swarm_running(work_dir).await;
     let req = DaemonRequest::CreateWorker {
         prompt: prompt.to_string(),
         agent: "codex".to_string(),
@@ -46,6 +47,7 @@ pub async fn swarm_create(work_dir: &Path, repo: &str, prompt: &str) -> Result<S
 
 /// Send a message to a running swarm worker.
 pub async fn swarm_send(work_dir: &Path, worktree_id: &str, message: &str) -> Result<()> {
+    ensure_swarm_running(work_dir).await;
     let req = DaemonRequest::SendMessage {
         worktree_id: worktree_id.to_string(),
         message: message.to_string(),
