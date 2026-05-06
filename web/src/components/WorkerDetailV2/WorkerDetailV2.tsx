@@ -771,13 +771,20 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             )}
 
             {/* Bottom divider: current state */}
-            {(['waiting', 'running', 'failed'].includes(data.state) || isTerminal) && (
+            {data.state === 'running' ? (
+              <div className={styles.liveIndicator}>
+                <span className={styles.liveIndicatorDot} />
+                <span className={styles.liveIndicatorDot} />
+                <span className={styles.liveIndicatorDot} />
+                <span className={styles.liveIndicatorLabel}>running…</span>
+              </div>
+            ) : ((['waiting', 'failed'].includes(data.state) || isTerminal) && (
               <div className={styles.stateDivider}>
                 <span className={styles.stateDividerText}>
                   {stateDividerLabel(data.state, reviews.length > 0)}
                 </span>
               </div>
-            )}
+            ))}
           </div>
         )}
 
