@@ -4573,6 +4573,14 @@ async fn v2_create_worker(
     }
 }
 
+/// Semaphore capping concurrent title-generation claude subprocesses.
+static TITLE_GEN_SEMAPHORE: std::sync::OnceLock<tokio::sync::Semaphore> =
+    std::sync::OnceLock::new();
+
+fn title_gen_semaphore() -> &'static tokio::sync::Semaphore {
+    TITLE_GEN_SEMAPHORE.get_or_init(|| tokio::sync::Semaphore::new(4))
+}
+
 /// Generate a short display title for a worker using Claude and store it in the DB.
 /// Runs as a background task; failures are silently logged.
 async fn generate_and_store_worker_title(
@@ -4583,6 +4591,15 @@ async fn generate_and_store_worker_title(
 ) {
     use tokio::io::AsyncWriteExt as _;
     use tracing::{info, warn};
+
+    // Limit concurrent claude subprocesses for title generation
+    let _permit = match title_gen_semaphore().try_acquire() {
+        Ok(p) => p,
+        Err(_) => {
+            warn!("[worker-title/{workspace}/{worker_id}] skipped: title generation at capacity");
+            return;
+        }
+    };
 
     let prompt = format!(
         "Generate a short display title (4-8 words) for this task. \
