@@ -3,7 +3,7 @@ import styles from './EmptyState.module.css'
 
 export default function EmptyState() {
   return (
-    <div className={styles.container}>
+    <div className={styles.container} data-testid="empty-state-root">
       <LayoutGrid size={32} className={styles.icon} aria-hidden="true" />
       <p className={styles.heading}>Select something</p>
       <p className={styles.subtext}>Choose a worker or auto bot from the sidebar</p>
