@@ -20,7 +20,7 @@ use daemon_client::DaemonClient;
 use ratatui::prelude::*;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::daemon::tui_socket::{RepoDispatchInfo, TuiResponse};
@@ -802,6 +802,11 @@ async fn event_loop(
                                         && let Some(ref pane_id) = wt.agent_pane_id
                                     {
                                         send_key_to_pane(pane_id, key.code, key.modifiers);
+                                        // Record typing indicator when Enter is pressed
+                                        if matches!(key.code, KeyCode::Enter) {
+                                            app.last_worker_message_sent =
+                                                Some((wt.id.clone(), Instant::now()));
+                                        }
                                     }
                                 }
                             }

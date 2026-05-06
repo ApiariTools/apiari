@@ -188,6 +188,10 @@ pub struct App {
 
     // Periodic refresh
     last_worker_refresh: Instant,
+
+    // Track when a message was sent to a worker to show typing indicator.
+    // Format: (worker_id, timestamp_sent)
+    pub last_worker_message_sent: Option<(String, Instant)>,
 }
 
 impl App {
@@ -241,6 +245,7 @@ impl App {
             show_help: false,
             pr_detail: None,
             last_worker_refresh: Instant::now(),
+            last_worker_message_sent: None,
         }
     }
 
@@ -318,8 +323,16 @@ impl App {
         // Daemon mode: show agent events.
         let session = self.sessions.first();
         let worktree_id = wt.id.clone();
+        let mut should_clear_typing = false;
         if let Some(session) = session {
             let events = discovery::read_agent_events(session, &worktree_id, 100);
+
+            // Clear typing indicator if new events arrived for this worker
+            should_clear_typing = !events.is_empty()
+                && self
+                    .last_worker_message_sent
+                    .as_ref()
+                    .is_some_and(|(id, _)| id == &worktree_id);
             if events.is_empty() {
                 let phase = wt.phase.as_deref().unwrap_or("unknown");
                 self.pane_content = format!("Worker {worktree_id} ({phase}) — no events yet");
@@ -364,10 +377,30 @@ impl App {
                         _ => {}
                     }
                 }
+
+                // Add typing indicator if a message was recently sent to this worker
+                if self
+                    .last_worker_message_sent
+                    .as_ref()
+                    .is_some_and(|(worker_id, sent_time)| {
+                        worker_id == &worktree_id && sent_time.elapsed().as_secs() < 5
+                    })
+                {
+                    let spinner_frames = &["typing ", "typing. ", "typing.. ", "typing..."];
+                    let spinner = spinner_frames[(self.spinner_tick / 5) % 4];
+                    lines.push(String::new());
+                    lines.push(format!("  {}", spinner));
+                }
+
                 self.pane_content = lines.join("\n");
             }
         } else {
             self.pane_content = "No workspace session".to_string();
+        }
+
+        // Clear typing indicator after receiving new events
+        if should_clear_typing {
+            self.last_worker_message_sent = None;
         }
     }
 
