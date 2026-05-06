@@ -576,7 +576,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   const inputDisabled = data.state !== 'waiting' && data.state !== 'queued'
 
   return (
-    <div className={styles.container}>
+    <div className={styles.container} data-testid="worker-detail-root">
       {/* ── Header (fixed) ── */}
       <div className={styles.header}>
         <div className={styles.headerRow}>
