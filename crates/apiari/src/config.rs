@@ -271,17 +271,19 @@ impl Default for ActivityConfig {
 
 /// Token efficiency settings applied to spawned claude/codex subprocesses.
 ///
-/// All fields are opt-in (`None` = no override). Recommended starting point
-/// for most agentic workflows — add to your workspace TOML under
-/// `[coordinator.token_controls]`:
+/// All fields are `Option<_>` — `None` means "use the inherited value or no override".
+/// The workspace-level `[token_controls]` block sets defaults; per-bee
+/// `[coordinator.token_controls]` or `[[bees.token_controls]]` blocks override them.
+///
+/// The built-in `Default` impl bakes in sensible values for most agentic workflows:
 ///
 /// ```toml
-/// [coordinator.token_controls]
+/// [token_controls]
 /// thinking_enabled = false  # disables extended thinking (biggest cost saver)
 /// bash_max_output = 20000   # cap bash output at 20k chars (prevents context floods)
 /// autocompact_pct = 70      # compact context at 70% full, not 95%+
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenControls {
     /// Sets MAX_THINKING_TOKENS env var on the spawned agent process
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -304,6 +306,38 @@ pub struct TokenControls {
     /// Passed as --max-tokens for Claude (config_overrides for Codex)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+}
+
+impl Default for TokenControls {
+    fn default() -> Self {
+        Self {
+            max_thinking_tokens: None,
+            autocompact_pct: Some(70),
+            bash_max_output: Some(20_000),
+            effort_level: None,
+            thinking_enabled: Some(false),
+            max_output_tokens: None,
+        }
+    }
+}
+
+impl TokenControls {
+    /// Merge self with a base config, preferring self's `Some` values.
+    ///
+    /// Fields set in `self` take priority; `None` fields fall back to `base`.
+    pub fn merge_with_base(&self, base: &TokenControls) -> TokenControls {
+        TokenControls {
+            max_thinking_tokens: self.max_thinking_tokens.or(base.max_thinking_tokens),
+            autocompact_pct: self.autocompact_pct.or(base.autocompact_pct),
+            bash_max_output: self.bash_max_output.or(base.bash_max_output),
+            effort_level: self
+                .effort_level
+                .clone()
+                .or_else(|| base.effort_level.clone()),
+            thinking_enabled: self.thinking_enabled.or(base.thinking_enabled),
+            max_output_tokens: self.max_output_tokens.or(base.max_output_tokens),
+        }
+    }
 }
 
 /// A fully self-contained workspace configuration.
@@ -404,6 +438,12 @@ pub struct WorkspaceConfig {
     /// Activity feed / event retention configuration.
     #[serde(default)]
     pub activity: ActivityConfig,
+
+    /// Workspace-level token efficiency defaults, inherited by all bees.
+    /// Per-bee `[coordinator.token_controls]` or `[[bees.token_controls]]`
+    /// blocks override these on a field-by-field basis.
+    #[serde(default)]
+    pub token_controls: TokenControls,
 }
 
 /// A single daemon TCP endpoint (host + port).
@@ -1090,6 +1130,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
         shells: ShellsConfig::default(),
         schedule: None,
         activity: ActivityConfig::default(),
+        token_controls: TokenControls::default(),
     }
 }
 
@@ -2005,6 +2046,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -2035,6 +2077,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -2069,6 +2112,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         };
 
         let buzz = to_buzz_config(&ws);
@@ -2457,6 +2501,7 @@ watch = ["sentry"]
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         }
     }
 
@@ -2961,14 +3006,56 @@ name = "Bee"
     // ── TokenControls ──
 
     #[test]
-    fn test_token_controls_default_is_all_none() {
+    fn test_token_controls_default_has_good_values() {
         let tc = TokenControls::default();
         assert!(tc.max_thinking_tokens.is_none());
-        assert!(tc.autocompact_pct.is_none());
-        assert!(tc.bash_max_output.is_none());
+        assert_eq!(tc.autocompact_pct, Some(70));
+        assert_eq!(tc.bash_max_output, Some(20_000));
         assert!(tc.effort_level.is_none());
-        assert!(tc.thinking_enabled.is_none());
+        assert_eq!(tc.thinking_enabled, Some(false));
         assert!(tc.max_output_tokens.is_none());
+    }
+
+    #[test]
+    fn test_token_controls_merge_self_wins() {
+        let base = TokenControls {
+            autocompact_pct: Some(80),
+            bash_max_output: Some(5_000),
+            thinking_enabled: Some(true),
+            effort_level: Some("high".to_owned()),
+            ..Default::default()
+        };
+        let overrides = TokenControls {
+            autocompact_pct: Some(60),
+            bash_max_output: None,
+            thinking_enabled: None,
+            effort_level: Some("low".to_owned()),
+            ..Default::default()
+        };
+        let merged = overrides.merge_with_base(&base);
+        // overrides wins where set
+        assert_eq!(merged.autocompact_pct, Some(60));
+        assert_eq!(merged.effort_level.as_deref(), Some("low"));
+        // falls back to base where override is None
+        assert_eq!(merged.bash_max_output, Some(5_000));
+        assert_eq!(merged.thinking_enabled, Some(true));
+    }
+
+    #[test]
+    fn test_token_controls_merge_all_none_base_wins() {
+        let base = TokenControls {
+            max_output_tokens: Some(4096),
+            autocompact_pct: Some(90),
+            ..Default::default()
+        };
+        let overrides = TokenControls {
+            max_output_tokens: None,
+            autocompact_pct: None,
+            ..Default::default()
+        };
+        let merged = overrides.merge_with_base(&base);
+        assert_eq!(merged.max_output_tokens, Some(4096));
+        assert_eq!(merged.autocompact_pct, Some(90));
     }
 
     #[test]
@@ -3031,6 +3118,7 @@ max_output_tokens = 4096
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         };
         // No [[bees]] → uses coordinator config
         let bees = ws.resolved_bees();

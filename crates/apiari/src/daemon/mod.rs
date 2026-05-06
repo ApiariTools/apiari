@@ -5480,7 +5480,10 @@ fn build_bee_coordinator(
     if let Some(settings) = config::coordinator_settings_json() {
         coordinator.set_settings(settings);
     }
-    coordinator.set_token_controls(bee.token_controls.clone());
+    coordinator.set_token_controls(
+        bee.token_controls
+            .merge_with_base(&ws_config.token_controls),
+    );
     coordinator.set_safety_hooks(Box::new(GitSafetyHooks {
         workspace_root: ws_config.root.clone(),
     }));

@@ -83,6 +83,9 @@ pub struct ResumeOptions {
     /// Skip all confirmation prompts and execute without sandboxing.
     /// Maps to `--dangerously-bypass-approvals-and-sandbox`.
     pub dangerously_bypass_sandbox: bool,
+
+    /// Config key=value overrides (passed as `-c key=value`).
+    pub config_overrides: Vec<(String, String)>,
 }
 
 /// Sandbox modes controlling file system access.
@@ -197,6 +200,9 @@ impl ResumeOptions {
         }
         if self.dangerously_bypass_sandbox {
             args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+        }
+        for (key, value) in &self.config_overrides {
+            args.extend(["-c".to_owned(), format!("{key}={value}")]);
         }
 
         args

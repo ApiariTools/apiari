@@ -62,12 +62,15 @@ pub fn max_context_tokens(model: &str) -> u64 {
     }
 }
 
-/// Merge `thinking_enabled` from token controls into the existing settings JSON.
+/// Merge token control fields into the existing settings JSON.
+///
+/// Handles `thinking_enabled` → `alwaysThinkingEnabled` and
+/// `effort_level` → `effortLevel`.
 fn apply_token_controls_settings(
     base: &Option<String>,
     controls: &crate::config::TokenControls,
 ) -> Option<String> {
-    if controls.thinking_enabled.is_none() {
+    if controls.thinking_enabled.is_none() && controls.effort_level.is_none() {
         return base.clone();
     }
     let mut obj: serde_json::Map<String, serde_json::Value> = base
@@ -76,6 +79,9 @@ fn apply_token_controls_settings(
         .unwrap_or_default();
     if let Some(enabled) = controls.thinking_enabled {
         obj.insert("alwaysThinkingEnabled".to_owned(), enabled.into());
+    }
+    if let Some(ref level) = controls.effort_level {
+        obj.insert("effortLevel".to_owned(), level.clone().into());
     }
     serde_json::to_string(&obj).ok().or_else(|| base.clone())
 }
@@ -386,7 +392,6 @@ impl Coordinator {
             disallowed_tools: self.disallowed_tools.clone(),
             working_dir: self.working_dir.clone(),
             settings: merged_settings,
-            effort: self.token_controls.effort_level.clone(),
             max_tokens: self.token_controls.max_output_tokens,
             env_vars,
             ..Default::default()
@@ -691,6 +696,12 @@ impl Coordinator {
             .as_ref()
             .and_then(|hooks| hooks.pre_turn());
 
+        let codex_config_overrides: Vec<(String, String)> = self
+            .token_controls
+            .max_output_tokens
+            .map(|v| vec![("model.maxTokens".to_owned(), v.to_string())])
+            .unwrap_or_default();
+
         let mut execution = if let Some(ref sid) = self.session_id
             && matches!(
                 self.execution_policy,
@@ -705,6 +716,7 @@ impl Coordinator {
                         images: image_paths.to_vec(),
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
+                        config_overrides: codex_config_overrides,
                         ..Default::default()
                     },
                 )
@@ -731,6 +743,7 @@ impl Coordinator {
                             crate::config::BeeExecutionPolicy::Autonomous
                         ),
                         working_dir: self.working_dir.clone(),
+                        config_overrides: codex_config_overrides,
                         ..Default::default()
                     },
                 )
@@ -1808,14 +1821,22 @@ mod tests {
     #[test]
     fn test_apply_token_controls_settings_no_thinking_enabled_returns_base() {
         let base = Some(r#"{"foo":"bar"}"#.to_owned());
-        let controls = crate::config::TokenControls::default();
+        let controls = crate::config::TokenControls {
+            thinking_enabled: None,
+            effort_level: None,
+            ..Default::default()
+        };
         let result = apply_token_controls_settings(&base, &controls);
         assert_eq!(result, base);
     }
 
     #[test]
     fn test_apply_token_controls_settings_no_base_no_thinking_returns_none() {
-        let controls = crate::config::TokenControls::default();
+        let controls = crate::config::TokenControls {
+            thinking_enabled: None,
+            effort_level: None,
+            ..Default::default()
+        };
         let result = apply_token_controls_settings(&None, &controls);
         assert!(result.is_none());
     }
@@ -1879,10 +1900,16 @@ mod tests {
         coord.set_token_controls(crate::config::TokenControls {
             effort_level: Some("low".to_owned()),
             max_output_tokens: Some(2048),
+            thinking_enabled: None,
+            autocompact_pct: None,
+            bash_max_output: None,
             ..Default::default()
         });
         let opts = coord.build_options(&store).unwrap();
-        assert_eq!(opts.effort.as_deref(), Some("low"));
+        // effort_level goes into --settings JSON as effortLevel, not --effort flag
+        let settings_str = opts.settings.as_deref().unwrap_or("{}");
+        let settings: serde_json::Value = serde_json::from_str(settings_str).unwrap();
+        assert_eq!(settings["effortLevel"], "low");
         assert_eq!(opts.max_tokens, Some(2048));
     }
 }

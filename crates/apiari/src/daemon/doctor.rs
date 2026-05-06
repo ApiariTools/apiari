@@ -265,6 +265,7 @@ mod tests {
             shells: ShellsConfig::default(),
             schedule: None,
             activity: crate::config::ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         }
     }
 

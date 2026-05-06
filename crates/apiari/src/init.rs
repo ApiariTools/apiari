@@ -34,17 +34,19 @@ repos = []  # empty = auto-discover from workspace root
 # chat_id = 0
 # topic_id = 0
 
+# Token efficiency defaults — applied to all bees in this workspace.
+# Override per-bee with [coordinator.token_controls] or [[bees.token_controls]].
+# These values are already active by default; uncomment to change them.
+# [token_controls]
+# thinking_enabled = false  # disables extended thinking (biggest cost saver for agentic loops)
+# bash_max_output = 20000   # cap bash output at 20k chars (prevents context floods)
+# autocompact_pct = 70      # compact at 70% full instead of waiting until 95%+
+
 [coordinator]
 model = "sonnet"
 max_turns = 20
 prompt = """
 {prompt_lines}"""
-
-# Token efficiency — recommended defaults (uncomment to enable)
-# [coordinator.token_controls]
-# thinking_enabled = false  # disables extended thinking (biggest cost saver for agentic loops)
-# bash_max_output = 20000   # cap bash output at 20k chars (prevents context floods)
-# autocompact_pct = 70      # compact at 70% full instead of waiting until 95%+
 
 # [watchers.github]
 # repos = ["owner/repo1", "owner/repo2"]

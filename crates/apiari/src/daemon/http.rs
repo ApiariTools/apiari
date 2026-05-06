@@ -6683,6 +6683,7 @@ mod tests {
             shells: crate::config::ShellsConfig::default(),
             schedule: None,
             activity: crate::config::ActivityConfig::default(),
+            token_controls: crate::config::TokenControls::default(),
         }
     }
 
