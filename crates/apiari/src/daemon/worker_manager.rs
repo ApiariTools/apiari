@@ -413,3 +413,407 @@ fn upsert_state_entry(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+
+    fn init_git_repo(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+    }
+
+    fn read_state(work_dir: &Path) -> serde_json::Value {
+        let raw = fs::read_to_string(work_dir.join(".swarm").join("state.json")).unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    fn make_swarm_dir(work_dir: &Path) {
+        fs::create_dir_all(work_dir.join(".swarm")).unwrap();
+    }
+
+    // ── resolve_repo ──────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_repo_finds_git_repo_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("myrepo");
+        init_git_repo(&repo);
+
+        let result = resolve_repo(tmp.path(), "myrepo").unwrap();
+        assert_eq!(result, repo);
+    }
+
+    #[test]
+    fn resolve_repo_falls_back_to_direct_path_when_dir_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("somedir");
+        fs::create_dir_all(&dir).unwrap();
+
+        let result = resolve_repo(tmp.path(), "somedir").unwrap();
+        assert_eq!(result, dir);
+    }
+
+    #[test]
+    fn resolve_repo_errors_when_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = resolve_repo(tmp.path(), "nonexistent").unwrap_err();
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn resolve_repo_errors_include_work_dir_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = resolve_repo(tmp.path(), "ghost").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("ghost"), "error should name the missing repo");
+    }
+
+    #[test]
+    fn resolve_repo_prefers_git_repo_over_plain_dir_with_same_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("proj");
+        init_git_repo(&repo);
+
+        // Should find it via detect_repos (git scan) — either way result is correct.
+        let result = resolve_repo(tmp.path(), "proj").unwrap();
+        assert_eq!(result, repo);
+    }
+
+    // ── upsert_state_entry ────────────────────────────────────────────────
+
+    #[test]
+    fn upsert_creates_state_json_from_scratch() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+
+        upsert_state_entry(
+            tmp.path(),
+            "repo-a1b2",
+            "feat/my-task",
+            "do the thing",
+            &AgentKind::Codex,
+            Path::new("/workspace/repo"),
+            Path::new("/workspace/.swarm/wt/repo-a1b2"),
+        );
+
+        let state = read_state(tmp.path());
+        let worktrees = state["worktrees"].as_array().unwrap();
+        assert_eq!(worktrees.len(), 1);
+        let wt = &worktrees[0];
+        assert_eq!(wt["id"].as_str(), Some("repo-a1b2"));
+        assert_eq!(wt["branch"].as_str(), Some("feat/my-task"));
+        assert_eq!(wt["prompt"].as_str(), Some("do the thing"));
+        assert_eq!(wt["phase"].as_str(), Some("starting"));
+        assert_eq!(wt["status"].as_str(), Some("running"));
+        assert!(
+            wt["created_at"].as_str().is_some(),
+            "created_at should be set"
+        );
+    }
+
+    #[test]
+    fn upsert_preserves_session_name_and_inbox_pos() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        let state = read_state(tmp.path());
+        assert_eq!(state["session_name"].as_str(), Some("apiari"));
+        assert_eq!(state["last_inbox_pos"].as_i64(), Some(0));
+    }
+
+    #[test]
+    fn upsert_updates_existing_entry_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "feat/old",
+            "old prompt",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "feat/new",
+            "new prompt",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        let state = read_state(tmp.path());
+        let worktrees = state["worktrees"].as_array().unwrap();
+        assert_eq!(worktrees.len(), 1, "same id must not create a duplicate");
+        assert_eq!(worktrees[0]["branch"].as_str(), Some("feat/new"));
+        assert_eq!(worktrees[0]["prompt"].as_str(), Some("new prompt"));
+    }
+
+    #[test]
+    fn upsert_appends_when_ids_differ() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b1",
+            "p1",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+        upsert_state_entry(
+            tmp.path(),
+            "w-2",
+            "b2",
+            "p2",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+        upsert_state_entry(
+            tmp.path(),
+            "w-3",
+            "b3",
+            "p3",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        let state = read_state(tmp.path());
+        assert_eq!(state["worktrees"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn upsert_sets_correct_agent_kind_label() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Claude,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        let state = read_state(tmp.path());
+        let kind = state["worktrees"][0]["agent_kind"].as_str().unwrap();
+        assert_eq!(kind, AgentKind::Claude.label());
+    }
+
+    // ── update_state_phase ────────────────────────────────────────────────
+
+    #[test]
+    fn update_phase_waiting_sets_status_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        update_state_phase(tmp.path(), "w-1", "waiting");
+
+        let state = read_state(tmp.path());
+        assert_eq!(state["worktrees"][0]["phase"].as_str(), Some("waiting"));
+        assert_eq!(state["worktrees"][0]["status"].as_str(), Some("running"));
+    }
+
+    #[test]
+    fn update_phase_running_keeps_status_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        update_state_phase(tmp.path(), "w-1", "running");
+
+        let state = read_state(tmp.path());
+        assert_eq!(state["worktrees"][0]["phase"].as_str(), Some("running"));
+        assert_eq!(state["worktrees"][0]["status"].as_str(), Some("running"));
+    }
+
+    #[test]
+    fn update_phase_failed_sets_status_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        update_state_phase(tmp.path(), "w-1", "failed");
+
+        let state = read_state(tmp.path());
+        assert_eq!(state["worktrees"][0]["phase"].as_str(), Some("failed"));
+        assert_eq!(state["worktrees"][0]["status"].as_str(), Some("done"));
+    }
+
+    #[test]
+    fn update_phase_starting_sets_status_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        update_state_phase(tmp.path(), "w-1", "starting");
+
+        let state = read_state(tmp.path());
+        assert_eq!(state["worktrees"][0]["status"].as_str(), Some("done"));
+    }
+
+    #[test]
+    fn update_phase_is_noop_when_no_state_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        // No panic expected — silently does nothing.
+        update_state_phase(tmp.path(), "w-1", "waiting");
+    }
+
+    #[test]
+    fn update_phase_does_not_touch_other_workers() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b1",
+            "p1",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+        upsert_state_entry(
+            tmp.path(),
+            "w-2",
+            "b2",
+            "p2",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        update_state_phase(tmp.path(), "w-1", "failed");
+
+        let state = read_state(tmp.path());
+        let w2 = state["worktrees"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["id"].as_str() == Some("w-2"))
+            .unwrap();
+        assert_eq!(
+            w2["phase"].as_str(),
+            Some("starting"),
+            "w-2 must be unchanged"
+        );
+        assert_eq!(
+            w2["status"].as_str(),
+            Some("running"),
+            "w-2 status must be unchanged"
+        );
+    }
+
+    #[test]
+    fn update_phase_is_noop_for_unknown_worker_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Codex,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        update_state_phase(tmp.path(), "ghost", "failed");
+
+        let state = read_state(tmp.path());
+        // w-1 should be untouched.
+        assert_eq!(state["worktrees"][0]["phase"].as_str(), Some("starting"));
+    }
+
+    // ── WorkerManager — error paths (no live agent needed) ────────────────
+
+    #[tokio::test]
+    async fn send_message_to_unknown_worker_returns_error() {
+        let mgr = WorkerManager::new();
+        let err = mgr.send_message("ghost-1234", "hello").await.unwrap_err();
+        assert!(
+            err.to_string().contains("ghost-1234"),
+            "error should name the missing worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_unknown_worker_returns_error() {
+        let mgr = WorkerManager::new();
+        let err = mgr.close_worker("ghost-1234").await.unwrap_err();
+        assert!(err.to_string().contains("ghost-1234"));
+    }
+
+    #[tokio::test]
+    async fn is_live_returns_false_for_unknown_worker() {
+        let mgr = WorkerManager::new();
+        assert!(!mgr.is_live("ghost-1234"));
+    }
+
+    #[tokio::test]
+    async fn new_manager_starts_with_no_live_workers() {
+        let mgr = WorkerManager::new();
+        // Any random ID should not be live.
+        assert!(!mgr.is_live("a"));
+        assert!(!mgr.is_live(""));
+    }
+}
