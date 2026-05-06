@@ -4670,6 +4670,23 @@ async fn generate_and_store_worker_title(
     }
 }
 
+/// Copy agent events/output from the old swarm dir to the new one so history
+/// is preserved across rekeys (send-to-dead-agent, requeue, redispatch).
+fn copy_agent_dir(swarm_root: &std::path::Path, old_id: &str, new_id: &str) {
+    let src = swarm_root.join("agents").join(old_id);
+    let dst = swarm_root.join("agents").join(new_id);
+    if !src.exists() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dst);
+    for entry in std::fs::read_dir(&src).into_iter().flatten().flatten() {
+        let from = entry.path();
+        if let Some(name) = from.file_name() {
+            let _ = std::fs::copy(&from, dst.join(name));
+        }
+    }
+}
+
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -4906,6 +4923,7 @@ async fn v2_send_message(
         }
 
         let _ = store.rekey(&id, &new_swarm_id);
+        copy_agent_dir(&ws.config.root.join(".swarm"), &id, &new_swarm_id);
         let review_mode = brief
             .get("review_mode")
             .and_then(|v| v.as_str())
@@ -4918,18 +4936,18 @@ async fn v2_send_message(
             state: crate::buzz::worker::WorkerState::Queued,
             brief: Some(brief),
             repo: Some(repo),
-            branch: None,
+            branch: worker.branch.clone(),
             goal: worker.goal.clone(),
-            tests_passing: false,
+            tests_passing: worker.tests_passing,
             branch_ready: false,
-            pr_url: None,
-            pr_approved: false,
+            pr_url: worker.pr_url.clone(),
+            pr_approved: worker.pr_approved,
             is_stalled: false,
             revision_count: new_revision,
             review_mode,
             blocked_reason: None,
             display_title: worker.display_title.clone(),
-            last_output_at: None,
+            last_output_at: worker.last_output_at.clone(),
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: worker.created_at.clone(),
             updated_at: chrono::Utc::now().to_rfc3339(),
@@ -5192,6 +5210,7 @@ async fn v2_requeue_worker(
     // Rekey the existing DB record to the new swarm ID, preserving all reviews and history.
     // The task is the same task — only the underlying swarm worktree changed.
     let _ = store.rekey(&id, &new_swarm_id);
+    copy_agent_dir(&ws.config.root.join(".swarm"), &id, &new_swarm_id);
 
     let now = chrono::Utc::now().to_rfc3339();
     let review_mode = brief
@@ -5206,17 +5225,17 @@ async fn v2_requeue_worker(
         state: crate::buzz::worker::WorkerState::Queued,
         brief: Some(brief),
         repo: Some(repo),
-        branch: None,
+        branch: worker.branch.clone(),
         goal: worker.goal.clone(),
-        tests_passing: false,
+        tests_passing: worker.tests_passing,
         branch_ready: false,
-        pr_url: None,
-        pr_approved: false,
+        pr_url: worker.pr_url.clone(),
+        pr_approved: worker.pr_approved,
         is_stalled: false,
         revision_count: new_revision,
         review_mode,
         blocked_reason: None,
-        last_output_at: None,
+        last_output_at: worker.last_output_at.clone(),
         state_entered_at: now.clone(),
         created_at: worker.created_at.clone(),
         updated_at: now,
@@ -5357,6 +5376,7 @@ async fn auto_requeue_with_feedback(
     };
 
     let _ = store.rekey(&worker.id, &new_id);
+    copy_agent_dir(&workspace_root.join(".swarm"), &worker.id, &new_id);
 
     let now = chrono::Utc::now().to_rfc3339();
     let review_mode = brief
@@ -5371,17 +5391,17 @@ async fn auto_requeue_with_feedback(
         state: crate::buzz::worker::WorkerState::Queued,
         brief: Some(brief),
         repo: Some(repo),
-        branch: None,
+        branch: worker.branch.clone(),
         goal: worker.goal.clone(),
-        tests_passing: false,
+        tests_passing: worker.tests_passing,
         branch_ready: false,
-        pr_url: None,
-        pr_approved: false,
+        pr_url: worker.pr_url.clone(),
+        pr_approved: worker.pr_approved,
         is_stalled: false,
         revision_count: new_revision,
         review_mode,
         blocked_reason: None,
-        last_output_at: None,
+        last_output_at: worker.last_output_at.clone(),
         state_entered_at: now.clone(),
         created_at: worker.created_at.clone(),
         updated_at: now,
