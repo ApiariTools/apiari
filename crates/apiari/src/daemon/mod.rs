@@ -5903,7 +5903,9 @@ fn list_repo_files(repo_root: &Path) -> Vec<String> {
         .args(["--files"])
         .current_dir(repo_root)
         .output();
-    if let Ok(out) = rg_out && out.status.success() {
+    if let Ok(out) = rg_out
+        && out.status.success()
+    {
         return String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(|l| l.trim().to_string())
@@ -5915,7 +5917,9 @@ fn list_repo_files(repo_root: &Path) -> Vec<String> {
         .args([".", "-type", "f", "-not", "-path", "./.git/*"])
         .current_dir(repo_root)
         .output();
-    if let Ok(out) = find_out && out.status.success() {
+    if let Ok(out) = find_out
+        && out.status.success()
+    {
         return String::from_utf8_lossy(&out.stdout)
             .lines()
             .map(|l| l.trim().trim_start_matches("./").to_string())
