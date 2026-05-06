@@ -134,7 +134,8 @@ describe("WorkerDetailV2", () => {
       pr_url: "https://github.com/org/repo/pull/42",
     });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
-    const link = await screen.findByRole("link", { name: /PR/i });
+    // PR link now shows the PR number (#42) instead of generic "PR"
+    const link = await screen.findByRole("link", { name: /#42/i });
     expect(link).toHaveAttribute("href", "https://github.com/org/repo/pull/42");
   });
 
@@ -148,9 +149,9 @@ describe("WorkerDetailV2", () => {
     // Use waiting state so the input is enabled
     vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "waiting", label: "Waiting" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
-    const textarea = await screen.findByPlaceholderText("Send a message to the worker...");
-    fireEvent.change(textarea, { target: { value: "hello worker" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    const input = await screen.findByPlaceholderText("Send an instruction…");
+    fireEvent.change(input, { target: { value: "hello worker" } });
+    fireEvent.click(screen.getByTitle("Send"));
     await waitFor(() => {
       expect(api.sendWorkerMessageV2).toHaveBeenCalledWith("default", "w-abc", "hello worker");
     });
@@ -274,7 +275,7 @@ describe("WorkerDetailV2", () => {
 
   // ── Review feature tests ──────────────────────────────────────────────────
 
-  it("shows 'Request Review' button when waiting and branch_ready", async () => {
+  it("shows review button when waiting and branch_ready", async () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({
       ...mockWorker,
       state: "waiting",
@@ -283,7 +284,7 @@ describe("WorkerDetailV2", () => {
     });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     expect(await screen.findByTestId("review-btn")).toBeInTheDocument();
-    expect(screen.getByTestId("review-btn")).toHaveTextContent("Request Review");
+    expect(screen.getByTestId("review-btn")).toHaveTextContent("Review");
   });
 
   it("hides 'Request Review' button when state is running", async () => {

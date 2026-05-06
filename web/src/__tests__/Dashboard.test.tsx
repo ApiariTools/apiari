@@ -1,7 +1,11 @@
 import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import Dashboard from "../components/Dashboard/Dashboard";
 import type { WorkerV2, AutoBot } from "../types";
+
+vi.mock("../api", () => ({
+  listWidgets: vi.fn().mockResolvedValue([]),
+}));
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -60,86 +64,73 @@ const defaultProps = {
   onSelectAutoBot: vi.fn(),
 };
 
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe("Dashboard", () => {
-  it("renders EmptyState when no workers and no auto bots", () => {
+  it("renders 'No active workers' when workers list is empty", () => {
     render(<Dashboard {...defaultProps} />);
-    // EmptyState text
-    expect(screen.getByText("Select something")).toBeInTheDocument();
+    expect(screen.getByText("No active workers")).toBeInTheDocument();
   });
 
-  it("renders stat cards when workers exist", () => {
+  it("renders Running stat pill when running workers exist", () => {
     const workers = [
       makeWorker({ id: "w-1", state: "running" }),
       makeWorker({ id: "w-2", state: "running" }),
-      makeWorker({ id: "w-3", state: "waiting" }),
-      makeWorker({ id: "w-4", state: "failed" }),
-      makeWorker({ id: "w-5", state: "merged" }),
     ];
     render(<Dashboard {...defaultProps} workers={workers} />);
-
-    const statCards = screen.getByTestId("stat-cards");
-    expect(statCards).toBeInTheDocument();
-    // Check section headings
     expect(screen.getByText("Running")).toBeInTheDocument();
-    expect(screen.getByText("Waiting")).toBeInTheDocument();
-    expect(screen.getByText("Failed")).toBeInTheDocument();
-    expect(screen.getByText("Merged")).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
   });
 
-  it("renders correct running count in stat cards", () => {
-    const workers = [
-      makeWorker({ id: "w-1", state: "running" }),
-      makeWorker({ id: "w-2", state: "running" }),
-      makeWorker({ id: "w-3", state: "waiting" }),
-    ];
+  it("renders Waiting stat pill when waiting workers exist", () => {
+    const workers = [makeWorker({ id: "w-1", state: "waiting" })];
     render(<Dashboard {...defaultProps} workers={workers} />);
-    const statCards = screen.getByTestId("stat-cards");
-    // "2" running, "1" waiting
-    const counts = statCards.querySelectorAll("[class*='statCount']");
-    const texts = Array.from(counts).map((el) => el.textContent);
-    expect(texts).toContain("2"); // running
-    expect(texts).toContain("1"); // waiting
+    expect(screen.getByText("Waiting")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
   });
 
-  it("stalled workers are NOT counted as running", () => {
+  it("only renders non-zero stat pills", () => {
+    const workers = [makeWorker({ id: "w-1", state: "running" })];
+    render(<Dashboard {...defaultProps} workers={workers} />);
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.queryByText("Waiting")).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+  });
+
+  it("stalled workers do NOT count as running", () => {
     const workers = [
       makeWorker({ id: "w-1", state: "running", is_stalled: true }),
       makeWorker({ id: "w-2", state: "running", is_stalled: false }),
     ];
     render(<Dashboard {...defaultProps} workers={workers} />);
-    const statCards = screen.getByTestId("stat-cards");
-    const counts = statCards.querySelectorAll("[class*='statCount']");
-    const runningCount = counts[0]?.textContent; // first card is Running
-    expect(runningCount).toBe("1"); // only the non-stalled one
+    // Running=1 (stalled excluded), Stalled=1 — "2" should NOT appear as a count
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.getByText("Stalled")).toBeInTheDocument();
+    // "2" would appear if stalled was counted as running — it should not
+    expect(screen.queryByText("2")).not.toBeInTheDocument();
   });
 
-  it("renders worker rows", () => {
-    const workers = [
-      makeWorker({ id: "w-1", goal: "Fix auth" }),
-      makeWorker({ id: "w-2", goal: "Update deps" }),
-    ];
+  it("shows attention list for waiting workers", () => {
+    const workers = [makeWorker({ id: "w-1", state: "waiting", goal: "Fix bug" })];
     render(<Dashboard {...defaultProps} workers={workers} />);
-    expect(screen.getByText("Fix auth")).toBeInTheDocument();
-    expect(screen.getByText("Update deps")).toBeInTheDocument();
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Fix bug")).toBeInTheDocument();
   });
 
-  it("worker row shows revision pill when revision_count > 0", () => {
-    const workers = [makeWorker({ id: "w-1", revision_count: 2 })];
+  it("shows attention list for stalled workers", () => {
+    const workers = [makeWorker({ id: "w-1", state: "running", is_stalled: true, goal: "Stalled task" })];
     render(<Dashboard {...defaultProps} workers={workers} />);
-    expect(screen.getByText("pass 2")).toBeInTheDocument();
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(screen.getByText("Stalled task")).toBeInTheDocument();
   });
 
-  it("worker row does NOT show revision pill when revision_count == 0", () => {
-    const workers = [makeWorker({ id: "w-1", revision_count: 0 })];
-    render(<Dashboard {...defaultProps} workers={workers} />);
-    expect(screen.queryByText(/pass/)).not.toBeInTheDocument();
-  });
-
-  it("calls onSelectWorker when worker row is clicked", () => {
+  it("calls onSelectWorker when attention row is clicked", () => {
     const onSelectWorker = vi.fn();
-    const workers = [makeWorker({ id: "w-42" })];
+    const workers = [makeWorker({ id: "w-42", state: "waiting", goal: "Fix bug" })];
     render(
       <Dashboard
         {...defaultProps}
@@ -147,57 +138,24 @@ describe("Dashboard", () => {
         onSelectWorker={onSelectWorker}
       />,
     );
-    const row = screen.getByTestId("dashboard-worker-row");
-    fireEvent.click(row);
+    fireEvent.click(screen.getByText("Fix bug").closest("button")!);
     expect(onSelectWorker).toHaveBeenCalledWith("w-42");
   });
 
-  it("renders auto bot rows", () => {
-    const autoBots = [
-      makeAutoBot({ id: "bot-1", name: "Triage" }),
-      makeAutoBot({ id: "bot-2", name: "Standup" }),
-    ];
-    render(<Dashboard {...defaultProps} autoBots={autoBots} />);
-    expect(screen.getByText("Triage")).toBeInTheDocument();
-    expect(screen.getByText("Standup")).toBeInTheDocument();
-  });
-
-  it("calls onSelectAutoBot when auto bot row is clicked", () => {
-    const onSelectAutoBot = vi.fn();
-    const autoBots = [makeAutoBot({ id: "bot-99", name: "Triage" })];
-    render(
-      <Dashboard
-        {...defaultProps}
-        autoBots={autoBots}
-        onSelectAutoBot={onSelectAutoBot}
-      />,
-    );
-    const row = screen.getByTestId("dashboard-auto-bot-row");
-    fireEvent.click(row);
-    expect(onSelectAutoBot).toHaveBeenCalledWith("bot-99");
-  });
-
-  it("renders workers section heading", () => {
-    const workers = [makeWorker()];
+  it("does not show attention list when all workers are running and not stalled", () => {
+    const workers = [makeWorker({ id: "w-1", state: "running", is_stalled: false })];
     render(<Dashboard {...defaultProps} workers={workers} />);
-    expect(screen.getByTestId("workers-section")).toBeInTheDocument();
+    expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
   });
 
-  it("renders auto bots section heading", () => {
+  it("renders dashboard header", () => {
+    render(<Dashboard {...defaultProps} />);
+    expect(screen.getByText("Overview")).toBeInTheDocument();
+  });
+
+  it("accepts autoBots prop without errors", () => {
     const autoBots = [makeAutoBot()];
-    render(<Dashboard {...defaultProps} autoBots={autoBots} />);
-    expect(screen.getByTestId("auto-bots-section")).toBeInTheDocument();
-  });
-
-  it("does not render workers section when workers is empty", () => {
-    const autoBots = [makeAutoBot()];
-    render(<Dashboard {...defaultProps} autoBots={autoBots} />);
-    expect(screen.queryByTestId("workers-section")).not.toBeInTheDocument();
-  });
-
-  it("does not render auto bots section when autoBots is empty", () => {
-    const workers = [makeWorker()];
-    render(<Dashboard {...defaultProps} workers={workers} />);
-    expect(screen.queryByTestId("auto-bots-section")).not.toBeInTheDocument();
+    // Dashboard receives autoBots but doesn't render them directly — just smoke test
+    expect(() => render(<Dashboard {...defaultProps} autoBots={autoBots} />)).not.toThrow();
   });
 });

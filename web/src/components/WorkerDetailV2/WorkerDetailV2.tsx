@@ -256,72 +256,31 @@ interface ToolGroupRowProps {
   onToggle: () => void
 }
 
-function terminalLines(t: WorkerEvent): { tool: string; lines: string[] } {
-  const toolName = t.tool ?? t.content.split(':')[0].trim()
-  const args = t.input ?? {}
-
-  if (toolName === 'Bash' && typeof args.command === 'string') {
-    return { tool: toolName, lines: [`$ ${args.command}`] }
-  }
-  if ((toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') && typeof args.file_path === 'string') {
-    return { tool: toolName, lines: [args.file_path] }
-  }
-  if (toolName === 'Grep') {
-    const parts: string[] = []
-    if (typeof args.pattern === 'string') parts.push(args.pattern)
-    if (typeof args.path === 'string') parts.push(args.path)
-    return { tool: toolName, lines: parts.length ? parts : [t.content] }
-  }
-  if (toolName === 'Glob' && typeof args.pattern === 'string') {
-    return { tool: toolName, lines: [args.pattern] }
-  }
-  if (toolName === 'WebFetch' && typeof args.url === 'string') {
-    return { tool: toolName, lines: [args.url] }
-  }
-  if (toolName === 'WebSearch' && typeof args.query === 'string') {
-    return { tool: toolName, lines: [args.query] }
-  }
-  if (toolName === 'Agent' && typeof args.description === 'string') {
-    return { tool: toolName, lines: [args.description] }
-  }
-
-  // generic fallback: show non-empty string values from input
-  const fallbackLines = Object.entries(args)
-    .filter(([, v]) => typeof v === 'string' && (v as string).length > 0)
-    .map(([k, v]) => `${k}: ${(v as string).slice(0, 200)}`)
-  return { tool: toolName, lines: fallbackLines.length ? fallbackLines : [t.content] }
-}
 
 function ToolGroupRow({ group, expanded, onToggle }: ToolGroupRowProps) {
   const time = formatTime(group.created_at)
   const { tools } = group
 
   return (
-    <div className={styles.toolGroup} data-testid="tool-group">
-      <div className={styles.toolGroupHeader} onClick={onToggle}>
-        <span className={styles.eventTime}>{time}</span>
-        <div className={styles.toolGroupSummary}>
-          <span className={styles.toolGroupExpander}>{expanded ? '▼' : '▶'}</span>
-          <span>{tools.length} tool call{tools.length !== 1 ? 's' : ''}</span>
-        </div>
+    <div className={styles.toolGroup} data-testid="tool-group" onClick={onToggle}>
+      <span className={styles.eventTime}>{time}</span>
+      <div className={styles.toolGroupContent}>
+        <span className={styles.toolGroupExpander}>{expanded ? '▼' : '▶'}</span>
+        {expanded ? (
+          <div className={styles.toolGroupExpanded}>
+            <span className={styles.toolGroupCount}>{tools.length} tool call{tools.length !== 1 ? 's' : ''}</span>
+            {tools.map((t, i) => (
+              <div key={i} className={styles.toolGroupLine}>· {formatToolCall(t)}</div>
+            ))}
+          </div>
+        ) : (
+          <div className={styles.toolGroupCollapsed}>
+            {tools.map((t, i) => (
+              <span key={i} className={styles.toolGroupPreviewItem}>{formatToolCall(t)}</span>
+            ))}
+          </div>
+        )}
       </div>
-      {expanded && (
-        <div className={styles.toolTerminal}>
-          {tools.map((t, i) => {
-            const { tool, lines } = terminalLines(t)
-            return (
-              <div key={i} className={styles.terminalEntry}>
-                <span className={styles.terminalTool}>{tool}</span>
-                <div className={styles.terminalArgs}>
-                  {lines.map((line, j) => (
-                    <span key={j} className={styles.terminalLine}>{line}</span>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
     </div>
   )
 }

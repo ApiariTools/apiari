@@ -584,86 +584,57 @@
 /* tool_group */
 .toolGroup {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.toolGroupSummary {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 10px;
-  border-radius: 100px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
-  font-size: 12px;
-  color: var(--text);
-  width: fit-content;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
-}
-
-.toolGroupSummary:hover {
-  background: var(--bg-hover);
-  color: var(--text-strong);
-}
-
-.toolGroupHeader {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  gap: var(--space-3);
+  align-items: flex-start;
   cursor: pointer;
   user-select: none;
+  padding: 2px 0;
+}
+
+.toolGroupContent {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
 }
 
 .toolGroupExpander {
   font-size: 9px;
   opacity: 0.6;
-}
-
-/* Terminal block for expanded tool calls */
-.toolTerminal {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  overflow: hidden;
-}
-
-.terminalEntry {
-  display: flex;
-  gap: var(--space-3);
-  padding: 6px var(--space-3);
-  border-bottom: 1px solid var(--border);
-  line-height: 1.5;
-  align-items: flex-start;
-}
-
-.terminalEntry:last-child {
-  border-bottom: none;
-}
-
-.terminalTool {
-  color: var(--accent);
-  font-size: 11px;
-  font-weight: 600;
   flex-shrink: 0;
-  min-width: 60px;
-  padding-top: 1px;
+  margin-top: 1px;
 }
 
-.terminalArgs {
+.toolGroupCollapsed {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  flex: 1;
-  min-width: 0;
 }
 
-.terminalLine {
-  color: var(--text-strong);
-  word-break: break-all;
-  white-space: pre-wrap;
+.toolGroupPreviewItem {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.toolGroupExpanded {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.toolGroupCount {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.toolGroupLine {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
 }
 
 /* empty state */

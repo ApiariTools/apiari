@@ -110,6 +110,8 @@ beforeEach(() => {
   vi.mocked(api.getWorkerV2).mockResolvedValue(mockWorkerDetail);
   vi.mocked(api.listAutoBots).mockResolvedValue(mockAutoBots);
   vi.mocked(api.getAutoBot).mockResolvedValue(mockAutoBotDetail);
+  // listWidgets may not be in the auto-mock if the export was added after initial mock setup
+  Object.assign(api, { listWidgets: vi.fn().mockResolvedValue([]) });
 });
 
 describe("App shell", () => {
@@ -134,13 +136,12 @@ describe("App shell", () => {
   });
 
   it("shows empty state when nothing is selected", async () => {
-    // Override mocks to return empty lists so Dashboard shows EmptyState
+    // Override mocks to return empty lists so Dashboard shows no-workers state
     vi.mocked(api.listWorkersV2).mockResolvedValue([]);
     vi.mocked(api.listAutoBots).mockResolvedValue([]);
     render(<App />);
-    // Wait for workspace to load, then Dashboard shows EmptyState
-    expect(await screen.findByText("Select something")).toBeInTheDocument();
-    expect(screen.getByText("Choose a worker or auto bot from the sidebar")).toBeInTheDocument();
+    // Wait for workspace to load, then Dashboard shows "No active workers"
+    expect(await screen.findByText("No active workers")).toBeInTheDocument();
   });
 
   it("shows worker detail when a worker is selected", async () => {
