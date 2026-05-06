@@ -5903,47 +5903,86 @@ fn likely_files_from_repo(repo_root: &Path, text: &str) -> Vec<String> {
         return Vec::new();
     }
 
-    let output = std::process::Command::new("rg")
-        .args(["--files"])
-        .current_dir(repo_root)
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    if !output.status.success() {
+    let file_list = collect_repo_files(repo_root);
+    if file_list.is_empty() {
         return Vec::new();
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let text_lower = text.to_ascii_lowercase();
     let mut scored = Vec::new();
-    for line in stdout.lines() {
-        let path = line.trim();
-        if path.is_empty() {
-            continue;
-        }
+    for path in &file_list {
         let lower = path.to_ascii_lowercase();
         let mut score = 0_i32;
         for keyword in &keywords {
-            if lower.contains(keyword) {
+            if lower.contains(keyword.as_str()) {
                 score += 3;
             }
         }
-        if lower.contains("workerspanel") && text.to_ascii_lowercase().contains("worker") {
+        if lower.contains("workerspanel") && text_lower.contains("worker") {
             score += 5;
         }
         if lower.contains("mobile") {
             score += 1;
         }
-        if lower.contains("css") && text.to_ascii_lowercase().contains("padding") {
+        if lower.contains("css") && text_lower.contains("padding") {
             score += 2;
         }
         if score > 0 {
-            scored.push((score, path.to_string()));
+            scored.push((score, path.clone()));
         }
     }
 
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
     scored.into_iter().take(3).map(|(_, path)| path).collect()
+}
+
+/// List all files in the repo, preferring `rg --files` and falling back to
+/// a native recursive walk so the function works when ripgrep isn't installed.
+fn collect_repo_files(repo_root: &Path) -> Vec<String> {
+    // Try ripgrep first — it respects .gitignore and is fast.
+    if let Ok(out) = std::process::Command::new("rg")
+        .args(["--files"])
+        .current_dir(repo_root)
+        .output()
+        && out.status.success()
+    {
+        let paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !paths.is_empty() {
+            return paths;
+        }
+    }
+
+    // Fallback: native recursive walk, skipping common noise directories.
+    let skip = ["target", "node_modules", ".git", ".swarm"];
+    let mut files = Vec::new();
+    walk_dir(repo_root, repo_root, &skip, &mut files);
+    files
+}
+
+fn walk_dir(root: &Path, dir: &Path, skip: &[&str], out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if skip.iter().any(|s| name == *s) {
+            continue;
+        }
+        if path.is_dir() {
+            walk_dir(root, &path, skip, out);
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_string_lossy().to_string());
+        }
+    }
 }
 
 pub(crate) fn find_repo_root_path(
