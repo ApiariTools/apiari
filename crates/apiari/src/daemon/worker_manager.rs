@@ -201,8 +201,32 @@ impl WorkerManager {
                     match agent.next_event().await {
                         Ok(Some(ev)) => log_event(&mut logger, &ev),
                         Ok(None) | Err(_) => {
-                            update_state_phase(&wdir, &wid, "failed");
-                            break;
+                            // Agent finished. Check if a message arrived while it was running.
+                            // If so, treat it as a follow-up: set waiting so the HTTP handler
+                            // can see the agent is ready, then process the message.
+                            match msg_rx.try_recv() {
+                                Ok(msg) => {
+                                    update_state_phase(&wdir, &wid, "waiting");
+                                    let _ = logger.log(&AgentEvent::UserMessage {
+                                        timestamp: Utc::now(),
+                                        text: msg.clone(),
+                                    });
+                                    update_state_phase(&wdir, &wid, "running");
+                                    if let Err(e) = agent.send_message(&msg).await {
+                                        let _ = logger.log(&AgentEvent::Error {
+                                            timestamp: Utc::now(),
+                                            message: e.to_string(),
+                                        });
+                                        update_state_phase(&wdir, &wid, "failed");
+                                        break;
+                                    }
+                                    // Continue the loop — agent is running again.
+                                }
+                                Err(_) => {
+                                    update_state_phase(&wdir, &wid, "failed");
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -815,5 +839,53 @@ mod tests {
         // Any random ID should not be live.
         assert!(!mgr.is_live("a"));
         assert!(!mgr.is_live(""));
+    }
+
+    // ── msg_rx.try_recv on agent exit ─────────────────────────────────────
+    //
+    // Regression test: a message sent while the agent was running must not
+    // be silently dropped when the agent exits. The supervisor loop calls
+    // try_recv() after Ok(None) and immediately re-dispatches the message.
+    // We can't run a real agent here, but we can test the channel mechanics
+    // that gate the behaviour.
+
+    #[tokio::test]
+    async fn buffered_message_is_visible_via_try_recv_after_agent_exits() {
+        // Simulate what the supervisor loop does: message arrives in channel
+        // while agent is running, then agent exits (Ok(None)).
+        let (tx, mut rx) = mpsc::channel::<String>(8);
+        tx.send("follow-up message".to_string()).await.unwrap();
+
+        // Agent exits — supervisor calls try_recv.
+        let msg = rx.try_recv();
+        assert!(
+            msg.is_ok(),
+            "message buffered during agent run must be retrievable on exit"
+        );
+        assert_eq!(msg.unwrap(), "follow-up message");
+    }
+
+    #[tokio::test]
+    async fn try_recv_returns_error_when_no_buffered_message() {
+        let (_tx, mut rx) = mpsc::channel::<String>(8);
+        // Nothing sent — agent exits cleanly, no follow-up.
+        assert!(
+            rx.try_recv().is_err(),
+            "empty channel should signal clean exit, not a pending message"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_buffered_messages_only_first_is_used_on_agent_exit() {
+        // Only try_recv once on exit — the rest stay in the buffer for the
+        // next accept_input cycle (or are dropped when the task ends).
+        let (tx, mut rx) = mpsc::channel::<String>(8);
+        tx.send("first".to_string()).await.unwrap();
+        tx.send("second".to_string()).await.unwrap();
+
+        let first = rx.try_recv().unwrap();
+        assert_eq!(first, "first");
+        // Second is still there; a second agent run could pick it up.
+        assert!(rx.try_recv().is_ok());
     }
 }
