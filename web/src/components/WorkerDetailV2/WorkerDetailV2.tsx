@@ -613,7 +613,8 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
   // Only allow sending when the agent process is actually alive.
   // "waiting" with branch_ready means agent completed work (has a PR) — agent is dead.
   // "waiting" without branch_ready means agent is paused waiting for user input — alive.
-  const canSend = data.state === 'running' || data.state === 'queued' ||
+  // "stalled" means agent is alive but silent — sending is the right thing to do.
+  const canSend = data.state === 'running' || data.state === 'queued' || data.state === 'stalled' ||
     (data.state === 'waiting' && !data.branch_ready)
   const inputDisabled = !canSend
 
@@ -886,7 +887,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             <input
               ref={textareaRef}
               className={styles.instructionInput}
-              placeholder={data.state === 'running' ? 'Send async instruction…' : canSend ? 'Send an instruction…' : 'Worker is not running'}
+              placeholder={data.state === 'running' || data.state === 'stalled' ? 'Send async instruction…' : canSend ? 'Send an instruction…' : 'Worker is not running'}
               disabled={inputDisabled}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
             />

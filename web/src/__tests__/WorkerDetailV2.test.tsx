@@ -252,12 +252,12 @@ describe("WorkerDetailV2", () => {
     expect(textarea).not.toBeDisabled();
   });
 
-  it("input is disabled when state is stalled", async () => {
+  it("input is enabled when state is stalled (agent is alive, just silent)", async () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "stalled", label: "Stalled" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("action-bar");
-    const textarea = screen.getByPlaceholderText("Worker is not running");
-    expect(textarea).toBeDisabled();
+    const textarea = screen.getByPlaceholderText("Send async instruction…");
+    expect(textarea).not.toBeDisabled();
   });
 
   it("input is hidden when state is done", async () => {

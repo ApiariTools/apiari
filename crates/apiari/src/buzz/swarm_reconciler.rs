@@ -174,6 +174,34 @@ impl SwarmReconciler {
         })
     }
 
+    /// On daemon startup, reset any Stalled workers whose swarm agent is still
+    /// running back to Running. Stall is a continuous-observation state — after
+    /// a restart we have no baseline, so assume alive and let stall detection
+    /// re-fire naturally if the agent really is silent.
+    pub fn reset_stalled_on_startup(&self) -> Result<()> {
+        let worktrees = self.load_swarm_state();
+        let workers = self.store.list(&self.workspace)?;
+        let swarm_map: HashMap<String, &SwarmWorktree> =
+            worktrees.iter().map(|wt| (wt.id.clone(), wt)).collect();
+
+        for worker in &workers {
+            if worker.state != WorkerState::Stalled {
+                continue;
+            }
+            if let Some(wt) = swarm_map.get(&worker.id) {
+                let phase = wt.phase.as_deref().unwrap_or("");
+                if phase == "running" {
+                    info!(
+                        "[reconciler] startup: resetting {} stalled→running (agent alive)",
+                        worker.id
+                    );
+                    self.do_transition(worker, WorkerState::Running)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Run one reconciliation cycle.
     pub fn reconcile_once(&self) -> Result<()> {
         let worktrees = self.load_swarm_state();
@@ -523,6 +551,10 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
                 return;
             }
         };
+
+        if let Err(e) = reconciler.reset_stalled_on_startup() {
+            warn!("[reconciler] startup reset error: {e}");
+        }
 
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
