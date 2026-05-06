@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Plus } from 'lucide-react'
+import { ChevronDown, Plus, LayoutDashboard } from 'lucide-react'
 import styles from './Sidebar.module.css'
+
+export interface SidebarTag {
+  label: string
+  color: 'green' | 'amber' | 'faint'
+}
 
 export interface SidebarItem {
   id: string
   name: string
   status: string // 'running' | 'waiting' | 'stalled' | 'failed' | 'merged' | 'idle'
   meta?: string
+  tags?: SidebarTag[]
 }
 
 export interface ActivityItem {
@@ -18,6 +24,7 @@ export interface SidebarProps {
   selectedType: 'auto_bot' | 'worker' | null
   selectedId: string | null
   onSelect: (type: 'auto_bot' | 'worker', id: string) => void
+  onHome: () => void
   autoBots: SidebarItem[]
   workers: SidebarItem[]
   workspaces: string[]
@@ -48,21 +55,39 @@ interface ItemProps {
   onSelect: (type: 'auto_bot' | 'worker', id: string) => void
 }
 
+function tagColorClass(color: SidebarTag['color']): string {
+  switch (color) {
+    case 'green': return styles.tagGreen
+    case 'amber': return styles.tagAmber
+    default: return styles.tagFaint
+  }
+}
+
 function SidebarItemRow({ item, type, isSelected, onSelect }: ItemProps) {
+  const showSecondLine = item.meta || (item.tags && item.tags.length > 0)
   return (
     <button
-      className={`${styles.item} ${isSelected ? styles.itemSelected : ''}`}
+      className={`${styles.item} ${isSelected ? styles.itemSelected : ''} ${showSecondLine ? styles.itemTall : ''}`}
       onClick={() => onSelect(type, item.id)}
       type="button"
       aria-current={isSelected ? 'true' : undefined}
     >
       <span className={`${styles.dot} ${dotClass(item.status)}`} aria-hidden="true" />
-      <span className={`${styles.name} ${isSelected ? styles.nameSelected : ''}`}>
-        {item.name}
-      </span>
-      {item.meta && (
-        <span className={styles.meta}>{item.meta}</span>
-      )}
+      <div className={styles.itemContent}>
+        <span className={`${styles.name} ${isSelected ? styles.nameSelected : ''}`}>
+          {item.name}
+        </span>
+        {showSecondLine && (
+          <div className={styles.itemMeta}>
+            {item.meta && <span className={styles.metaId}>{item.meta}</span>}
+            {item.tags?.map((tag, i) => (
+              <span key={i} className={`${styles.tag} ${tagColorClass(tag.color)}`}>
+                {tag.label}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </button>
   )
 }
@@ -128,6 +153,7 @@ export default function Sidebar({
   selectedType,
   selectedId,
   onSelect,
+  onHome,
   autoBots,
   workers,
   workspaces,
@@ -137,6 +163,7 @@ export default function Sidebar({
   doneWorkerCount = 0,
   activityItems,
 }: SidebarProps) {
+  const homeSelected = selectedType === null && selectedId === null
   return (
     <nav className={styles.sidebar} aria-label="Sidebar">
       <WorkspaceSelector
@@ -145,6 +172,17 @@ export default function Sidebar({
         onWorkspaceChange={onWorkspaceChange}
       />
       <div className={styles.selectorDivider} />
+      <button
+        className={`${styles.item} ${homeSelected ? styles.itemSelected : ''}`}
+        onClick={onHome}
+        type="button"
+      >
+        <LayoutDashboard size={14} className={styles.itemIcon} aria-hidden="true" />
+        <div className={styles.itemContent}>
+          <span className={`${styles.name} ${homeSelected ? styles.nameSelected : ''}`}>Overview</span>
+        </div>
+      </button>
+      <div className={styles.divider} />
       <div className={styles.section}>
         <span className={styles.sectionLabel}>Auto Bots</span>
         {autoBots.length === 0 ? (

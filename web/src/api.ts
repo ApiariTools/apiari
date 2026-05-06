@@ -8,6 +8,7 @@ import type {
   Message,
   Repo,
   Doc,
+  DashboardWidget,
   ResearchTask,
   Followup,
   Signal,
@@ -501,4 +502,29 @@ export async function sendMessage(
     throw new Error(data.error ?? `POST chat/${bot} failed`);
   }
   return data;
+}
+
+// ── Dashboard widgets ──────────────────────────────────────────────────
+
+export async function listWidgets(workspace: string): Promise<DashboardWidget[]> {
+  return get<DashboardWidget[]>(`/workspaces/${workspace}/v2/widgets`)
+}
+
+export async function upsertWidget(
+  workspace: string,
+  slot: string,
+  widget: Omit<DashboardWidget, 'slot' | 'updated_at'> & { ttl_minutes?: number },
+): Promise<void> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/widgets/${encodeURIComponent(slot)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(widget),
+  })
+  if (!res.ok) throw new Error(`upsertWidget failed: ${res.status}`)
+}
+
+export async function deleteWidget(workspace: string, slot: string): Promise<void> {
+  await fetch(`${BASE}/workspaces/${workspace}/v2/widgets/${encodeURIComponent(slot)}`, {
+    method: 'DELETE',
+  })
 }

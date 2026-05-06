@@ -370,3 +370,159 @@ export interface ContextBotSession {
   minimized: boolean
   loading: boolean
 }
+
+// ── Dashboard Widgets ──────────────────────────────────────────────────
+
+export type WidgetStatus = 'ok' | 'warning' | 'error' | 'neutral' | 'running' | 'pending'
+export type WidgetTrendDirection = 'up' | 'down' | 'neutral'
+export type WidgetSeverity = 'error' | 'warning' | 'info'
+
+interface WidgetBase {
+  slot: string
+  title: string
+  updated_at?: string
+  href?: string
+  source?: string    // who wrote this (e.g. "GitHub bot", "Coordinator")
+  editable?: boolean // hint that user can change this via config
+}
+
+export interface StatWidget extends WidgetBase {
+  type: 'stat'
+  value: string
+  unit?: string
+  trend?: string
+  trend_direction?: WidgetTrendDirection
+  status?: WidgetStatus
+}
+
+export interface StatItem {
+  label: string
+  value: string
+  status?: WidgetStatus
+}
+
+export interface StatRowWidget extends WidgetBase {
+  type: 'stat_row'
+  stats: StatItem[]
+}
+
+export interface ListItem {
+  id: string
+  label: string
+  meta?: string
+  status?: WidgetStatus
+  right?: string
+  href?: string
+}
+
+export interface ListWidget extends WidgetBase {
+  type: 'list'
+  items: ListItem[]
+  empty_message?: string
+}
+
+export interface StatusGridItem {
+  label: string
+  status: WidgetStatus
+  href?: string
+}
+
+export interface StatusGridWidget extends WidgetBase {
+  type: 'status_grid'
+  items: StatusGridItem[]
+}
+
+export interface ActivityFeedItem {
+  id: string
+  timestamp: string
+  actor?: string
+  actor_color?: string
+  event: string
+  kind?: WidgetStatus
+  href?: string
+}
+
+export interface ActivityFeedWidget extends WidgetBase {
+  type: 'activity_feed'
+  items: ActivityFeedItem[]
+}
+
+export interface ProgressWidget extends WidgetBase {
+  type: 'progress'
+  label: string
+  percent: number
+  status?: WidgetStatus
+  sublabel?: string
+}
+
+export interface SparklineWidget extends WidgetBase {
+  type: 'sparkline'
+  value: string
+  unit?: string
+  trend?: string
+  trend_direction?: WidgetTrendDirection
+  status?: WidgetStatus
+  points: number[]
+  x_labels?: string[]
+}
+
+export interface BarChartBar {
+  label: string
+  value: number
+  status?: WidgetStatus
+}
+
+export interface BarChartWidget extends WidgetBase {
+  type: 'bar_chart'
+  bars: BarChartBar[]
+}
+
+export interface AlertBannerWidget extends WidgetBase {
+  type: 'alert_banner'
+  body: string
+  severity: WidgetSeverity
+  action_label?: string
+  action_href?: string
+  dismissible?: boolean
+}
+
+export interface LinkGroup {
+  label: string
+  links: { label: string; href: string; meta?: string }[]
+}
+
+export interface LinkCollectionWidget extends WidgetBase {
+  type: 'link_collection'
+  groups: LinkGroup[]
+}
+
+export interface MarkdownBlockWidget extends WidgetBase {
+  type: 'markdown_block'
+  content: string
+}
+
+export interface DonutSegment {
+  label: string
+  value: number
+  color: string
+}
+
+export interface DonutWidget extends WidgetBase {
+  type: 'donut'
+  total_label?: string
+  segments: DonutSegment[]
+}
+
+export type DashboardWidget =
+  | StatWidget
+  | StatRowWidget
+  | ListWidget
+  | StatusGridWidget
+  | ActivityFeedWidget
+  | ProgressWidget
+  | SparklineWidget
+  | BarChartWidget
+  | AlertBannerWidget
+  | LinkCollectionWidget
+  | MarkdownBlockWidget
+  | DonutWidget

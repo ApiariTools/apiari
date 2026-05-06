@@ -1,128 +1,63 @@
-import type { WorkerV2, AutoBot } from '../../types'
-import { formatRelative } from '../../utils/time'
-import EmptyState from '../EmptyState/EmptyState'
+import { useEffect, useState, useCallback } from 'react'
+import { LayoutDashboard } from 'lucide-react'
+import type { WorkerV2, AutoBot, DashboardWidget } from '../../types'
+import { listWidgets } from '../../api'
+import Widget from '../widgets/Widget'
 import styles from './Dashboard.module.css'
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── Worker summary (built-in stat_row widget) ──────────────────────────────
 
-function getHour(): number {
-  return new Date().getHours()
-}
+function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSelectWorker: (id: string) => void }) {
+  const running = workers.filter((w) => w.state === 'running' && !w.is_stalled)
+  const waiting = workers.filter((w) => w.state === 'waiting')
+  const stalled = workers.filter((w) => w.is_stalled)
+  const failed  = workers.filter((w) => w.state === 'failed')
 
-function greeting(): string {
-  const h = getHour()
-  if (h < 12) return 'Good morning.'
-  if (h < 17) return 'Good afternoon.'
-  return 'Good evening.'
-}
+  const attentionWorkers = [...stalled, ...waiting, ...failed]
 
-function workerDotClass(worker: WorkerV2): string {
-  if (worker.is_stalled) return styles.dotStalled
-  switch (worker.state) {
-    case 'running': return styles.dotRunning
-    case 'waiting': return styles.dotWaiting
-    case 'failed': return styles.dotFailed
-    case 'merged': return styles.dotMerged
-    default: return styles.dotIdle
-  }
-}
-
-function autoBotDotClass(bot: AutoBot): string {
-  switch (bot.status) {
-    case 'running': return styles.dotRunning
-    case 'error': return styles.dotFailed
-    default: return styles.dotIdle
-  }
-}
-
-function workerStateLabel(worker: WorkerV2): string {
-  if (worker.is_stalled) return 'Stalled'
-  return worker.label || worker.state
-}
-
-// ── Stat card ────────────────────────────────────────────────────────────
-
-interface StatCardProps {
-  label: string
-  count: number
-  colorClass: string
-}
-
-function StatCard({ label, count, colorClass }: StatCardProps) {
   return (
-    <div className={styles.statCard}>
-      <span className={`${styles.statCount} ${colorClass}`}>{count}</span>
-      <span className={styles.statLabel}>{label}</span>
+    <div className={styles.builtinSection}>
+      {/* Stat pills */}
+      <div className={styles.statPills}>
+        {[
+          { label: 'Running', count: running.length, color: 'var(--status-running)' },
+          { label: 'Waiting', count: waiting.length, color: 'var(--status-waiting)' },
+          { label: 'Stalled', count: stalled.length, color: 'var(--status-stalled)' },
+          { label: 'Failed',  count: failed.length,  color: 'var(--status-failed)' },
+        ].filter((s) => s.count > 0).map((s) => (
+          <div key={s.label} className={styles.statPill}>
+            <span className={styles.statPillNum} style={{ color: s.color }}>{s.count}</span>
+            <span className={styles.statPillLabel}>{s.label}</span>
+          </div>
+        ))}
+        {workers.length === 0 && <span className={styles.emptyMsg}>No active workers</span>}
+      </div>
+
+      {/* Attention list */}
+      {attentionWorkers.length > 0 && (
+        <div className={styles.attentionList}>
+          <span className={styles.attentionHeading}>Needs attention</span>
+          {attentionWorkers.map((w) => {
+            const dotColor = w.is_stalled
+              ? 'var(--status-stalled)'
+              : w.state === 'failed'
+              ? 'var(--status-failed)'
+              : 'var(--status-waiting)'
+            return (
+              <button key={w.id} className={styles.attentionRow} onClick={() => onSelectWorker(w.id)}>
+                <span className={styles.attentionDot} style={{ background: dotColor }} />
+                <span className={styles.attentionName}>{w.goal ?? w.branch ?? w.id}</span>
+                <span className={styles.attentionId}>{w.id}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
 
-// ── Worker row ───────────────────────────────────────────────────────────
-
-interface WorkerRowProps {
-  worker: WorkerV2
-  onClick: () => void
-}
-
-function WorkerRow({ worker, onClick }: WorkerRowProps) {
-  const dotCls = workerDotClass(worker)
-  const label = workerStateLabel(worker)
-  const name = worker.goal ?? worker.branch ?? worker.id
-
-  return (
-    <button
-      className={styles.itemRow}
-      onClick={onClick}
-      type="button"
-      data-testid="dashboard-worker-row"
-    >
-      <span className={`${styles.dot} ${dotCls}`} aria-hidden="true" />
-      <span className={styles.itemName}>{name}</span>
-      <span className={styles.itemMeta}>{label}</span>
-      {worker.revision_count > 0 && (
-        <span className={styles.revPill}>pass {worker.revision_count}</span>
-      )}
-    </button>
-  )
-}
-
-// ── Auto bot row ─────────────────────────────────────────────────────────
-
-interface AutoBotRowProps {
-  bot: AutoBot
-  onClick: () => void
-}
-
-function AutoBotRow({ bot, onClick }: AutoBotRowProps) {
-  const dotCls = autoBotDotClass(bot)
-
-  let meta = bot.status
-  if (bot.status === 'idle') {
-    meta = 'idle'
-  } else if (bot.status === 'running') {
-    meta = 'running'
-  }
-
-  return (
-    <button
-      className={styles.itemRow}
-      onClick={onClick}
-      type="button"
-      data-testid="dashboard-auto-bot-row"
-    >
-      <span className={`${styles.dot} ${dotCls}`} aria-hidden="true" />
-      <span className={styles.itemName}>{bot.name}</span>
-      <span className={styles.itemMeta}>{meta}</span>
-      {bot.updated_at && bot.status !== 'running' && (
-        <span className={styles.itemTimestamp}>
-          {formatRelative(bot.updated_at)}
-        </span>
-      )}
-    </button>
-  )
-}
-
-// ── Main component ───────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────
 
 export interface DashboardProps {
   workspace: string
@@ -132,61 +67,62 @@ export interface DashboardProps {
   onSelectAutoBot: (id: string) => void
 }
 
-export default function Dashboard({
-  workers,
-  autoBots,
-  onSelectWorker,
-  onSelectAutoBot,
-}: DashboardProps) {
-  if (workers.length === 0 && autoBots.length === 0) {
-    return <EmptyState />
-  }
+export default function Dashboard({ workspace, workers, onSelectWorker }: DashboardProps) {
+  const [widgets, setWidgets] = useState<DashboardWidget[]>([])
 
-  const runningCount = workers.filter(
-    (w) => w.state === 'running' && !w.is_stalled,
-  ).length
-  const waitingCount = workers.filter((w) => w.state === 'waiting').length
-  const failedCount = workers.filter((w) => w.state === 'failed').length
-  const mergedCount = workers.filter((w) => w.state === 'merged').length
+  const fetchWidgets = useCallback(() => {
+    if (!workspace) return
+    listWidgets(workspace).then(setWidgets).catch((e) => console.error('[dashboard] fetch widgets:', e))
+  }, [workspace])
+
+  useEffect(() => {
+    fetchWidgets()
+    const interval = setInterval(fetchWidgets, 30_000)
+    return () => clearInterval(interval)
+  }, [fetchWidgets])
+
+  // Debug
+  useEffect(() => {
+    console.log('[dashboard] widgets:', widgets.length, widgets.map(w => w.type))
+  }, [widgets])
+
+  // Separate alert_banners (always shown first) from the rest
+  const alerts  = widgets.filter((w) => w.type === 'alert_banner')
+  const rest    = widgets.filter((w) => w.type !== 'alert_banner')
 
   return (
-    <div className={styles.container} data-testid="dashboard">
-      <p className={styles.greeting}>{greeting()} Here's what's happening.</p>
-
-      {/* Stat cards */}
-      <div className={styles.stats} data-testid="stat-cards">
-        <StatCard label="Running" count={runningCount} colorClass={styles.countRunning} />
-        <StatCard label="Waiting" count={waitingCount} colorClass={styles.countWaiting} />
-        <StatCard label="Failed" count={failedCount} colorClass={styles.countFailed} />
-        <StatCard label="Merged" count={mergedCount} colorClass={styles.countMerged} />
+    <div className={styles.container}>
+      {/* Header */}
+      <div className={styles.header}>
+        <LayoutDashboard size={16} className={styles.headerIcon} />
+        <span className={styles.headerTitle}>Overview</span>
       </div>
 
-      {/* Workers */}
-      {workers.length > 0 && (
-        <section className={styles.section} data-testid="workers-section">
-          <span className={styles.sectionLabel}>Workers</span>
-          {workers.map((w) => (
-            <WorkerRow
-              key={w.id}
-              worker={w}
-              onClick={() => onSelectWorker(w.id)}
-            />
-          ))}
-        </section>
+      {/* Alert banners — always at top */}
+      {alerts.length > 0 && (
+        <div className={styles.alerts}>
+          {alerts.map((w) => <Widget key={w.slot} widget={w} />)}
+        </div>
       )}
 
-      {/* Auto Bots */}
-      {autoBots.length > 0 && (
-        <section className={styles.section} data-testid="auto-bots-section">
-          <span className={styles.sectionLabel}>Auto Bots</span>
-          {autoBots.map((b) => (
-            <AutoBotRow
-              key={b.id}
-              bot={b}
-              onClick={() => onSelectAutoBot(b.id)}
-            />
-          ))}
-        </section>
+      {/* Built-in worker summary */}
+      <WorkerSummary workers={workers} onSelectWorker={onSelectWorker} />
+
+      {/* Bot-written widgets */}
+      {rest.length > 0 && (
+        <div className={styles.widgetGrid}>
+          {rest.map((w) => <Widget key={w.slot} widget={w} />)}
+        </div>
+      )}
+
+      {/* Empty widget state */}
+      {widgets.length === 0 && (
+        <div className={styles.widgetsEmpty}>
+          <p className={styles.widgetsEmptyText}>No widgets yet.</p>
+          <p className={styles.widgetsEmptyHint}>
+            Bots can write widgets to this dashboard using the <code>write_dashboard_widget</code> tool.
+          </p>
+        </div>
       )}
     </div>
   )

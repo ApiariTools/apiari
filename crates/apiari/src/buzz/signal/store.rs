@@ -239,6 +239,74 @@ impl SignalStore {
         // Ensure auto bot tables exist on the shared DB connection.
         crate::buzz::auto_bot::ensure_schema(&self.conn)?;
 
+        // Dashboard widget slots.
+        self.conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS dashboard_widgets (
+                workspace  TEXT NOT NULL,
+                slot       TEXT NOT NULL,
+                widget_json TEXT NOT NULL,
+                expires_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(workspace, slot)
+            );
+            ",
+        )?;
+
+        Ok(())
+    }
+
+    /// Upsert a dashboard widget for a slot.
+    ///
+    /// `widget_json` is the full widget payload (including `type`, `title`, etc.).
+    /// `ttl_minutes` of `None` means the widget never expires.
+    pub fn upsert_widget(
+        &self,
+        slot: &str,
+        widget_json: &str,
+        ttl_minutes: Option<i64>,
+    ) -> Result<()> {
+        let now = Utc::now();
+        let updated_at = now.to_rfc3339();
+        let expires_at = ttl_minutes.map(|m| (now + chrono::Duration::minutes(m)).to_rfc3339());
+        self.conn.execute(
+            "INSERT INTO dashboard_widgets (workspace, slot, widget_json, expires_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(workspace, slot) DO UPDATE SET
+               widget_json = excluded.widget_json,
+               expires_at  = excluded.expires_at,
+               updated_at  = excluded.updated_at",
+            params![self.workspace, slot, widget_json, expires_at, updated_at],
+        )?;
+        Ok(())
+    }
+
+    /// Return all active (non-expired) widgets for this workspace.
+    pub fn get_widgets(&self) -> Result<Vec<(String, String, String)>> {
+        let now = Utc::now().to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "SELECT slot, widget_json, updated_at FROM dashboard_widgets
+             WHERE workspace = ?1
+               AND (expires_at IS NULL OR expires_at > ?2)
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map(params![self.workspace, now], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .wrap_err("failed to query widgets")
+    }
+
+    /// Delete a widget slot.
+    pub fn delete_widget(&self, slot: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM dashboard_widgets WHERE workspace = ?1 AND slot = ?2",
+            params![self.workspace, slot],
+        )?;
         Ok(())
     }
 

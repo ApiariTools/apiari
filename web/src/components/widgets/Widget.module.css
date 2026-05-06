@@ -1,0 +1,643 @@
+/* ── Card shell ──────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  border-left-style: solid;
+  border-left-color: transparent;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.15);
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+
+.card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.2);
+  transform: translateY(-1px);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.cardTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.cardTitleLink {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s;
+}
+
+.cardTitleLink:hover {
+  color: var(--text);
+}
+
+.cardHeaderRight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.cardAge {
+  font-size: 11px;
+  color: var(--text-faint);
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.infoWrap {
+  position: relative;
+}
+
+.infoBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  opacity: 0.4;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 3px;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.infoBtn:hover {
+  opacity: 1;
+  color: var(--text);
+}
+
+.infoPopover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: var(--space-3);
+  min-width: 200px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: fadeIn 100ms ease;
+}
+
+.infoRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.infoLabel {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  width: 54px;
+}
+
+.infoValue {
+  font-size: 12px;
+  color: var(--text);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.infoEditable {
+  font-size: 11px;
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+/* ── Stat ────────────────────────────────────────────────────────────────── */
+
+.statValue {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.statUnit {
+  font-size: 16px;
+  font-weight: 400;
+  margin-left: 3px;
+  opacity: 0.7;
+}
+
+.statTrend {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ── Stat row ────────────────────────────────────────────────────────────── */
+
+.statRow {
+  display: flex;
+  gap: 0;
+}
+
+.statRowCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  border-right: 1px solid var(--border);
+}
+
+.statRowCell:first-child {
+  padding-left: 0;
+}
+
+.statRowCell:last-child {
+  border-right: none;
+}
+
+.statRowValue {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--text-strong);
+}
+
+.statRowLabel {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ── List ────────────────────────────────────────────────────────────────── */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.listLink {
+  text-decoration: none;
+  display: block;
+}
+
+.listRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.listRow:last-child {
+  border-bottom: none;
+}
+
+.listLink:hover .listRow {
+  opacity: 0.8;
+}
+
+.listDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.listLabel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.listName {
+  font-size: 13px;
+  color: var(--text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listMeta {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.listRight {
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.listExternal {
+  color: var(--text-faint);
+  opacity: 0;
+  flex-shrink: 0;
+}
+
+.listLink:hover .listExternal {
+  opacity: 0.5;
+}
+
+.emptyMsg {
+  font-size: 13px;
+  color: var(--text-faint);
+  margin: 0;
+}
+
+/* ── Status grid ─────────────────────────────────────────────────────────── */
+
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.gridLink {
+  text-decoration: none;
+}
+
+.gridPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 100px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+  transition: border-color 0.15s;
+}
+
+.gridLink:hover .gridPill {
+  border-color: var(--border-strong);
+}
+
+.gridDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.gridLabel {
+  white-space: nowrap;
+}
+
+/* ── Activity feed ───────────────────────────────────────────────────────── */
+
+.feed {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.feedRow {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.feedRow:last-child {
+  border-bottom: none;
+}
+
+.feedDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 5px;
+}
+
+.feedBody {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.feedActor {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.feedEvent {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-decoration: none;
+}
+
+a.feedEvent:hover {
+  color: var(--text-strong);
+}
+
+.feedTime {
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+/* ── Progress ────────────────────────────────────────────────────────────── */
+
+.progressLabel {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.progressTrack {
+  height: 6px;
+  background: var(--bg-elevated);
+  border-radius: 100px;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: 100px;
+  transition: width 0.4s ease;
+}
+
+.progressSublabel {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ── Sparkline ───────────────────────────────────────────────────────────── */
+
+.sparklineHeader {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.sparklineValue {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.sparklineSvg {
+  width: 100%;
+  height: 40px;
+  display: block;
+}
+
+.sparklineLabels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* ── Bar chart ───────────────────────────────────────────────────────────── */
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.barRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.barLabel {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  width: 80px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.barTrack {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-elevated);
+  border-radius: 100px;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 100px;
+  transition: width 0.4s ease;
+}
+
+.barValue {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* ── Alert banner ────────────────────────────────────────────────────────── */
+
+.alertBody {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.65;
+  margin: 0;
+}
+
+.alertAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: opacity 0.15s;
+  margin-top: var(--space-1);
+}
+
+.alertAction:hover {
+  opacity: 0.75;
+}
+
+/* Alert cards get stronger background tint */
+.card[style*="borderLeftWidth"] {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ── Link collection ─────────────────────────────────────────────────────── */
+
+.linkGroups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.linkGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.linkGroupLabel {
+  font-size: 11px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+}
+
+.linkRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+
+.linkRow:last-child {
+  border-bottom: none;
+}
+
+.linkRow:hover {
+  opacity: 0.75;
+}
+
+.linkName {
+  font-size: 13px;
+  color: var(--text-strong);
+  flex: 1;
+}
+
+.linkMeta {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.linkExternal {
+  color: var(--text-faint);
+  opacity: 0;
+  flex-shrink: 0;
+}
+
+.linkRow:hover .linkExternal {
+  opacity: 0.5;
+}
+
+/* ── Markdown block ──────────────────────────────────────────────────────── */
+
+.markdown {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.65;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.markdown p { margin-bottom: var(--space-2); }
+.markdown p:last-child { margin-bottom: 0; }
+.markdown strong { color: var(--text-strong); }
+.markdown code { font-family: var(--font-mono); font-size: 12px; }
+.markdown blockquote {
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-3);
+  color: var(--text-faint);
+  margin: var(--space-2) 0;
+}
+
+/* ── Donut ───────────────────────────────────────────────────────────────── */
+
+.donut {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.donutSvg {
+  width: 112px;
+  height: 112px;
+  flex-shrink: 0;
+}
+
+.donutLabel {
+  font-size: 11px;
+  fill: var(--text-faint);
+  font-family: var(--font);
+}
+
+.donutLegend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1;
+}
+
+.donutLegendRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.donutLegendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.donutLegendName {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.donutLegendValue {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}

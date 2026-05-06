@@ -4,20 +4,20 @@
   --sidebar-rail-width: 60px;
   --bottom-bar-height: 56px;
 
-  /* Backgrounds — warmer, Linear-like */
-  --bg: #0f0f0f;
-  --bg-card: #161616;
-  --bg-hover: #1c1c1c;
-  --bg-elevated: #202020;
+  /* Backgrounds — sidebar darker, main content lighter */
+  --bg: #1c1c1c;
+  --bg-card: #141414;
+  --bg-hover: #222;
+  --bg-elevated: #262626;
 
   /* Borders */
-  --border: #222;
-  --border-strong: #2e2e2e;
+  --border: #2a2a2a;
+  --border-strong: #383838;
 
-  /* Text — more contrast */
-  --text: #999;
+  /* Text */
+  --text: #b8b8b8;
   --text-strong: #f0f0f0;
-  --text-faint: #444;
+  --text-faint: #666;
 
   /* Accent */
   --accent: #f5c542;
@@ -32,6 +32,7 @@
 
   /* Typography */
   --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Menlo', 'Monaco', monospace;
   --font-size-base: 15px;
   --font-size-small: 13px;
   --font-size-meta: 12px;
