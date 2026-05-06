@@ -16,13 +16,16 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerState {
+    // Pre-dispatch (internal, not shown to users as distinct states)
     Created,
     Briefed,
     Queued,
+    // Active
     Running,
     Waiting,
-    Merged,
-    Failed,
+    Stalled,
+    // Terminal
+    Done,
     Abandoned,
 }
 
@@ -34,8 +37,8 @@ impl WorkerState {
             WorkerState::Queued => "queued",
             WorkerState::Running => "running",
             WorkerState::Waiting => "waiting",
-            WorkerState::Merged => "merged",
-            WorkerState::Failed => "failed",
+            WorkerState::Stalled => "stalled",
+            WorkerState::Done => "done",
             WorkerState::Abandoned => "abandoned",
         }
     }
@@ -47,18 +50,17 @@ impl WorkerState {
             "queued" => Some(WorkerState::Queued),
             "running" => Some(WorkerState::Running),
             "waiting" => Some(WorkerState::Waiting),
-            "merged" => Some(WorkerState::Merged),
-            "failed" => Some(WorkerState::Failed),
+            "stalled" => Some(WorkerState::Stalled),
+            "done" => Some(WorkerState::Done),
             "abandoned" => Some(WorkerState::Abandoned),
+            // Legacy values — map to nearest equivalent
+            "merged" | "failed" => Some(WorkerState::Done),
             _ => None,
         }
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            WorkerState::Merged | WorkerState::Failed | WorkerState::Abandoned
-        )
+        matches!(self, WorkerState::Done | WorkerState::Abandoned)
     }
 }
 
@@ -106,24 +108,22 @@ pub struct Worker {
 pub fn derived_label(worker: &Worker) -> String {
     match worker.state {
         WorkerState::Running => {
-            if worker.is_stalled {
-                "Stalled".to_string()
-            } else if worker.revision_count > 0 {
+            if worker.revision_count > 0 {
                 format!("Revising (pass {})", worker.revision_count)
             } else {
                 "Working".to_string()
             }
         }
+        WorkerState::Stalled => "Stalled".to_string(),
         WorkerState::Waiting => {
             if worker.blocked_reason.is_some() {
                 "Needs input".to_string()
-            } else if let Some(ref _url) = worker.pr_url {
+            } else if worker.pr_url.is_some() {
                 if worker.tests_passing && worker.pr_approved {
                     "Ready to merge".to_string()
                 } else if !worker.tests_passing {
                     "Tests failing".to_string()
                 } else {
-                    // pr_url set, tests passing but not approved yet → has feedback pending
                     "Has feedback".to_string()
                 }
             } else if worker.branch_ready {
@@ -132,8 +132,7 @@ pub fn derived_label(worker: &Worker) -> String {
                 "Waiting".to_string()
             }
         }
-        WorkerState::Merged => "Merged".to_string(),
-        WorkerState::Failed => "Failed".to_string(),
+        WorkerState::Done => "Done".to_string(),
         WorkerState::Abandoned => "Abandoned".to_string(),
         WorkerState::Created => "Created".to_string(),
         WorkerState::Briefed => "Briefed".to_string(),
@@ -347,17 +346,18 @@ impl WorkerStore {
     }
 
     /// Transition a worker to a new state.
-    /// Also updates `state_entered_at` and `updated_at`.
+    /// Also updates `state_entered_at`, `updated_at`, and syncs `is_stalled`.
     /// This is a forward-only guard: callers should check before calling.
     pub fn transition(&self, workspace: &str, id: &str, new_state: WorkerState) -> Result<()> {
         let now = Utc::now().to_rfc3339();
+        let is_stalled = new_state == WorkerState::Stalled;
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
                 "UPDATE workers
-                 SET state=?1, state_entered_at=?2, updated_at=?2
-                 WHERE workspace=?3 AND id=?4",
-                params![new_state.as_str(), now, workspace, id],
+                 SET state=?1, state_entered_at=?2, updated_at=?2, is_stalled=?3
+                 WHERE workspace=?4 AND id=?5",
+                params![new_state.as_str(), now, is_stalled as i64, workspace, id],
             )
             .wrap_err("transition worker state")?;
         if rows == 0 {
@@ -537,7 +537,6 @@ mod tests {
         let mut w = make_worker("w1", "acme");
         w.state = WorkerState::Running;
         w.revision_count = 0;
-        w.is_stalled = false;
         assert_eq!(derived_label(&w), "Working");
     }
 
@@ -546,15 +545,13 @@ mod tests {
         let mut w = make_worker("w1", "acme");
         w.state = WorkerState::Running;
         w.revision_count = 2;
-        w.is_stalled = false;
         assert_eq!(derived_label(&w), "Revising (pass 2)");
     }
 
     #[test]
-    fn label_running_stalled() {
+    fn label_stalled() {
         let mut w = make_worker("w1", "acme");
-        w.state = WorkerState::Running;
-        w.is_stalled = true;
+        w.state = WorkerState::Stalled;
         assert_eq!(derived_label(&w), "Stalled");
     }
 
@@ -605,17 +602,10 @@ mod tests {
     }
 
     #[test]
-    fn label_merged() {
+    fn label_done() {
         let mut w = make_worker("w1", "acme");
-        w.state = WorkerState::Merged;
-        assert_eq!(derived_label(&w), "Merged");
-    }
-
-    #[test]
-    fn label_failed() {
-        let mut w = make_worker("w1", "acme");
-        w.state = WorkerState::Failed;
-        assert_eq!(derived_label(&w), "Failed");
+        w.state = WorkerState::Done;
+        assert_eq!(derived_label(&w), "Done");
     }
 
     #[test]
@@ -753,24 +743,25 @@ mod tests {
     }
 
     #[test]
-    fn test_update_properties_clear_stalled() {
+    fn test_transition_stalled_syncs_is_stalled() {
         let store = WorkerStore::open_memory().unwrap();
-        let mut w = make_worker("w1", "acme");
-        w.is_stalled = true;
-        store.upsert(&w).unwrap();
+        store.upsert(&make_worker("w1", "acme")).unwrap();
 
+        // Transition to Stalled → is_stalled becomes true
         store
-            .update_properties(
-                "acme",
-                "w1",
-                WorkerPropertyUpdate {
-                    is_stalled: Some(false),
-                    ..Default::default()
-                },
-            )
+            .transition("acme", "w1", WorkerState::Stalled)
             .unwrap();
-        let fetched = store.get("acme", "w1").unwrap().unwrap();
-        assert!(!fetched.is_stalled);
+        let w = store.get("acme", "w1").unwrap().unwrap();
+        assert_eq!(w.state, WorkerState::Stalled);
+        assert!(w.is_stalled);
+
+        // Transition back to Running → is_stalled cleared
+        store
+            .transition("acme", "w1", WorkerState::Running)
+            .unwrap();
+        let w = store.get("acme", "w1").unwrap().unwrap();
+        assert_eq!(w.state, WorkerState::Running);
+        assert!(!w.is_stalled);
     }
 
     #[test]

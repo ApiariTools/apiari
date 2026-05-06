@@ -4,13 +4,12 @@ import styles from './CommandPalette.module.css'
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-function workerDotClass(state: WorkerV2['state'], isStalled: boolean): string {
-  if (isStalled) return styles.dotStalled
+function workerDotClass(state: WorkerV2['state']): string {
   switch (state) {
     case 'running': return styles.dotRunning
     case 'waiting': return styles.dotWaiting
-    case 'failed': return styles.dotFailed
-    case 'merged': return styles.dotMerged
+    case 'stalled': return styles.dotStalled
+    case 'done': return styles.dotDone
     default: return styles.dotIdle
   }
 }
@@ -175,7 +174,7 @@ export default function CommandPalette({
               {filteredWorkers.map((w, i) => {
                 const globalIdx = workerSectionStart + i
                 const isActive = globalIdx === activeIndex
-                const dotCls = workerDotClass(w.state, w.is_stalled)
+                const dotCls = workerDotClass(w.state)
                 const name = w.goal ?? w.branch ?? w.id
 
                 return (

@@ -256,7 +256,7 @@ export interface WorkerBrief {
 export interface WorkerV2 {
   id: string;
   workspace: string;
-  state: 'created' | 'briefed' | 'queued' | 'running' | 'waiting' | 'merged' | 'failed' | 'abandoned';
+  state: 'created' | 'briefed' | 'queued' | 'running' | 'waiting' | 'stalled' | 'done' | 'abandoned';
   label: string;
   brief: WorkerBrief | null;
   repo: string | null;

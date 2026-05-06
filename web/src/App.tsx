@@ -64,7 +64,7 @@ function workerToSidebarItem(w: WorkerV2): SidebarItem {
   return {
     id: w.id,
     name: shortGoal,
-    status: w.is_stalled ? 'stalled' : w.state,
+    status: w.state,
     meta: w.id,
     tags,
   }
@@ -359,7 +359,7 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange)
   }, [])
 
-  const DONE_STATES = ['merged', 'abandoned', 'failed']
+  const DONE_STATES = ['done', 'abandoned']
   const activeWorkers = workers.filter((w) => !DONE_STATES.includes(w.state))
   const doneWorkers = workers.filter((w) => DONE_STATES.includes(w.state))
   const sidebarWorkers = activeWorkers.map(workerToSidebarItem)

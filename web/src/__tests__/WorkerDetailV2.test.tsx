@@ -103,25 +103,18 @@ describe("WorkerDetailV2", () => {
     expect(await screen.findByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
-  it("does not show cancel button when state is merged", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "merged", label: "Merged" });
+  it("does not show cancel button when state is done", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "done", label: "Done" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
   });
 
-  it("shows retry button when state is failed", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "failed", label: "Failed" });
-    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
-    expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument();
-  });
-
-  it("shows stalled pill when is_stalled is true", async () => {
+  it("shows stalled pill when state is stalled", async () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({
       ...mockWorker,
-      is_stalled: true,
+      state: "stalled",
       label: "Stalled",
-      state: "running",
     });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const pills = await screen.findByTestId("property-pills");
@@ -259,16 +252,16 @@ describe("WorkerDetailV2", () => {
     expect(textarea).not.toBeDisabled();
   });
 
-  it("input is disabled when state is failed", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "failed", label: "Failed" });
+  it("input is disabled when state is stalled", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "stalled", label: "Stalled" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("action-bar");
     const textarea = screen.getByPlaceholderText("Worker is not running");
     expect(textarea).toBeDisabled();
   });
 
-  it("input is hidden when state is merged", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "merged", label: "Merged" });
+  it("input is hidden when state is done", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "done", label: "Done" });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
     expect(screen.queryByTestId("action-bar")).not.toBeInTheDocument();

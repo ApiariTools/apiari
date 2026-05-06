@@ -195,11 +195,7 @@
   background: var(--status-stalled);
 }
 
-.dotFailed {
-  background: var(--status-failed);
-}
-
-.dotMerged {
+.dotDone {
   background: var(--status-merged);
 }
 

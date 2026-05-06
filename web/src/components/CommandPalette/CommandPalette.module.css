@@ -116,8 +116,7 @@
 .dotRunning { background: var(--status-running); }
 .dotWaiting { background: var(--status-waiting); }
 .dotStalled { background: var(--status-stalled); }
-.dotFailed  { background: var(--status-failed); }
-.dotMerged  { background: var(--status-merged); }
+.dotDone    { background: var(--status-merged); }
 .dotIdle    { background: var(--text-faint); }
 
 .resultName {

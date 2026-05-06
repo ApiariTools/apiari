@@ -8,12 +8,12 @@
 //! | agent running                     | queued    | → running                                    |
 //! | agent waiting (agent-status file) | running   | → waiting                                    |
 //! | agent exited 0 (phase=="completed")| running   | → waiting, set branch_ready=true             |
-//! | agent exited non-0 (phase failed) | running   | → failed                                     |
+//! | agent exited non-0 (phase failed) | running   | → waiting, set branch_ready=true             |
 //! | pr.url appeared                   | any       | set pr_url property                          |
-//! | worker vanished from state.json   | active    | check gh pr; → merged or → abandoned         |
+//! | worker vanished from state.json   | active    | check gh pr; → done or → abandoned           |
 //! | DB=waiting, swarm=running         | waiting   | → running, increment revision_count          |
-//! | last_output_at >10min + running   | —         | set is_stalled=true                          |
-//! | new output event                  | running   | clear is_stalled, update last_output_at      |
+//! | last_output_at >10min + running   | —         | → stalled                                    |
+//! | new output event                  | stalled   | → running, update last_output_at             |
 
 use std::{
     collections::HashMap,
@@ -214,11 +214,14 @@ impl SwarmReconciler {
     fn apply_disappeared(&self, worker: &Worker) -> Result<()> {
         // Only act on non-terminal active states.
         match worker.state {
-            WorkerState::Running | WorkerState::Waiting | WorkerState::Queued => {}
+            WorkerState::Running
+            | WorkerState::Waiting
+            | WorkerState::Stalled
+            | WorkerState::Queued => {}
             _ => return Ok(()), // already terminal, nothing to do
         }
 
-        // If worker had a PR, check if it merged via gh CLI.
+        // Worker disappeared — check if its PR merged.
         if let Some(pr_url) = &worker.pr_url {
             let output = std::process::Command::new("gh")
                 .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
@@ -226,19 +229,14 @@ impl SwarmReconciler {
             if let Ok(out) = output {
                 let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if state == "MERGED" {
-                    info!(
-                        "[reconciler] {} PR merged, transitioning to merged",
-                        worker.id
-                    );
-                    self.do_transition(worker, WorkerState::Merged)?;
+                    info!("[reconciler] {} PR merged → done", worker.id);
+                    self.do_transition(worker, WorkerState::Done)?;
                     return Ok(());
                 }
             }
-            // gh failed or returned non-MERGED — treat as "don't know, skip"
         }
 
-        // No PR or PR not merged — worker disappeared without merging.
-        // Use state_entered_at to avoid false positives on daemon restart.
+        // No PR or PR not merged — worker disappeared, treat as abandoned after grace period.
         if let Ok(entered) = worker
             .state_entered_at
             .parse::<chrono::DateTime<chrono::Utc>>()
@@ -246,7 +244,7 @@ impl SwarmReconciler {
             let age_minutes = (chrono::Utc::now() - entered).num_minutes();
             if age_minutes >= 1 {
                 info!(
-                    "[reconciler] {} disappeared from swarm without PR merge, → abandoned",
+                    "[reconciler] {} disappeared without merged PR → abandoned",
                     worker.id
                 );
                 self.do_transition(worker, WorkerState::Abandoned)?;
@@ -261,13 +259,7 @@ impl SwarmReconciler {
         let phase = swarm_wt.phase.as_deref().unwrap_or("");
         let agent_status = agent_status(&self.swarm_dir, &worker.id);
 
-        // 1. phase=="merged" → merged (any state)
-        if phase == "merged" && worker.state != WorkerState::Merged {
-            self.do_transition(worker, WorkerState::Merged)?;
-            return Ok(());
-        }
-
-        // 2. pr_url appeared (any state)
+        // 1. pr_url appeared — update property on any state
         let swarm_pr_url = swarm_wt.pr.as_ref().and_then(|p| p.url.as_deref());
         if let Some(url) = swarm_pr_url
             && worker.pr_url.as_deref() != Some(url)
@@ -284,25 +276,27 @@ impl SwarmReconciler {
             self.emit_event(worker)?;
         }
 
-        // 3. State-specific transitions
+        // 2. State-specific transitions
         match worker.state {
             WorkerState::Queued => {
-                // queued → running when swarm is running
                 if phase == "running" {
                     self.do_transition(worker, WorkerState::Running)?;
                 }
             }
             WorkerState::Running => {
-                // Check for agent-status "waiting"
+                // Agent paused waiting for input
                 if agent_status.as_deref() == Some("waiting") {
                     info!("[reconciler] {} agent waiting (agent-status)", worker.id);
                     self.do_transition(worker, WorkerState::Waiting)?;
                     return Ok(());
                 }
 
-                // phase=="completed" (agent exited 0) — swarm serializes WorkerPhase::Completed as "completed"
-                if phase == "completed" {
-                    info!("[reconciler] {} agent completed", worker.id);
+                // Agent exited cleanly — move to waiting for review
+                if phase == "completed" || phase == "failed" {
+                    info!(
+                        "[reconciler] {} agent exited (phase={phase}) → waiting",
+                        worker.id
+                    );
                     self.store.update_properties(
                         &self.workspace,
                         &worker.id,
@@ -316,18 +310,22 @@ impl SwarmReconciler {
                     return Ok(());
                 }
 
-                // phase=="failed" (agent exited non-0)
-                if phase == "failed" {
-                    info!("[reconciler] {} agent failed", worker.id);
-                    self.do_transition(worker, WorkerState::Failed)?;
-                    return Ok(());
-                }
-
-                // Still running — check stall detection and update last_output_at
+                // Still running — check for stall
                 self.check_stall_and_output(worker)?;
             }
+            WorkerState::Stalled => {
+                // Stalled → running if output resumes
+                self.check_stall_and_output(worker)?;
+
+                // Agent exited from stalled — move to waiting
+                if phase == "completed" || phase == "failed" {
+                    info!("[reconciler] {} stalled agent exited → waiting", worker.id);
+                    self.do_transition(worker, WorkerState::Waiting)?;
+                    return Ok(());
+                }
+            }
             WorkerState::Waiting => {
-                // waiting → running when swarm is running (human resumed)
+                // Resumed — human sent a message, agent is running again
                 if phase == "running" && agent_status.as_deref() != Some("waiting") {
                     info!(
                         "[reconciler] {} resumed from waiting (revision {})",
@@ -345,8 +343,8 @@ impl SwarmReconciler {
                     self.do_transition(worker, WorkerState::Running)?;
                 }
             }
-            // Terminal states — no forward transitions from swarm
-            WorkerState::Merged | WorkerState::Failed | WorkerState::Abandoned => {}
+            // Terminal states — no forward transitions
+            WorkerState::Done | WorkerState::Abandoned => {}
             // Pre-dispatch states — swarm hasn't started yet
             WorkerState::Created | WorkerState::Briefed => {}
         }
@@ -395,14 +393,14 @@ impl SwarmReconciler {
         Ok(())
     }
 
-    /// Stall detection and last_output_at update for running workers.
+    /// Stall detection and last_output_at update for running/stalled workers.
     fn check_stall_and_output(&self, worker: &Worker) -> Result<()> {
         let latest = last_output_timestamp(&self.swarm_dir, &worker.id);
 
         if let Some(ts) = latest {
             let ts_str = ts.to_rfc3339();
 
-            // New output arrived — clear stall, update timestamp
+            // New output arrived — update timestamp, un-stall if needed
             let is_new = worker
                 .last_output_at
                 .as_deref()
@@ -410,53 +408,41 @@ impl SwarmReconciler {
                 .is_none_or(|prev| ts > prev);
 
             if is_new {
-                let mut update = WorkerPropertyUpdate {
-                    last_output_at: Some(ts_str),
-                    ..Default::default()
-                };
-                if worker.is_stalled {
-                    update.is_stalled = Some(false);
+                self.store.update_properties(
+                    &self.workspace,
+                    &worker.id,
+                    WorkerPropertyUpdate {
+                        last_output_at: Some(ts_str),
+                        ..Default::default()
+                    },
+                )?;
+                if worker.state == WorkerState::Stalled {
+                    info!("[reconciler] {} output resumed → running", worker.id);
+                    self.do_transition(worker, WorkerState::Running)?;
+                } else {
+                    self.emit_event(worker)?;
                 }
-                self.store
-                    .update_properties(&self.workspace, &worker.id, update)?;
-                self.emit_event(worker)?;
                 return Ok(());
             }
 
             // No new output — check if stall threshold exceeded (10 min)
             let age_minutes = (Utc::now() - ts).num_minutes();
-            if age_minutes >= 10 && !worker.is_stalled {
+            if age_minutes >= 10 && worker.state == WorkerState::Running {
                 info!(
                     "[reconciler] {} stalled (no output for {}min)",
                     worker.id, age_minutes
                 );
-                self.store.update_properties(
-                    &self.workspace,
-                    &worker.id,
-                    WorkerPropertyUpdate {
-                        is_stalled: Some(true),
-                        ..Default::default()
-                    },
-                )?;
-                self.emit_event(worker)?;
+                self.do_transition(worker, WorkerState::Stalled)?;
             }
         } else if let Ok(entered) = worker.state_entered_at.parse::<chrono::DateTime<Utc>>() {
             // No events file — use state_entered_at as proxy
             let age_minutes = (Utc::now() - entered).num_minutes();
-            if age_minutes >= 10 && !worker.is_stalled {
+            if age_minutes >= 10 && worker.state == WorkerState::Running {
                 info!(
                     "[reconciler] {} stalled (no events, {}min in running)",
                     worker.id, age_minutes
                 );
-                self.store.update_properties(
-                    &self.workspace,
-                    &worker.id,
-                    WorkerPropertyUpdate {
-                        is_stalled: Some(true),
-                        ..Default::default()
-                    },
-                )?;
-                self.emit_event(worker)?;
+                self.do_transition(worker, WorkerState::Stalled)?;
             }
         }
 
@@ -686,7 +672,8 @@ mod tests {
     }
 
     #[test]
-    fn rule_running_failed() {
+    fn rule_running_failed_phase_moves_to_waiting() {
+        // swarm phase="failed" means the agent exited — worker moves to Waiting (branch_ready=true)
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
         let mut w = default_worker("w1");
@@ -697,22 +684,8 @@ mod tests {
         r.apply_rules(&w, &wt).unwrap();
 
         let updated = r.store.get("test", "w1").unwrap().unwrap();
-        assert_eq!(updated.state, WorkerState::Failed);
-    }
-
-    #[test]
-    fn rule_any_phase_merged() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r = make_reconciler(&tmp);
-        let mut w = default_worker("w1");
-        w.state = WorkerState::Waiting;
-        r.store.upsert(&w).unwrap();
-
-        let wt = swarm_wt("w1", "merged", None);
-        r.apply_rules(&w, &wt).unwrap();
-
-        let updated = r.store.get("test", "w1").unwrap().unwrap();
-        assert_eq!(updated.state, WorkerState::Merged);
+        assert_eq!(updated.state, WorkerState::Waiting);
+        assert!(updated.branch_ready);
     }
 
     #[test]
@@ -823,11 +796,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
 
-        for terminal_state in [
-            WorkerState::Merged,
-            WorkerState::Failed,
-            WorkerState::Abandoned,
-        ] {
+        for terminal_state in [WorkerState::Done, WorkerState::Abandoned] {
             let mut w = default_worker("w-terminal");
             w.state = terminal_state.clone();
             w.state_entered_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();

@@ -6743,7 +6743,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
@@ -6759,7 +6759,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
         ]);
 
@@ -6817,7 +6817,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
@@ -6833,7 +6833,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
-            token_controls: crate::config::TokenControls::default(),
+                token_controls: crate::config::TokenControls::default(),
             },
         ]);
 

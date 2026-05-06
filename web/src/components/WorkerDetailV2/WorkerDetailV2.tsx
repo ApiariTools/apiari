@@ -31,19 +31,18 @@ function linkify(text: string): React.ReactNode[] {
 // ── Status badge ─────────────────────────────────────────────────────────
 
 function statusClass(worker: WorkerV2): string {
-  if (worker.is_stalled) return styles.statusStalled
   switch (worker.state) {
     case 'running': return styles.statusRunning
     case 'waiting': return styles.statusWaiting
-    case 'failed': return styles.statusFailed
-    case 'merged': return styles.statusMerged
+    case 'stalled': return styles.statusStalled
+    case 'done': return styles.statusDone
     case 'abandoned': return styles.statusAbandoned
     default: return styles.statusDefault
   }
 }
 
 function StatusBadge({ worker }: { worker: WorkerV2 }) {
-  const isRunning = !worker.is_stalled && worker.state === 'running'
+  const isRunning = worker.state === 'running'
   return (
     <span className={`${styles.statusBadge} ${statusClass(worker)}`} data-testid="status-badge">
       <span className={`${styles.statusDot} ${isRunning ? styles.statusDotRunning : ''}`} />
@@ -67,7 +66,7 @@ function Pills({ worker }: { worker: WorkerV2 }) {
           Branch ready
         </span>
       )}
-      {worker.is_stalled && (
+      {worker.state === 'stalled' && (
         <span className={`${styles.pill} ${styles.pillOrange}`}>
           Stalled
         </span>
@@ -115,8 +114,8 @@ function stateDividerLabel(state: string, hasReviews = false): string {
   switch (state) {
     case 'running': return 'Worker running'
     case 'waiting': return hasReviews ? 'Reviewed' : 'Waiting for review'
-    case 'failed': return 'Worker failed'
-    case 'merged': return 'Merged'
+    case 'stalled': return 'Worker stalled'
+    case 'done': return 'Done'
     case 'abandoned': return 'Abandoned'
     default: return state
   }
@@ -607,10 +606,10 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
   const canCancel = ['running', 'waiting', 'queued'].includes(data.state)
   const hasRequestChangesReview = reviews.some(r => r.verdict === 'request_changes')
-  const canRequeue = data.state === 'failed' || data.state === 'abandoned' ||
+  const canRequeue = data.state === 'abandoned' ||
     (data.state === 'waiting' && hasRequestChangesReview)
   const canReview = data.state === 'waiting' && data.branch_ready
-  const isTerminal = data.state === 'merged' || data.state === 'abandoned'
+  const isTerminal = data.state === 'done' || data.state === 'abandoned'
   // Only allow sending when the agent process is actually alive.
   // "waiting" with branch_ready means agent completed work (has a PR) — agent is dead.
   // "waiting" without branch_ready means agent is paused waiting for user input — alive.
@@ -648,7 +647,6 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                         pr_url: data.pr_url,
                         revision_count: data.revision_count,
                         goal: data.goal,
-                        is_stalled: data.is_stalled,
                         tests_passing: data.tests_passing,
                       },
                     },
@@ -827,7 +825,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                 <span className={styles.liveDot} style={{ animationDelay: '300ms' }} />
               </div>
             )}
-            {data.state !== 'running' && (['waiting', 'failed'].includes(data.state) || isTerminal) && (
+            {data.state !== 'running' && (['waiting', 'stalled'].includes(data.state) || isTerminal) && (
               <div className={styles.stateDivider}>
                 <span className={styles.stateDividerText}>
                   {stateDividerLabel(data.state, reviews.length > 0)}

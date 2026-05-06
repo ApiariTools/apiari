@@ -98,16 +98,16 @@ describe("Dashboard", () => {
     render(<Dashboard {...defaultProps} workers={workers} />);
     expect(screen.getByText("Running")).toBeInTheDocument();
     expect(screen.queryByText("Waiting")).not.toBeInTheDocument();
-    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Stalled")).not.toBeInTheDocument();
   });
 
   it("stalled workers do NOT count as running", () => {
     const workers = [
-      makeWorker({ id: "w-1", state: "running", is_stalled: true }),
-      makeWorker({ id: "w-2", state: "running", is_stalled: false }),
+      makeWorker({ id: "w-1", state: "stalled" }),
+      makeWorker({ id: "w-2", state: "running" }),
     ];
     render(<Dashboard {...defaultProps} workers={workers} />);
-    // Running=1 (stalled excluded), Stalled=1 — "2" should NOT appear as a count
+    // Running=1, Stalled=1 — "2" should NOT appear as a count
     expect(screen.getByText("Running")).toBeInTheDocument();
     expect(screen.getByText("Stalled")).toBeInTheDocument();
     // "2" would appear if stalled was counted as running — it should not
@@ -122,7 +122,7 @@ describe("Dashboard", () => {
   });
 
   it("shows attention list for stalled workers", () => {
-    const workers = [makeWorker({ id: "w-1", state: "running", is_stalled: true, goal: "Stalled task" })];
+    const workers = [makeWorker({ id: "w-1", state: "stalled", goal: "Stalled task" })];
     render(<Dashboard {...defaultProps} workers={workers} />);
     expect(screen.getByText("Needs attention")).toBeInTheDocument();
     expect(screen.getByText("Stalled task")).toBeInTheDocument();
@@ -142,8 +142,8 @@ describe("Dashboard", () => {
     expect(onSelectWorker).toHaveBeenCalledWith("w-42");
   });
 
-  it("does not show attention list when all workers are running and not stalled", () => {
-    const workers = [makeWorker({ id: "w-1", state: "running", is_stalled: false })];
+  it("does not show attention list when all workers are running", () => {
+    const workers = [makeWorker({ id: "w-1", state: "running" })];
     render(<Dashboard {...defaultProps} workers={workers} />);
     expect(screen.queryByText("Needs attention")).not.toBeInTheDocument();
   });

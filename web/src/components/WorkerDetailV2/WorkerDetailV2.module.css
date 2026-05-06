@@ -222,12 +222,7 @@
   background: rgba(232, 160, 32, 0.12);
 }
 
-.statusFailed {
-  color: var(--status-failed);
-  background: rgba(232, 85, 85, 0.12);
-}
-
-.statusMerged {
+.statusDone {
   color: var(--status-merged);
   background: rgba(124, 92, 191, 0.12);
 }

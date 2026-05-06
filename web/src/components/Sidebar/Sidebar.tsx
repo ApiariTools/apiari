@@ -42,8 +42,7 @@ function dotClass(status: string): string {
     case 'running': return styles.dotRunning
     case 'waiting': return styles.dotWaiting
     case 'stalled': return styles.dotStalled
-    case 'failed': return styles.dotFailed
-    case 'merged': return styles.dotMerged
+    case 'done': return styles.dotDone
     default: return styles.dotIdle
   }
 }

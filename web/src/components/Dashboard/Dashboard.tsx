@@ -8,12 +8,11 @@ import styles from './Dashboard.module.css'
 // ── Worker summary (built-in stat_row widget) ──────────────────────────────
 
 function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSelectWorker: (id: string) => void }) {
-  const running = workers.filter((w) => w.state === 'running' && !w.is_stalled)
+  const running = workers.filter((w) => w.state === 'running')
   const waiting = workers.filter((w) => w.state === 'waiting')
-  const stalled = workers.filter((w) => w.is_stalled)
-  const failed  = workers.filter((w) => w.state === 'failed')
+  const stalled = workers.filter((w) => w.state === 'stalled')
 
-  const attentionWorkers = [...stalled, ...waiting, ...failed]
+  const attentionWorkers = [...stalled, ...waiting]
 
   return (
     <div className={styles.builtinSection}>
@@ -23,7 +22,6 @@ function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSel
           { label: 'Running', count: running.length, color: 'var(--status-running)' },
           { label: 'Waiting', count: waiting.length, color: 'var(--status-waiting)' },
           { label: 'Stalled', count: stalled.length, color: 'var(--status-stalled)' },
-          { label: 'Failed',  count: failed.length,  color: 'var(--status-failed)' },
         ].filter((s) => s.count > 0).map((s) => (
           <div key={s.label} className={styles.statPill}>
             <span className={styles.statPillNum} style={{ color: s.color }}>{s.count}</span>
@@ -38,10 +36,8 @@ function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSel
         <div className={styles.attentionList}>
           <span className={styles.attentionHeading}>Needs attention</span>
           {attentionWorkers.map((w) => {
-            const dotColor = w.is_stalled
+            const dotColor = w.state === 'stalled'
               ? 'var(--status-stalled)'
-              : w.state === 'failed'
-              ? 'var(--status-failed)'
               : 'var(--status-waiting)'
             return (
               <button key={w.id} className={styles.attentionRow} onClick={() => onSelectWorker(w.id)}>
