@@ -611,8 +611,11 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     (data.state === 'waiting' && hasRequestChangesReview)
   const canReview = data.state === 'waiting' && data.branch_ready
   const isTerminal = data.state === 'merged' || data.state === 'abandoned'
-  // Only allow sending when the agent process is actually running
-  const canSend = ['running', 'waiting', 'queued'].includes(data.state)
+  // Only allow sending when the agent process is actually alive.
+  // "waiting" with branch_ready means agent completed work (has a PR) — agent is dead.
+  // "waiting" without branch_ready means agent is paused waiting for user input — alive.
+  const canSend = data.state === 'running' || data.state === 'queued' ||
+    (data.state === 'waiting' && !data.branch_ready)
   const inputDisabled = !canSend
 
   return (

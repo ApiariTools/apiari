@@ -344,6 +344,16 @@ impl SwarmReconciler {
                     )?;
                     self.do_transition(worker, WorkerState::Running)?;
                 }
+
+                // Agent died while waiting — only mark failed if there's no PR.
+                // If there is a PR, the work was done; keep waiting for review.
+                if phase == "failed" && worker.pr_url.is_none() {
+                    info!(
+                        "[reconciler] {} agent failed while waiting (no PR) → failed",
+                        worker.id
+                    );
+                    self.do_transition(worker, WorkerState::Failed)?;
+                }
             }
             // Terminal states — no forward transitions from swarm
             WorkerState::Merged | WorkerState::Failed | WorkerState::Abandoned => {}
