@@ -39,6 +39,9 @@ pub struct SessionOptions {
     /// Maximum number of agentic turns.
     pub max_turns: Option<u64>,
 
+    /// Maximum number of output tokens per response (--max-tokens).
+    pub max_tokens: Option<u32>,
+
     // -- System prompt -----------------------------------------------------
     /// Replace the entire system prompt.
     pub system_prompt: Option<String>,
@@ -166,6 +169,9 @@ impl SessionOptions {
         }
         if let Some(turns) = self.max_turns {
             args.extend(["--max-turns".to_owned(), turns.to_string()]);
+        }
+        if let Some(tokens) = self.max_tokens {
+            args.extend(["--max-tokens".to_owned(), tokens.to_string()]);
         }
 
         // System prompt.
@@ -300,5 +306,23 @@ mod tests {
         let args = opts.to_cli_args();
         assert!(args.contains(&"--permission-mode".to_owned()));
         assert!(args.contains(&"acceptEdits".to_owned()));
+    }
+
+    #[test]
+    fn max_tokens_flag() {
+        let opts = SessionOptions {
+            max_tokens: Some(4096),
+            ..Default::default()
+        };
+        let args = opts.to_cli_args();
+        assert!(args.contains(&"--max-tokens".to_owned()));
+        assert!(args.contains(&"4096".to_owned()));
+    }
+
+    #[test]
+    fn max_tokens_absent_when_none() {
+        let opts = SessionOptions::default();
+        let args = opts.to_cli_args();
+        assert!(!args.iter().any(|a| a == "--max-tokens"));
     }
 }

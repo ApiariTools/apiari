@@ -6718,6 +6718,7 @@ mod tests {
             topic_id: None,
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: crate::config::TokenControls::default(),
         }];
 
         assert_eq!(display_bee_name(&bees, &bees[0]), "Main");
@@ -6741,6 +6742,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
+                token_controls: crate::config::TokenControls::default(),
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
@@ -6756,6 +6758,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
+                token_controls: crate::config::TokenControls::default(),
             },
         ]);
 
@@ -6786,6 +6789,7 @@ mod tests {
             topic_id: None,
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: crate::config::TokenControls::default(),
         }]);
 
         assert_eq!(
@@ -6812,6 +6816,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
+                token_controls: crate::config::TokenControls::default(),
             },
             crate::config::BeeConfig {
                 name: "Codex".to_string(),
@@ -6827,6 +6832,7 @@ mod tests {
                 topic_id: None,
                 heartbeat: None,
                 heartbeat_prompt: None,
+                token_controls: crate::config::TokenControls::default(),
             },
         ]);
 
@@ -6862,6 +6868,7 @@ mod tests {
             topic_id: None,
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: crate::config::TokenControls::default(),
         };
 
         assert_eq!(

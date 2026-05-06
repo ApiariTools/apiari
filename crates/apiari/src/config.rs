@@ -269,6 +269,29 @@ impl Default for ActivityConfig {
     }
 }
 
+/// Token efficiency settings applied to spawned claude/codex subprocesses.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TokenControls {
+    /// Sets MAX_THINKING_TOKENS env var on the spawned agent process
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_thinking_tokens: Option<u32>,
+    /// Sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE env var (0–100)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocompact_pct: Option<u8>,
+    /// Sets BASH_MAX_OUTPUT_LENGTH env var
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bash_max_output: Option<u32>,
+    /// Sets effortLevel via --effort flag on claude CLI
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_level: Option<String>,
+    /// Sets alwaysThinkingEnabled in --settings JSON
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_enabled: Option<bool>,
+    /// Passed as --max-tokens for Claude (config_overrides for Codex)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
 /// A fully self-contained workspace configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
@@ -450,6 +473,9 @@ pub struct CoordinatorConfig {
     /// Signal sources that trigger a coordinator follow-through.
     #[serde(default = "default_signal_hooks")]
     pub signal_hooks: Vec<SignalHookConfig>,
+    /// Token efficiency settings for spawned subprocesses.
+    #[serde(default)]
+    pub token_controls: TokenControls,
 }
 
 impl Default for CoordinatorConfig {
@@ -462,6 +488,7 @@ impl Default for CoordinatorConfig {
             prompt: None,
             max_session_turns: default_max_session_turns(),
             signal_hooks: default_signal_hooks(),
+            token_controls: TokenControls::default(),
         }
     }
 }
@@ -504,6 +531,9 @@ pub struct BeeConfig {
     /// Prompt sent to the Bee on each heartbeat.
     #[serde(default)]
     pub heartbeat_prompt: Option<String>,
+    /// Token efficiency settings for spawned subprocesses.
+    #[serde(default)]
+    pub token_controls: TokenControls,
 }
 
 impl BeeConfig {
@@ -567,6 +597,7 @@ impl WorkspaceConfig {
             topic_id: self.telegram.as_ref().and_then(|tg| tg.topic_id),
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: c.token_controls.clone(),
         }]
     }
 
@@ -989,6 +1020,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
             topic_id: None,
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: TokenControls::default(),
         }];
 
         bees.extend(value.bots.iter().map(|bot| BeeConfig {
@@ -1005,6 +1037,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
             topic_id: None,
             heartbeat: hive_bot_heartbeat(bot),
             heartbeat_prompt: bot.proactive_prompt.clone(),
+            token_controls: TokenControls::default(),
         }));
 
         bees
@@ -2837,6 +2870,7 @@ name = "Bee"
             topic_id: None,
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: TokenControls::default(),
         }
     }
 
@@ -2908,5 +2942,98 @@ name = "Bee"
             BeeExecutionPolicy::DispatchOnly.resolved(WorkspaceAuthority::Autonomous),
             BeeExecutionPolicy::DispatchOnly
         );
+    }
+
+    // ── TokenControls ──
+
+    #[test]
+    fn test_token_controls_default_is_all_none() {
+        let tc = TokenControls::default();
+        assert!(tc.max_thinking_tokens.is_none());
+        assert!(tc.autocompact_pct.is_none());
+        assert!(tc.bash_max_output.is_none());
+        assert!(tc.effort_level.is_none());
+        assert!(tc.thinking_enabled.is_none());
+        assert!(tc.max_output_tokens.is_none());
+    }
+
+    #[test]
+    fn test_token_controls_toml_roundtrip() {
+        let toml_str = r#"
+max_thinking_tokens = 8000
+autocompact_pct = 80
+bash_max_output = 50000
+effort_level = "high"
+thinking_enabled = true
+max_output_tokens = 4096
+"#;
+        let tc: TokenControls = toml::from_str(toml_str).unwrap();
+        assert_eq!(tc.max_thinking_tokens, Some(8000));
+        assert_eq!(tc.autocompact_pct, Some(80));
+        assert_eq!(tc.bash_max_output, Some(50000));
+        assert_eq!(tc.effort_level.as_deref(), Some("high"));
+        assert_eq!(tc.thinking_enabled, Some(true));
+        assert_eq!(tc.max_output_tokens, Some(4096));
+    }
+
+    #[test]
+    fn test_token_controls_partial_toml_roundtrip() {
+        let toml_str = "max_output_tokens = 2048\n";
+        let tc: TokenControls = toml::from_str(toml_str).unwrap();
+        assert_eq!(tc.max_output_tokens, Some(2048));
+        assert!(tc.max_thinking_tokens.is_none());
+        assert!(tc.effort_level.is_none());
+    }
+
+    #[test]
+    fn test_coordinator_config_forwards_token_controls_to_resolved_bees() {
+        let mut ws = WorkspaceConfig {
+            config_version: None,
+            root: std::path::PathBuf::from("/tmp"),
+            repos: vec![],
+            authority: WorkspaceAuthority::default(),
+            capabilities: WorkspaceCapabilities::default(),
+            telegram: None,
+            coordinator: CoordinatorConfig {
+                token_controls: TokenControls {
+                    max_output_tokens: Some(1024),
+                    effort_level: Some("low".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            bees: None,
+            watchers: WatchersConfig::default(),
+            orchestrator: Default::default(),
+            swarm: SwarmConfig::default(),
+            review: ReviewConfig::default(),
+            commands: vec![],
+            morning_brief: None,
+            daemon_tcp_port: None,
+            daemon_tcp_bind: None,
+            daemon_host: None,
+            daemon_port: None,
+            daemon_endpoints: vec![],
+            shells: ShellsConfig::default(),
+            schedule: None,
+            activity: ActivityConfig::default(),
+        };
+        // No [[bees]] → uses coordinator config
+        let bees = ws.resolved_bees();
+        assert_eq!(bees.len(), 1);
+        assert_eq!(bees[0].token_controls.max_output_tokens, Some(1024));
+        assert_eq!(bees[0].token_controls.effort_level.as_deref(), Some("low"));
+
+        // [[bees]] present → each bee keeps its own token_controls
+        ws.bees = Some(vec![BeeConfig {
+            name: "CustomBee".into(),
+            token_controls: TokenControls {
+                max_output_tokens: Some(512),
+                ..Default::default()
+            },
+            ..default_bee()
+        }]);
+        let bees = ws.resolved_bees();
+        assert_eq!(bees[0].token_controls.max_output_tokens, Some(512));
     }
 }

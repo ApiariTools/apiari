@@ -62,6 +62,48 @@ pub fn max_context_tokens(model: &str) -> u64 {
     }
 }
 
+/// Merge `thinking_enabled` from token controls into the existing settings JSON.
+fn apply_token_controls_settings(
+    base: &Option<String>,
+    controls: &crate::config::TokenControls,
+) -> Option<String> {
+    if controls.thinking_enabled.is_none() {
+        return base.clone();
+    }
+    let mut obj: serde_json::Map<String, serde_json::Value> = base
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    if let Some(enabled) = controls.thinking_enabled {
+        obj.insert("alwaysThinkingEnabled".to_owned(), enabled.into());
+    }
+    serde_json::to_string(&obj).ok().or_else(|| base.clone())
+}
+
+/// Build env vars for Codex subprocesses from token controls.
+fn build_codex_env_vars(controls: &crate::config::TokenControls) -> Vec<(String, String)> {
+    let mut vars = Vec::new();
+    if let Some(v) = controls.max_thinking_tokens {
+        vars.push(("MAX_THINKING_TOKENS".to_owned(), v.to_string()));
+    }
+    if let Some(v) = controls.autocompact_pct {
+        vars.push(("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE".to_owned(), v.to_string()));
+    }
+    if let Some(v) = controls.bash_max_output {
+        vars.push(("BASH_MAX_OUTPUT_LENGTH".to_owned(), v.to_string()));
+    }
+    vars
+}
+
+/// Build config_overrides for Codex subprocesses from token controls.
+fn build_codex_config_overrides(controls: &crate::config::TokenControls) -> Vec<(String, String)> {
+    let mut overrides = Vec::new();
+    if let Some(v) = controls.max_output_tokens {
+        overrides.push(("model.maxTokens".to_owned(), v.to_string()));
+    }
+    overrides
+}
+
 /// Reduce first-turn workspace context for Codex/Gemini.
 ///
 /// Claude can tolerate the full expanded skills prompt because it has a
@@ -164,6 +206,7 @@ pub struct Coordinator {
     /// Context to prepend to the next user message (e.g. /doctor output).
     /// Consumed on the next `take_pending_context()` call.
     pending_context: Option<String>,
+    token_controls: crate::config::TokenControls,
 }
 
 impl Coordinator {
@@ -185,6 +228,7 @@ impl Coordinator {
             safety_hooks: None,
             last_num_turns: 0,
             pending_context: None,
+            token_controls: crate::config::TokenControls::default(),
         }
     }
 
@@ -241,6 +285,11 @@ impl Coordinator {
     /// Set custom settings JSON (e.g. PreToolUse hooks).
     pub fn set_settings(&mut self, settings: String) {
         self.settings = Some(settings);
+    }
+
+    /// Set token efficiency controls for spawned subprocesses.
+    pub fn set_token_controls(&mut self, controls: crate::config::TokenControls) {
+        self.token_controls = controls;
     }
 
     /// Install safety hooks for pre/post-turn workspace checks.
@@ -340,6 +389,19 @@ impl Coordinator {
             hook_playbooks,
         );
 
+        let merged_settings = apply_token_controls_settings(&self.settings, &self.token_controls);
+
+        let mut env_vars = Vec::new();
+        if let Some(v) = self.token_controls.max_thinking_tokens {
+            env_vars.push(("MAX_THINKING_TOKENS".to_owned(), v.to_string()));
+        }
+        if let Some(v) = self.token_controls.autocompact_pct {
+            env_vars.push(("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE".to_owned(), v.to_string()));
+        }
+        if let Some(v) = self.token_controls.bash_max_output {
+            env_vars.push(("BASH_MAX_OUTPUT_LENGTH".to_owned(), v.to_string()));
+        }
+
         let mut opts = SessionOptions {
             system_prompt: Some(system_prompt),
             max_turns: Some(self.max_turns as u64),
@@ -347,7 +409,10 @@ impl Coordinator {
             allowed_tools: self.allowed_tools.clone(),
             disallowed_tools: self.disallowed_tools.clone(),
             working_dir: self.working_dir.clone(),
-            settings: self.settings.clone(),
+            settings: merged_settings,
+            effort: self.token_controls.effort_level.clone(),
+            max_tokens: self.token_controls.max_output_tokens,
+            env_vars,
             ..Default::default()
         };
 
@@ -650,6 +715,9 @@ impl Coordinator {
             .as_ref()
             .and_then(|hooks| hooks.pre_turn());
 
+        let codex_env_vars = build_codex_env_vars(&self.token_controls);
+        let codex_config_overrides = build_codex_config_overrides(&self.token_controls);
+
         let mut execution = if let Some(ref sid) = self.session_id
             && matches!(
                 self.execution_policy,
@@ -664,6 +732,7 @@ impl Coordinator {
                         images: image_paths.to_vec(),
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
+                        env_vars: codex_env_vars,
                         ..Default::default()
                     },
                 )
@@ -690,6 +759,8 @@ impl Coordinator {
                             crate::config::BeeExecutionPolicy::Autonomous
                         ),
                         working_dir: self.working_dir.clone(),
+                        env_vars: codex_env_vars,
+                        config_overrides: codex_config_overrides,
                         ..Default::default()
                     },
                 )
@@ -1760,5 +1831,109 @@ mod tests {
 
         assert_eq!(codex_assistant_text(&reasoning), None);
         assert_eq!(codex_assistant_text(&message), Some("Final answer"));
+    }
+
+    // -- token_controls helpers --
+
+    #[test]
+    fn test_apply_token_controls_settings_no_thinking_enabled_returns_base() {
+        let base = Some(r#"{"foo":"bar"}"#.to_owned());
+        let controls = crate::config::TokenControls::default();
+        let result = apply_token_controls_settings(&base, &controls);
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn test_apply_token_controls_settings_no_base_no_thinking_returns_none() {
+        let controls = crate::config::TokenControls::default();
+        let result = apply_token_controls_settings(&None, &controls);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_apply_token_controls_settings_merges_thinking_enabled_true() {
+        let controls = crate::config::TokenControls {
+            thinking_enabled: Some(true),
+            ..Default::default()
+        };
+        let result = apply_token_controls_settings(&None, &controls).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["alwaysThinkingEnabled"], true);
+    }
+
+    #[test]
+    fn test_apply_token_controls_settings_merges_into_existing_json() {
+        let base = Some(r#"{"existingKey":"existingVal"}"#.to_owned());
+        let controls = crate::config::TokenControls {
+            thinking_enabled: Some(false),
+            ..Default::default()
+        };
+        let result = apply_token_controls_settings(&base, &controls).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["existingKey"], "existingVal");
+        assert_eq!(parsed["alwaysThinkingEnabled"], false);
+    }
+
+    #[test]
+    fn test_build_options_applies_token_controls_env_vars() {
+        let store = crate::buzz::signal::store::SignalStore::open_memory("ws").unwrap();
+        let mut coord = make_coordinator();
+        coord.set_token_controls(crate::config::TokenControls {
+            max_thinking_tokens: Some(8000),
+            autocompact_pct: Some(75),
+            bash_max_output: Some(50000),
+            ..Default::default()
+        });
+        let opts = coord.build_options(&store).unwrap();
+        assert!(
+            opts.env_vars
+                .iter()
+                .any(|(k, v)| k == "MAX_THINKING_TOKENS" && v == "8000")
+        );
+        assert!(
+            opts.env_vars
+                .iter()
+                .any(|(k, v)| k == "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" && v == "75")
+        );
+        assert!(
+            opts.env_vars
+                .iter()
+                .any(|(k, v)| k == "BASH_MAX_OUTPUT_LENGTH" && v == "50000")
+        );
+    }
+
+    #[test]
+    fn test_build_options_applies_effort_level_and_max_tokens() {
+        let store = crate::buzz::signal::store::SignalStore::open_memory("ws").unwrap();
+        let mut coord = make_coordinator();
+        coord.set_token_controls(crate::config::TokenControls {
+            effort_level: Some("low".to_owned()),
+            max_output_tokens: Some(2048),
+            ..Default::default()
+        });
+        let opts = coord.build_options(&store).unwrap();
+        assert_eq!(opts.effort.as_deref(), Some("low"));
+        assert_eq!(opts.max_tokens, Some(2048));
+    }
+
+    #[test]
+    fn test_build_codex_config_overrides_includes_max_tokens() {
+        let controls = crate::config::TokenControls {
+            max_output_tokens: Some(4096),
+            ..Default::default()
+        };
+        let overrides = build_codex_config_overrides(&controls);
+        assert!(
+            overrides
+                .iter()
+                .any(|(k, v)| k == "model.maxTokens" && v == "4096")
+        );
+    }
+
+    #[test]
+    fn test_build_codex_env_vars_empty_when_no_controls() {
+        let controls = crate::config::TokenControls::default();
+        let vars = build_codex_env_vars(&controls);
+        assert!(vars.is_empty());
     }
 }
