@@ -2354,9 +2354,8 @@ fn draw_thoughts_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, a
     let width = area.width as usize;
 
     let mut used = 1;
-    let mut idx = start;
     let count = ws.thoughts.len();
-    for _ in 0..count {
+    for (idx, _) in (start..).zip(0..count) {
         let (cat, content) = &ws.thoughts[idx % count];
         let icon = category_icon(cat);
         let entry = format!("{icon} {content}");
@@ -2380,7 +2379,6 @@ fn draw_thoughts_strip(frame: &mut Frame, app: &App, ws: &app::WorkspaceState, a
             Style::default().fg(theme::SMOKE),
         ));
         used += entry.len();
-        idx += 1;
     }
 
     let line = Line::from(spans);
