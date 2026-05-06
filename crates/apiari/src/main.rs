@@ -6,6 +6,8 @@ mod config_validate;
 mod daemon;
 mod git_safety;
 pub mod shells;
+#[cfg(test)]
+mod test_utils;
 mod ui;
 mod validate_bash;
 

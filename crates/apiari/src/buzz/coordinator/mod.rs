@@ -969,11 +969,7 @@ fn truncate_cmd(cmd: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::Path,
-        sync::{Mutex, OnceLock},
-    };
+    use std::{fs, path::Path};
 
     use apiari_claude_sdk::{
         Event,
@@ -988,8 +984,7 @@ mod tests {
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        crate::test_utils::env_lock()
     }
 
     struct PathGuard {

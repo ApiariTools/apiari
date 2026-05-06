@@ -889,9 +889,11 @@ mod tests {
         w.state_entered_at = (chrono::Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
         r.store.upsert(&w).unwrap();
 
-        // Prepend fake gh dir to PATH so our script is found first
+        // Prepend fake gh dir to PATH so our script is found first.
+        // Hold the shared env_lock for the duration to avoid races with concurrent tests.
         let original_path = std::env::var("PATH").unwrap_or_default();
-        // SAFETY: single-threaded test
+        let _guard = crate::test_utils::env_lock();
+        // SAFETY: guarded by env_lock; no other thread mutates PATH while held
         unsafe {
             std::env::set_var(
                 "PATH",
@@ -901,7 +903,7 @@ mod tests {
 
         r.apply_disappeared(&w).unwrap();
 
-        // SAFETY: single-threaded test
+        // SAFETY: guarded by env_lock
         unsafe { std::env::set_var("PATH", &original_path) };
 
         let updated = r.store.get("test", "w-closed").unwrap().unwrap();
@@ -928,7 +930,8 @@ mod tests {
         r.store.upsert(&w).unwrap();
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        // SAFETY: single-threaded test
+        let _guard = crate::test_utils::env_lock();
+        // SAFETY: guarded by env_lock
         unsafe {
             std::env::set_var(
                 "PATH",
@@ -938,7 +941,7 @@ mod tests {
 
         r.apply_disappeared(&w).unwrap();
 
-        // SAFETY: single-threaded test
+        // SAFETY: guarded by env_lock
         unsafe { std::env::set_var("PATH", &original_path) };
 
         let updated = r.store.get("test", "w-merged").unwrap().unwrap();
@@ -966,7 +969,8 @@ mod tests {
         r.store.upsert(&w).unwrap();
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        // SAFETY: single-threaded test
+        let _guard = crate::test_utils::env_lock();
+        // SAFETY: guarded by env_lock
         unsafe {
             std::env::set_var(
                 "PATH",
@@ -976,7 +980,7 @@ mod tests {
 
         r.apply_disappeared(&w).unwrap();
 
-        // SAFETY: single-threaded test
+        // SAFETY: guarded by env_lock
         unsafe { std::env::set_var("PATH", &original_path) };
 
         // gh failed → fell through to grace-period logic → still Running (too fresh)

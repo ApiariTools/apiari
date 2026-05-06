@@ -5928,7 +5928,7 @@ fn likely_files_from_repo(repo_root: &Path, text: &str) -> Vec<String> {
             score += 2;
         }
         if score > 0 {
-            scored.push((score, path.clone()));
+            scored.push((score, path.to_string()));
         }
     }
 
