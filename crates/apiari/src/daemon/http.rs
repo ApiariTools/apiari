@@ -4744,9 +4744,9 @@ async fn v2_send_message(
         }
     };
 
-    // If branch_ready, the agent process has exited — can't use swarm send.
-    // Spawn a fresh agent with the message prepended as revision instructions.
-    if worker.branch_ready {
+    // If branch_ready, OR the agent isn't in the live map (daemon restarted and
+    // the agent process is gone), spawn a fresh agent with the message prepended.
+    if worker.branch_ready || !state.worker_manager.is_live(&id) {
         let brief = match &worker.brief {
             Some(b) => b.clone(),
             None => serde_json::json!({}),
@@ -4858,7 +4858,6 @@ async fn v2_send_message(
         return Json(serde_json::json!({"ok": true, "new_id": new_swarm_id})).into_response();
     }
 
-    // Agent is alive — send message via embedded daemon IPC.
     if let Err(e) = state.worker_manager.send_message(&id, &body.message).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
