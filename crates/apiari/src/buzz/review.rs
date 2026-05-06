@@ -402,6 +402,7 @@ pub async fn run_review(
     workspace_root: &Path,
     conn: Arc<Mutex<Connection>>,
     event_tx: Option<broadcast::Sender<Value>>,
+    review_config: &crate::config::ReviewConfig,
 ) -> Result<ReviewOutcome> {
     // ── 1. Determine worktree path ────────────────────────────────────
 
@@ -500,9 +501,9 @@ pub async fn run_review(
     let mut child = tokio::process::Command::new("claude")
         .arg("--print")
         .arg("--max-turns")
-        .arg("10")
+        .arg(review_config.max_turns.to_string())
         .arg("--allowedTools")
-        .arg("Read,Bash")
+        .arg(&review_config.allowed_tools)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

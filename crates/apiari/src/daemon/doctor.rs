@@ -253,6 +253,7 @@ mod tests {
             bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
+            review: crate::config::ReviewConfig::default(),
             orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,

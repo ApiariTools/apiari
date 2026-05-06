@@ -318,6 +318,10 @@ pub struct WorkspaceConfig {
     #[serde(default, alias = "dispatch")]
     pub swarm: SwarmConfig,
 
+    /// Automated code reviewer configuration.
+    #[serde(default)]
+    pub review: ReviewConfig,
+
     /// Custom slash commands.
     #[serde(default)]
     pub commands: Vec<CommandConfig>,
@@ -1028,6 +1032,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
                 .as_ref()
                 .and_then(|dispatch| dispatch.default_dispatch_repo.clone()),
         },
+        review: ReviewConfig::default(),
         commands: vec![],
         morning_brief: None,
         daemon_tcp_port: None,
@@ -1595,6 +1600,37 @@ fn default_swarm_agent() -> String {
     "claude".to_string()
 }
 
+/// Configuration for the automated code reviewer that runs on worker branches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewConfig {
+    /// Maximum number of tool-use turns the reviewer may take before producing a verdict.
+    /// Each turn is one Claude response + one tool call (Read a file, run a Bash command, etc).
+    /// Default: 5. Increase if reviewers are hitting the limit before finishing.
+    #[serde(default = "default_review_max_turns")]
+    pub max_turns: u32,
+    /// Comma-separated list of tools the reviewer is allowed to use.
+    /// Defaults to safe read-only commands only. Do NOT add Write or Edit here.
+    #[serde(default = "default_review_allowed_tools")]
+    pub allowed_tools: String,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            max_turns: default_review_max_turns(),
+            allowed_tools: default_review_allowed_tools(),
+        }
+    }
+}
+
+fn default_review_max_turns() -> u32 {
+    5
+}
+
+fn default_review_allowed_tools() -> String {
+    "Read,Bash(git diff:git log:git show:git status:cat:find:grep)".to_string()
+}
+
 /// Build the settings JSON for the coordinator (PreToolUse hook).
 ///
 /// Shared by daemon, TUI, and CLI chat — configures the `apiari validate-bash`
@@ -1912,6 +1948,7 @@ max_session_turns = 0
             bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
+            review: ReviewConfig::default(),
             orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
@@ -1941,6 +1978,7 @@ max_session_turns = 0
             bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
+            review: ReviewConfig::default(),
             orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
@@ -1974,6 +2012,7 @@ max_session_turns = 0
             bees: None,
             watchers: WatchersConfig::default(),
             swarm: SwarmConfig::default(),
+            review: ReviewConfig::default(),
             orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
@@ -2361,6 +2400,7 @@ watch = ["sentry"]
                 ..Default::default()
             },
             swarm: SwarmConfig::default(),
+            review: ReviewConfig::default(),
             orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,

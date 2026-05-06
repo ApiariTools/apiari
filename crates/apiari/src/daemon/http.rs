@@ -5262,6 +5262,9 @@ async fn v2_request_review(
     }
 
     let workspace_root = load_workspace_root(&workspace);
+    let review_config = load_workspace_by_name(&workspace)
+        .map(|ws| ws.config.review.clone())
+        .unwrap_or_default();
     let db_path = state.db_path.as_ref().clone();
     let updates_tx = state.updates_tx.clone();
 
@@ -5310,6 +5313,7 @@ async fn v2_request_review(
             &workspace_root,
             conn,
             Some(val_tx),
+            &review_config,
         )
         .await
         {
@@ -6667,6 +6671,7 @@ mod tests {
             bees: None,
             watchers: crate::config::WatchersConfig::default(),
             swarm: crate::config::SwarmConfig::default(),
+            review: crate::config::ReviewConfig::default(),
             orchestrator: Default::default(),
             commands: vec![],
             morning_brief: None,
