@@ -5699,6 +5699,7 @@ struct AppleLocalRouterDecision {
     reason: String,
 }
 
+#[cfg(target_os = "macos")]
 fn apple_router_script_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/apple_dispatch_router.swift")
 }

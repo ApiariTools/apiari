@@ -243,8 +243,8 @@ fn is_continuation_of_assistant_turn(entries: &[ConversationEntry], idx: usize) 
     if idx == 0 {
         return false;
     }
-    for j in (0..idx).rev() {
-        match &entries[j] {
+    for entry in entries[..idx].iter().rev() {
+        match entry {
             ConversationEntry::AssistantText { .. } | ConversationEntry::Question { .. } => {
                 return true;
             }
