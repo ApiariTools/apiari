@@ -4607,10 +4607,18 @@ async fn generate_and_store_worker_title(
                 .map_err(|e| format!("write stdin: {e}"))?;
         }
 
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| format!("wait: {e}"))?;
+        // 30-second timeout to avoid hanging tasks
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            child.wait_with_output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => return Err(format!("wait: {e}")),
+            Err(_) => return Err("timeout waiting for claude".to_string()),
+        };
+
         if !output.status.success() {
             return Err("claude exited non-zero".to_string());
         }
@@ -4627,12 +4635,8 @@ async fn generate_and_store_worker_title(
             return Err("empty title from claude".to_string());
         }
 
-        // Truncate to 80 chars max
-        let title = if title.len() > 80 {
-            title[..80].to_string()
-        } else {
-            title
-        };
+        // Truncate to 80 chars on a character boundary (not byte index)
+        let title: String = title.chars().take(80).collect();
 
         let store = open_worker_store_from_path(db_path).map_err(|e| format!("open store: {e}"))?;
         store

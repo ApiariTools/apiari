@@ -204,8 +204,14 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         ",
     )
     .wrap_err("failed to create worker tables")?;
-    // Migration: add display_title to existing databases (safe to ignore if already present)
-    let _ = conn.execute_batch("ALTER TABLE workers ADD COLUMN display_title TEXT");
+    // Migration: add display_title column to existing databases.
+    // Ignore only "duplicate column" errors; surface anything else.
+    if let Err(e) = conn.execute_batch("ALTER TABLE workers ADD COLUMN display_title TEXT") {
+        let msg = e.to_string();
+        if !msg.contains("duplicate column") {
+            return Err(e).wrap_err("failed to migrate workers table (add display_title)");
+        }
+    }
     Ok(())
 }
 
@@ -808,5 +814,43 @@ mod tests {
 
         let w = store.get("acme", "w1").unwrap().unwrap();
         assert_eq!(w.state, WorkerState::Running);
+    }
+
+    #[test]
+    fn test_update_display_title_persisted() {
+        let store = WorkerStore::open_memory().unwrap();
+        store.upsert(&make_worker("w1", "acme")).unwrap();
+
+        store
+            .update_display_title("acme", "w1", "Add Rate Limiting to API")
+            .unwrap();
+
+        let w = store.get("acme", "w1").unwrap().unwrap();
+        assert_eq!(w.display_title.as_deref(), Some("Add Rate Limiting to API"));
+
+        let listed = store.list("acme").unwrap();
+        assert_eq!(
+            listed[0].display_title.as_deref(),
+            Some("Add Rate Limiting to API")
+        );
+    }
+
+    #[test]
+    fn test_upsert_does_not_clobber_display_title() {
+        let store = WorkerStore::open_memory().unwrap();
+        store.upsert(&make_worker("w1", "acme")).unwrap();
+        store
+            .update_display_title("acme", "w1", "Short Title")
+            .unwrap();
+
+        // Upsert with display_title: None should preserve the existing title
+        let mut w = make_worker("w1", "acme");
+        w.state = WorkerState::Running;
+        w.display_title = None;
+        store.upsert(&w).unwrap();
+
+        let fetched = store.get("acme", "w1").unwrap().unwrap();
+        assert_eq!(fetched.display_title.as_deref(), Some("Short Title"));
+        assert_eq!(fetched.state, WorkerState::Running);
     }
 }
