@@ -437,6 +437,12 @@
   word-break: break-word;
 }
 
+.eventLink {
+  color: var(--accent);
+  text-decoration: underline;
+  opacity: 0.8;
+}
+
 /* tool_use — single inline faint line, no box */
 .eventTool {
   font-size: 12px;

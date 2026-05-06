@@ -134,7 +134,7 @@ describe("WorkerDetailV2", () => {
       pr_url: "https://github.com/org/repo/pull/42",
     });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
-    const link = await screen.findByRole("link", { name: /PR/i });
+    const link = await screen.findByRole("link", { name: /#42/i });
     expect(link).toHaveAttribute("href", "https://github.com/org/repo/pull/42");
   });
 

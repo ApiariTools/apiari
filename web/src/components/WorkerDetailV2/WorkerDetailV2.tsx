@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { ExternalLink, MessageSquare } from 'lucide-react'
 import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, WorkerBrief, ContextBotContext, WorkerEvent } from '../../types'
 import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
@@ -163,6 +164,17 @@ function groupConsecutiveTools(events: WorkerEvent[]): DisplayEvent[] {
   return result
 }
 
+// ── Linkify helper ───────────────────────────────────────────────────────
+
+function linkify(text: string): (string | JSX.Element)[] {
+  const parts = text.split(/(https?:\/\/[^\s]+)/g)
+  return parts.map((part, i) =>
+    /^https?:\/\//.test(part)
+      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className={styles.eventLink}>{part}</a>
+      : part
+  )
+}
+
 // ── Event row ────────────────────────────────────────────────────────────
 
 interface EventRowProps {
@@ -183,7 +195,7 @@ function EventRow({ event_type, content, created_at, tool, input }: EventRowProp
       <div className={styles.eventRow}>
         <span className={styles.eventTime}>{time}</span>
         <div className={`${styles.eventBody} ${styles.eventAssistant}`}>
-          <ReactMarkdown>{trimmed}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmed}</ReactMarkdown>
         </div>
       </div>
     )
@@ -195,7 +207,7 @@ function EventRow({ event_type, content, created_at, tool, input }: EventRowProp
         <span className={styles.eventTime}>{time}</span>
         <div className={styles.eventBody}>
           <div className={styles.eventUserLabel}>You</div>
-          <div className={styles.eventUserContent}>{content}</div>
+          <div className={styles.eventUserContent}>{linkify(content)}</div>
         </div>
       </div>
     )
@@ -216,7 +228,7 @@ function EventRow({ event_type, content, created_at, tool, input }: EventRowProp
     <div className={styles.eventRow}>
       <span className={styles.eventTime}>{time}</span>
       <div className={`${styles.eventBody} ${styles.eventAssistant}`}>
-        <ReactMarkdown>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       </div>
     </div>
   )
@@ -668,7 +680,10 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
               rel="noopener noreferrer"
               className={styles.prLink}
             >
-              PR <ExternalLink size={12} />
+              {(() => {
+                const prNumber = data.pr_url?.match(/\/pull\/(\d+)/)?.[1]
+                return prNumber ? `#${prNumber}` : 'PR'
+              })()} <ExternalLink size={12} />
             </a>
           </div>
         )}
