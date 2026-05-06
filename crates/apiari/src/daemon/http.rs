@@ -8452,4 +8452,147 @@ model = "sonnet"
         );
         assert_eq!(json["session_id"].as_str(), Some("ctx-xyz"));
     }
+
+    // ── v2_send_message: daemon-restart regression ─────────────────────────
+    //
+    // Before the fix, a worker in the DB but absent from the WorkerManager live
+    // map (e.g. after a daemon restart) returned 500 "worker not found or not
+    // running". The fix routes such workers through the requeue path instead.
+    // These tests verify that the 500 from WorkerManager.send_message is never
+    // the final response — we always take the requeue branch.
+
+    fn make_test_state_with_db(db_path: &std::path::Path) -> HttpState {
+        let (updates_tx, _) = broadcast::channel(4);
+        let (signal_tx, _) = mpsc::unbounded_channel();
+        let (chat_tx, _) = mpsc::unbounded_channel();
+        let (cancel_tx, _) = mpsc::unbounded_channel();
+        HttpState {
+            graph: Arc::new(RwLock::new(
+                crate::buzz::orchestrator::graph::builtin::builtin_workflow(),
+            )),
+            yaml_path: Arc::new(None),
+            db_path: Arc::new(db_path.to_path_buf()),
+            workspace: Arc::new("apiari".to_string()),
+            updates_tx,
+            signal_tx,
+            chat_tx,
+            cancel_tx,
+            worker_manager: Arc::new(WorkerManager::new()), // empty live map
+        }
+    }
+
+    fn seed_waiting_worker(
+        db_path: &std::path::Path,
+        id: &str,
+        workspace: &str,
+        repo: Option<&str>,
+        branch_ready: bool,
+    ) {
+        let store = open_worker_store_from_path(db_path).unwrap();
+        let _ = store.upsert(&crate::buzz::worker::Worker {
+            id: id.to_string(),
+            workspace: workspace.to_string(),
+            state: crate::buzz::worker::WorkerState::Waiting,
+            brief: Some(serde_json::json!({"goal": "fix the bug"})),
+            repo: repo.map(str::to_string),
+            branch: Some("feat/test".to_string()),
+            goal: Some("fix the bug".to_string()),
+            tests_passing: false,
+            branch_ready,
+            pr_url: None,
+            pr_approved: false,
+            is_stalled: false,
+            revision_count: 0,
+            review_mode: "local_first".to_string(),
+            blocked_reason: None,
+            display_title: None,
+            last_output_at: None,
+            state_entered_at: chrono::Utc::now().to_rfc3339(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            label: String::new(),
+        });
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_to_orphaned_worker_takes_requeue_path_not_500() {
+        // Regression: after daemon restart, workers not in the live map returned
+        // 500 "worker not found or not running". Now they take the requeue path.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "apiari", &root);
+
+        let db_path = temp.path().join("test.db");
+        // Worker has no repo — the requeue path will return 400 "worker has no repo".
+        // The old broken path returned 500 "worker ghost-1234 not found or not running".
+        seed_waiting_worker(&db_path, "ghost-1234", "apiari", None, false);
+
+        let state = make_test_state_with_db(&db_path);
+        let resp = v2_send_message(
+            Path(("apiari".to_string(), "ghost-1234".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "please fix the tests".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        // Must NOT be the WorkerManager "not found or not running" 500.
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let err = json["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("not found or not running"),
+            "should have taken requeue path, not send_message 500: got '{err}'"
+        );
+        // The requeue path correctly rejects a worker with no repo.
+        assert!(
+            err.contains("no repo") || err.contains("repo"),
+            "expected 'no repo' error from requeue path, got: '{err}'"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_branch_ready_also_takes_requeue_path() {
+        // branch_ready workers were already routed correctly; this confirms
+        // the condition still works after the daemon-restart fix.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("apiari");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "apiari", &root);
+
+        let db_path = temp.path().join("test.db");
+        seed_waiting_worker(&db_path, "ready-1234", "apiari", None, true);
+
+        let state = make_test_state_with_db(&db_path);
+        let resp = v2_send_message(
+            Path(("apiari".to_string(), "ready-1234".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "please address the review comments".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let err = json["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("not found or not running"),
+            "branch_ready should not hit send_message: got '{err}'"
+        );
+    }
 }
