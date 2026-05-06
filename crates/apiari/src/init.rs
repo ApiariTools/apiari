@@ -40,6 +40,12 @@ max_turns = 20
 prompt = """
 {prompt_lines}"""
 
+# Token efficiency — recommended defaults (uncomment to enable)
+# [coordinator.token_controls]
+# thinking_enabled = false  # disables extended thinking (biggest cost saver for agentic loops)
+# bash_max_output = 20000   # cap bash output at 20k chars (prevents context floods)
+# autocompact_pct = 70      # compact at 70% full instead of waiting until 95%+
+
 # [watchers.github]
 # repos = ["owner/repo1", "owner/repo2"]
 # interval_secs = 120

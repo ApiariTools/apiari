@@ -270,21 +270,35 @@ impl Default for ActivityConfig {
 }
 
 /// Token efficiency settings applied to spawned claude/codex subprocesses.
+///
+/// All fields are opt-in (`None` = no override). Recommended starting point
+/// for most agentic workflows — add to your workspace TOML under
+/// `[coordinator.token_controls]`:
+///
+/// ```toml
+/// [coordinator.token_controls]
+/// thinking_enabled = false  # disables extended thinking (biggest cost saver)
+/// bash_max_output = 20000   # cap bash output at 20k chars (prevents context floods)
+/// autocompact_pct = 70      # compact context at 70% full, not 95%+
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TokenControls {
     /// Sets MAX_THINKING_TOKENS env var on the spawned agent process
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_thinking_tokens: Option<u32>,
-    /// Sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE env var (0–100)
+    /// Sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE env var (0–100).
+    /// Recommended: 70 (compact at 70% full instead of waiting until 95%+)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autocompact_pct: Option<u8>,
-    /// Sets BASH_MAX_OUTPUT_LENGTH env var
+    /// Sets BASH_MAX_OUTPUT_LENGTH env var.
+    /// Recommended: 20000 (prevents runaway log dumps from flooding context)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash_max_output: Option<u32>,
     /// Sets effortLevel via --effort flag on claude CLI
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_level: Option<String>,
-    /// Sets alwaysThinkingEnabled in --settings JSON
+    /// Sets alwaysThinkingEnabled in --settings JSON.
+    /// Recommended: false (extended thinking adds significant cost in agentic loops)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_enabled: Option<bool>,
     /// Passed as --max-tokens for Claude (config_overrides for Codex)
