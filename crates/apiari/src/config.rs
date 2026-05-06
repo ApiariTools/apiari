@@ -367,6 +367,10 @@ pub struct WorkspaceConfig {
     /// Activity feed / event retention configuration.
     #[serde(default)]
     pub activity: ActivityConfig,
+    /// Workspace-level token controls. Inherited by all coordinators and bees.
+    /// Individual coordinators/bees can override specific fields.
+    #[serde(default)]
+    pub token_controls: TokenControls,
 }
 
 /// A single daemon TCP endpoint (host + port).
@@ -427,6 +431,109 @@ pub struct TelegramConfig {
     pub allowed_user_ids: Vec<i64>,
 }
 
+/// Token efficiency controls applied to spawned agent subprocesses.
+///
+/// These are set on the subprocess itself — not in the user's shell.
+/// Workspace-level settings are inherited by all coordinators and bees;
+/// individual coordinators/bees can override specific fields.
+///
+/// Example workspace TOML:
+/// ```toml
+/// [token_controls]
+/// thinking_enabled = false    # disable extended thinking (default)
+/// bash_max_output = 20000     # cap bash output chars (default)
+/// autocompact_pct = 70        # compact at 70% context full (default)
+/// # effort_level = "low"      # "low" | "normal" | "high"
+/// # max_output_tokens = 8000  # cap response tokens
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenControls {
+    /// Sets `BASH_MAX_OUTPUT_LENGTH` env var on the Claude subprocess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bash_max_output: Option<u32>,
+    /// Sets `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` env var on the Claude subprocess (0–100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autocompact_pct: Option<u8>,
+    /// Sets `MAX_THINKING_TOKENS` env var on the Claude subprocess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_thinking_tokens: Option<u32>,
+    /// Sets `alwaysThinkingEnabled` in the Claude `--settings` JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_enabled: Option<bool>,
+    /// Sets `effortLevel` in the Claude `--settings` JSON ("low", "normal", "high").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_level: Option<String>,
+    /// Max output tokens. Passed as `--max-tokens` for Claude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u32>,
+}
+
+impl Default for TokenControls {
+    fn default() -> Self {
+        Self {
+            // Disable extended thinking — big cost savings in agentic loops
+            thinking_enabled: Some(false),
+            // Prevent runaway bash output from eating the context window
+            bash_max_output: Some(20000),
+            // Compact earlier so context stays clean
+            autocompact_pct: Some(70),
+            max_thinking_tokens: None,
+            effort_level: None,
+            max_output_tokens: None,
+        }
+    }
+}
+
+impl TokenControls {
+    /// Merge two TokenControls: `self` wins, `base` fills in unset fields.
+    pub fn merge_with_base(&self, base: &TokenControls) -> TokenControls {
+        TokenControls {
+            thinking_enabled: self.thinking_enabled.or(base.thinking_enabled),
+            bash_max_output: self.bash_max_output.or(base.bash_max_output),
+            autocompact_pct: self.autocompact_pct.or(base.autocompact_pct),
+            max_thinking_tokens: self.max_thinking_tokens.or(base.max_thinking_tokens),
+            effort_level: self
+                .effort_level
+                .clone()
+                .or_else(|| base.effort_level.clone()),
+            max_output_tokens: self.max_output_tokens.or(base.max_output_tokens),
+        }
+    }
+
+    /// Build the env vars for a Claude subprocess from these controls.
+    /// Only Claude-specific env vars are included.
+    pub fn claude_env_vars(&self) -> Vec<(String, String)> {
+        let mut vars = Vec::new();
+        if let Some(v) = self.bash_max_output {
+            vars.push(("BASH_MAX_OUTPUT_LENGTH".into(), v.to_string()));
+        }
+        if let Some(v) = self.autocompact_pct {
+            vars.push(("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE".into(), v.to_string()));
+        }
+        if let Some(v) = self.max_thinking_tokens {
+            vars.push(("MAX_THINKING_TOKENS".into(), v.to_string()));
+        }
+        vars
+    }
+
+    /// Build the `--settings` JSON fragment for a Claude subprocess.
+    /// Returns `None` if no settings fields are set.
+    pub fn claude_settings_json(&self) -> Option<String> {
+        let mut map = serde_json::Map::new();
+        if let Some(thinking) = self.thinking_enabled {
+            map.insert(
+                "alwaysThinkingEnabled".into(),
+                serde_json::Value::Bool(thinking),
+            );
+        }
+        if map.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(map).to_string())
+        }
+    }
+}
+
 /// Coordinator configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoordinatorConfig {
@@ -450,6 +557,9 @@ pub struct CoordinatorConfig {
     /// Signal sources that trigger a coordinator follow-through.
     #[serde(default = "default_signal_hooks")]
     pub signal_hooks: Vec<SignalHookConfig>,
+    /// Token efficiency controls. Inherits from workspace-level [token_controls].
+    #[serde(default)]
+    pub token_controls: TokenControls,
 }
 
 impl Default for CoordinatorConfig {
@@ -462,6 +572,7 @@ impl Default for CoordinatorConfig {
             prompt: None,
             max_session_turns: default_max_session_turns(),
             signal_hooks: default_signal_hooks(),
+            token_controls: TokenControls::default(),
         }
     }
 }
@@ -504,6 +615,9 @@ pub struct BeeConfig {
     /// Prompt sent to the Bee on each heartbeat.
     #[serde(default)]
     pub heartbeat_prompt: Option<String>,
+    /// Token efficiency controls. Overrides workspace-level [token_controls].
+    #[serde(default)]
+    pub token_controls: TokenControls,
 }
 
 impl BeeConfig {
@@ -547,6 +661,7 @@ impl WorkspaceConfig {
                 .cloned()
                 .map(|mut bee| {
                     bee.model = normalize_model_identifier(&bee.provider, &bee.model);
+                    bee.token_controls = bee.token_controls.merge_with_base(&self.token_controls);
                     bee
                 })
                 .collect();
@@ -567,6 +682,7 @@ impl WorkspaceConfig {
             topic_id: self.telegram.as_ref().and_then(|tg| tg.topic_id),
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: c.token_controls.merge_with_base(&self.token_controls),
         }]
     }
 
@@ -989,6 +1105,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
             topic_id: None,
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: TokenControls::default(),
         }];
 
         bees.extend(value.bots.iter().map(|bot| BeeConfig {
@@ -1005,6 +1122,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
             topic_id: None,
             heartbeat: hive_bot_heartbeat(bot),
             heartbeat_prompt: bot.proactive_prompt.clone(),
+            token_controls: TokenControls::default(),
         }));
 
         bees
@@ -1043,6 +1161,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
         shells: ShellsConfig::default(),
         schedule: None,
         activity: ActivityConfig::default(),
+        token_controls: TokenControls::default(),
     }
 }
 
@@ -1958,6 +2077,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -1988,6 +2108,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -2022,6 +2143,7 @@ max_session_turns = 0
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         };
 
         let buzz = to_buzz_config(&ws);
@@ -2410,6 +2532,7 @@ watch = ["sentry"]
             shells: ShellsConfig::default(),
             schedule: None,
             activity: ActivityConfig::default(),
+            token_controls: TokenControls::default(),
         }
     }
 
@@ -2837,6 +2960,7 @@ name = "Bee"
             topic_id: None,
             heartbeat: None,
             heartbeat_prompt: None,
+            token_controls: TokenControls::default(),
         }
     }
 

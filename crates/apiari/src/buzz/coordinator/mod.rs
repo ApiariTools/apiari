@@ -158,6 +158,7 @@ pub struct Coordinator {
     execution_policy: crate::config::BeeExecutionPolicy,
     working_dir: Option<PathBuf>,
     settings: Option<String>,
+    token_controls: crate::config::TokenControls,
     safety_hooks: Option<Box<dyn SafetyHooks>>,
     /// Number of turns used in the last completed session.
     last_num_turns: u64,
@@ -182,6 +183,7 @@ impl Coordinator {
             execution_policy: crate::config::BeeExecutionPolicy::Autonomous,
             working_dir: None,
             settings: None,
+            token_controls: crate::config::TokenControls::default(),
             safety_hooks: None,
             last_num_turns: 0,
             pending_context: None,
@@ -241,6 +243,11 @@ impl Coordinator {
     /// Set custom settings JSON (e.g. PreToolUse hooks).
     pub fn set_settings(&mut self, settings: String) {
         self.settings = Some(settings);
+    }
+
+    /// Set token efficiency controls for spawned subprocesses.
+    pub fn set_token_controls(&mut self, controls: crate::config::TokenControls) {
+        self.token_controls = controls;
     }
 
     /// Install safety hooks for pre/post-turn workspace checks.
@@ -340,6 +347,13 @@ impl Coordinator {
             hook_playbooks,
         );
 
+        // Merge token_controls settings into existing settings JSON (which may
+        // have PreToolUse hooks from coordinator_settings_json).
+        let merged_settings = merge_settings_json(
+            self.settings.as_deref(),
+            self.token_controls.claude_settings_json().as_deref(),
+        );
+
         let mut opts = SessionOptions {
             system_prompt: Some(system_prompt),
             max_turns: Some(self.max_turns as u64),
@@ -347,7 +361,8 @@ impl Coordinator {
             allowed_tools: self.allowed_tools.clone(),
             disallowed_tools: self.disallowed_tools.clone(),
             working_dir: self.working_dir.clone(),
-            settings: self.settings.clone(),
+            settings: merged_settings,
+            env_vars: self.token_controls.claude_env_vars(),
             ..Default::default()
         };
 
@@ -958,6 +973,28 @@ fn codex_assistant_text(item: &apiari_codex_sdk::Item) -> Option<&str> {
             text.as_deref().filter(|text| !text.is_empty())
         }
         _ => None,
+    }
+}
+
+/// Merge two Claude `--settings` JSON strings, with `overlay` taking priority.
+///
+/// Recursively merges JSON objects so that keys from `overlay` overwrite `base`.
+/// Returns `None` if both inputs are `None`.
+fn merge_settings_json(base: Option<&str>, overlay: Option<&str>) -> Option<String> {
+    match (base, overlay) {
+        (None, None) => None,
+        (Some(b), None) => Some(b.to_string()),
+        (None, Some(o)) => Some(o.to_string()),
+        (Some(b), Some(o)) => {
+            let mut merged: serde_json::Value = serde_json::from_str(b).unwrap_or_default();
+            let extra: serde_json::Value = serde_json::from_str(o).unwrap_or_default();
+            if let (Some(m), Some(e)) = (merged.as_object_mut(), extra.as_object()) {
+                for (k, v) in e {
+                    m.insert(k.clone(), v.clone());
+                }
+            }
+            Some(merged.to_string())
+        }
     }
 }
 
