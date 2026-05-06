@@ -232,9 +232,16 @@ impl SwarmReconciler {
                     );
                     self.do_transition(worker, WorkerState::Merged)?;
                     return Ok(());
+                } else if state == "CLOSED" {
+                    info!(
+                        "[reconciler] {} PR closed without merge, transitioning to abandoned",
+                        worker.id
+                    );
+                    self.do_transition(worker, WorkerState::Abandoned)?;
+                    return Ok(());
                 }
             }
-            // gh failed or returned non-MERGED — treat as "don't know, skip"
+            // gh failed or returned non-MERGED/non-CLOSED — treat as "don't know, skip"
         }
 
         // No PR or PR not merged — worker disappeared without merging.

@@ -1990,15 +1990,18 @@ fn apply_pr_poll_results(
             }
 
             let is_merged = result.pr.state == "MERGED";
+            let is_closed = result.pr.state == "CLOSED";
             worker.pr = Some(result.pr);
             *state_dirty = true;
 
-            // Auto-close workers whose PR has been merged (if enabled for this workspace)
-            if is_merged && ws.close_on_pr_merge {
+            // Auto-close workers whose PR has been merged or closed (if enabled for this workspace)
+            if (is_merged || is_closed) && ws.close_on_pr_merge {
                 tracing::info!(
                     worker_id = %worker.id,
                     pr_number = worker.pr.as_ref().unwrap().number,
-                    "Auto-closing worker, PR merged",
+                    is_merged,
+                    is_closed,
+                    "Auto-closing worker, PR merged or closed",
                 );
                 worker.message_tx = None;
                 worker.phase = WorkerPhase::Completed;
