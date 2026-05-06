@@ -352,8 +352,8 @@ mod tests {
             "preamble missing 'no git add/commit/push'"
         );
         assert!(
-            preamble.contains("ONLY Bash writes allowed are to /tmp/"),
-            "preamble missing '/tmp/ exception'"
+            preamble.contains("ONLY Bash writes allowed are your persistent memory file"),
+            "preamble missing bash write exception clause"
         );
         assert!(
             preamble.contains(".apiari/context.md"),
