@@ -4459,6 +4459,7 @@ async fn v2_create_worker(
         state_entered_at: now.clone(),
         created_at: now.clone(),
         updated_at: now,
+        display_title: None,
         label: String::new(),
     };
 
@@ -4533,6 +4534,23 @@ async fn v2_create_worker(
                     label: "Queued".to_string(),
                     properties: serde_json::json!({}),
                 });
+
+            // Spawn background task to generate a short display title via Claude
+            if let Some(goal_text) = goal.filter(|g| !g.is_empty()) {
+                let title_workspace = workspace.clone();
+                let title_id = final_id.clone();
+                let db_path = state.db_path.clone();
+                tokio::spawn(async move {
+                    generate_and_store_worker_title(
+                        &title_workspace,
+                        &title_id,
+                        &goal_text,
+                        &db_path,
+                    )
+                    .await;
+                });
+            }
+
             Json(serde_json::json!({
                 "ok": true,
                 "worker_id": final_id,
@@ -4552,6 +4570,82 @@ async fn v2_create_worker(
             Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
         )
             .into_response(),
+    }
+}
+
+/// Generate a short display title for a worker using Claude and store it in the DB.
+/// Runs as a background task; failures are silently logged.
+async fn generate_and_store_worker_title(
+    workspace: &str,
+    worker_id: &str,
+    goal: &str,
+    db_path: &std::path::Path,
+) {
+    use tokio::io::AsyncWriteExt as _;
+    use tracing::{info, warn};
+
+    let prompt = format!(
+        "Generate a short display title (4-8 words) for this task. \
+         Output only the title, no punctuation, no markdown, no explanation.\n\nTask: {goal}"
+    );
+
+    let result = async {
+        let mut child = tokio::process::Command::new("claude")
+            .arg("--print")
+            .arg("--max-turns")
+            .arg("1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("spawn claude: {e}"))?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(prompt.as_bytes())
+                .await
+                .map_err(|e| format!("write stdin: {e}"))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("wait: {e}"))?;
+        if !output.status.success() {
+            return Err("claude exited non-zero".to_string());
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let title = raw
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        if title.is_empty() {
+            return Err("empty title from claude".to_string());
+        }
+
+        // Truncate to 80 chars max
+        let title = if title.len() > 80 {
+            title[..80].to_string()
+        } else {
+            title
+        };
+
+        let store = open_worker_store_from_path(db_path).map_err(|e| format!("open store: {e}"))?;
+        store
+            .update_display_title(workspace, worker_id, &title)
+            .map_err(|e| format!("update: {e}"))?;
+
+        Ok::<String, String>(title)
+    }
+    .await;
+
+    match result {
+        Ok(title) => info!("[worker-title/{workspace}/{worker_id}] generated: {title:?}"),
+        Err(e) => warn!("[worker-title/{workspace}/{worker_id}] failed: {e}"),
     }
 }
 

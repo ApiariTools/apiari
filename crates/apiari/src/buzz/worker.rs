@@ -87,6 +87,8 @@ pub struct Worker {
     pub state_entered_at: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Short LLM-generated title for display (stored in DB, filled in by row_to_worker).
+    pub display_title: Option<String>,
     /// Derived display label — computed, never stored in DB.
     #[serde(skip_deserializing)]
     pub label: String,
@@ -184,7 +186,8 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             last_output_at DATETIME,
             state_entered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            display_title TEXT
         );
 
         CREATE TABLE IF NOT EXISTS worker_hooks (
@@ -201,6 +204,8 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         ",
     )
     .wrap_err("failed to create worker tables")?;
+    // Migration: add display_title to existing databases (safe to ignore if already present)
+    let _ = conn.execute_batch("ALTER TABLE workers ADD COLUMN display_title TEXT");
     Ok(())
 }
 
@@ -254,8 +259,8 @@ impl WorkerStore {
              (id, workspace, state, brief, repo, branch, goal,
               tests_passing, branch_ready, pr_url, pr_approved, is_stalled,
               revision_count, review_mode, blocked_reason,
-              last_output_at, state_entered_at, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+              last_output_at, state_entered_at, created_at, updated_at, display_title)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
              ON CONFLICT(id) DO UPDATE SET
                workspace       = excluded.workspace,
                state           = excluded.state,
@@ -273,7 +278,8 @@ impl WorkerStore {
                blocked_reason  = excluded.blocked_reason,
                last_output_at  = excluded.last_output_at,
                state_entered_at= excluded.state_entered_at,
-               updated_at      = excluded.updated_at",
+               updated_at      = excluded.updated_at,
+               display_title   = COALESCE(excluded.display_title, workers.display_title)",
             params![
                 worker.id,
                 worker.workspace,
@@ -294,6 +300,7 @@ impl WorkerStore {
                 worker.state_entered_at,
                 worker.created_at,
                 worker.updated_at,
+                worker.display_title,
             ],
         )
         .wrap_err("upsert worker")?;
@@ -307,7 +314,7 @@ impl WorkerStore {
             "SELECT id,workspace,state,brief,repo,branch,goal,
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
-                    last_output_at,state_entered_at,created_at,updated_at
+                    last_output_at,state_entered_at,created_at,updated_at,display_title
              FROM workers WHERE workspace=?1 AND id=?2",
             params![workspace, id],
             row_to_worker,
@@ -329,7 +336,7 @@ impl WorkerStore {
             "SELECT id,workspace,state,brief,repo,branch,goal,
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
-                    last_output_at,state_entered_at,created_at,updated_at
+                    last_output_at,state_entered_at,created_at,updated_at,display_title
              FROM workers WHERE workspace=?1
              ORDER BY updated_at DESC",
         )?;
@@ -452,6 +459,22 @@ impl WorkerStore {
         Ok(())
     }
 
+    /// Set the LLM-generated display title for a worker.
+    pub fn update_display_title(&self, workspace: &str, id: &str, title: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE workers SET display_title=?1, updated_at=?2 WHERE workspace=?3 AND id=?4",
+                params![title, now, workspace, id],
+            )
+            .wrap_err("update display_title")?;
+        if rows == 0 {
+            return Err(eyre!("worker not found: {workspace}/{id}"));
+        }
+        Ok(())
+    }
+
     /// Replace a worker's UUID with the swarm-assigned ID.
     /// Deletes the old record and upserts under the new ID.
     pub fn rekey(&self, old_id: &str, new_id: &str) -> Result<()> {
@@ -493,6 +516,7 @@ fn row_to_worker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worker> {
         state_entered_at: row.get(16)?,
         created_at: row.get(17)?,
         updated_at: row.get(18)?,
+        display_title: row.get(19)?,
         // label is filled in by the caller
         label: String::new(),
     })
@@ -526,6 +550,7 @@ mod tests {
             state_entered_at: now.clone(),
             created_at: now.clone(),
             updated_at: now,
+            display_title: None,
             label: String::new(),
         }
     }

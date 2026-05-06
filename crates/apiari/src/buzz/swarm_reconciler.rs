@@ -600,6 +600,7 @@ mod tests {
             state_entered_at: now.clone(),
             created_at: now.clone(),
             updated_at: now,
+            display_title: None,
             label: "Queued".to_string(),
         }
     }

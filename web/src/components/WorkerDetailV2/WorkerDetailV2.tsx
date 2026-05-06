@@ -621,7 +621,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
         )}
         <div className={styles.headerRow}>
           <h1 className={styles.goal}>
-            {data.goal ?? data.branch ?? data.id}
+            {data.display_title ?? data.goal ?? data.branch ?? data.id}
           </h1>
           <div className={styles.headerActions}>
             {onOpenContextBot && (
