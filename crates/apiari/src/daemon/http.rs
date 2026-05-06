@@ -4804,7 +4804,142 @@ async fn v2_send_message(
         }
     };
 
-    // Run swarm send
+    // If branch_ready, the agent process has exited — can't use swarm send.
+    // Spawn a fresh agent with the message prepended as revision instructions.
+    if worker.branch_ready {
+        let brief = match &worker.brief {
+            Some(b) => b.clone(),
+            None => serde_json::json!({}),
+        };
+        let repo = match &worker.repo {
+            Some(r) => r.clone(),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "worker has no repo"})),
+                )
+                    .into_response();
+            }
+        };
+
+        let mut prompt = format!(
+            "# Revision Instructions\n\n{}\n\n{}",
+            body.message,
+            format_brief_as_prompt(&brief)
+        );
+
+        // Also include any review feedback if present.
+        let review_feedback: Option<String> = open_review_store_from_path(&state.db_path)
+            .ok()
+            .and_then(|rs| rs.list_for_worker(&workspace, &id).ok())
+            .and_then(|reviews| {
+                reviews
+                    .into_iter()
+                    .find(|r| r.verdict == "request_changes" && r.worker_message.is_some())
+                    .and_then(|r| r.worker_message)
+            });
+        if let Some(ref feedback) = review_feedback {
+            prompt.push_str(&format!("\n\n# Prior Review Feedback\n\n{feedback}"));
+        }
+
+        let tmp_id = uuid::Uuid::new_v4().to_string();
+        let prompt_file = std::env::temp_dir().join(format!("worker-send-{tmp_id}.txt"));
+        if let Err(e) = std::fs::write(&prompt_file, &prompt) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("failed to write prompt file: {e}")})),
+            )
+                .into_response();
+        }
+
+        let output = tokio::process::Command::new("swarm")
+            .arg("--dir")
+            .arg(&ws.config.root)
+            .arg("create")
+            .arg("--repo")
+            .arg(&repo)
+            .arg("--prompt-file")
+            .arg(&prompt_file)
+            .output()
+            .await;
+
+        let _ = std::fs::remove_file(&prompt_file);
+
+        let new_swarm_id = match output {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                stdout
+                    .lines()
+                    .map(|l| strip_ansi(l).trim().to_string())
+                    .find(|l| {
+                        !l.is_empty()
+                            && l.contains('-')
+                            && !l.contains(' ')
+                            && !l.contains('=')
+                            && !l.contains(':')
+                    })
+                    .unwrap_or_default()
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("swarm create failed: {stderr}")})),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
+                )
+                    .into_response();
+            }
+        };
+
+        if new_swarm_id.is_empty() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "swarm create did not return a worker ID"})),
+            )
+                .into_response();
+        }
+
+        let _ = store.rekey(&id, &new_swarm_id);
+        let review_mode = brief
+            .get("review_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("local_first")
+            .to_string();
+        let new_revision = worker.revision_count + 1;
+        let updated_worker = crate::buzz::worker::Worker {
+            id: new_swarm_id.clone(),
+            workspace: workspace.clone(),
+            state: crate::buzz::worker::WorkerState::Queued,
+            brief: Some(brief),
+            repo: Some(repo),
+            branch: None,
+            goal: worker.goal.clone(),
+            tests_passing: false,
+            branch_ready: false,
+            pr_url: None,
+            pr_approved: false,
+            is_stalled: false,
+            revision_count: new_revision,
+            review_mode,
+            blocked_reason: None,
+            last_output_at: None,
+            state_entered_at: chrono::Utc::now().to_rfc3339(),
+            created_at: worker.created_at.clone(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            label: String::new(),
+        };
+        let _ = store.upsert(&updated_worker);
+
+        return Json(serde_json::json!({"ok": true, "new_id": new_swarm_id})).into_response();
+    }
+
+    // Agent is alive — use swarm send.
     let output = tokio::process::Command::new("swarm")
         .arg("--dir")
         .arg(&ws.config.root)
@@ -4814,8 +4949,8 @@ async fn v2_send_message(
         .output()
         .await;
 
-    let swarm_ok = match output {
-        Ok(out) if out.status.success() => true,
+    match output {
+        Ok(out) if out.status.success() => {}
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
             return (
@@ -4831,9 +4966,9 @@ async fn v2_send_message(
             )
                 .into_response();
         }
-    };
+    }
 
-    // If waiting → running, increment revision
+    // Waiting → running, increment revision
     if worker.state == crate::buzz::worker::WorkerState::Waiting {
         let _ = store.update_properties(
             &workspace,
@@ -4845,7 +4980,6 @@ async fn v2_send_message(
         );
         let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Running);
 
-        // Emit WS event
         if let Ok(Some(updated)) = store.get(&workspace, &id) {
             let _ = state.updates_tx.send(WsUpdate::WorkerV2State {
                 workspace: workspace.clone(),
@@ -4860,7 +4994,6 @@ async fn v2_send_message(
         }
     }
 
-    let _ = swarm_ok;
     Json(serde_json::json!({"ok": true})).into_response()
 }
 

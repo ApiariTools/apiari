@@ -610,12 +610,8 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
     (data.state === 'waiting' && hasRequestChangesReview)
   const canReview = data.state === 'waiting' && data.branch_ready
   const isTerminal = data.state === 'done' || data.state === 'abandoned'
-  // Only allow sending when the agent process is actually alive.
-  // "waiting" with branch_ready means agent completed work (has a PR) — agent is dead.
-  // "waiting" without branch_ready means agent is paused waiting for user input — alive.
-  // "stalled" means agent is alive but silent — sending is the right thing to do.
-  const canSend = data.state === 'running' || data.state === 'queued' || data.state === 'stalled' ||
-    (data.state === 'waiting' && !data.branch_ready)
+  // Allow sending to any non-terminal worker — swarm handles re-queuing/restart.
+  const canSend = !isTerminal
   const inputDisabled = !canSend
 
   return (
@@ -887,7 +883,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             <input
               ref={textareaRef}
               className={styles.instructionInput}
-              placeholder={data.state === 'running' || data.state === 'stalled' ? 'Send async instruction…' : canSend ? 'Send an instruction…' : 'Worker is not running'}
+              placeholder={canSend ? (data.state === 'running' || data.state === 'stalled' ? 'Send async instruction…' : 'Send an instruction…') : 'Worker is not running'}
               disabled={inputDisabled}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
             />
