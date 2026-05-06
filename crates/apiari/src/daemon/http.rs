@@ -28,6 +28,7 @@ use crate::buzz::{
     orchestrator::graph::{WorkflowGraph, walker::GraphCursor},
     task::{Task, TaskAttempt, store::TaskStore},
 };
+use crate::daemon::swarm_ipc;
 
 // ── Shared state ───────────────────────────────────────────────────────
 
@@ -1745,30 +1746,10 @@ async fn send_workspace_worker_message(
         )
     })?;
 
-    let output = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(&ws.config.root)
-        .arg("send")
-        .arg(&worker_id)
-        .arg(&body.message)
-        .output()
+    swarm_ipc::swarm_send(&ws.config.root, &worker_id, &body.message)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to run swarm: {e}"),
-            )
-        })?;
-
-    if output.status.success() {
-        Ok(Json(serde_json::json!({ "ok": true })))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("swarm send failed: {stderr}"),
-        ))
-    }
+        .map(|_| Json(serde_json::json!({ "ok": true })))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// POST /api/workspaces/:workspace/workers/:worker_id/promote — commit worktree changes and open a PR.
@@ -3303,31 +3284,10 @@ async fn send_worker_message(
             )
         })?;
 
-    // Run swarm send command
-    let output = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(&ws.config.root)
-        .arg("send")
-        .arg(&body.worker_id)
-        .arg(&body.text)
-        .output()
+    swarm_ipc::swarm_send(&ws.config.root, &body.worker_id, &body.text)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to run swarm: {e}"),
-            )
-        })?;
-
-    if output.status.success() {
-        Ok(Json(serde_json::json!({ "ok": true })))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("swarm send failed: {stderr}"),
-        ))
-    }
+        .map(|_| Json(serde_json::json!({ "ok": true })))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 // ── Worker activity endpoint ──────────────────────────────────────────
@@ -4482,38 +4442,13 @@ async fn v2_create_worker(
             .into_response();
     }
 
-    // Dispatch to swarm
-    let output = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(&ws.config.root)
-        .arg("create")
-        .arg("--repo")
-        .arg(&body.repo)
-        .arg("--prompt-file")
-        .arg(&prompt_file)
-        .output()
-        .await;
+    // Dispatch to swarm via embedded daemon IPC.
+    let _ = std::fs::remove_file(&prompt_file); // prompt content is passed directly
+    let swarm_result = swarm_ipc::swarm_create(&ws.config.root, &body.repo, &prompt_content).await;
 
-    match output {
-        Ok(out) if out.status.success() => {
-            // Swarm prints ANSI-colored log lines then the assigned ID as the last line.
-            // Strip ANSI escape codes, then find the first line that looks like a worker ID.
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let swarm_id = stdout
-                .lines()
-                .map(|l| strip_ansi(l).trim().to_string())
-                .find(|l| {
-                    // Worker IDs look like "apiari-a06f": no spaces, no '=', contains '-'
-                    !l.is_empty()
-                        && l.contains('-')
-                        && !l.contains(' ')
-                        && !l.contains('=')
-                        && !l.contains(':')
-                })
-                .unwrap_or_default();
+    match swarm_result {
+        Ok(swarm_id) => {
             let final_id = if !swarm_id.is_empty() && swarm_id != id {
-                // Delete the UUID record and upsert under the swarm-assigned ID
-                // so the reconciler can match it by ID.
                 let _ = store.rekey(&id, &swarm_id);
                 let mut rekeyed = worker.clone();
                 rekeyed.id = swarm_id.clone();
@@ -4535,7 +4470,6 @@ async fn v2_create_worker(
                     properties: serde_json::json!({}),
                 });
 
-            // Spawn background task to generate a short display title via Claude
             if let Some(goal_text) = goal.filter(|g| !g.is_empty()) {
                 let title_workspace = workspace.clone();
                 let title_id = final_id.clone();
@@ -4557,17 +4491,9 @@ async fn v2_create_worker(
             }))
             .into_response()
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("swarm create failed: {stderr}")})),
-            )
-                .into_response()
-        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
+            Json(serde_json::json!({"error": e.to_string()})),
         )
             .into_response(),
     }
@@ -4869,46 +4795,14 @@ async fn v2_send_message(
                 .into_response();
         }
 
-        let output = tokio::process::Command::new("swarm")
-            .arg("--dir")
-            .arg(&ws.config.root)
-            .arg("create")
-            .arg("--repo")
-            .arg(&repo)
-            .arg("--prompt-file")
-            .arg(&prompt_file)
-            .output()
-            .await;
-
         let _ = std::fs::remove_file(&prompt_file);
 
-        let new_swarm_id = match output {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                stdout
-                    .lines()
-                    .map(|l| strip_ansi(l).trim().to_string())
-                    .find(|l| {
-                        !l.is_empty()
-                            && l.contains('-')
-                            && !l.contains(' ')
-                            && !l.contains('=')
-                            && !l.contains(':')
-                    })
-                    .unwrap_or_default()
-            }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("swarm create failed: {stderr}")})),
-                )
-                    .into_response();
-            }
+        let new_swarm_id = match swarm_ipc::swarm_create(&ws.config.root, &repo, &prompt).await {
+            Ok(id) => id,
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
+                    Json(serde_json::json!({"error": e.to_string()})),
                 )
                     .into_response();
             }
@@ -4958,33 +4852,13 @@ async fn v2_send_message(
         return Json(serde_json::json!({"ok": true, "new_id": new_swarm_id})).into_response();
     }
 
-    // Agent is alive — use swarm send.
-    let output = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(&ws.config.root)
-        .arg("send")
-        .arg(&id)
-        .arg(&body.message)
-        .output()
-        .await;
-
-    match output {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("swarm send failed: {stderr}")})),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
-            )
-                .into_response();
-        }
+    // Agent is alive — send message via embedded daemon IPC.
+    if let Err(e) = swarm_ipc::swarm_send(&ws.config.root, &id, &body.message).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
     }
 
     // Waiting → running, increment revision
@@ -5153,47 +5027,14 @@ async fn v2_requeue_worker(
             .into_response();
     }
 
-    // Dispatch new swarm worker.
-    let output = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(&ws.config.root)
-        .arg("create")
-        .arg("--repo")
-        .arg(&repo)
-        .arg("--prompt-file")
-        .arg(&prompt_file)
-        .output()
-        .await;
-
     let _ = std::fs::remove_file(&prompt_file);
 
-    let new_swarm_id = match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout
-                .lines()
-                .map(|l| strip_ansi(l).trim().to_string())
-                .find(|l| {
-                    !l.is_empty()
-                        && l.contains('-')
-                        && !l.contains(' ')
-                        && !l.contains('=')
-                        && !l.contains(':')
-                })
-                .unwrap_or_default()
-        }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("swarm create failed: {stderr}")})),
-            )
-                .into_response();
-        }
+    let new_swarm_id = match swarm_ipc::swarm_create(&ws.config.root, &repo, &prompt).await {
+        Ok(id) => id,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("failed to run swarm: {e}")})),
+                Json(serde_json::json!({"error": e.to_string()})),
             )
                 .into_response();
         }
@@ -5309,51 +5150,13 @@ async fn auto_requeue_with_feedback(
         "\n\n# Review Feedback (Previous Attempt)\n\nA reviewer inspected your last attempt and requested changes. Address all of the following before marking the work done:\n\n{review_feedback}"
     ));
 
-    let tmp_id = uuid::Uuid::new_v4().to_string();
-    let prompt_file = std::env::temp_dir().join(format!("worker-auto-requeue-{tmp_id}.txt"));
-    if let Err(e) = std::fs::write(&prompt_file, &prompt) {
-        tracing::warn!("[auto-requeue/{workspace}] failed to write prompt file: {e}");
-        return;
-    }
-
-    let output = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(workspace_root)
-        .arg("create")
-        .arg("--repo")
-        .arg(&repo)
-        .arg("--prompt-file")
-        .arg(&prompt_file)
-        .output()
-        .await;
-
-    let _ = std::fs::remove_file(&prompt_file);
-
-    let new_id = match output {
-        Ok(out) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout
-                .lines()
-                .map(|l| strip_ansi(l).trim().to_string())
-                .find(|l| {
-                    !l.is_empty()
-                        && l.contains('-')
-                        && !l.contains(' ')
-                        && !l.contains('=')
-                        && !l.contains(':')
-                })
-                .unwrap_or_default()
-        }
-        Ok(out) => {
-            tracing::warn!(
-                "[auto-requeue/{workspace}] swarm create failed for {}: {}",
-                worker.id,
-                String::from_utf8_lossy(&out.stderr)
-            );
-            return;
-        }
+    let new_id = match swarm_ipc::swarm_create(workspace_root, &repo, &prompt).await {
+        Ok(id) => id,
         Err(e) => {
-            tracing::warn!("[auto-requeue/{workspace}] failed to run swarm: {e}");
+            tracing::warn!(
+                "[auto-requeue/{workspace}] swarm create failed for {}: {e}",
+                worker.id
+            );
             return;
         }
     };
@@ -6345,20 +6148,12 @@ async fn v2_context_bot_chat(
                     .unwrap_or("");
 
                 let brief = format!("Context bot dispatch:\n\n{goal}\n\nWorkspace: {workspace}");
-                if tokio::fs::write(&prompt_path, &brief).await.is_ok() {
-                    let mut cmd = tokio::process::Command::new("swarm");
-                    cmd.arg("--dir").arg(&workspace_root).arg("create");
-                    if !repo.is_empty() {
-                        cmd.arg("--repo").arg(repo);
-                    }
-                    cmd.arg("--prompt-file").arg(&prompt_path);
-
-                    if let Ok(status) = cmd.status().await
-                        && status.success()
-                    {
-                        dispatched_worker_id = Some(worker_id);
-                    }
-                    let _ = tokio::fs::remove_file(&prompt_path).await;
+                let _ = tokio::fs::remove_file(&prompt_path).await;
+                if swarm_ipc::swarm_create(&workspace_root, repo, &brief)
+                    .await
+                    .is_ok()
+                {
+                    dispatched_worker_id = Some(worker_id);
                 }
                 break;
             }

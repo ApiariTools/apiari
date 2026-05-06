@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod http;
 pub mod morning_brief;
 pub mod socket;
+pub mod swarm_ipc;
 
 use std::{
     collections::HashMap,
@@ -2908,6 +2909,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 warn!("[daemon] failed to start web UI server: {e}");
             }
         }
+    }
+
+    // Start the embedded swarm daemon so worker create/send calls work without
+    // a separate swarm process. Use the first workspace root as the work dir.
+    if let Some(first_slot) = slots.first() {
+        swarm_ipc::ensure_swarm_running(&first_slot.config.root).await;
     }
 
     // Spawn v2 swarm reconcilers — one per workspace.
