@@ -9,6 +9,7 @@ const workers: Worker[] = [
     branch: "swarm/mobile-cards",
     status: "failed",
     agent: "codex",
+    prompt: "Use the original prompt text in the worker list",
     execution_note: "Worker finished without a ready branch or PR handoff.",
     ready_branch: null,
     has_uncommitted_changes: false,
@@ -39,6 +40,10 @@ describe("WorkersPanel", () => {
     const onSelectWorker = vi.fn();
     render(<WorkersPanel workers={workers} onSelectWorker={onSelectWorker} />);
 
+    expect(
+      screen.getByText("Use the original prompt text in the worker list"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Tighten mobile cards")).not.toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByText("Implementation failed")).toBeInTheDocument();
     expect(screen.getByText("Worker closed without PR")).toBeInTheDocument();

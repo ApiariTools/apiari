@@ -2739,6 +2739,8 @@ struct WorkerView {
     agent: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     execution_note: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ready_branch: Option<String>,
@@ -3014,6 +3016,7 @@ fn worker_view_from_task(workspace: &str, task: &crate::buzz::task::Task) -> Opt
             .unwrap_or_else(|| "task/lifecycle".to_string()),
         agent: "system".to_string(),
         status: worker_status_for_task(task),
+        prompt: None,
         execution_note: None,
         ready_branch: None,
         has_uncommitted_changes: false,
@@ -3070,6 +3073,7 @@ fn worker_view_from_state(
             worker.agent_kind.clone()
         },
         status: overlay_status.unwrap_or_else(|| worker_status_for_state(config, worker)),
+        prompt: (!worker.prompt.trim().is_empty()).then(|| worker.prompt.clone()),
         execution_note: worker_execution_note(config, worker),
         ready_branch: worker.ready_branch.clone(),
         has_uncommitted_changes: worker_has_uncommitted_changes(worker),
@@ -6990,6 +6994,7 @@ mod tests {
                 branch: "apiari/fix-http".to_string(),
                 agent: "claude".to_string(),
                 status: "running".to_string(),
+                prompt: None,
                 execution_note: None,
                 ready_branch: None,
                 has_uncommitted_changes: false,
@@ -7016,6 +7021,7 @@ mod tests {
                 branch: "common/fix-sdk".to_string(),
                 agent: "gemini".to_string(),
                 status: "running".to_string(),
+                prompt: None,
                 execution_note: None,
                 ready_branch: None,
                 has_uncommitted_changes: false,

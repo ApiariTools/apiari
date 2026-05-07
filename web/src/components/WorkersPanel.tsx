@@ -71,7 +71,7 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
             </span>
           </div>
           <div className={styles.desc}>
-            {w.task_title || w.description || branchName(w.branch)}
+            {w.prompt || w.description || w.task_title || branchName(w.branch)}
           </div>
           <div className={styles.tags}>
             {w.status === "stalled" && (
