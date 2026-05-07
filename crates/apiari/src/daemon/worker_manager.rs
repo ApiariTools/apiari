@@ -357,6 +357,9 @@ async fn run_agent_task(
 
     update_state_phase(&work_dir, &worker_id, "running");
 
+    let mut accumulated_text = String::new();
+    let mut pr_url_found: Option<String> = None;
+
     loop {
         // Drain all events from the current agent run.
         let mut last_session_id: Option<String> = None;
@@ -367,6 +370,16 @@ async fn run_agent_task(
             } = ev
             {
                 last_session_id = Some(sid.clone());
+            }
+            if let AgentEventWire::TextDelta { ref text } = ev {
+                accumulated_text.push_str(text);
+                if pr_url_found.is_none()
+                    && let Some(url) =
+                        apiari_swarm::core::state::parse_pr_opened(&accumulated_text)
+                {
+                    update_state_pr(&work_dir, &worker_id, &url);
+                    pr_url_found = Some(url);
+                }
             }
             log_event(&mut logger, &ev);
         }
@@ -684,6 +697,28 @@ fn update_state_phase(work_dir: &Path, worker_id: &str, phase: &str) {
                     } else {
                         "done".to_string()
                     });
+                break;
+            }
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string(&state).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(tmp, path);
+    }
+}
+
+fn update_state_pr(work_dir: &Path, worker_id: &str, pr_url: &str) {
+    let path = work_dir.join(".swarm").join("state.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    if let Some(worktrees) = state["worktrees"].as_array_mut() {
+        for wt in worktrees.iter_mut() {
+            if wt["id"].as_str() == Some(worker_id) {
+                wt["pr"] = serde_json::json!({ "url": pr_url });
                 break;
             }
         }
