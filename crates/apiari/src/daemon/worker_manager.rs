@@ -221,6 +221,22 @@ impl WorkerManager {
     pub async fn send_message(&self, worker_id: &str, message: &str) -> Result<()> {
         let is_running = self.live.lock().await.contains(worker_id);
         if is_running {
+            // Log the user message immediately so it appears in the timeline
+            // before the current agent run finishes and dequeues it.
+            if let Ok((work_dir, _, _, _)) =
+                read_worker_paths(&self.db_path, &self.workspace, worker_id)
+            {
+                let events_path = work_dir
+                    .join(".swarm")
+                    .join("agents")
+                    .join(worker_id)
+                    .join("events.jsonl");
+                let logger = EventLogger::new(events_path);
+                logger.log(&AgentEvent::UserMessage {
+                    timestamp: Utc::now(),
+                    text: message.to_string(),
+                });
+            }
             self.pending
                 .lock()
                 .await
