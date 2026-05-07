@@ -58,6 +58,8 @@ struct SwarmWorktree {
     pr: Option<SwarmPr>,
     #[serde(default)]
     branch: Option<String>,
+    #[serde(default)]
+    worktree_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -161,6 +163,10 @@ pub struct SwarmReconciler {
     store: WorkerStore,
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     db_path: Option<std::path::PathBuf>,
+    /// Workers queued for PR URL discovery. Value = attempts remaining (max 3).
+    /// Populated by apply_rules when a Waiting worker has no pr_url.
+    /// Drained by discover_prs_from_queue in the 5-min slow loop.
+    pr_discovery_queue: std::sync::Mutex<HashMap<String, u32>>,
 }
 
 impl SwarmReconciler {
@@ -176,6 +182,7 @@ impl SwarmReconciler {
             store,
             event_tx: config.event_tx,
             db_path: config.db_path,
+            pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -363,6 +370,11 @@ impl SwarmReconciler {
                 }
             }
             WorkerState::Waiting => {
+                // Queue for PR discovery if we don't have a URL yet.
+                if worker.pr_url.is_none() {
+                    self.queue_pr_discovery(&worker.id);
+                }
+
                 // Resumed — human sent a message, agent is running again
                 if phase == "running" && agent_status.as_deref() != Some("waiting") {
                     info!(
@@ -653,6 +665,97 @@ impl SwarmReconciler {
         }
     }
 
+    /// Add a worker to the PR discovery queue if not already present.
+    /// Idempotent — existing entries keep their current attempt count.
+    fn queue_pr_discovery(&self, worker_id: &str) {
+        self.pr_discovery_queue
+            .lock()
+            .unwrap()
+            .entry(worker_id.to_string())
+            .or_insert(3);
+    }
+
+    /// Call `gh pr view` from the worktree directory to discover an open PR.
+    /// Returns the PR URL on success, None if no PR exists or gh fails.
+    fn discover_pr_url(&self, _worker_id: &str, worktree_path: &Path) -> Option<String> {
+        if !worktree_path.exists() {
+            return None;
+        }
+        let output = std::process::Command::new("gh")
+            .args(["pr", "view", "--json", "url"])
+            .current_dir(worktree_path)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let val: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
+        val["url"].as_str().map(|s| s.to_string())
+    }
+
+    /// Drain the PR discovery queue: for each queued worker, attempt `gh pr view`
+    /// from its worktree. On success, write pr_url to DB and dequeue. On miss,
+    /// decrement the attempt counter and dequeue when exhausted.
+    ///
+    /// Called in the 5-min slow loop alongside poll_pr_approvals so we never
+    /// hit GitHub on the hot 5-second path.
+    pub fn discover_prs_from_queue(&self) {
+        // Snapshot the queue without holding the lock during gh calls.
+        let snapshot: Vec<(String, u32)> = {
+            let q = self.pr_discovery_queue.lock().unwrap();
+            q.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        };
+
+        if snapshot.is_empty() {
+            return;
+        }
+
+        for (worker_id, attempts) in snapshot {
+            // Derive worktree path from convention: .swarm/wt/{worker_id}.
+            // Also check if state.json has an explicit path (populated after deserialization).
+            let worktree_path = self.swarm_dir.join("wt").join(&worker_id);
+
+            match self.discover_pr_url(&worker_id, &worktree_path) {
+                Some(url) => {
+                    info!(
+                        "[reconciler/pr-discovery] {} found PR {} — writing to DB",
+                        worker_id, url
+                    );
+                    let _ = self.store.update_properties(
+                        &self.workspace,
+                        &worker_id,
+                        WorkerPropertyUpdate {
+                            pr_url: Some(Some(url)),
+                            ..Default::default()
+                        },
+                    );
+                    if let Ok(Some(w)) = self.store.get(&self.workspace, &worker_id) {
+                        let _ = self.emit_event(&w);
+                    }
+                    self.pr_discovery_queue.lock().unwrap().remove(&worker_id);
+                }
+                None => {
+                    let mut q = self.pr_discovery_queue.lock().unwrap();
+                    if attempts <= 1 {
+                        info!(
+                            "[reconciler/pr-discovery] {} gave up after 3 attempts — no PR found",
+                            worker_id
+                        );
+                        q.remove(&worker_id);
+                    } else {
+                        q.insert(worker_id.clone(), attempts - 1);
+                        debug!(
+                            "[reconciler/pr-discovery] {} no PR yet, {} attempts left",
+                            worker_id,
+                            attempts - 1
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn emit_event(&self, worker: &Worker) -> Result<()> {
         let Some(ref tx) = self.event_tx else {
             return Ok(());
@@ -739,7 +842,10 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
                     let r = std::sync::Arc::clone(&reconciler);
                     // Spawn a blocking task so `gh` subprocess calls don't block
                     // the async runtime while waiting on GitHub's API.
-                    tokio::task::spawn_blocking(move || r.poll_pr_approvals());
+                    tokio::task::spawn_blocking(move || {
+                        r.discover_prs_from_queue();
+                        r.poll_pr_approvals();
+                    });
                 }
             }
         }
@@ -772,6 +878,7 @@ mod tests {
             store,
             event_tx: None,
             db_path: None,
+            pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -811,6 +918,7 @@ mod tests {
                 url: Some(url.to_string()),
             }),
             branch: None,
+            worktree_path: None,
         }
     }
 
@@ -1020,6 +1128,97 @@ mod tests {
             // State must not have changed
             assert_eq!(updated.state, terminal_state);
         }
+    }
+
+    // ── PR discovery queue tests ────────────────────────────────────────
+
+    #[test]
+    fn waiting_worker_with_no_pr_url_queued_for_discovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Waiting;
+        w.pr_url = None;
+        r.store.upsert(&w).unwrap();
+
+        let wt = swarm_wt("w1", "waiting", None);
+        r.apply_rules(&w, &wt).unwrap();
+
+        let queue = r.pr_discovery_queue.lock().unwrap();
+        assert!(queue.contains_key("w1"), "should be queued for discovery");
+        assert_eq!(queue["w1"], 3);
+    }
+
+    #[test]
+    fn waiting_worker_with_pr_url_not_queued() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/org/repo/pull/1".to_string());
+        r.store.upsert(&w).unwrap();
+
+        let wt = swarm_wt("w1", "waiting", None);
+        r.apply_rules(&w, &wt).unwrap();
+
+        let queue = r.pr_discovery_queue.lock().unwrap();
+        assert!(
+            !queue.contains_key("w1"),
+            "should not queue when pr_url already set"
+        );
+    }
+
+    #[test]
+    fn queue_pr_discovery_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        r.queue_pr_discovery("w1");
+        r.queue_pr_discovery("w1"); // second call should not reset attempts
+        r.queue_pr_discovery("w1");
+
+        let queue = r.pr_discovery_queue.lock().unwrap();
+        assert_eq!(
+            queue["w1"], 3,
+            "or_insert should not overwrite existing entry"
+        );
+    }
+
+    #[test]
+    fn discover_prs_from_queue_removes_after_exhausted_attempts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        // Seed with 1 attempt and a path that doesn't exist (gh will fail)
+        r.pr_discovery_queue
+            .lock()
+            .unwrap()
+            .insert("w-missing".to_string(), 1);
+
+        r.discover_prs_from_queue();
+
+        let queue = r.pr_discovery_queue.lock().unwrap();
+        assert!(
+            !queue.contains_key("w-missing"),
+            "should be removed after last attempt"
+        );
+    }
+
+    #[test]
+    fn discover_prs_from_queue_decrements_attempts_on_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        r.pr_discovery_queue
+            .lock()
+            .unwrap()
+            .insert("w-miss".to_string(), 2);
+
+        r.discover_prs_from_queue();
+
+        let queue = r.pr_discovery_queue.lock().unwrap();
+        // Still present, decremented to 1
+        assert_eq!(queue.get("w-miss"), Some(&1));
     }
 
     #[test]
