@@ -1720,6 +1720,95 @@ mod tests {
         assert_eq!(max_context_tokens("unknown-model"), 200_000);
     }
 
+    // -- session length management --
+
+    #[test]
+    fn test_session_cumulative_tokens_start_at_zero() {
+        let coord = make_coordinator();
+        assert_eq!(
+            coord
+                .session_cumulative_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn test_reset_session_clears_cumulative_tokens() {
+        let mut coord = make_coordinator();
+        // Manually set a non-zero count to simulate accumulated turns.
+        coord
+            .session_cumulative_tokens
+            .store(150_000, std::sync::atomic::Ordering::Relaxed);
+        coord.session_id = Some("fake-session".to_string());
+
+        coord.reset_session();
+
+        assert_eq!(
+            coord
+                .session_cumulative_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert!(coord.session_id.is_none());
+    }
+
+    #[test]
+    fn test_session_over_80pct_skips_resume_in_build_options() {
+        // Put a coordinator with a session ID that's at 85% of context.
+        let store = SignalStore::open_memory("ws").unwrap();
+        let mut coord = make_coordinator();
+        coord.session_id = Some("existing-session".to_string());
+
+        // claude-sonnet context = 200_000; 85% = 170_000 tokens.
+        coord
+            .session_cumulative_tokens
+            .store(170_000, std::sync::atomic::Ordering::Relaxed);
+
+        let opts = coord.build_options(&store).unwrap();
+
+        // Session should NOT be resumed — over 80% budget.
+        assert!(
+            opts.resume.is_none(),
+            "session over 80% context budget should not be resumed, got: {:?}",
+            opts.resume
+        );
+        // Counter should be reset after the threshold triggered.
+        assert_eq!(
+            coord
+                .session_cumulative_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn test_session_under_80pct_resumes_normally() {
+        let store = SignalStore::open_memory("ws").unwrap();
+        let mut coord = make_coordinator();
+        coord.session_id = Some("existing-session".to_string());
+
+        // 50% of 200_000 = 100_000 — well under threshold.
+        coord
+            .session_cumulative_tokens
+            .store(100_000, std::sync::atomic::Ordering::Relaxed);
+
+        let opts = coord.build_options(&store).unwrap();
+
+        assert_eq!(
+            opts.resume.as_deref(),
+            Some("existing-session"),
+            "session under 80% budget should resume normally"
+        );
+        // Counter unchanged — no reset triggered.
+        assert_eq!(
+            coord
+                .session_cumulative_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            100_000
+        );
+    }
+
     // -- set_provider --
 
     #[test]

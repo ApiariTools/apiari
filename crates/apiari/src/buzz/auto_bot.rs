@@ -858,4 +858,120 @@ mod tests {
         let runs = store.list_runs("b1", 10).unwrap();
         assert!(runs[0].cost_usd.is_none());
     }
+
+    // ── Circuit breaker ────────────────────────────────────────────────
+
+    #[test]
+    fn test_circuit_breaker_not_paused_by_default() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+        assert!(!store.is_paused("b1").unwrap());
+        let bot = store.get("acme", "b1").unwrap().unwrap();
+        assert_ne!(bot.status, "paused");
+    }
+
+    #[test]
+    fn test_circuit_breaker_paused_when_future_timestamp() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+
+        let future = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        store.set_paused_until("b1", Some(&future)).unwrap();
+
+        assert!(store.is_paused("b1").unwrap());
+        let bot = store.get("acme", "b1").unwrap().unwrap();
+        assert_eq!(bot.status, "paused");
+    }
+
+    #[test]
+    fn test_circuit_breaker_not_paused_after_expiry() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+
+        // Set a past timestamp — pause has expired.
+        let past = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        store.set_paused_until("b1", Some(&past)).unwrap();
+
+        assert!(!store.is_paused("b1").unwrap());
+        // Status should NOT be "paused" since the window expired.
+        let bot = store.get("acme", "b1").unwrap().unwrap();
+        assert_ne!(bot.status, "paused");
+    }
+
+    #[test]
+    fn test_circuit_breaker_clear_pause() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+
+        let future = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        store.set_paused_until("b1", Some(&future)).unwrap();
+        assert!(store.is_paused("b1").unwrap());
+
+        store.set_paused_until("b1", None).unwrap();
+        assert!(!store.is_paused("b1").unwrap());
+    }
+
+    // ── Cost summary ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_cost_summary_empty_when_no_runs() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+
+        let summary = store.cost_summary("acme", 7).unwrap();
+        // Bot exists but has no runs — run_count should be 0.
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].run_count, 0);
+        assert_eq!(summary[0].total_cost_usd, 0.0);
+    }
+
+    #[test]
+    fn test_cost_summary_sums_per_bot() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+        store.upsert(&make_bot("b2", "acme", "cron")).unwrap();
+
+        store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
+        store
+            .finish_run("r1", "notified", "ok", None, Some(0.01))
+            .unwrap();
+
+        store.insert_run(&make_run("r2", "b1", "acme")).unwrap();
+        store
+            .finish_run("r2", "notified", "ok", None, Some(0.02))
+            .unwrap();
+
+        store.insert_run(&make_run("r3", "b2", "acme")).unwrap();
+        store
+            .finish_run("r3", "notified", "ok", None, Some(0.005))
+            .unwrap();
+
+        let summary = store.cost_summary("acme", 7).unwrap();
+        // Sorted DESC by total_cost.
+        assert_eq!(summary[0].bot_id, "b1");
+        assert!((summary[0].total_cost_usd - 0.03).abs() < 1e-9);
+        assert_eq!(summary[0].run_count, 2);
+
+        assert_eq!(summary[1].bot_id, "b2");
+        assert!((summary[1].total_cost_usd - 0.005).abs() < 1e-9);
+        assert_eq!(summary[1].run_count, 1);
+    }
+
+    #[test]
+    fn test_cost_summary_excludes_other_workspace() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+
+        let mut b2 = make_bot("b2", "other", "cron");
+        b2.workspace = "other".to_string();
+        store.upsert(&b2).unwrap();
+
+        store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
+        store
+            .finish_run("r1", "notified", "ok", None, Some(0.05))
+            .unwrap();
+
+        let acme_summary = store.cost_summary("acme", 7).unwrap();
+        assert!(acme_summary.iter().all(|r| r.bot_id != "b2"));
+    }
 }

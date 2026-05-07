@@ -236,10 +236,6 @@ impl SwarmReconciler {
         let _ = swarm_map;
         let _ = worker_map;
 
-        // Advance task stages for tasks in InAiReview or HumanReview based on
-        // current PR state (approved → HumanReview, merged → Merged).
-        self.check_pr_state_for_tasks_in_review();
-
         Ok(())
     }
 
@@ -563,15 +559,18 @@ impl SwarmReconciler {
         }
     }
 
-    /// Poll `gh pr view` for every task in InAiReview / HumanReview and advance
-    /// the stage when the PR transitions to approved or merged.
+    /// Check PR approval state for tasks in `InAiReview` and advance to `HumanReview`
+    /// when the PR is approved.
     ///
-    /// - PR state == MERGED → Merged
-    /// - PR review decision == APPROVED (and not merged) → HumanReview
+    /// Called on a slow background interval (every 5 minutes), NOT in the hot
+    /// 5-second reconciler loop. `gh` is an external subprocess — running it
+    /// every 5s per task would be unacceptable.
     ///
-    /// Runs synchronously; called once per reconciliation tick (every 5s).
-    /// `gh` calls are skipped if the tool is not available.
-    fn check_pr_state_for_tasks_in_review(&self) {
+    /// Merged detection is intentionally excluded: when a worker's worktree is
+    /// closed after merging, `apply_disappeared` already calls `gh pr view` once
+    /// at that exact moment and advances the task to Done/Merged. No periodic
+    /// polling needed for that transition.
+    pub fn poll_pr_approvals(&self) {
         use crate::buzz::task::{TaskStage, store::TaskStore};
 
         let Some(ref db_path) = self.db_path else {
@@ -581,70 +580,74 @@ impl SwarmReconciler {
         let task_store = match TaskStore::open(db_path) {
             Ok(s) => s,
             Err(e) => {
-                warn!("[reconciler] could not open task store for PR poll: {e}");
+                warn!("[reconciler/pr-poll] could not open task store: {e}");
                 return;
             }
         };
 
-        let stages_to_check = [TaskStage::InAiReview, TaskStage::HumanReview];
-        for stage in &stages_to_check {
-            let tasks = match task_store.get_tasks_by_stage(&self.workspace, stage) {
-                Ok(t) => t,
-                Err(e) => {
-                    warn!("[reconciler] get_tasks_by_stage error: {e}");
-                    continue;
-                }
+        let tasks = match task_store.get_tasks_by_stage(&self.workspace, &TaskStage::InAiReview) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!("[reconciler/pr-poll] get_tasks_by_stage error: {e}");
+                return;
+            }
+        };
+
+        // No tasks to check — common case, return immediately without spawning gh.
+        if tasks.is_empty() {
+            return;
+        }
+
+        for task in tasks {
+            let pr_url = match &task.pr_url {
+                Some(url) if !url.is_empty() => url.clone(),
+                _ => continue, // task has no PR yet — skip
             };
 
-            for task in tasks {
-                let pr_url = match &task.pr_url {
-                    Some(url) if !url.is_empty() => url.clone(),
-                    _ => continue,
-                };
+            // One gh call per task with a PR. Only reaches here if there are
+            // tasks in InAiReview, which should be a small number.
+            let output = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "view",
+                    &pr_url,
+                    "--json",
+                    "state,reviewDecision",
+                    "--jq",
+                    "[.state, (.reviewDecision // \"\")]",
+                ])
+                .output();
 
-                // Query PR state + review decision in one gh call.
-                let output = std::process::Command::new("gh")
-                    .args([
-                        "pr",
-                        "view",
-                        &pr_url,
-                        "--json",
-                        "state,reviewDecision",
-                        "--jq",
-                        "[.state, (.reviewDecision // \"\")]",
-                    ])
-                    .output();
+            let (pr_state, review_decision) = match output {
+                Ok(out) if out.status.success() => {
+                    let raw = String::from_utf8_lossy(&out.stdout);
+                    let parts: Vec<String> = serde_json::from_str(raw.trim()).unwrap_or_default();
+                    (
+                        parts.first().cloned().unwrap_or_default(),
+                        parts.get(1).cloned().unwrap_or_default(),
+                    )
+                }
+                _ => continue, // gh unavailable or PR not found — try again next interval
+            };
 
-                let (pr_state, review_decision) = match output {
-                    Ok(out) if out.status.success() => {
-                        let raw = String::from_utf8_lossy(&out.stdout);
-                        let parts: Vec<String> =
-                            serde_json::from_str(raw.trim()).unwrap_or_default();
-                        (
-                            parts.first().cloned().unwrap_or_default(),
-                            parts.get(1).cloned().unwrap_or_default(),
-                        )
-                    }
-                    _ => continue, // gh not available or PR not found — skip
-                };
-
-                if pr_state == "MERGED" && *stage != TaskStage::Merged {
-                    info!(
-                        "[reconciler] task {} PR merged → Merged (was {:?})",
-                        task.id, stage
+            if review_decision == "APPROVED" && pr_state == "OPEN" {
+                info!(
+                    "[reconciler/pr-poll] task {} PR approved → HumanReview",
+                    task.id
+                );
+                if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::HumanReview) {
+                    warn!(
+                        "[reconciler/pr-poll] task {} → HumanReview failed: {e}",
+                        task.id
                     );
-                    if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::Merged) {
-                        warn!("[reconciler] task {} → Merged failed: {e}", task.id);
-                    }
-                } else if review_decision == "APPROVED"
-                    && pr_state == "OPEN"
-                    && *stage == TaskStage::InAiReview
-                {
-                    info!("[reconciler] task {} PR approved → HumanReview", task.id);
-                    if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::HumanReview)
-                    {
-                        warn!("[reconciler] task {} → HumanReview failed: {e}", task.id);
-                    }
+                }
+            } else if pr_state == "MERGED" {
+                // Belt-and-suspenders: apply_disappeared handles this when the worker
+                // closes, but catches the rare case where the PR was merged outside
+                // swarm (e.g. merged from GitHub UI after the worktree was already gone).
+                info!("[reconciler/pr-poll] task {} PR merged → Merged", task.id);
+                if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::Merged) {
+                    warn!("[reconciler/pr-poll] task {} → Merged failed: {e}", task.id);
                 }
             }
         }
@@ -704,7 +707,7 @@ impl SwarmReconciler {
 pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite::Connection>>) {
     tokio::spawn(async move {
         let reconciler = match SwarmReconciler::new(config, conn) {
-            Ok(r) => r,
+            Ok(r) => std::sync::Arc::new(r),
             Err(e) => {
                 warn!("[reconciler] failed to initialize: {e}");
                 return;
@@ -715,13 +718,29 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
             warn!("[reconciler] startup reset error: {e}");
         }
 
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Fast loop: file reads only (swarm state.json, agent-status files).
+        // No external subprocesses — must stay cheap.
+        let mut fast_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        fast_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Slow loop: PR approval polling via `gh pr view`.
+        // Runs every 5 minutes. Only fires if there are tasks in InAiReview.
+        let mut pr_interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
+        pr_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            interval.tick().await;
-            if let Err(e) = reconciler.reconcile_once() {
-                warn!("[reconciler] error: {e}");
+            tokio::select! {
+                _ = fast_interval.tick() => {
+                    if let Err(e) = reconciler.reconcile_once() {
+                        warn!("[reconciler] error: {e}");
+                    }
+                }
+                _ = pr_interval.tick() => {
+                    let r = std::sync::Arc::clone(&reconciler);
+                    // Spawn a blocking task so `gh` subprocess calls don't block
+                    // the async runtime while waiting on GitHub's API.
+                    tokio::task::spawn_blocking(move || r.poll_pr_approvals());
+                }
             }
         }
     });
