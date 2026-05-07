@@ -229,6 +229,10 @@ pub struct Coordinator {
     /// a stale context that no longer matches the actual system state.
     /// Uses Cell for interior mutability so `build_options` can stay `&self`.
     last_prompt_hash: std::cell::Cell<Option<u64>>,
+    /// Cumulative input+output tokens used in the current session.
+    /// Compared against max_context_tokens(model) to trigger a session reset
+    /// before the context window fills up. AtomicU64 for Send + interior mutability.
+    session_cumulative_tokens: std::sync::atomic::AtomicU64,
 }
 
 impl Coordinator {
@@ -252,6 +256,7 @@ impl Coordinator {
             last_num_turns: 0,
             pending_context: None,
             last_prompt_hash: std::cell::Cell::new(None),
+            session_cumulative_tokens: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -427,6 +432,24 @@ impl Coordinator {
         }
         self.last_prompt_hash.set(Some(new_hash));
 
+        // Session length guard: if cumulative tokens have exceeded 80% of the
+        // model's context window, reset the session now so the next turn starts
+        // fresh rather than running into a hard context-limit error mid-response.
+        let cumulative = self
+            .session_cumulative_tokens
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let ctx_limit = max_context_tokens(&self.model);
+        let over_limit = cumulative > 0 && cumulative >= (ctx_limit * 4 / 5);
+        if over_limit && self.session_id.is_some() {
+            info!(
+                "[coordinator] session token budget at {}/{} (≥80%); resetting session to avoid context overflow",
+                cumulative, ctx_limit
+            );
+            self.session_cumulative_tokens
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+        let skip_resume = prompt_changed || over_limit;
+
         // Merge token_controls settings into existing settings JSON (which may
         // have PreToolUse hooks from coordinator_settings_json).
         let merged_settings = merge_settings_json(
@@ -446,10 +469,9 @@ impl Coordinator {
             ..Default::default()
         };
 
-        // Only resume an existing session when the prompt hash is stable.
-        // A changed hash means the session context no longer matches what Claude
-        // has in memory — resume would replay the wrong context.
-        if !prompt_changed && let Some(ref session_id) = self.session_id {
+        // Only resume an existing session when the prompt hash is stable and the
+        // session isn't approaching the context window limit.
+        if !skip_resume && let Some(ref session_id) = self.session_id {
             opts.resume = Some(session_id.clone());
         }
 
@@ -715,14 +737,28 @@ impl Coordinator {
         message: &str,
         bundle: DispatchBundle,
         image_paths: &[PathBuf],
-        on_event: F,
+        mut on_event: F,
     ) -> Result<String>
     where
         F: FnMut(CoordinatorEvent),
     {
-        match bundle {
+        // Track per-turn token usage so we can accumulate it into
+        // self.session_cumulative_tokens after dispatch. AtomicU64 is used
+        // because the closure (and thus the future) must be Send.
+        let turn_tokens = std::sync::atomic::AtomicU64::new(0);
+        let tracking_on_event = |event: CoordinatorEvent| {
+            if let CoordinatorEvent::Usage(ref stats) = event {
+                turn_tokens.fetch_add(
+                    stats.input_tokens + stats.output_tokens,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            on_event(event);
+        };
+
+        let result = match bundle {
             DispatchBundle::Claude(opts) => {
-                self.handle_message_with_options(message, *opts, on_event)
+                self.handle_message_with_options(message, *opts, tracking_on_event)
                     .await
             }
             DispatchBundle::AltProvider { system_prompt } => {
@@ -732,12 +768,22 @@ impl Coordinator {
                     message.to_string()
                 };
                 match self.provider.as_str() {
-                    "codex" => self.run_codex(&prompt, image_paths, on_event).await,
-                    "gemini" => self.run_gemini(&prompt, on_event).await,
+                    "codex" => {
+                        self.run_codex(&prompt, image_paths, tracking_on_event)
+                            .await
+                    }
+                    "gemini" => self.run_gemini(&prompt, tracking_on_event).await,
                     _ => unreachable!(),
                 }
             }
-        }
+        };
+
+        // Accumulate this turn's tokens into the session counter.
+        let turn_count = turn_tokens.load(std::sync::atomic::Ordering::Relaxed);
+        self.session_cumulative_tokens
+            .fetch_add(turn_count, std::sync::atomic::Ordering::Relaxed);
+
+        result
     }
 
     /// Run a turn against the Codex CLI.
@@ -1087,6 +1133,9 @@ impl Coordinator {
         self.session_id = None;
         self.session_token = None;
         self.pending_context = None;
+        self.session_cumulative_tokens
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        self.last_prompt_hash.set(None);
     }
 }
 

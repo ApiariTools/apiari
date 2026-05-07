@@ -5617,6 +5617,7 @@ async fn v2_create_auto_bot(
         provider: body.provider,
         model: body.model,
         enabled: true,
+        paused_until: None,
         created_at: now.clone(),
         updated_at: now,
         status: String::new(),

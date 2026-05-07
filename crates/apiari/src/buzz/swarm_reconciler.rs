@@ -236,6 +236,10 @@ impl SwarmReconciler {
         let _ = swarm_map;
         let _ = worker_map;
 
+        // Advance task stages for tasks in InAiReview or HumanReview based on
+        // current PR state (approved → HumanReview, merged → Merged).
+        self.check_pr_state_for_tasks_in_review();
+
         Ok(())
     }
 
@@ -556,6 +560,93 @@ impl SwarmReconciler {
                 "[reconciler] failed to promote task {} for worker {worker_id}: {e}",
                 task.id
             ),
+        }
+    }
+
+    /// Poll `gh pr view` for every task in InAiReview / HumanReview and advance
+    /// the stage when the PR transitions to approved or merged.
+    ///
+    /// - PR state == MERGED → Merged
+    /// - PR review decision == APPROVED (and not merged) → HumanReview
+    ///
+    /// Runs synchronously; called once per reconciliation tick (every 5s).
+    /// `gh` calls are skipped if the tool is not available.
+    fn check_pr_state_for_tasks_in_review(&self) {
+        use crate::buzz::task::{TaskStage, store::TaskStore};
+
+        let Some(ref db_path) = self.db_path else {
+            return;
+        };
+
+        let task_store = match TaskStore::open(db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[reconciler] could not open task store for PR poll: {e}");
+                return;
+            }
+        };
+
+        let stages_to_check = [TaskStage::InAiReview, TaskStage::HumanReview];
+        for stage in &stages_to_check {
+            let tasks = match task_store.get_tasks_by_stage(&self.workspace, stage) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!("[reconciler] get_tasks_by_stage error: {e}");
+                    continue;
+                }
+            };
+
+            for task in tasks {
+                let pr_url = match &task.pr_url {
+                    Some(url) if !url.is_empty() => url.clone(),
+                    _ => continue,
+                };
+
+                // Query PR state + review decision in one gh call.
+                let output = std::process::Command::new("gh")
+                    .args([
+                        "pr",
+                        "view",
+                        &pr_url,
+                        "--json",
+                        "state,reviewDecision",
+                        "--jq",
+                        "[.state, (.reviewDecision // \"\")]",
+                    ])
+                    .output();
+
+                let (pr_state, review_decision) = match output {
+                    Ok(out) if out.status.success() => {
+                        let raw = String::from_utf8_lossy(&out.stdout);
+                        let parts: Vec<String> =
+                            serde_json::from_str(raw.trim()).unwrap_or_default();
+                        (
+                            parts.first().cloned().unwrap_or_default(),
+                            parts.get(1).cloned().unwrap_or_default(),
+                        )
+                    }
+                    _ => continue, // gh not available or PR not found — skip
+                };
+
+                if pr_state == "MERGED" && *stage != TaskStage::Merged {
+                    info!(
+                        "[reconciler] task {} PR merged → Merged (was {:?})",
+                        task.id, stage
+                    );
+                    if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::Merged) {
+                        warn!("[reconciler] task {} → Merged failed: {e}", task.id);
+                    }
+                } else if review_decision == "APPROVED"
+                    && pr_state == "OPEN"
+                    && *stage == TaskStage::InAiReview
+                {
+                    info!("[reconciler] task {} PR approved → HumanReview", task.id);
+                    if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::HumanReview)
+                    {
+                        warn!("[reconciler] task {} → HumanReview failed: {e}", task.id);
+                    }
+                }
+            }
         }
     }
 

@@ -25,9 +25,13 @@ pub struct AutoBot {
     pub provider: String,
     pub model: Option<String>,
     pub enabled: bool,
+    /// RFC3339 timestamp — bot is circuit-broken until this time.
+    /// None means not paused. Set automatically after 3 consecutive failures.
+    #[serde(default)]
+    pub paused_until: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-    /// Derived — not stored. "idle" | "running" | "error"
+    /// Derived — not stored. "idle" | "running" | "error" | "paused"
     #[serde(skip_deserializing)]
     pub status: String,
 }
@@ -46,6 +50,15 @@ pub struct AutoBotRun {
     /// LLM cost in USD for this run, if the provider reported it.
     #[serde(default)]
     pub cost_usd: Option<f64>,
+}
+
+/// Per-bot cost summary row returned by `AutoBotStore::cost_summary`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BotCostSummary {
+    pub bot_id: String,
+    pub bot_name: String,
+    pub total_cost_usd: f64,
+    pub run_count: u32,
 }
 
 // ── Schema ─────────────────────────────────────────────────────────────
@@ -67,6 +80,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             provider TEXT NOT NULL DEFAULT 'claude',
             model TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
+            paused_until TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -87,9 +101,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     )
     .wrap_err("failed to create auto_bot tables")?;
 
-    // Migrate existing tables that predate the cost_usd column.
-    // ALTER TABLE ADD COLUMN fails if the column exists, so we ignore that error.
+    // Migrate existing tables that predate new columns.
+    // ALTER TABLE ADD COLUMN is idempotent (error ignored when column exists).
     let _ = conn.execute("ALTER TABLE auto_bot_runs ADD COLUMN cost_usd REAL", []);
+    let _ = conn.execute("ALTER TABLE auto_bots ADD COLUMN paused_until TEXT", []);
 
     Ok(())
 }
@@ -105,6 +120,13 @@ impl AutoBotStore {
     /// Create a new store, ensuring schema exists.
     pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
         Self { conn }
+    }
+
+    /// Clone the store by cloning the inner Arc — shares the same connection.
+    pub fn clone_arc(&self) -> Self {
+        Self {
+            conn: Arc::clone(&self.conn),
+        }
     }
 
     /// Ensure the schema exists (idempotent).
@@ -130,8 +152,8 @@ impl AutoBotStore {
             "INSERT INTO auto_bots
              (id, workspace, name, color, trigger_type, cron_schedule,
               signal_source, signal_filter, prompt, provider, model,
-              enabled, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+              enabled, paused_until, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
              ON CONFLICT(id) DO UPDATE SET
                workspace     = excluded.workspace,
                name          = excluded.name,
@@ -158,6 +180,7 @@ impl AutoBotStore {
                 bot.provider,
                 bot.model,
                 bot.enabled as i64,
+                bot.paused_until,
                 bot.created_at,
                 bot.updated_at,
             ],
@@ -172,7 +195,7 @@ impl AutoBotStore {
         let result = conn.query_row(
             "SELECT id,workspace,name,color,trigger_type,cron_schedule,
                     signal_source,signal_filter,prompt,provider,model,enabled,
-                    created_at,updated_at
+                    paused_until,created_at,updated_at
              FROM auto_bots WHERE workspace=?1 AND id=?2",
             params![workspace, id],
             row_to_auto_bot,
@@ -193,7 +216,7 @@ impl AutoBotStore {
         let mut stmt = conn.prepare(
             "SELECT id,workspace,name,color,trigger_type,cron_schedule,
                     signal_source,signal_filter,prompt,provider,model,enabled,
-                    created_at,updated_at
+                    paused_until,created_at,updated_at
              FROM auto_bots WHERE workspace=?1
              ORDER BY created_at DESC",
         )?;
@@ -338,10 +361,90 @@ impl AutoBotStore {
         }
     }
 
+    /// Set a circuit-breaker pause on a bot until `until` (RFC3339).
+    /// Pass `None` to clear the pause.
+    pub fn set_paused_until(&self, bot_id: &str, until: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE auto_bots SET paused_until=?1 WHERE id=?2",
+            params![until, bot_id],
+        )
+        .wrap_err("set_paused_until")?;
+        Ok(())
+    }
+
+    /// Return true if the bot is currently circuit-broken (paused_until > now).
+    pub fn is_paused(&self, bot_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT paused_until FROM auto_bots WHERE id=?1",
+            params![bot_id],
+            |row| row.get::<_, Option<String>>(0),
+        );
+        match result {
+            Ok(Some(until)) => {
+                if let Ok(until_dt) = until.parse::<chrono::DateTime<chrono::Utc>>() {
+                    Ok(chrono::Utc::now() < until_dt)
+                } else {
+                    Ok(false)
+                }
+            }
+            Ok(None) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(e).wrap_err("is_paused"),
+        }
+    }
+
+    /// Per-bot cost summary for the given workspace over the last `days` days.
+    /// Returns `(bot_id, bot_name, total_cost_usd, run_count)` sorted by cost DESC.
+    pub fn cost_summary(&self, workspace: &str, days: u32) -> Result<Vec<BotCostSummary>> {
+        let conn = self.conn.lock().unwrap();
+        let since = (chrono::Utc::now() - chrono::Duration::days(days as i64)).to_rfc3339();
+        let mut stmt = conn.prepare(
+            "SELECT b.id, b.name,
+                    COALESCE(SUM(r.cost_usd), 0.0) AS total_cost,
+                    COUNT(r.id) AS run_count
+             FROM auto_bots b
+             LEFT JOIN auto_bot_runs r
+               ON r.auto_bot_id = b.id
+               AND r.started_at >= ?2
+               AND r.finished_at IS NOT NULL
+             WHERE b.workspace = ?1
+             GROUP BY b.id, b.name
+             ORDER BY total_cost DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![workspace, since], |row| {
+                Ok(BotCostSummary {
+                    bot_id: row.get(0)?,
+                    bot_name: row.get(1)?,
+                    total_cost_usd: row.get::<_, f64>(2)?,
+                    run_count: row.get::<_, i64>(3)? as u32,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .wrap_err("cost_summary")?;
+        Ok(rows)
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────
 
     /// Derive status from the latest run — must be called while holding the conn lock.
     fn derive_status_locked(&self, conn: &Connection, auto_bot_id: &str) -> Result<String> {
+        // Check circuit-breaker first.
+        let paused_until: Option<String> = conn
+            .query_row(
+                "SELECT paused_until FROM auto_bots WHERE id=?1",
+                params![auto_bot_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(None);
+        if let Some(until) = paused_until
+            && let Ok(until_dt) = until.parse::<chrono::DateTime<chrono::Utc>>()
+            && chrono::Utc::now() < until_dt
+        {
+            return Ok("paused".to_string());
+        }
+
         let result = conn.query_row(
             "SELECT finished_at, outcome FROM auto_bot_runs
              WHERE auto_bot_id=?1
@@ -379,8 +482,9 @@ fn row_to_auto_bot(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutoBot> {
         provider: row.get(9)?,
         model: row.get(10)?,
         enabled: row.get::<_, i64>(11)? != 0,
-        created_at: row.get(12)?,
-        updated_at: row.get(13)?,
+        paused_until: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
         status: String::new(), // filled by caller
     })
 }
@@ -429,6 +533,7 @@ mod tests {
             provider: "claude".to_string(),
             model: None,
             enabled: true,
+            paused_until: None,
             created_at: now.clone(),
             updated_at: now,
             status: String::new(),

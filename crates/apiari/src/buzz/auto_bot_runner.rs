@@ -87,6 +87,10 @@ impl AutoBotRunner {
             if !bot.enabled {
                 continue;
             }
+            // Circuit breaker: skip bots that are paused after repeated failures.
+            if bot.status == "paused" {
+                continue;
+            }
             match bot.trigger_type.as_str() {
                 "cron" => {
                     if let Err(e) = self.maybe_fire_cron_bot(&bot) {
@@ -417,15 +421,14 @@ async fn maybe_emit_failure_signal(
         }
     };
 
-    // Alert threshold: every 3rd consecutive failure (3, 6, 9, …).
-    // This fires on the 3rd failure and again if the bot keeps failing, but
-    // won't spam — each group of 3 produces exactly one alert.
+    // At 3 consecutive failures: circuit-break for 2 hours + alert.
+    // At 6, 9, …: alert again (bot may have been manually un-paused and failed again).
     if consecutive == 0 || consecutive % 3 != 0 {
         return;
     }
 
     warn!(
-        "[auto_bot_runner/{workspace}] bot {} has failed {} consecutive times — emitting alert signal",
+        "[auto_bot_runner/{workspace}] bot {} has failed {} consecutive times — circuit-breaking + emitting alert signal",
         bot.id, consecutive
     );
 
@@ -434,12 +437,23 @@ async fn maybe_emit_failure_signal(
     let bot_id = bot.id.clone();
     let bot_name = bot.name.clone();
     let count = consecutive;
+    let store_clone = store.clone_arc();
 
     tokio::task::block_in_place(|| {
+        // Circuit-break: pause for 2 hours so we don't keep hammering a broken bot.
+        let pause_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        if let Err(e) = store_clone.set_paused_until(&bot_id, Some(&pause_until)) {
+            warn!("[auto_bot_runner/{workspace_owned}] bot {bot_id} could not set pause: {e}");
+        } else {
+            info!(
+                "[auto_bot_runner/{workspace_owned}] bot {bot_id} paused until {pause_until} (circuit breaker)"
+            );
+        }
+
         if let Ok(signal_store) = SignalStore::open(&db_path_owned, &workspace_owned) {
             let external_id = format!("bot-failure-{bot_id}");
             let message = format!(
-                "Auto bot `{bot_name}` has failed {count} consecutive times. \
+                "Auto bot `{bot_name}` has failed {count} consecutive times and has been paused for 2 hours. \
                  Check the bot configuration and recent run logs."
             );
             let update = SignalUpdate::new("auto_bot", &external_id, &message, Severity::Critical);
@@ -833,6 +847,7 @@ mod tests {
                  provider TEXT NOT NULL DEFAULT 'claude',
                  model TEXT,
                  enabled INTEGER NOT NULL DEFAULT 1,
+                 paused_until TEXT,
                  created_at TEXT NOT NULL,
                  updated_at TEXT NOT NULL
              );
@@ -909,6 +924,7 @@ mod tests {
             provider: "claude".to_string(),
             model: None,
             enabled: true,
+            paused_until: None,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
             status: String::new(),

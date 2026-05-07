@@ -4847,8 +4847,20 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                         }
                                         let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
                                     }
+                                    "costs" | "costs7" | "costs30" => {
+                                        let days: u32 = if command == "costs30" { 30 } else { 7 };
+                                        let db_path = slot.db_path.clone();
+                                        let workspace_name = slot.name.clone();
+                                        let text = tokio::task::spawn_blocking(move || {
+                                            format_cost_report(&db_path, &workspace_name, days)
+                                        }).await.unwrap_or_else(|e| format!("costs failed: {e}"));
+                                        if let Some(ref server) = socket_server {
+                                            server.broadcast_activity("telegram", &slot.name, "assistant_message", &text);
+                                        }
+                                        let _ = channel.send_message(&OutboundMessage { chat_id, text, buttons: vec![], topic_id }).await;
+                                    }
                                     "help" => {
-                                        let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message".to_string();
+                                        let mut text = "Built-in commands:\n/status — show open signals\n/costs — auto bot cost report (last 7 days; /costs30 for 30 days)\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message".to_string();
                                         if !slot.config.commands.is_empty() {
                                             text.push_str("\n\nCustom commands:");
                                             for cmd in &slot.config.commands {
@@ -6560,8 +6572,20 @@ async fn handle_tui_command(
             let context = format!("The user ran /doctor and got the following output:\n\n{text}");
             (true, Some(context))
         }
+        "costs" | "costs7" | "costs30" => {
+            let days: u32 = if command == "costs30" { 30 } else { 7 };
+            let db_path = slot.db_path.clone();
+            let workspace_name = slot.name.clone();
+            let text = tokio::task::spawn_blocking(move || {
+                format_cost_report(&db_path, &workspace_name, days)
+            })
+            .await
+            .unwrap_or_else(|e| format!("costs failed: {e}"));
+            reply(responder, socket_server, &slot.name, &text);
+            (true, None)
+        }
         "help" => {
-            let mut text = "Built-in commands:\n/status — show open signals\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message"
+            let mut text = "Built-in commands:\n/status — show open signals\n/costs — auto bot cost report (last 7 days; /costs30 for 30 days)\n/config — show workspace configuration summary\n/brief — generate morning brief on demand\n/doctor — check workspace health (--fix to scaffold missing files)\n/reset — reset coordinator session\n/clear — clear session (hard reset, no context carried forward)\n/compact — compact session (summarize key context to memory, then reset)\n/devmode — toggle dev mode (on/off/status)\n/reinstall — sync repos and rebuild apiari from source (/update also works)\n/help — this message"
                 .to_string();
             if !slot.config.commands.is_empty() {
                 text.push_str("\n\nCustom commands:");
@@ -6786,6 +6810,37 @@ async fn build_full_status(slot: &WorkspaceSlot) -> String {
     }
 
     summary
+}
+
+/// Format a cost report for all auto bots in the workspace over the last `days` days.
+fn format_cost_report(db_path: &std::path::Path, workspace: &str, days: u32) -> String {
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(c) => c,
+        Err(e) => return format!("Could not open DB: {e}"),
+    };
+    let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
+    let store =
+        crate::buzz::auto_bot::AutoBotStore::new(std::sync::Arc::new(std::sync::Mutex::new(conn)));
+    let rows = match store.cost_summary(workspace, days) {
+        Ok(r) => r,
+        Err(e) => return format!("Could not query costs: {e}"),
+    };
+    if rows.is_empty() {
+        return format!("No auto bot runs in the last {days} days.");
+    }
+    let total: f64 = rows.iter().map(|r| r.total_cost_usd).sum();
+    let mut out = format!("Auto bot costs — last {days} days:\n");
+    for row in &rows {
+        if row.run_count == 0 {
+            continue;
+        }
+        out.push_str(&format!(
+            "  {} — ${:.4} ({} runs)\n",
+            row.bot_name, row.total_cost_usd, row.run_count
+        ));
+    }
+    out.push_str(&format!("  Total: ${total:.4}"));
+    out
 }
 
 /// Compute the effective schedule for a single watcher and validate the

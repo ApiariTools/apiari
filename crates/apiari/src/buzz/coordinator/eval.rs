@@ -418,4 +418,161 @@ mod tests {
         }
         .run();
     }
+
+    // ── Scenario-level behavioral tests ────────────────────────────────
+    //
+    // These test that realistic coordinator response patterns produce the
+    // correct action mix — catching regressions in the complete parsing
+    // pipeline without needing a live LLM.
+
+    #[test]
+    fn scenario_ci_failure_response_dispatches_fix() {
+        // A coordinator that sees CI failing should emit [FIX:] so CodeBee picks it up.
+        let response = "\
+            I've checked the CI logs and the failure is in the payment service — \
+            the retry logic is missing after the gateway timeout. \
+            [FIX: add retry with exponential backoff to payment gateway client]";
+        let actions = super::super::actions::parse_actions(response);
+        assert!(
+            actions.iter().any(|a| matches!(a, BeeAction::Fix { .. })),
+            "CI failure scenario should produce a FIX action, got: {actions:?}"
+        );
+        // Should NOT produce noise actions
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, BeeAction::Escalate { .. })),
+            "CI failure with known root cause should not escalate"
+        );
+    }
+
+    #[test]
+    fn scenario_unknown_prod_incident_escalates() {
+        // When the root cause is unknown and prod is affected, coordinator should escalate.
+        let response = "\
+            The error rate is spiking across all services simultaneously — \
+            this doesn't match any known pattern. Paging on-call. \
+            [ESCALATE: unknown prod incident — 500 error rate 40% across all services since 14:22 UTC]";
+        let actions = super::super::actions::parse_actions(response);
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, BeeAction::Escalate { .. })),
+            "unknown prod incident should escalate, got: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn scenario_resolved_signal_gets_dismissed() {
+        let response = "The deploy completed successfully and the error rate is back to baseline. \
+                         Closing signal 88. [DISMISS: 88]";
+        let actions = super::super::actions::parse_actions(response);
+        assert_eq!(
+            actions,
+            vec![BeeAction::Dismiss { signal_id: 88 }],
+            "resolved signal should be dismissed"
+        );
+    }
+
+    #[test]
+    fn scenario_coordinator_creates_task_for_work() {
+        let response = "The memory leak in the worker pool is real — I can reproduce it. \
+                         Creating a task so we can track this properly. \
+                         [TASK: fix memory leak in worker pool — workers never release connection handles]";
+        let actions = super::super::actions::parse_actions(response);
+        assert!(
+            actions.iter().any(|a| matches!(a, BeeAction::Task { .. })),
+            "coordinator should create a task for tracked work, got: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn scenario_multi_action_triage_response() {
+        // Realistic triage: acknowledge a stale signal, create a task for real work,
+        // and schedule a follow-up.
+        let response = "\
+            Signal 12 is a known flap from the canary — safe to close. [DISMISS: 12]\n\
+            The authentication timeout on signal 13 is worth investigating. \
+            [TASK: investigate auth timeout — signal 13]\n\
+            I'll check back after the deploy goes out. [FOLLOWUP: 4h | check if auth timeout cleared after deploy]";
+        let actions = super::super::actions::parse_actions(response);
+
+        assert_eq!(actions.len(), 3, "expected 3 actions, got: {actions:?}");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, BeeAction::Dismiss { signal_id: 12 }))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, BeeAction::Task { title } if title.contains("auth timeout")))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, BeeAction::Followup { when, .. } if when == "4h"))
+        );
+    }
+
+    #[test]
+    fn scenario_canvas_used_for_status_board() {
+        // Coordinator updates the canvas with a formatted status board.
+        let response = "Here's the current workspace summary:\n\
+                         [CANVAS]\n\
+                         ## Workers\n\
+                         - cli-1 — running (auth rewrite)\n\
+                         - cli-2 — waiting (PR open)\n\n\
+                         ## Open Signals\n\
+                         - CI failing on main (P1)\n\
+                         [/CANVAS]\n\
+                         Let me know if you need anything.";
+        let actions = super::super::actions::parse_actions(response);
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], BeeAction::Canvas { content } if content.contains("Workers")),
+            "expected canvas with workspace summary"
+        );
+    }
+
+    #[test]
+    fn scenario_snoozed_signal_not_dismissed() {
+        // Coordinator that snoozes (not dismisses) a signal for later review.
+        let response = "CI failure on PR #42 might recover after the infra change lands. \
+                         Snoozing for 2 hours rather than closing. [SNOOZE: 42, 2]";
+        let actions = super::super::actions::parse_actions(response);
+        assert_eq!(
+            actions,
+            vec![BeeAction::Snooze {
+                signal_id: 42,
+                hours: 2
+            }]
+        );
+        // Must not also dismiss
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, BeeAction::Dismiss { .. }))
+        );
+    }
+
+    #[test]
+    fn scenario_prompt_properties_include_signal_count() {
+        use super::super::prompt::build_system_prompt;
+        use crate::buzz::signal::SignalRecord;
+
+        let signals: Vec<SignalRecord> = vec![]; // no signals
+        let prompt = build_system_prompt(&signals, &[], None, Some("Main"), None, None);
+        let failures = eval_prompt_properties(
+            &prompt,
+            &[
+                ("prompt is non-empty", !prompt.is_empty()),
+                (
+                    "prompt mentions the coordinator name",
+                    prompt.contains("Main"),
+                ),
+            ],
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 }
