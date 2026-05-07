@@ -8693,6 +8693,78 @@ model = "sonnet"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn send_message_to_live_worker_queues_message() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        seed_worker(
+            &db_path,
+            "live-abc1",
+            "ws",
+            crate::buzz::worker::WorkerState::Running,
+            Some("myrepo"),
+            Some(serde_json::json!({"goal": "fix the bug"})),
+            false,
+            None,
+            false,
+            false,
+            Some("feat/fix"),
+            None,
+            0,
+        );
+
+        let state = make_test_state_with_db(&db_path);
+        state.worker_manager.inject_live_for_test("live-abc1").await;
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "live-abc1".to_string())),
+            State(state.clone()),
+            Json(V2SendMessageBody {
+                message: "please fix the tests".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let pending = state.worker_manager.pending_for_test("live-abc1").await;
+        assert_eq!(pending, vec!["please fix the tests"]);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_404_when_worker_not_in_db_even_if_live() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+        let state = make_test_state_with_db(&db_path);
+        // Worker is live but not in DB — should still get 404.
+        state.worker_manager.inject_live_for_test("live-abc1").await;
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "live-abc1".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "hello".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn send_message_404_when_workspace_not_found() {
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();

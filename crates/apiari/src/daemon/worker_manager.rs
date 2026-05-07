@@ -2,6 +2,16 @@
 //!
 //! Creates git worktrees, spawns agents, and routes messages — all directly,
 //! with no separate daemon process or IPC socket. One process total.
+//!
+//! ## Message delivery model
+//!
+//! Claude/Codex/Gemini agents are CLI processes that run to completion and
+//! resume via session ID — not long-lived processes that read from stdin.
+//! Messages are therefore delivered by re-spawning the agent with the message
+//! as a new prompt and the prior session ID for context continuity.
+//!
+//! If a message arrives while an agent is running, it is queued in `pending`
+//! and picked up the moment the current run finishes.
 
 use apiari_swarm::core::agent::AgentKind;
 use apiari_swarm::daemon::event_logger::{AgentEvent, EventLogger};
@@ -10,26 +20,21 @@ use apiari_swarm::daemon::protocol::{AgentEventWire, TaskDirPayload};
 use chrono::Utc;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
-
-// ── Live worker handle ─────────────────────────────────────────────────
-
-struct LiveWorker {
-    msg_tx: mpsc::Sender<String>,
-    repo_path: PathBuf,
-    worktree_path: PathBuf,
-    branch: String,
-    work_dir: PathBuf,
-}
+use tokio::sync::Mutex;
 
 // ── WorkerManager ──────────────────────────────────────────────────────
 
 /// Manages all in-flight workers: git worktrees + agent processes.
 pub struct WorkerManager {
-    live: Arc<Mutex<HashMap<String, LiveWorker>>>,
+    /// Workers currently running an agent process (prevents double-spawn).
+    live: Arc<Mutex<HashSet<String>>>,
+    /// Messages queued while an agent is running.
+    pending: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
+    /// work_dir per worker — used by resume_worker/close_worker to locate state.json.
+    work_dirs: Arc<Mutex<HashMap<String, PathBuf>>>,
     db_path: PathBuf,
     workspace: String,
 }
@@ -37,7 +42,9 @@ pub struct WorkerManager {
 impl WorkerManager {
     pub fn new(db_path: PathBuf, workspace: String) -> Self {
         Self {
-            live: Arc::new(Mutex::new(HashMap::new())),
+            live: Arc::new(Mutex::new(HashSet::new())),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            work_dirs: Arc::new(Mutex::new(HashMap::new())),
             db_path,
             workspace,
         }
@@ -157,12 +164,12 @@ impl WorkerManager {
             &prompt_copy,
         );
 
-        // Spawn agent + supervisor task.
+        // Prepare agent events directory.
         let agent_dir = work_dir_copy.join(".swarm").join("agents").join(&worker_id);
         std::fs::create_dir_all(&agent_dir)?;
 
-        let mut agent = spawn_managed_agent(SpawnOptions {
-            kind,
+        let agent = spawn_managed_agent(SpawnOptions {
+            kind: kind.clone(),
             prompt: effective_prompt,
             working_dir: worktree_path.clone(),
             dangerously_skip_permissions: true,
@@ -171,153 +178,301 @@ impl WorkerManager {
         })
         .await?;
 
-        let (msg_tx, mut msg_rx) = mpsc::channel::<String>(8);
+        // Register work_dir so resume_worker/close_worker can find state.json.
+        self.work_dirs
+            .lock()
+            .await
+            .insert(worker_id.clone(), work_dir_copy.clone());
 
-        let live = Arc::clone(&self.live);
-        let wid = worker_id.clone();
-        let wdir = work_dir_copy.clone();
-        let wt_path = worktree_path.clone();
-        let rpath = repo_path.clone();
-
-        tokio::spawn(async move {
-            let events_path = wdir
-                .join(".swarm")
-                .join("agents")
-                .join(&wid)
-                .join("events.jsonl");
-            let mut logger = EventLogger::new(events_path);
-            let _ = logger.log(&AgentEvent::Start {
-                timestamp: Utc::now(),
-                prompt: prompt_copy.clone(),
-                model: None,
-            });
-
-            loop {
-                if agent.accepts_input() {
-                    // Agent is waiting for a follow-up message.
-                    update_state_phase(&wdir, &wid, "waiting");
-                    if let Some(msg) = msg_rx.recv().await {
-                        let _ = logger.log(&AgentEvent::UserMessage {
-                            timestamp: Utc::now(),
-                            text: msg.clone(),
-                        });
-                        update_state_phase(&wdir, &wid, "running");
-                        if let Err(e) = agent.send_message(&msg).await {
-                            let _ = logger.log(&AgentEvent::Error {
-                                timestamp: Utc::now(),
-                                message: e.to_string(),
-                            });
-                            update_state_phase(&wdir, &wid, "failed");
-                            break;
-                        }
-                    } else {
-                        // Sender dropped — manager is shutting down.
-                        break;
-                    }
-                } else {
-                    // Drain the next agent event.
-                    match agent.next_event().await {
-                        Ok(Some(ev)) => log_event(&mut logger, &ev),
-                        Ok(None) | Err(_) => {
-                            // Agent finished. Check if a message arrived while it was running.
-                            // If so, treat it as a follow-up: set waiting so the HTTP handler
-                            // can see the agent is ready, then process the message.
-                            match msg_rx.try_recv() {
-                                Ok(msg) => {
-                                    update_state_phase(&wdir, &wid, "waiting");
-                                    let _ = logger.log(&AgentEvent::UserMessage {
-                                        timestamp: Utc::now(),
-                                        text: msg.clone(),
-                                    });
-                                    update_state_phase(&wdir, &wid, "running");
-                                    if let Err(e) = agent.send_message(&msg).await {
-                                        let _ = logger.log(&AgentEvent::Error {
-                                            timestamp: Utc::now(),
-                                            message: e.to_string(),
-                                        });
-                                        update_state_phase(&wdir, &wid, "failed");
-                                        break;
-                                    }
-                                    // Continue the loop — agent is running again.
-                                }
-                                Err(_) => {
-                                    update_state_phase(&wdir, &wid, "failed");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Pull main and clean up worktree on agent exit.
-            let _ = tokio::task::spawn_blocking(move || {
-                apiari_swarm::core::git::pull_main(&rpath);
-                let _ = apiari_swarm::core::git::remove_worktree(&rpath, &wt_path);
-            })
-            .await;
-
-            live.lock().await.remove(&wid);
-        });
-
-        self.live.lock().await.insert(
+        let events_path = agent_dir.join("events.jsonl");
+        spawn_agent_task(
+            Arc::clone(&self.live),
+            Arc::clone(&self.pending),
+            Arc::clone(&self.work_dirs),
             worker_id.clone(),
-            LiveWorker {
-                msg_tx,
-                repo_path,
-                worktree_path,
-                branch,
-                work_dir: work_dir_copy,
-            },
+            work_dir_copy,
+            repo_path,
+            worktree_path,
+            kind,
+            agent,
+            events_path,
+            Some(prompt_copy),
         );
+
+        self.live.lock().await.insert(worker_id.clone());
 
         Ok(worker_id)
     }
 
-    /// Close a worker: disconnect the agent and remove its git worktree.
+    /// Close a worker: stop any pending messages and remove its git worktree.
     pub async fn close_worker(&self, worker_id: &str) -> Result<()> {
-        let mut live = self.live.lock().await;
-        let worker = live
-            .remove(worker_id)
-            .ok_or_else(|| eyre!("worker {worker_id} not found or not running"))?;
+        let work_dir = {
+            let mut dirs = self.work_dirs.lock().await;
+            dirs.remove(worker_id)
+                .ok_or_else(|| eyre!("worker {worker_id} not found or not running"))?
+        };
 
-        drop(worker.msg_tx); // signal the waiting loop to exit
+        self.live.lock().await.remove(worker_id);
+        self.pending.lock().await.remove(worker_id);
 
-        let repo_path = worker.repo_path;
-        let worktree_path = worker.worktree_path;
-        let branch = worker.branch;
-        let work_dir = worker.work_dir;
         let wt_id = worker_id.to_string();
+        let wdir2 = work_dir.clone();
+
+        // Read paths from state.json for git cleanup.
+        let state_path = work_dir.join(".swarm").join("state.json");
+        let cleanup = std::fs::read_to_string(&state_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|state| {
+                state["worktrees"].as_array().and_then(|arr| {
+                    arr.iter()
+                        .find(|w| w["id"].as_str() == Some(worker_id))
+                        .cloned()
+                })
+            })
+            .and_then(|wt| {
+                let repo_path = wt["repo_path"].as_str().map(PathBuf::from)?;
+                let worktree_path = wt["worktree_path"].as_str().map(PathBuf::from)?;
+                let branch = wt["branch"].as_str().map(|s| s.to_string())?;
+                Some((repo_path, worktree_path, branch))
+            });
 
         tokio::task::spawn_blocking(move || {
-            let _ = apiari_swarm::core::git::remove_worktree(&repo_path, &worktree_path);
-            let _ = apiari_swarm::core::git::delete_branch(&repo_path, &branch);
-            update_state_phase(&work_dir, &wt_id, "failed");
+            update_state_phase(&wdir2, &wt_id, "failed");
+            if let Some((repo_path, worktree_path, branch)) = cleanup {
+                let _ = apiari_swarm::core::git::remove_worktree(&repo_path, &worktree_path);
+                let _ = apiari_swarm::core::git::delete_branch(&repo_path, &branch);
+            }
         });
 
         Ok(())
     }
 
-    /// Send a message to a running worker.
+    /// Send a message to a worker.
+    ///
+    /// If the agent is currently running, the message is queued and delivered
+    /// the instant the current run finishes. If the agent is idle (not live),
+    /// a resume session is spawned immediately with this message as the prompt.
     pub async fn send_message(&self, worker_id: &str, message: &str) -> Result<()> {
-        let live = self.live.lock().await;
-        let worker = live
-            .get(worker_id)
-            .ok_or_else(|| eyre!("worker {worker_id} not found or not running"))?;
-        worker
-            .msg_tx
-            .send(message.to_string())
-            .await
-            .map_err(|_| eyre!("worker {worker_id} channel closed"))?;
+        let is_running = self.live.lock().await.contains(worker_id);
+        if is_running {
+            self.pending
+                .lock()
+                .await
+                .entry(worker_id.to_string())
+                .or_default()
+                .push_back(message.to_string());
+            Ok(())
+        } else {
+            self.resume_worker(worker_id, message).await
+        }
+    }
+
+    /// Spawn a new agent session to resume a worker that has finished its prior run.
+    async fn resume_worker(&self, worker_id: &str, message: &str) -> Result<()> {
+        let work_dir = {
+            let dirs = self.work_dirs.lock().await;
+            dirs.get(worker_id)
+                .cloned()
+                .ok_or_else(|| eyre!("worker {worker_id} not found"))?
+        };
+
+        let state_path = work_dir.join(".swarm").join("state.json");
+        let raw = std::fs::read_to_string(&state_path)
+            .map_err(|e| eyre!("failed to read state.json: {e}"))?;
+        let state: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| eyre!("failed to parse state.json: {e}"))?;
+
+        let wt = state["worktrees"]
+            .as_array()
+            .and_then(|arr| arr.iter().find(|w| w["id"].as_str() == Some(worker_id)))
+            .ok_or_else(|| eyre!("worker {worker_id} not found in state.json"))?
+            .clone();
+
+        let session_id = wt["session_id"].as_str().map(|s| s.to_string());
+        let worktree_path = wt["worktree_path"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or_else(|| eyre!("worker {worker_id} has no worktree_path in state.json"))?;
+        let repo_path = wt["repo_path"]
+            .as_str()
+            .map(PathBuf::from)
+            .ok_or_else(|| eyre!("worker {worker_id} has no repo_path in state.json"))?;
+        let kind = wt["agent_kind"]
+            .as_str()
+            .and_then(|k| k.parse().ok())
+            .unwrap_or(AgentKind::Codex);
+
+        update_state_phase(&work_dir, worker_id, "running");
+
+        let agent = spawn_managed_agent(SpawnOptions {
+            kind: kind.clone(),
+            prompt: message.to_string(),
+            working_dir: worktree_path.clone(),
+            dangerously_skip_permissions: true,
+            resume_session_id: session_id,
+            max_turns: None,
+        })
+        .await?;
+
+        let events_path = work_dir
+            .join(".swarm")
+            .join("agents")
+            .join(worker_id)
+            .join("events.jsonl");
+
+        spawn_agent_task(
+            Arc::clone(&self.live),
+            Arc::clone(&self.pending),
+            Arc::clone(&self.work_dirs),
+            worker_id.to_string(),
+            work_dir,
+            repo_path,
+            worktree_path,
+            kind,
+            agent,
+            events_path,
+            None,
+        );
+
+        self.live.lock().await.insert(worker_id.to_string());
+
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn is_live(&self, worker_id: &str) -> bool {
-        self.live
-            .try_lock()
-            .map_or(false, |m| m.contains_key(worker_id))
+        self.live.try_lock().is_ok_and(|m| m.contains(worker_id))
     }
+
+    // ── Test helpers ───────────────────────────────────────────────────────
+
+    #[cfg(test)]
+    pub async fn inject_live_for_test(&self, worker_id: &str) {
+        self.live.lock().await.insert(worker_id.to_string());
+    }
+
+    #[cfg(test)]
+    pub async fn inject_pending_for_test(&self, worker_id: &str, message: &str) {
+        self.pending
+            .lock()
+            .await
+            .entry(worker_id.to_string())
+            .or_default()
+            .push_back(message.to_string());
+    }
+
+    #[cfg(test)]
+    pub async fn pending_for_test(&self, worker_id: &str) -> Vec<String> {
+        self.pending
+            .lock()
+            .await
+            .get(worker_id)
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+// ── Agent task ─────────────────────────────────────────────────────────
+
+/// Spawn a tokio task that drains agent events, persists the session ID,
+/// and picks up any pending messages when the agent finishes.
+fn spawn_agent_task(
+    live: Arc<Mutex<HashSet<String>>>,
+    pending: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
+    work_dirs: Arc<Mutex<HashMap<String, PathBuf>>>,
+    worker_id: String,
+    work_dir: PathBuf,
+    repo_path: PathBuf,
+    worktree_path: PathBuf,
+    kind: AgentKind,
+    mut agent: Box<dyn apiari_swarm::daemon::managed_agent::ManagedAgent>,
+    events_path: PathBuf,
+    initial_prompt: Option<String>,
+) {
+    tokio::spawn(async move {
+        let mut logger = EventLogger::new(events_path);
+        if let Some(ref prompt) = initial_prompt {
+            logger.log(&AgentEvent::Start {
+                timestamp: Utc::now(),
+                prompt: prompt.clone(),
+                model: None,
+            });
+        }
+
+        'outer: loop {
+            let mut session_id: Option<String> = None;
+
+            // Drain all events for this agent run.
+            while let Ok(Some(ev)) = agent.next_event().await {
+                if let AgentEventWire::SessionResult {
+                    session_id: Some(ref sid),
+                    ..
+                } = ev
+                {
+                    session_id = Some(sid.clone());
+                    update_state_session_id(&work_dir, &worker_id, sid);
+                }
+                log_event(&mut logger, &ev);
+            }
+
+            // 1. Remove from live BEFORE checking pending (prevents double-spawn).
+            live.lock().await.remove(&worker_id);
+
+            // 2. Check pending queue for a follow-up message.
+            let next_msg = {
+                let mut p = pending.lock().await;
+                p.get_mut(&worker_id).and_then(|q| q.pop_front())
+            };
+
+            if let Some(msg) = next_msg {
+                // 3a. Message waiting — update state, re-add to live, resume.
+                update_state_phase(&work_dir, &worker_id, "running");
+                logger.log(&AgentEvent::UserMessage {
+                    timestamp: Utc::now(),
+                    text: msg.clone(),
+                });
+
+                match spawn_managed_agent(SpawnOptions {
+                    kind: kind.clone(),
+                    prompt: msg,
+                    working_dir: worktree_path.clone(),
+                    dangerously_skip_permissions: true,
+                    resume_session_id: session_id,
+                    max_turns: None,
+                })
+                .await
+                {
+                    Ok(new_agent) => {
+                        live.lock().await.insert(worker_id.clone());
+                        agent = new_agent;
+                        // continue 'outer
+                    }
+                    Err(e) => {
+                        logger.log(&AgentEvent::Error {
+                            timestamp: Utc::now(),
+                            message: e.to_string(),
+                        });
+                        update_state_phase(&work_dir, &worker_id, "failed");
+                        work_dirs.lock().await.remove(&worker_id);
+                        break 'outer;
+                    }
+                }
+            } else {
+                // 3b. No pending message — mark completed and clean up.
+                update_state_phase(&work_dir, &worker_id, "completed");
+                let rpath = repo_path.clone();
+                let wt_path = worktree_path.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    apiari_swarm::core::git::pull_main(&rpath);
+                    let _ = apiari_swarm::core::git::remove_worktree(&rpath, &wt_path);
+                })
+                .await;
+                work_dirs.lock().await.remove(&worker_id);
+                break 'outer;
+            }
+        }
+    });
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -371,13 +526,12 @@ fn upsert_worker_db_record(
 
 fn resolve_repo(work_dir: &Path, repo: &str) -> Result<PathBuf> {
     // Check configured repos in workspace config.
-    if let Ok(configs) = apiari_swarm::core::git::detect_repos(work_dir) {
-        if let Some(r) = configs
+    if let Ok(configs) = apiari_swarm::core::git::detect_repos(work_dir)
+        && let Some(r) = configs
             .iter()
             .find(|r| apiari_swarm::core::git::repo_name(r) == repo || r.ends_with(repo))
-        {
-            return Ok(r.clone());
-        }
+    {
+        return Ok(r.clone());
     }
     // Fallback: treat as relative path from work_dir.
     let path = work_dir.join(repo);
@@ -421,7 +575,7 @@ fn log_event(logger: &mut EventLogger, ev: &AgentEventWire) {
         },
         _ => return,
     };
-    let _ = logger.log(&event);
+    logger.log(&event);
 }
 
 fn update_state_phase(work_dir: &Path, worker_id: &str, phase: &str) {
@@ -442,6 +596,28 @@ fn update_state_phase(work_dir: &Path, worker_id: &str, phase: &str) {
                     } else {
                         "done".to_string()
                     });
+                break;
+            }
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, serde_json::to_string(&state).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(tmp, path);
+    }
+}
+
+fn update_state_session_id(work_dir: &Path, worker_id: &str, session_id: &str) {
+    let path = work_dir.join(".swarm").join("state.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    if let Some(worktrees) = state["worktrees"].as_array_mut() {
+        for wt in worktrees.iter_mut() {
+            if wt["id"].as_str() == Some(worker_id) {
+                wt["session_id"] = serde_json::Value::String(session_id.to_string());
                 break;
             }
         }
@@ -496,10 +672,10 @@ fn upsert_state_entry(
     }
 
     let tmp = path.with_extension("json.tmp");
-    if let Ok(json) = serde_json::to_string(&state) {
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, path);
-        }
+    if let Ok(json) = serde_json::to_string(&state)
+        && std::fs::write(&tmp, json).is_ok()
+    {
+        let _ = std::fs::rename(tmp, path);
     }
 }
 
@@ -873,7 +1049,40 @@ mod tests {
         assert_eq!(state["worktrees"][0]["phase"].as_str(), Some("starting"));
     }
 
-    // ── WorkerManager — error paths (no live agent needed) ────────────────
+    // ── update_state_session_id ───────────────────────────────────────────
+
+    #[test]
+    fn update_session_id_persists_to_state_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        upsert_state_entry(
+            tmp.path(),
+            "w-1",
+            "b",
+            "p",
+            &AgentKind::Claude,
+            Path::new("/r"),
+            Path::new("/w"),
+        );
+
+        update_state_session_id(tmp.path(), "w-1", "ses-abc123");
+
+        let state = read_state(tmp.path());
+        assert_eq!(
+            state["worktrees"][0]["session_id"].as_str(),
+            Some("ses-abc123")
+        );
+    }
+
+    #[test]
+    fn update_session_id_is_noop_when_no_state_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_swarm_dir(tmp.path());
+        // Should not panic.
+        update_state_session_id(tmp.path(), "w-1", "ses-xyz");
+    }
+
+    // ── WorkerManager — error paths ───────────────────────────────────────
 
     #[tokio::test]
     async fn send_message_to_unknown_worker_returns_error() {
@@ -901,56 +1110,71 @@ mod tests {
     #[tokio::test]
     async fn new_manager_starts_with_no_live_workers() {
         let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
-        // Any random ID should not be live.
         assert!(!mgr.is_live("a"));
         assert!(!mgr.is_live(""));
     }
 
-    // ── msg_rx.try_recv on agent exit ─────────────────────────────────────
-    //
-    // Regression test: a message sent while the agent was running must not
-    // be silently dropped when the agent exits. The supervisor loop calls
-    // try_recv() after Ok(None) and immediately re-dispatches the message.
-    // We can't run a real agent here, but we can test the channel mechanics
-    // that gate the behaviour.
+    // ── send_message queueing ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn buffered_message_is_visible_via_try_recv_after_agent_exits() {
-        // Simulate what the supervisor loop does: message arrives in channel
-        // while agent is running, then agent exits (Ok(None)).
-        let (tx, mut rx) = mpsc::channel::<String>(8);
-        tx.send("follow-up message".to_string()).await.unwrap();
+    async fn send_message_while_live_queues_not_errors() {
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
+        mgr.inject_live_for_test("live-abc1").await;
 
-        // Agent exits — supervisor calls try_recv.
-        let msg = rx.try_recv();
-        assert!(
-            msg.is_ok(),
-            "message buffered during agent run must be retrievable on exit"
-        );
-        assert_eq!(msg.unwrap(), "follow-up message");
+        mgr.send_message("live-abc1", "follow-up").await.unwrap();
+
+        let pending = mgr.pending_for_test("live-abc1").await;
+        assert_eq!(pending, vec!["follow-up"]);
     }
 
     #[tokio::test]
-    async fn try_recv_returns_error_when_no_buffered_message() {
-        let (_tx, mut rx) = mpsc::channel::<String>(8);
-        // Nothing sent — agent exits cleanly, no follow-up.
+    async fn send_message_queues_multiple_messages_in_order() {
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
+        mgr.inject_live_for_test("w-1").await;
+
+        mgr.send_message("w-1", "first").await.unwrap();
+        mgr.send_message("w-1", "second").await.unwrap();
+        mgr.send_message("w-1", "third").await.unwrap();
+
+        let pending = mgr.pending_for_test("w-1").await;
+        assert_eq!(pending, vec!["first", "second", "third"]);
+    }
+
+    #[tokio::test]
+    async fn send_message_when_not_live_calls_resume_and_returns_err_without_state() {
+        // resume_worker tries to read state.json which doesn't exist — that's OK.
+        // The important assertion: it returns Err, not panics.
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
+        // Inject into work_dirs so resume_worker can find the worker, but state.json doesn't exist.
+        mgr.work_dirs.lock().await.insert(
+            "idle-w1".to_string(),
+            std::path::PathBuf::from("/nonexistent"),
+        );
+
+        let result = mgr.send_message("idle-w1", "please resume").await;
         assert!(
-            rx.try_recv().is_err(),
-            "empty channel should signal clean exit, not a pending message"
+            result.is_err(),
+            "should fail gracefully without real state.json"
         );
     }
 
     #[tokio::test]
-    async fn multiple_buffered_messages_only_first_is_used_on_agent_exit() {
-        // Only try_recv once on exit — the rest stay in the buffer for the
-        // next accept_input cycle (or are dropped when the task ends).
-        let (tx, mut rx) = mpsc::channel::<String>(8);
-        tx.send("first".to_string()).await.unwrap();
-        tx.send("second".to_string()).await.unwrap();
+    async fn pending_message_cleared_after_pickup() {
+        let mgr = WorkerManager::new(std::path::PathBuf::from("/tmp/test.db"), "test".to_string());
+        mgr.inject_pending_for_test("w-1", "queued message").await;
 
-        let first = rx.try_recv().unwrap();
-        assert_eq!(first, "first");
-        // Second is still there; a second agent run could pick it up.
-        assert!(rx.try_recv().is_ok());
+        // Simulate the agent task picking up the pending message.
+        let msg = mgr
+            .pending
+            .lock()
+            .await
+            .get_mut("w-1")
+            .and_then(|q| q.pop_front());
+
+        assert_eq!(msg.as_deref(), Some("queued message"));
+        assert!(
+            mgr.pending_for_test("w-1").await.is_empty(),
+            "queue should be empty after pickup"
+        );
     }
 }
