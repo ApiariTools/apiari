@@ -13,6 +13,7 @@
 pub mod actions;
 pub mod audit;
 pub mod devmode;
+pub mod eval;
 pub mod memory;
 pub mod prompt;
 pub mod skills;
