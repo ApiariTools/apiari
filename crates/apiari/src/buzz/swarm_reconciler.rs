@@ -386,9 +386,18 @@ impl SwarmReconciler {
                 }
             }
             WorkerState::Running => {
-                // Agent paused waiting for input
+                // Agent paused waiting for input — detected via agent-status file
                 if agent_status.as_deref() == Some("waiting") {
                     info!("[reconciler] {} agent waiting (agent-status)", worker.id);
+                    self.do_transition(worker, WorkerState::Waiting)?;
+                    return Ok(());
+                }
+
+                // Agent paused waiting for input — detected via swarm phase.
+                // Handles the case where the swarm daemon wrote phase="waiting" but
+                // the agent-status file is absent (e.g. daemon died before cleaning up).
+                if phase == "waiting" {
+                    info!("[reconciler] {} agent waiting (swarm phase)", worker.id);
                     self.do_transition(worker, WorkerState::Waiting)?;
                     return Ok(());
                 }
@@ -1023,6 +1032,22 @@ mod tests {
 
         let updated = r.store.get("test", "w1").unwrap().unwrap();
         assert_eq!(updated.state, WorkerState::Running);
+    }
+
+    #[test]
+    fn rule_running_swarm_phase_waiting_transitions_to_waiting() {
+        // swarm phase="waiting" with no agent-status file should still move to Waiting
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        r.store.upsert(&w).unwrap();
+
+        let wt = swarm_wt("w1", "waiting", None);
+        r.apply_rules(&w, &wt).unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
     }
 
     #[test]
