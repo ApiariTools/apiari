@@ -39,11 +39,13 @@ describe("WorkersPanel", () => {
     const onSelectWorker = vi.fn();
     render(<WorkersPanel workers={workers} onSelectWorker={onSelectWorker} />);
 
+    expect(screen.getByText("Tighten mobile cards")).toBeInTheDocument();
+    expect(screen.getByText("apiari-ebbc")).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByText("Implementation failed")).toBeInTheDocument();
     expect(screen.getByText("Worker closed without PR")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("apiari-ebbc"));
+    fireEvent.click(screen.getByText("Tighten mobile cards"));
     expect(onSelectWorker).toHaveBeenCalledWith("apiari-ebbc");
   });
 });

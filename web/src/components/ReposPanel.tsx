@@ -17,6 +17,10 @@ function branchName(branch: string): string {
   return branch.replace(/^swarm\//, "");
 }
 
+function workerLabel(worker: Repo["workers"][number]): string {
+  return worker.task_title || worker.description || branchName(worker.branch);
+}
+
 export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, onClose }: Props) {
   return (
     <ToolPanel
@@ -81,7 +85,10 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
                         </span>
                       )}
                     </div>
-                    <div className={styles.workerBranchLine}>{branchName(w.branch)}</div>
+                    <div className={styles.workerTitleLine}>{workerLabel(w)}</div>
+                    <div className={styles.workerBranchLine}>
+                      {w.id} · {branchName(w.branch)}
+                    </div>
                   </div>
                 ))}
               </div>

@@ -96,6 +96,15 @@
   color: var(--text-strong);
 }
 
+.workerTitleLine {
+  font-size: 13px;
+  color: var(--text);
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workerBranchLine {
   font-size: 12px;
   color: var(--text-faint);

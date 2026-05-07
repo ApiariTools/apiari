@@ -31,7 +31,7 @@
   animation: pulse 2s infinite;
 }
 
-.id {
+.title {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-strong);

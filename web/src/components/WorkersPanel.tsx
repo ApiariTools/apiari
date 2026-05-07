@@ -23,6 +23,10 @@ function branchName(branch: string): string {
   return branch.replace(/^swarm\//, "");
 }
 
+function workerLabel(worker: Worker): string {
+  return worker.task_title || worker.description || branchName(worker.branch);
+}
+
 function labelForAttemptRole(role?: string | null): string | null {
   if (!role) return null;
   if (role === "implementation") return "Implementation";
@@ -65,13 +69,13 @@ export function WorkersPanel({ workers, onSelectWorker, mobileOpen, onClose }: P
                       : "var(--text-faint)",
               }}
             />
-            <span className={styles.id}>{w.id}</span>
+            <span className={styles.title}>{workerLabel(w)}</span>
             <span className={styles.time}>
               {formatElapsed(w.elapsed_secs)}
             </span>
           </div>
           <div className={styles.desc}>
-            {w.task_title || w.description || branchName(w.branch)}
+            {w.id}
           </div>
           <div className={styles.tags}>
             {w.status === "stalled" && (

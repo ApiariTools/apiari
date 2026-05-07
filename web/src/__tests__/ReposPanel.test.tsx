@@ -7,7 +7,7 @@ import type { Repo, ResearchTask } from "../types";
 const repos: Repo[] = [
   { name: "hive", path: "/dev/hive", has_swarm: true, is_clean: true, branch: "main", workers: [] },
   { name: "swarm", path: "/dev/swarm", has_swarm: true, is_clean: false, branch: "feat/test", workers: [
-    { id: "cli-3", branch: "swarm/fix-bug", status: "running", agent: "claude", pr_url: "https://github.com/test/pull/1", pr_title: "Fix bug", description: null, elapsed_secs: 120, dispatched_by: "Main" },
+    { id: "cli-3", branch: "swarm/fix-bug", status: "running", agent: "claude", pr_url: "https://github.com/test/pull/1", pr_title: "Fix bug", description: "Fix login race", elapsed_secs: 120, dispatched_by: "Main" },
   ]},
   { name: "common", path: "/dev/common", has_swarm: false, is_clean: true, branch: "main", workers: [] },
 ];
@@ -46,6 +46,7 @@ describe("ReposPanel", () => {
 
   it("renders workers under their repo", () => {
     render(<ReposPanel {...defaultProps} />);
+    expect(screen.getByText("Fix login race")).toBeInTheDocument();
     expect(screen.getByText("cli-3")).toBeInTheDocument();
   });
 
@@ -58,7 +59,7 @@ describe("ReposPanel", () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     render(<ReposPanel {...defaultProps} onSelectWorker={onSelect} />);
-    await user.click(screen.getByText("cli-3"));
+    await user.click(screen.getByText("Fix login race"));
     expect(onSelect).toHaveBeenCalledWith("cli-3");
   });
 
