@@ -357,9 +357,6 @@ async fn run_agent_task(
 
     update_state_phase(&work_dir, &worker_id, "running");
 
-    let mut accumulated_text = String::new();
-    let mut pr_url_found: Option<String> = None;
-
     loop {
         // Drain all events from the current agent run.
         let mut last_session_id: Option<String> = None;
@@ -370,16 +367,6 @@ async fn run_agent_task(
             } = ev
             {
                 last_session_id = Some(sid.clone());
-            }
-            if let AgentEventWire::TextDelta { ref text } = ev {
-                accumulated_text.push_str(text);
-                if pr_url_found.is_none()
-                    && let Some(url) =
-                        apiari_swarm::core::state::parse_pr_opened(&accumulated_text)
-                {
-                    update_state_pr(&work_dir, &worker_id, &url);
-                    pr_url_found = Some(url);
-                }
             }
             log_event(&mut logger, &ev);
         }
@@ -434,6 +421,10 @@ async fn run_agent_task(
             }
             None => {
                 update_state_phase(&work_dir, &worker_id, "waiting");
+                // Agent is done — look up any PR on this branch from GitHub.
+                if let Some(url) = lookup_pr_by_branch(&work_dir, &worker_id) {
+                    update_state_pr(&work_dir, &worker_id, &url);
+                }
                 break;
             }
         }
@@ -705,6 +696,34 @@ fn update_state_phase(work_dir: &Path, worker_id: &str, phase: &str) {
     if std::fs::write(&tmp, serde_json::to_string(&state).unwrap_or_default()).is_ok() {
         let _ = std::fs::rename(tmp, path);
     }
+}
+
+fn lookup_pr_by_branch(work_dir: &Path, worker_id: &str) -> Option<String> {
+    let path = work_dir.join(".swarm").join("state.json");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let state: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let branch = state["worktrees"]
+        .as_array()?
+        .iter()
+        .find(|wt| wt["id"].as_str() == Some(worker_id))?
+        .get("branch")
+        .and_then(|v| v.as_str())?
+        .to_string();
+
+    let out = std::process::Command::new("gh")
+        .args([
+            "pr", "list", "--head", &branch, "--state", "all", "--json", "url", "--limit", "1",
+        ])
+        .current_dir(work_dir)
+        .output()
+        .ok()?;
+
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    json.as_array()?
+        .first()?
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 fn update_state_pr(work_dir: &Path, worker_id: &str, pr_url: &str) {
