@@ -5838,6 +5838,7 @@ async fn v2_trigger_auto_bot(
         outcome: None,
         summary: None,
         worker_id: None,
+        cost_usd: None,
     };
 
     if let Err(e) = store.insert_run(&run) {

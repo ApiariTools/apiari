@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use super::auto_bot::{AutoBot, AutoBotRun, AutoBotStore};
 use crate::buzz::{
-    coordinator::actions::{BeeAction, parse_actions},
+    coordinator::actions::{BeeAction, find_malformed_markers, parse_actions},
     signal::{Severity, SignalUpdate, store::SignalStore},
 };
 
@@ -286,6 +286,8 @@ impl AutoBotRunner {
 
 /// Execute one auto bot run, using a pre-existing run record.
 ///
+/// Execute one auto bot run, using a pre-existing run record.
+///
 /// Used by the HTTP trigger endpoint which inserts the run record before calling this.
 pub async fn run_bot_external(
     bot: AutoBot,
@@ -302,7 +304,7 @@ pub async fn run_bot_external(
         workspace, bot.id, run_id
     );
 
-    let (outcome, summary, worker_id) = execute_bot_prompt(
+    let (outcome, summary, worker_id, cost_usd) = execute_bot_prompt(
         &bot,
         &bot.prompt,
         &workspace,
@@ -317,12 +319,14 @@ pub async fn run_bot_external(
         workspace, bot.id, run_id
     );
 
-    if let Err(e) = store.finish_run(&run_id, &outcome, &summary, worker_id.as_deref()) {
+    if let Err(e) = store.finish_run(&run_id, &outcome, &summary, worker_id.as_deref(), cost_usd) {
         error!(
             "[auto_bot_runner/{}] failed to finish external run {run_id}: {e}",
             workspace
         );
     }
+
+    maybe_emit_failure_signal(&store, &bot, &outcome, &workspace, &db_path).await;
 }
 
 /// Execute one auto bot run.
@@ -348,6 +352,7 @@ async fn run_bot(
         outcome: None,
         summary: None,
         worker_id: None,
+        cost_usd: None,
     };
 
     if let Err(e) = store.insert_run(&run) {
@@ -363,7 +368,7 @@ async fn run_bot(
         workspace, bot.id, run_id
     );
 
-    let (outcome, summary, worker_id) = execute_bot_prompt(
+    let (outcome, summary, worker_id, cost_usd) = execute_bot_prompt(
         &bot,
         &bot.prompt,
         &workspace,
@@ -378,17 +383,81 @@ async fn run_bot(
         workspace, bot.id, run_id
     );
 
-    if let Err(e) = store.finish_run(&run_id, &outcome, &summary, worker_id.as_deref()) {
+    if let Err(e) = store.finish_run(&run_id, &outcome, &summary, worker_id.as_deref(), cost_usd) {
         error!(
             "[auto_bot_runner/{}] failed to finish run {run_id}: {e}",
             workspace
         );
     }
+
+    maybe_emit_failure_signal(&store, &bot, &outcome, &workspace, &db_path).await;
+}
+
+/// If the bot just failed and has hit the consecutive-failure threshold (3),
+/// emit a Critical signal so the operator knows about the stuck bot.
+async fn maybe_emit_failure_signal(
+    store: &AutoBotStore,
+    bot: &AutoBot,
+    outcome: &str,
+    workspace: &str,
+    db_path: &Path,
+) {
+    if outcome != "error" {
+        return;
+    }
+
+    let consecutive = match store.count_consecutive_failures(&bot.id) {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(
+                "[auto_bot_runner/{workspace}] bot {} could not count failures: {e}",
+                bot.id
+            );
+            return;
+        }
+    };
+
+    // Alert threshold: every 3rd consecutive failure (3, 6, 9, …).
+    // This fires on the 3rd failure and again if the bot keeps failing, but
+    // won't spam — each group of 3 produces exactly one alert.
+    if consecutive == 0 || consecutive % 3 != 0 {
+        return;
+    }
+
+    warn!(
+        "[auto_bot_runner/{workspace}] bot {} has failed {} consecutive times — emitting alert signal",
+        bot.id, consecutive
+    );
+
+    let db_path_owned = db_path.to_path_buf();
+    let workspace_owned = workspace.to_string();
+    let bot_id = bot.id.clone();
+    let bot_name = bot.name.clone();
+    let count = consecutive;
+
+    tokio::task::block_in_place(|| {
+        if let Ok(signal_store) = SignalStore::open(&db_path_owned, &workspace_owned) {
+            let external_id = format!("bot-failure-{bot_id}");
+            let message = format!(
+                "Auto bot `{bot_name}` has failed {count} consecutive times. \
+                 Check the bot configuration and recent run logs."
+            );
+            let update = SignalUpdate::new("auto_bot", &external_id, &message, Severity::Critical);
+            match signal_store.upsert_signal(&update) {
+                Ok((id, _)) => info!(
+                    "[auto_bot_runner/{workspace_owned}] bot {bot_id} failure alert → signal id={id}"
+                ),
+                Err(e) => warn!(
+                    "[auto_bot_runner/{workspace_owned}] bot {bot_id} could not emit failure signal: {e}"
+                ),
+            }
+        }
+    });
 }
 
 /// Run the bot prompt through the coordinator (or fall back to plain claude --print).
 ///
-/// Returns `(outcome, summary, worker_id)` where outcome is one of:
+/// Returns `(outcome, summary, worker_id, cost_usd)` where outcome is one of:
 /// - `"dispatched_worker"` — coordinator dispatched a swarm worker via Bash
 /// - `"notified"` — coordinator produced a response (signal actions may have fired)
 /// - `"noise"` — empty response
@@ -400,7 +469,7 @@ async fn execute_bot_prompt(
     workspace_root: &Path,
     db_path: &Path,
     workspace_config: Option<&crate::config::WorkspaceConfig>,
-) -> (String, String, Option<String>) {
+) -> (String, String, Option<String>, Option<f64>) {
     if let Some(config) = workspace_config
         && !db_path.as_os_str().is_empty()
     {
@@ -408,7 +477,8 @@ async fn execute_bot_prompt(
             .await;
     }
     // Fallback: no config available (e.g. tests, legacy callers).
-    execute_plain(bot, prompt, workspace, workspace_root).await
+    let (outcome, summary, worker_id) = execute_plain(bot, prompt, workspace, workspace_root).await;
+    (outcome, summary, worker_id, None)
 }
 
 /// Run the bot through the full Coordinator: signal context, tools, action markers.
@@ -423,9 +493,9 @@ async fn execute_with_coordinator(
     workspace_root: &Path,
     db_path: &Path,
     config: &crate::config::WorkspaceConfig,
-) -> (String, String, Option<String>) {
+) -> (String, String, Option<String>, Option<f64>) {
     use crate::buzz::coordinator::{
-        Coordinator, CoordinatorEvent,
+        Coordinator, CoordinatorEvent, UsageStats,
         skills::{
             build_skills_prompt, default_coordinator_disallowed_tools, default_coordinator_tools,
         },
@@ -471,19 +541,24 @@ async fn execute_with_coordinator(
                 "[auto_bot_runner/{workspace}] bot {} failed to prepare coordinator session: {e}",
                 bot.id
             );
-            return execute_plain(bot, prompt, workspace, workspace_root).await;
+            let (outcome, summary, worker_id) =
+                execute_plain(bot, prompt, workspace, workspace_root).await;
+            return (outcome, summary, worker_id, None);
         }
     };
 
     // Phase 2 (async): run the LLM turn — no SignalStore reference needed.
     let mut response_buf = String::new();
+    let mut usage: Option<UsageStats> = None;
     let result = coordinator
-        .dispatch_message(prompt, bundle, &[], |event| {
-            if let CoordinatorEvent::Token(tok) = event {
-                response_buf.push_str(&tok);
-            }
+        .dispatch_message(prompt, bundle, &[], |event| match event {
+            CoordinatorEvent::Token(tok) => response_buf.push_str(&tok),
+            CoordinatorEvent::Usage(stats) => usage = Some(stats),
+            _ => {}
         })
         .await;
+
+    let cost_usd = usage.as_ref().and_then(|u| u.total_cost_usd);
 
     match result {
         Ok(full_response) => {
@@ -493,6 +568,12 @@ async fn execute_with_coordinator(
             } else {
                 full_response
             };
+
+            // Warn about malformed markers before they silently disappear.
+            for warning in find_malformed_markers(&response) {
+                warn!("[auto_bot_runner/{workspace}] bot {} {warning}", bot.id);
+            }
+
             let actions = parse_actions(&response);
 
             // Execute actions against the signal/task stores (blocking DB work).
@@ -520,14 +601,19 @@ async fn execute_with_coordinator(
                 "notified"
             };
 
-            (outcome.to_string(), response.trim().to_string(), None)
+            (
+                outcome.to_string(),
+                response.trim().to_string(),
+                None,
+                cost_usd,
+            )
         }
         Err(e) => {
             warn!(
                 "[auto_bot_runner/{workspace}] bot {} coordinator error: {e}",
                 bot.id
             );
-            ("error".to_string(), e.to_string(), None)
+            ("error".to_string(), e.to_string(), None, cost_usd)
         }
     }
 }
@@ -759,7 +845,8 @@ mod tests {
                  finished_at TEXT,
                  outcome TEXT,
                  summary TEXT,
-                 worker_id TEXT
+                 worker_id TEXT,
+                 cost_usd REAL
              );",
         )
         .unwrap();
@@ -838,6 +925,7 @@ mod tests {
             outcome: None,
             summary: None,
             worker_id: None,
+            cost_usd: None,
         };
         store.insert_run(&run).unwrap();
 

@@ -25,6 +25,14 @@ use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+fn hash_str(s: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
 use crate::buzz::{conversation::SessionToken, signal::store::SignalStore};
 
 /// Unified token usage stats across all providers.
@@ -165,6 +173,11 @@ pub struct Coordinator {
     /// Context to prepend to the next user message (e.g. /doctor output).
     /// Consumed on the next `take_pending_context()` call.
     pending_context: Option<String>,
+    /// Hash of the last system prompt we built. When this changes we auto-reset
+    /// the session so the LLM sees the updated prompt rather than replying on
+    /// a stale context that no longer matches the actual system state.
+    /// Uses Cell for interior mutability so `build_options` can stay `&self`.
+    last_prompt_hash: std::cell::Cell<Option<u64>>,
 }
 
 impl Coordinator {
@@ -187,6 +200,7 @@ impl Coordinator {
             safety_hooks: None,
             last_num_turns: 0,
             pending_context: None,
+            last_prompt_hash: std::cell::Cell::new(None),
         }
     }
 
@@ -347,6 +361,21 @@ impl Coordinator {
             hook_playbooks,
         );
 
+        // Detect prompt changes and auto-reset stale sessions.
+        // When the system prompt changes (new signals, updated context files, config edits),
+        // the existing Claude session ID will replay the old prompt — we must start fresh.
+        let new_hash = hash_str(&system_prompt);
+        let old_hash = self.last_prompt_hash.get();
+        let prompt_changed = old_hash.is_some_and(|h| h != new_hash);
+        if prompt_changed && self.session_id.is_some() {
+            info!(
+                "[coordinator] system prompt changed (hash {:x} → {:x}); session will not be resumed",
+                old_hash.unwrap_or(0),
+                new_hash
+            );
+        }
+        self.last_prompt_hash.set(Some(new_hash));
+
         // Merge token_controls settings into existing settings JSON (which may
         // have PreToolUse hooks from coordinator_settings_json).
         let merged_settings = merge_settings_json(
@@ -366,7 +395,10 @@ impl Coordinator {
             ..Default::default()
         };
 
-        if let Some(ref session_id) = self.session_id {
+        // Only resume an existing session when the prompt hash is stable.
+        // A changed hash means the session context no longer matches what Claude
+        // has in memory — resume would replay the wrong context.
+        if !prompt_changed && let Some(ref session_id) = self.session_id {
             opts.resume = Some(session_id.clone());
         }
 
@@ -502,6 +534,13 @@ impl Coordinator {
     where
         F: FnMut(CoordinatorEvent),
     {
+        info!(
+            provider = "claude",
+            model = %self.model,
+            resume = opts.resume.is_some(),
+            "coordinator turn"
+        );
+
         self.last_num_turns = 0;
         let client = ClaudeClient::new();
         let mut session = client.spawn(opts).await?;
@@ -655,6 +694,13 @@ impl Coordinator {
     where
         F: FnMut(CoordinatorEvent),
     {
+        info!(
+            provider = "codex",
+            model = %self.model,
+            resume = self.session_id.is_some(),
+            "coordinator turn"
+        );
+
         use apiari_codex_sdk::{CodexClient, ExecOptions, ResumeOptions};
 
         let client = CodexClient::new();
@@ -769,6 +815,13 @@ impl Coordinator {
     where
         F: FnMut(CoordinatorEvent),
     {
+        info!(
+            provider = "gemini",
+            model = %self.model,
+            resume = self.session_id.is_some(),
+            "coordinator turn"
+        );
+
         use apiari_gemini_sdk::{Event as GeminiEvent, GeminiClient, GeminiOptions};
 
         let client = GeminiClient::new();

@@ -4,6 +4,67 @@
 //! include action markers that the system executes. This module parses those
 //! markers from the response text.
 
+/// Known action marker names — used for both parsing and malformation detection.
+const KNOWN_MARKERS: &[&str] = &[
+    "DISMISS", "ESCALATE", "FIX", "SNOOZE", "TASK", "RESEARCH", "FOLLOWUP", "CANVAS",
+];
+
+/// Scan a coordinator response for likely-intended-but-malformed action markers.
+///
+/// Returns a list of human-readable descriptions of what looks wrong. Use these
+/// for diagnostics/logging — the parser itself silently skips malformed markers,
+/// so this function surfaces what would otherwise be invisible data loss.
+///
+/// Detects:
+/// - Wrong case: `[dismiss: 42]` instead of `[DISMISS: 42]`
+/// - Missing colon: `[DISMISS 42]` instead of `[DISMISS: 42]`
+pub fn find_malformed_markers(response: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let bytes = response.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        // Collect alphabetic characters after `[`
+        let tag_start = i + 1;
+        let mut j = tag_start;
+        while j < bytes.len() && bytes[j].is_ascii_alphabetic() {
+            j += 1;
+        }
+        if j == tag_start {
+            i += 1;
+            continue;
+        }
+        let candidate = std::str::from_utf8(&bytes[tag_start..j]).unwrap_or("");
+        let candidate_upper = candidate.to_uppercase();
+
+        if !KNOWN_MARKERS.contains(&candidate_upper.as_str()) {
+            i = j;
+            continue;
+        }
+
+        let is_exact_case = candidate == candidate_upper;
+        let has_colon = j < bytes.len() && bytes[j] == b':';
+
+        if !is_exact_case {
+            warnings.push(format!(
+                "marker `[{candidate}` near offset {i} looks like `[{candidate_upper}: ...]` but uses wrong case — markers must be UPPERCASE"
+            ));
+        } else if !has_colon && candidate_upper != "CANVAS" {
+            warnings.push(format!(
+                "marker `[{candidate_upper}` near offset {i} is missing `:` separator — expected `[{candidate_upper}: ...]`"
+            ));
+        }
+
+        i = j;
+    }
+
+    warnings
+}
+
 /// An action extracted from a Bee's response text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BeeAction {
@@ -294,5 +355,168 @@ mod tests {
         assert_eq!(actions[0], BeeAction::Dismiss { signal_id: 1 });
         assert_eq!(actions[1], BeeAction::Dismiss { signal_id: 2 });
         assert_eq!(actions[2], BeeAction::Dismiss { signal_id: 3 });
+    }
+
+    // ── Case sensitivity ───────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_lowercase_marker_ignored() {
+        // Markers are case-sensitive — lowercase must not parse.
+        assert!(parse_actions("[dismiss: 42]").is_empty());
+        assert!(parse_actions("[escalate: oh no]").is_empty());
+        assert!(parse_actions("[fix: something]").is_empty());
+        assert!(parse_actions("[task: do it]").is_empty());
+        assert!(parse_actions("[snooze: 1, 2]").is_empty());
+    }
+
+    #[test]
+    fn test_parse_mixed_case_marker_ignored() {
+        assert!(parse_actions("[Dismiss: 42]").is_empty());
+        assert_eq!(parse_actions("[ESCALATE: msg]").len(), 1); // uppercase works
+        assert!(parse_actions("[Escalate: msg]").is_empty()); // mixed case does not
+    }
+
+    // ── Whitespace handling ────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_dismiss_leading_whitespace_in_content() {
+        let actions = parse_actions("[DISMISS:   42  ]");
+        assert_eq!(actions, vec![BeeAction::Dismiss { signal_id: 42 }]);
+    }
+
+    #[test]
+    fn test_parse_task_with_inner_whitespace() {
+        let actions = parse_actions("[TASK:  Investigate   the   thing  ]");
+        assert_eq!(
+            actions,
+            vec![BeeAction::Task {
+                title: "Investigate   the   thing".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_followup_extra_spaces_around_pipe() {
+        let actions = parse_actions("[FOLLOWUP: 4h  |  Re-check CI ]");
+        assert_eq!(
+            actions,
+            vec![BeeAction::Followup {
+                when: "4h".to_string(),
+                action: "Re-check CI".to_string(),
+            }]
+        );
+    }
+
+    // ── Canvas blocks ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_canvas_block() {
+        let text = "[CANVAS]\n## Status\nAll green\n[/CANVAS]";
+        let actions = parse_actions(text);
+        assert_eq!(
+            actions,
+            vec![BeeAction::Canvas {
+                content: "## Status\nAll green".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_canvas_empty_block_ignored() {
+        let text = "[CANVAS]\n  \n[/CANVAS]";
+        let actions = parse_actions(text);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_canvas_unclosed_block_ignored() {
+        let text = "[CANVAS]\n## Status\nNo close tag";
+        let actions = parse_actions(text);
+        assert!(actions.is_empty());
+    }
+
+    // ── Snooze edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_snooze_zero_hours() {
+        let actions = parse_actions("[SNOOZE: 5, 0]");
+        assert_eq!(
+            actions,
+            vec![BeeAction::Snooze {
+                signal_id: 5,
+                hours: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_snooze_negative_id_rejected() {
+        // Negative signal_id should still parse (i64 allows it)
+        let actions = parse_actions("[SNOOZE: -1, 2]");
+        assert_eq!(
+            actions,
+            vec![BeeAction::Snooze {
+                signal_id: -1,
+                hours: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_snooze_non_numeric_hours_rejected() {
+        assert!(parse_actions("[SNOOZE: 5, tomorrow]").is_empty());
+    }
+
+    // ── Unclosed bracket handling ──────────────────────────────────────
+
+    #[test]
+    fn test_parse_unclosed_bracket_ignored() {
+        // No closing bracket — should produce no actions and not panic.
+        assert!(parse_actions("[DISMISS: 42").is_empty());
+        assert!(parse_actions("[ESCALATE: alert with no end").is_empty());
+    }
+
+    // ── Malformed marker detection ─────────────────────────────────────
+
+    #[test]
+    fn test_find_malformed_wrong_case() {
+        let warnings = find_malformed_markers("[dismiss: 42]");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("wrong case"));
+    }
+
+    #[test]
+    fn test_find_malformed_missing_colon() {
+        let warnings = find_malformed_markers("[DISMISS 42]");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("missing `:`"));
+    }
+
+    #[test]
+    fn test_find_malformed_multiple() {
+        let text = "Try [dismiss: 1] and [TASK hello]";
+        let warnings = find_malformed_markers(text);
+        assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn test_find_malformed_correct_markers_not_flagged() {
+        let text = "[DISMISS: 1] [TASK: do it] [ESCALATE: problem]";
+        let warnings = find_malformed_markers(text);
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+    }
+
+    #[test]
+    fn test_find_malformed_canvas_no_colon_ok() {
+        // [CANVAS] is special — no colon expected.
+        let warnings = find_malformed_markers("[CANVAS]\ncontent\n[/CANVAS]");
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+    }
+
+    #[test]
+    fn test_find_malformed_unknown_tag_ignored() {
+        // Unknown tags like [FOO] should not produce warnings.
+        let warnings = find_malformed_markers("[FOO: bar] [UNKNOWN: baz]");
+        assert!(warnings.is_empty());
     }
 }

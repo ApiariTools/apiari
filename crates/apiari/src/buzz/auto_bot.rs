@@ -43,6 +43,9 @@ pub struct AutoBotRun {
     pub outcome: Option<String>,
     pub summary: Option<String>,
     pub worker_id: Option<String>,
+    /// LLM cost in USD for this run, if the provider reported it.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 // ── Schema ─────────────────────────────────────────────────────────────
@@ -77,11 +80,17 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             finished_at TEXT,
             outcome TEXT,
             summary TEXT,
-            worker_id TEXT
+            worker_id TEXT,
+            cost_usd REAL
         );
         ",
     )
     .wrap_err("failed to create auto_bot tables")?;
+
+    // Migrate existing tables that predate the cost_usd column.
+    // ALTER TABLE ADD COLUMN fails if the column exists, so we ignore that error.
+    let _ = conn.execute("ALTER TABLE auto_bot_runs ADD COLUMN cost_usd REAL", []);
+
     Ok(())
 }
 
@@ -225,8 +234,8 @@ impl AutoBotStore {
         conn.execute(
             "INSERT INTO auto_bot_runs
              (id, auto_bot_id, workspace, triggered_by, started_at,
-              finished_at, outcome, summary, worker_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+              finished_at, outcome, summary, worker_id, cost_usd)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 run.id,
                 run.auto_bot_id,
@@ -237,28 +246,30 @@ impl AutoBotStore {
                 run.outcome,
                 run.summary,
                 run.worker_id,
+                run.cost_usd,
             ],
         )
         .wrap_err("insert auto_bot_run")?;
         Ok(())
     }
 
-    /// Finish an existing run — set finished_at, outcome, summary, worker_id.
+    /// Finish an existing run — set finished_at, outcome, summary, worker_id, cost_usd.
     pub fn finish_run(
         &self,
         run_id: &str,
         outcome: &str,
         summary: &str,
         worker_id: Option<&str>,
+        cost_usd: Option<f64>,
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
                 "UPDATE auto_bot_runs
-                 SET finished_at=?1, outcome=?2, summary=?3, worker_id=?4
-                 WHERE id=?5",
-                params![now, outcome, summary, worker_id, run_id],
+                 SET finished_at=?1, outcome=?2, summary=?3, worker_id=?4, cost_usd=?5
+                 WHERE id=?6",
+                params![now, outcome, summary, worker_id, cost_usd, run_id],
             )
             .wrap_err("finish auto_bot_run")?;
         if rows == 0 {
@@ -267,12 +278,36 @@ impl AutoBotStore {
         Ok(())
     }
 
+    /// Count how many of the most recent completed runs for a bot ended in `"error"`,
+    /// stopping at the first non-error outcome. Used to trigger failure alerts.
+    pub fn count_consecutive_failures(&self, auto_bot_id: &str) -> Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT outcome FROM auto_bot_runs
+             WHERE auto_bot_id=?1 AND finished_at IS NOT NULL
+             ORDER BY started_at DESC LIMIT 10",
+        )?;
+        let outcomes: Vec<Option<String>> = stmt
+            .query_map(params![auto_bot_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut count = 0u32;
+        for outcome in &outcomes {
+            if outcome.as_deref() == Some("error") {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        Ok(count)
+    }
+
     /// List the N most recent runs for a given auto_bot_id.
     pub fn list_runs(&self, auto_bot_id: &str, limit: usize) -> Result<Vec<AutoBotRun>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id,auto_bot_id,workspace,triggered_by,started_at,
-                    finished_at,outcome,summary,worker_id
+                    finished_at,outcome,summary,worker_id,cost_usd
              FROM auto_bot_runs WHERE auto_bot_id=?1
              ORDER BY started_at DESC
              LIMIT ?2",
@@ -289,7 +324,7 @@ impl AutoBotStore {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
             "SELECT id,auto_bot_id,workspace,triggered_by,started_at,
-                    finished_at,outcome,summary,worker_id
+                    finished_at,outcome,summary,worker_id,cost_usd
              FROM auto_bot_runs WHERE auto_bot_id=?1
              ORDER BY started_at DESC
              LIMIT 1",
@@ -361,6 +396,7 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutoBotRun> {
         outcome: row.get(6)?,
         summary: row.get(7)?,
         worker_id: row.get(8)?,
+        cost_usd: row.get(9).unwrap_or(None),
     })
 }
 
@@ -411,6 +447,7 @@ mod tests {
             outcome: None,
             summary: None,
             worker_id: None,
+            cost_usd: None,
         }
     }
 
@@ -512,7 +549,7 @@ mod tests {
         store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
 
         store
-            .finish_run("r1", "notified", "Sent summary.", None)
+            .finish_run("r1", "notified", "Sent summary.", None, None)
             .unwrap();
 
         let runs = store.list_runs("b1", 10).unwrap();
@@ -528,7 +565,7 @@ mod tests {
         store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
 
         store
-            .finish_run("r1", "dispatched_worker", "Dispatched.", Some("w-42"))
+            .finish_run("r1", "dispatched_worker", "Dispatched.", Some("w-42"), None)
             .unwrap();
 
         let runs = store.list_runs("b1", 10).unwrap();
@@ -586,7 +623,9 @@ mod tests {
         let store = AutoBotStore::open_memory().unwrap();
         store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
         store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
-        store.finish_run("r1", "notified", "ok", None).unwrap();
+        store
+            .finish_run("r1", "notified", "ok", None, None)
+            .unwrap();
         let bot = store.get("acme", "b1").unwrap().unwrap();
         assert_eq!(bot.status, "idle");
     }
@@ -597,7 +636,7 @@ mod tests {
         store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
         store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
         store
-            .finish_run("r1", "error", "something failed", None)
+            .finish_run("r1", "error", "something failed", None, None)
             .unwrap();
         let bot = store.get("acme", "b1").unwrap().unwrap();
         assert_eq!(bot.status, "error");
@@ -627,5 +666,91 @@ mod tests {
 
         let runs = store.list_runs("b1", 3).unwrap();
         assert_eq!(runs.len(), 3);
+    }
+
+    // ── Consecutive failure counting ───────────────────────────────────
+
+    #[test]
+    fn test_consecutive_failures_zero_when_no_runs() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+        assert_eq!(store.count_consecutive_failures("b1").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_consecutive_failures_counts_leading_errors() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+
+        // oldest run: success
+        let mut r0 = make_run("r0", "b1", "acme");
+        r0.started_at = (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        store.insert_run(&r0).unwrap();
+        store
+            .finish_run("r0", "notified", "ok", None, None)
+            .unwrap();
+
+        // two recent errors
+        let mut r1 = make_run("r1", "b1", "acme");
+        r1.started_at = (Utc::now() - chrono::Duration::seconds(5)).to_rfc3339();
+        store.insert_run(&r1).unwrap();
+        store.finish_run("r1", "error", "fail", None, None).unwrap();
+
+        let mut r2 = make_run("r2", "b1", "acme");
+        r2.started_at = Utc::now().to_rfc3339();
+        store.insert_run(&r2).unwrap();
+        store.finish_run("r2", "error", "fail", None, None).unwrap();
+
+        // Streak = 2 (not 3 — r0 breaks it)
+        assert_eq!(store.count_consecutive_failures("b1").unwrap(), 2);
+    }
+
+    #[test]
+    fn test_consecutive_failures_resets_after_success() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+
+        let mut r1 = make_run("r1", "b1", "acme");
+        r1.started_at = (Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+        store.insert_run(&r1).unwrap();
+        store.finish_run("r1", "error", "fail", None, None).unwrap();
+
+        // Success resets the streak
+        let mut r2 = make_run("r2", "b1", "acme");
+        r2.started_at = Utc::now().to_rfc3339();
+        store.insert_run(&r2).unwrap();
+        store
+            .finish_run("r2", "notified", "ok", None, None)
+            .unwrap();
+
+        assert_eq!(store.count_consecutive_failures("b1").unwrap(), 0);
+    }
+
+    // ── Cost tracking ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_cost_usd_stored_and_retrieved() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+        store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
+        store
+            .finish_run("r1", "notified", "ok", None, Some(0.0042))
+            .unwrap();
+
+        let runs = store.list_runs("b1", 10).unwrap();
+        assert!((runs[0].cost_usd.unwrap() - 0.0042).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_cost_usd_none_when_not_set() {
+        let store = AutoBotStore::open_memory().unwrap();
+        store.upsert(&make_bot("b1", "acme", "cron")).unwrap();
+        store.insert_run(&make_run("r1", "b1", "acme")).unwrap();
+        store
+            .finish_run("r1", "notified", "ok", None, None)
+            .unwrap();
+
+        let runs = store.list_runs("b1", 10).unwrap();
+        assert!(runs[0].cost_usd.is_none());
     }
 }
