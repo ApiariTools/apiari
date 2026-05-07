@@ -1722,17 +1722,13 @@ fn worker_repo_name(
 
 fn worker_task_title(worker: &SwarmWorktreeState) -> String {
     worker
-        .summary
-        .clone()
-        .or_else(|| {
-            worker
-                .prompt
-                .lines()
-                .next()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-        })
+        .prompt
+        .lines()
+        .next()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .or_else(|| worker.summary.clone())
         .unwrap_or_else(|| format!("Worker {}", worker.id))
 }
 
@@ -3090,10 +3086,7 @@ fn worker_view_from_state(
             .as_ref()
             .and_then(|pr| pr.title.clone())
             .or(overlay_pr_title),
-        description: worker
-            .summary
-            .clone()
-            .or_else(|| (!worker.prompt.trim().is_empty()).then(|| worker.prompt.clone())),
+        description: Some(worker_task_title(worker)),
         elapsed_secs: elapsed_secs(worker.created_at),
         dispatched_by: None,
         review_state: worker.pr.as_ref().and_then(|pr| pr.state.clone()),
@@ -7502,6 +7495,33 @@ state_path = "{}"
         assert_eq!(
             workers[0].execution_note.as_deref(),
             Some("Uncommitted diff, no ready branch, and no active session.")
+        );
+    }
+
+    #[test]
+    fn worker_task_title_prefers_prompt_over_summary() {
+        let worker = SwarmWorktreeState {
+            id: "apiari-7a04".to_string(),
+            branch: "swarm/mobile-cards".to_string(),
+            prompt: "Tighten mobile cards in the workers list.\nUse the prompt wording."
+                .to_string(),
+            agent_kind: "codex".to_string(),
+            created_at: None,
+            summary: Some("AI-generated summary".to_string()),
+            pr: None,
+            phase: None,
+            agent_session_status: None,
+            repo_path: None,
+            worktree_path: None,
+            agent_pid: None,
+            session_id: None,
+            ready_branch: None,
+            failure_note: None,
+        };
+
+        assert_eq!(
+            worker_task_title(&worker),
+            "Tighten mobile cards in the workers list."
         );
     }
 

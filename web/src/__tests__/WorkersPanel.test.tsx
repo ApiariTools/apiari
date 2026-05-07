@@ -35,15 +35,17 @@ const workers: Worker[] = [
 ];
 
 describe("WorkersPanel", () => {
-  it("shows derived lifecycle and latest attempt on worker cards", () => {
+  it("shows task titles as the primary worker label", () => {
     const onSelectWorker = vi.fn();
     render(<WorkersPanel workers={workers} onSelectWorker={onSelectWorker} />);
 
+    expect(screen.getByText("Tighten mobile cards")).toBeInTheDocument();
+    expect(screen.getByText("apiari-ebbc · mobile-cards")).toBeInTheDocument();
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByText("Implementation failed")).toBeInTheDocument();
     expect(screen.getByText("Worker closed without PR")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("apiari-ebbc"));
+    fireEvent.click(screen.getByText("Tighten mobile cards"));
     expect(onSelectWorker).toHaveBeenCalledWith("apiari-ebbc");
   });
 });

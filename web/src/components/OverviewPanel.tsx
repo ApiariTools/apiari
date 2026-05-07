@@ -46,6 +46,10 @@ function previewLabel(content?: string | null) {
   return content.length > 84 ? `${content.slice(0, 84).trimEnd()}…` : content;
 }
 
+function workerListTitle(worker: Worker) {
+  return worker.task_title || worker.description || worker.branch.replace(/^swarm\//, "");
+}
+
 export function OverviewPanel({
   workspace,
   remote,
@@ -125,7 +129,7 @@ export function OverviewPanel({
     nextWorker
       ? {
           key: `worker-${nextWorker.id}`,
-          title: `Review ${nextWorker.id}`,
+          title: workerListTitle(nextWorker),
           meta: `${nextWorker.status} · ${nextWorker.branch.replace(/^swarm\//, "")}`,
           action: () => onSelectWorker(nextWorker.id),
         }
@@ -225,7 +229,7 @@ export function OverviewPanel({
                 <ObjectRow
                   key={`worker-${worker.id}`}
                   onClick={() => onSelectWorker(worker.id)}
-                  title={worker.id}
+                  title={workerListTitle(worker)}
                   meta={`${worker.status} · ${worker.branch.replace(/^swarm\//, "")}`}
                   right={<StatusBadge tone="success">worker</StatusBadge>}
                 />
@@ -299,7 +303,7 @@ export function OverviewPanel({
                 <ObjectRow
                   key={worker.id}
                   onClick={() => onSelectWorker(worker.id)}
-                  title={worker.id}
+                  title={workerListTitle(worker)}
                   meta={`${worker.status} · ${worker.branch.replace(/^swarm\//, "")}`}
                   right={(
                     <>
