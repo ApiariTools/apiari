@@ -364,7 +364,8 @@ export interface ContextBotMessage {
 }
 
 export interface ContextBotSession {
-  id: string                    // UUID, generated client-side
+  id: string                    // local counter key (not sent to server)
+  server_session_id?: string    // echoed from first server response; sent on follow-up turns
   context: ContextBotContext
   title: string                 // e.g. "Viewing: fix-auth" or "Dashboard"
   messages: ContextBotMessage[]

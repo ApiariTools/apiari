@@ -473,12 +473,12 @@ export async function chatWithContextBot(
   workspace: string,
   message: string,
   context: ContextBotContext,
-  sessionId: string,
+  sessionId?: string,
 ): Promise<ContextBotChatResponse> {
   const res = await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId, context }),
+    body: JSON.stringify({ message, session_id: sessionId ?? null, context }),
   });
   if (!res.ok) throw new Error(`context bot chat: ${res.status}`);
   return res.json();

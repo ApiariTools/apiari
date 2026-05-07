@@ -77,7 +77,6 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
       })
 
       // Fire-and-forget: enrich the brief with context bot in background
-      const sessionId = crypto.randomUUID()
       chatWithContextBot(
         workspace,
         'Generate a detailed implementation brief for: ' + intent.trim(),
@@ -86,7 +85,6 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
           entity_id: null,
           entity_snapshot: { goal: intent.trim(), repo: selectedRepo },
         },
-        sessionId,
       ).catch(() => {
         // ignore — this is best-effort enrichment
       })

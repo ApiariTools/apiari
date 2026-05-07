@@ -14,6 +14,9 @@ import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from './
 import type { SidebarItem } from './components/Sidebar/Sidebar'
 import './theme.css'
 
+let _nextSessionId = 0
+function nextSessionId() { return String(++_nextSessionId) }
+
 type EntityType = 'auto_bot' | 'worker'
 
 interface SelectedEntity {
@@ -133,7 +136,7 @@ export default function App() {
   // ── Context bot handlers ────────────────────────────────────────────
 
   function openContextBot(context: ContextBotContext, title: string) {
-    const id = crypto.randomUUID()
+    const id = nextSessionId()
     setContextSessions((prev) => [
       ...prev,
       {
@@ -168,7 +171,7 @@ export default function App() {
     )
 
     try {
-      const res = await chatWithContextBot(workspace, message, session.context, sessionId)
+      const res = await chatWithContextBot(workspace, message, session.context, session.server_session_id)
 
       setContextSessions((prev) =>
         prev.map((s) =>
@@ -176,6 +179,7 @@ export default function App() {
             ? {
                 ...s,
                 loading: false,
+                server_session_id: res.session_id,
                 messages: [
                   ...s.messages,
                   { role: 'assistant' as const, content: res.response, timestamp: new Date().toISOString() },
