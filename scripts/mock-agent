@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Mock agent for e2e testing.
+# Outputs AgentEventWire JSONL to stdout — same wire format as the real agents.
+#
+# Usage:
+#   mock-agent initial               — first run: does work, opens a PR
+#   mock-agent resume <message>      — follow-up: responds to revision request
+#
+# Controlled by MOCK_AGENT_PR_URL env var (default: https://github.com/ApiariTools/apiari/pull/999)
+
+set -euo pipefail
+
+SCENARIO="${1:-initial}"
+SESSION_ID="mock-e2e-$(date +%s)-$$"
+PR_URL="${MOCK_AGENT_PR_URL:-https://github.com/ApiariTools/apiari/pull/999}"
+
+emit() { echo "$1"; }
+
+case "$SCENARIO" in
+  initial)
+    sleep 0.05
+    emit '{"type":"text_delta","text":"Analyzing the codebase to understand the task scope..."}'
+    sleep 0.05
+    emit '{"type":"tool_use","tool":"Bash","input":"find . -name '"'"'*.rs'"'"' | head -5"}'
+    sleep 0.05
+    emit '{"type":"tool_result","output":"src/main.rs\nsrc/lib.rs","is_error":false}'
+    sleep 0.05
+    emit '{"type":"text_delta","text":"\nFound the relevant files. Making the change now."}'
+    sleep 0.05
+    emit '{"type":"tool_use","tool":"Bash","input":"git add -A && git commit -m '"'"'fix: apply requested change'"'"'"}'
+    sleep 0.05
+    emit '{"type":"tool_result","output":"[swarm/mock-branch abc1234] fix: apply requested change","is_error":false}'
+    sleep 0.05
+    emit "{\"type\":\"text_delta\",\"text\":\"\\nDone. Branch pushed and PR opened.\\n\\nPR_OPENED: $PR_URL\"}"
+    emit "{\"type\":\"session_result\",\"turns\":4,\"session_id\":\"$SESSION_ID\"}"
+    ;;
+
+  resume)
+    shift || true
+    MSG="${*:-fix the issue}"
+    sleep 0.05
+    emit "{\"type\":\"text_delta\",\"text\":\"Got your feedback: \\\"$MSG\\\". Applying the fix now.\"}"
+    sleep 0.05
+    emit '{"type":"tool_use","tool":"Bash","input":"cargo test 2>&1 | tail -3"}'
+    sleep 0.05
+    emit '{"type":"tool_result","output":"test result: ok. 42 passed; 0 failed","is_error":false}'
+    sleep 0.05
+    emit '{"type":"text_delta","text":"\nAll tests pass. Changes committed and pushed to the branch."}'
+    emit "{\"type\":\"session_result\",\"turns\":2,\"session_id\":\"$SESSION_ID\"}"
+    ;;
+
+  *)
+    echo '{"type":"error","message":"unknown scenario"}' >&2
+    exit 1
+    ;;
+esac

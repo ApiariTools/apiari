@@ -373,6 +373,9 @@ async fn run_agent_task(
 
     update_state_phase(&work_dir, &worker_id, "running");
 
+    let mut accumulated_text = String::new();
+    let mut pr_url_written = false;
+
     loop {
         // Drain all events from the current agent run.
         let mut last_session_id: Option<String> = None;
@@ -383,6 +386,17 @@ async fn run_agent_task(
             } = ev
             {
                 last_session_id = Some(sid.clone());
+            }
+            // Fast path: capture PR_OPENED from streamed text immediately.
+            // Covers mock agent and any real agent that outputs the marker.
+            if let AgentEventWire::TextDelta { ref text } = ev {
+                accumulated_text.push_str(text);
+                if !pr_url_written
+                    && let Some(url) = apiari_swarm::core::state::parse_pr_opened(&accumulated_text)
+                {
+                    update_state_pr(&work_dir, &worker_id, &url);
+                    pr_url_written = true;
+                }
             }
             log_event(&mut logger, &ev);
         }
@@ -437,10 +451,12 @@ async fn run_agent_task(
             }
             None => {
                 update_state_phase(&work_dir, &worker_id, "waiting");
-                // Agent is done — look up any PR on this branch from GitHub.
-                if let Some(url) = lookup_pr_by_branch(&work_dir, &worker_id) {
+                // Fallback: if text scan didn't find a PR URL, ask GitHub.
+                if !pr_url_written && let Some(url) = lookup_pr_by_branch(&work_dir, &worker_id) {
                     update_state_pr(&work_dir, &worker_id, &url);
+                    pr_url_written = true;
                 }
+                let _ = pr_url_written;
                 break;
             }
         }

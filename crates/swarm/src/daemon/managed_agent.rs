@@ -50,7 +50,14 @@ pub struct SpawnOptions {
 }
 
 /// Spawn a new ManagedAgent based on the agent kind.
+///
+/// If `APIARI_E2E_AGENT` is set, all agents are replaced with a
+/// [`MockManagedAgent`] that runs the given script — used for e2e tests.
 pub async fn spawn_managed_agent(opts: SpawnOptions) -> Result<Box<dyn ManagedAgent>> {
+    if let Ok(script) = std::env::var("APIARI_E2E_AGENT") {
+        let agent = MockManagedAgent::spawn_initial(&script).await?;
+        return Ok(Box::new(agent));
+    }
     match opts.kind {
         AgentKind::Claude => {
             let agent = ClaudeManagedAgent::spawn(opts).await?;
@@ -725,6 +732,118 @@ fn translate_gemini_event(event: &apiari_gemini_sdk::Event) -> Option<AgentEvent
             message: message.clone().unwrap_or_else(|| "unknown error".into()),
         }),
         _ => None,
+    }
+}
+
+// ── Mock Managed Agent (e2e testing) ─────────────────────────────────────
+
+/// A scripted agent for e2e testing.
+///
+/// Runs `$APIARI_E2E_AGENT initial` on first spawn and
+/// `$APIARI_E2E_AGENT resume <message>` on every `send_message` call.
+/// Each run's stdout is parsed as newline-delimited `AgentEventWire` JSON.
+pub struct MockManagedAgent {
+    events: std::collections::VecDeque<AgentEventWire>,
+    session_id: Option<String>,
+    script: String,
+    finished: bool,
+}
+
+impl MockManagedAgent {
+    pub async fn spawn_initial(script: &str) -> Result<Self> {
+        let events = run_mock_script(script, &["initial"])?;
+        Ok(Self {
+            events: events.into(),
+            session_id: None,
+            script: script.to_string(),
+            finished: false,
+        })
+    }
+
+    fn spawn_resume(script: &str, message: &str) -> Result<Self> {
+        let events = run_mock_script(script, &["resume", message])?;
+        Ok(Self {
+            events: events.into(),
+            session_id: None,
+            script: script.to_string(),
+            finished: false,
+        })
+    }
+}
+
+fn run_mock_script(script: &str, args: &[&str]) -> Result<Vec<AgentEventWire>> {
+    use color_eyre::eyre::eyre;
+    let out = std::process::Command::new(script)
+        .args(args)
+        .output()
+        .map_err(|e| eyre!("mock agent script '{script}' failed to run: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let events = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<AgentEventWire>(line).ok())
+        .collect();
+    Ok(events)
+}
+
+#[async_trait]
+impl ManagedAgent for MockManagedAgent {
+    fn kind(&self) -> AgentKind {
+        AgentKind::Codex
+    }
+
+    async fn next_event(&mut self) -> Result<Option<AgentEventWire>> {
+        if self.finished {
+            return Ok(None);
+        }
+        match self.events.pop_front() {
+            Some(ev) => {
+                // Track session_id from SessionResult so resume works.
+                if let AgentEventWire::SessionResult {
+                    session_id: Some(ref sid),
+                    ..
+                } = ev
+                {
+                    self.session_id = Some(sid.clone());
+                    self.finished = true;
+                    return Ok(Some(ev));
+                }
+                Ok(Some(ev))
+            }
+            None => {
+                self.finished = true;
+                Ok(None)
+            }
+        }
+    }
+
+    async fn send_message(&mut self, message: &str) -> Result<()> {
+        let resumed = Self::spawn_resume(&self.script, message)?;
+        self.events = resumed.events;
+        self.finished = false;
+        Ok(())
+    }
+
+    fn accepts_input(&self) -> bool {
+        self.finished
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    async fn interrupt(&mut self) -> Result<()> {
+        self.finished = true;
+        self.events.clear();
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    async fn wait_for_stderr(&mut self) -> Option<String> {
+        None
     }
 }
 
