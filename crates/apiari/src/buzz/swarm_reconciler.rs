@@ -361,7 +361,21 @@ impl SwarmReconciler {
         let phase = swarm_wt.phase.as_deref().unwrap_or("");
         let agent_status = agent_status(&self.swarm_dir, &worker.id);
 
-        // 1. pr_url appeared — update property on any state
+        // 1a. branch appeared — sync to DB whenever state.json has it and DB doesn't
+        if let Some(ref branch) = swarm_wt.branch
+            && worker.branch.as_deref() != Some(branch.as_str())
+        {
+            self.store.update_properties(
+                &self.workspace,
+                &worker.id,
+                WorkerPropertyUpdate {
+                    branch: Some(branch.clone()),
+                    ..Default::default()
+                },
+            )?;
+        }
+
+        // 1b. pr_url appeared — update property on any state
         let swarm_pr_url = swarm_wt.pr.as_ref().and_then(|p| p.url.as_deref());
         if let Some(url) = swarm_pr_url
             && worker.pr_url.as_deref() != Some(url)
@@ -427,6 +441,13 @@ impl SwarmReconciler {
             WorkerState::Stalled => {
                 // Stalled → running if output resumes
                 self.check_stall_and_output(worker)?;
+
+                // Agent paused waiting for input while stalled
+                if agent_status.as_deref() == Some("waiting") || phase == "waiting" {
+                    info!("[reconciler] {} stalled agent now waiting", worker.id);
+                    self.do_transition(worker, WorkerState::Waiting)?;
+                    return Ok(());
+                }
 
                 // Agent exited from stalled — move to waiting
                 if phase == "completed" || phase == "failed" {
