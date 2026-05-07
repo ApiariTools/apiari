@@ -180,6 +180,64 @@ describe("ChatPanel", () => {
     expect(container.querySelector('[class*="headerDescription"]')).toBeNull();
   });
 
+  it("renders context usage indicator with percent label and bar width", () => {
+    render(
+      <ChatPanel
+        {...defaultProps}
+        contextUsage={{
+          inputTokens: 90_000,
+          outputTokens: 400,
+          cacheReadTokens: 0,
+          contextWindow: 200_000,
+          totalCostUsd: null,
+          percent: 45,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Context: 45%")).toBeInTheDocument();
+    const indicator = screen.getByTestId("context-usage-indicator");
+    expect(indicator).toHaveAttribute("aria-label", "Context usage: 45%");
+    const fill = indicator.querySelector('[class*="contextBarFill"]') as HTMLElement | null;
+    expect(fill?.style.width).toBe("45%");
+  });
+
+  it("turns context indicator yellow at 60%", () => {
+    const { container } = render(
+      <ChatPanel
+        {...defaultProps}
+        contextUsage={{
+          inputTokens: 120_000,
+          outputTokens: 400,
+          cacheReadTokens: 0,
+          contextWindow: 200_000,
+          totalCostUsd: null,
+          percent: 60,
+        }}
+      />,
+    );
+
+    expect(container.querySelector('[class*="contextWarn"]')).not.toBeNull();
+  });
+
+  it("turns context indicator red at 80%", () => {
+    const { container } = render(
+      <ChatPanel
+        {...defaultProps}
+        contextUsage={{
+          inputTokens: 160_000,
+          outputTokens: 400,
+          cacheReadTokens: 0,
+          contextWindow: 200_000,
+          totalCostUsd: null,
+          percent: 80,
+        }}
+      />,
+    );
+
+    expect(container.querySelector('[class*="contextDanger"]')).not.toBeNull();
+  });
+
   it("displays time correctly for old timestamps without Z suffix", () => {
     const msgs: Message[] = [
       { id: 1, workspace: "test", bot: "Main", role: "user", content: "old msg", attachments: null, created_at: "2026-04-26 15:30:00" },

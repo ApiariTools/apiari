@@ -99,6 +99,16 @@ pub enum WsUpdate {
         streaming_content: String,
         tool_name: Option<String>,
     },
+    /// A bot turn completed with token usage stats.
+    Usage {
+        workspace: String,
+        bot: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        total_cost_usd: Option<f64>,
+        context_window: u64,
+    },
     /// A followup was created.
     FollowupCreated {
         id: String,

@@ -294,6 +294,29 @@ fn send_web_bot_status(
     }
 }
 
+fn send_web_usage_update(
+    web_updates_tx: &Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
+    workspace: &str,
+    bee_name: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    total_cost_usd: Option<f64>,
+    context_window: u64,
+) {
+    if let Some(tx) = web_updates_tx {
+        let _ = tx.send(http::WsUpdate::Usage {
+            workspace: workspace.to_string(),
+            bot: web_bee_name(bee_name),
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            total_cost_usd,
+            context_window,
+        });
+    }
+}
+
 fn send_web_followup_created(
     web_updates_tx: &Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
     workspace: &str,
@@ -1212,6 +1235,16 @@ async fn run_coordinator_task(
                             });
                         }
                         CoordinatorEvent::Usage(stats) => {
+                            send_web_usage_update(
+                                &web_updates_tx,
+                                &name_for_cb,
+                                &bee_name,
+                                stats.input_tokens,
+                                stats.output_tokens,
+                                stats.cache_read_tokens,
+                                stats.total_cost_usd,
+                                crate::buzz::coordinator::max_context_tokens(&model_for_cb),
+                            );
                             let _ = responder_for_cb.send(socket::DaemonResponse::Usage {
                                 workspace: name_for_cb.clone(),
                                 input_tokens: stats.input_tokens,

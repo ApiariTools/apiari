@@ -4,6 +4,7 @@ import { ModeScaffold } from "../primitives/ModeScaffold";
 import { StatusBadge } from "../primitives/StatusBadge";
 import type { Bot, Followup, Message } from "../types";
 import type { Attachment } from "../components/ChatPanel";
+import type { ChatContextUsage } from "../hooks/useChatModeState";
 import styles from "./ChatMode.module.css";
 
 interface Props {
@@ -17,6 +18,7 @@ interface Props {
   loading: boolean;
   loadingStatus?: string;
   streamingContent?: string;
+  contextUsage: ChatContextUsage | null;
   hasOlderHistory: boolean;
   loadingOlderHistory: boolean;
   onLoadOlderHistory: () => Promise<void>;
@@ -71,6 +73,7 @@ export function ChatMode(props: Props) {
           loading={props.loading}
           loadingStatus={props.loadingStatus}
           streamingContent={props.streamingContent}
+          contextUsage={props.contextUsage}
           hasOlderHistory={props.hasOlderHistory}
           loadingOlderHistory={props.loadingOlderHistory}
           onLoadOlderHistory={props.onLoadOlderHistory}

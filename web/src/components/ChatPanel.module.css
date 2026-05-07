@@ -118,6 +118,59 @@
   gap: var(--space-2);
 }
 
+.contextIndicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--text-faint);
+}
+
+.contextLabel {
+  font-size: var(--font-size-meta);
+  font-weight: 600;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.contextBar {
+  width: 52px;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-faint) 14%, transparent);
+}
+
+.contextBarFill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.contextWarn {
+  color: #c58b17;
+  border-color: rgba(197, 139, 23, 0.28);
+  background: rgba(197, 139, 23, 0.08);
+}
+
+.contextWarn .contextBarFill {
+  background: #d39a22;
+}
+
+.contextDanger {
+  color: #c44949;
+  border-color: rgba(196, 73, 73, 0.28);
+  background: rgba(196, 73, 73, 0.08);
+}
+
+.contextDanger .contextBarFill {
+  background: #d85c5c;
+}
+
 .voiceModeBtn {
   background: none;
   border: 1px solid var(--border);
@@ -194,10 +247,25 @@
 
   .headerActions {
     gap: var(--space-1);
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .headerDescription {
     display: none;
+  }
+
+  .contextIndicator {
+    padding: 4px 8px;
+    gap: 6px;
+  }
+
+  .contextLabel {
+    font-size: var(--font-size-micro);
+  }
+
+  .contextBar {
+    width: 40px;
   }
 
   .botSwitcher {

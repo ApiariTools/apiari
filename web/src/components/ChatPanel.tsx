@@ -8,6 +8,7 @@ import { splitSentences } from "../voice";
 import { ChatInput } from "./ChatInput";
 import { FollowupCard, FollowupIndicator } from "./FollowupCard";
 import type { Attachment, VoiceState } from "./ChatInput";
+import type { ChatContextUsage } from "../hooks/useChatModeState";
 import { playSentCue, startThinkingCue, playSpeakingCue, setSharedAudioContext } from "../soundCues";
 import styles from "./ChatPanel.module.css";
 
@@ -23,6 +24,7 @@ interface Props {
   loading: boolean;
   loadingStatus?: string;
   streamingContent?: string;
+  contextUsage?: ChatContextUsage | null;
   hasOlderHistory?: boolean;
   loadingOlderHistory?: boolean;
   onLoadOlderHistory?: () => Promise<void>;
@@ -56,6 +58,7 @@ export function ChatPanel({
   loading,
   loadingStatus,
   streamingContent,
+  contextUsage,
   hasOlderHistory = false,
   loadingOlderHistory = false,
   onLoadOlderHistory,
@@ -101,6 +104,14 @@ export function ChatPanel({
       : loading
         ? "processing"
         : "listening";
+  const contextPercent = contextUsage ? Math.max(0, Math.round(contextUsage.percent)) : null;
+  const contextToneClass = contextPercent === null
+    ? ""
+    : contextPercent >= 80
+      ? styles.contextDanger
+      : contextPercent >= 60
+        ? styles.contextWarn
+        : "";
 
   // ── Message queue ──
   const handleSendOrQueue = useCallback(
@@ -573,6 +584,22 @@ export function ChatPanel({
           </div>
         ) : null}
         <div className={styles.headerActions}>
+          {contextPercent !== null ? (
+            <div
+              className={`${styles.contextIndicator} ${contextToneClass}`}
+              aria-label={`Context usage: ${contextPercent}%`}
+              title={`${contextPercent}% of session context in use`}
+              data-testid="context-usage-indicator"
+            >
+              <span className={styles.contextLabel}>Context: {contextPercent}%</span>
+              <span className={styles.contextBar} aria-hidden="true">
+                <span
+                  className={styles.contextBarFill}
+                  style={{ width: `${Math.min(100, contextPercent)}%` }}
+                />
+              </span>
+            </div>
+          ) : null}
           <button
             className={`${styles.voiceModeBtn} ${voiceMode ? styles.voiceModeActive : ""}`}
             onClick={toggleVoiceMode}

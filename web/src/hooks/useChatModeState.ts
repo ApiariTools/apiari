@@ -13,10 +13,21 @@ interface CachedChatState {
   lastFetchedAt: number;
 }
 
+export interface ChatContextUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  contextWindow: number;
+  totalCostUsd: number | null;
+  percent: number;
+}
+
 const chatCache = new Map<string, CachedChatState>();
+const contextUsageCache = new Map<string, ChatContextUsage>();
 
 export function __resetChatCacheForTests() {
   chatCache.clear();
+  contextUsageCache.clear();
 }
 
 function mergeMessages(prev: Message[], incoming: Message): Message[] {
@@ -69,6 +80,7 @@ export function useChatModeState({
   const [historyLimit, setHistoryLimit] = useState(INITIAL_HISTORY_LIMIT);
   const [hasOlderHistory, setHasOlderHistory] = useState(false);
   const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
+  const [contextUsage, setContextUsage] = useState<ChatContextUsage | null>(null);
 
   const lastMsgId = useRef(0);
   const nextTempId = useRef(-1);
@@ -88,6 +100,13 @@ export function useChatModeState({
   useEffect(() => { historyLimitRef.current = historyLimit; }, [historyLimit]);
   useEffect(() => { activeChatKeyRef.current = `${workspace}|${remote || ""}|${bot}|${mode}`; }, [workspace, remote, bot, mode]);
   useEffect(() => { cacheKeyRef.current = chatCacheKey(workspace, remote, bot); }, [workspace, remote, bot]);
+  useEffect(() => {
+    if (!workspace || !bot) {
+      setContextUsage(null);
+      return;
+    }
+    setContextUsage(contextUsageCache.get(chatCacheKey(workspace, remote, bot)) ?? null);
+  }, [workspace, remote, bot]);
   useEffect(() => {
     if (!workspace || !bot) return;
     const messagesMatchCurrentChat = messages.every((message) =>
@@ -217,6 +236,30 @@ export function useChatModeState({
         }
       }
 
+      if (event.type === "usage") {
+        const eventBot = typeof event.bot === "string" ? event.bot : "";
+        const contextWindow = typeof event.context_window === "number" ? event.context_window : 0;
+        const inputTokens = typeof event.input_tokens === "number" ? event.input_tokens : 0;
+        const usage = contextWindow > 0
+          ? {
+              inputTokens,
+              outputTokens: typeof event.output_tokens === "number" ? event.output_tokens : 0,
+              cacheReadTokens: typeof event.cache_read_tokens === "number" ? event.cache_read_tokens : 0,
+              contextWindow,
+              totalCostUsd: typeof event.total_cost_usd === "number" ? event.total_cost_usd : null,
+              percent: (inputTokens / contextWindow) * 100,
+            }
+          : null;
+
+        if (event.workspace && eventBot && usage) {
+          contextUsageCache.set(chatCacheKey(event.workspace, eventRemote, eventBot), usage);
+        }
+
+        if (isCurrentWorkspace && eventBot === bot) {
+          setContextUsage(usage);
+        }
+      }
+
       if (event.type === "research_update" && isCurrentWorkspace) {
         onResearchRefresh();
         if (event.status === "complete") {
@@ -239,6 +282,14 @@ export function useChatModeState({
         if (isCurrentWorkspace && event.bot === bot) {
           const eventMessage = event as unknown as Message;
           if (typeof eventMessage.id === "number") {
+            if (
+              eventMessage.role === "system"
+              && /^Session (reset|cleared|compacted)/i.test(eventMessage.content)
+            ) {
+              contextUsageCache.delete(chatCacheKey(eventMessage.workspace, eventRemote, eventMessage.bot));
+              setContextUsage(null);
+            }
+
             if (
               eventMessage.role === "assistant"
               && eventMessage.content === streamingContentRef.current.trim()
@@ -419,6 +470,7 @@ export function useChatModeState({
     setLoading,
     streamingContent,
     loadingStatus,
+    contextUsage,
     setLoadingStatus,
     hasOlderHistory,
     loadingOlderHistory,
