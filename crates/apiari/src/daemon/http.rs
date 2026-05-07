@@ -9253,6 +9253,143 @@ model = "sonnet"
         assert!(!worker.pr_approved);
     }
 
+    // ── End-to-end: send message routing ─────────────────────────────────
+    //
+    // inject_live_for_test() marks a worker as running in the live set.
+    // pending_for_test() reads what was queued.
+    //
+    // Full pipeline:
+    //   v2_create_worker writes DB row
+    //   → worker is live in WorkerManager
+    //   → v2_send_message finds DB row (not 404)
+    //   → is_live() true → message queued in pending (not dropped, not a dead channel)
+    //   → when agent finishes, pending message triggers resume
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_to_live_worker_queues_in_pending() {
+        // Worker in DB + in live set → send_message queues the message.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        seed_waiting_worker(&db_path, "live-abc1", "ws", Some("myrepo"), false);
+
+        let state = make_test_state_with_db(&db_path);
+        state.worker_manager.inject_live_for_test("live-abc1").await;
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "live-abc1".to_string())),
+            State(state.clone()),
+            Json(V2SendMessageBody {
+                message: "please add tests".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "expected 200 for live worker"
+        );
+
+        // Message must be in the pending queue — not dropped.
+        let pending = state.worker_manager.pending_for_test("live-abc1").await;
+        assert_eq!(
+            pending,
+            vec!["please add tests"],
+            "message must be queued for delivery when agent finishes"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_404_when_worker_not_in_db_even_if_live() {
+        // Worker in live set but NOT in DB → 404. DB is the source of truth.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        let state = make_test_state_with_db(&db_path);
+        state.worker_manager.inject_live_for_test("ghost-xyz").await;
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "ghost-xyz".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "hello ghost".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "worker not in DB must be 404 even if live"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_to_running_worker_not_in_live_map_takes_requeue_not_500() {
+        // Worker in DB (Running) but NOT in live map (daemon restart scenario).
+        // Must take requeue path and not return 500 "not found or not running".
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        // Seed a Running worker with a repo so requeue can attempt dispatch.
+        seed_worker(
+            &db_path,
+            "orphan-run1",
+            "ws",
+            crate::buzz::worker::WorkerState::Running,
+            Some("myrepo"),
+            Some(serde_json::json!({"goal": "fix the bug"})),
+            false,
+            None,
+            false,
+            false,
+            Some("feat/fix"),
+            None,
+            0,
+        );
+
+        let state = make_test_state_with_db(&db_path);
+        // NOT calling inject_live_for_test — simulates post-restart empty live map.
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "orphan-run1".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "are you there?".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        let json = response_json(resp).await;
+        let err = json["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("not found or not running"),
+            "orphaned running worker must not hit send_message dead end: '{err}'"
+        );
+    }
+
     // ── WorkerManager.is_live gate ────────────────────────────────────────
 
     #[tokio::test]

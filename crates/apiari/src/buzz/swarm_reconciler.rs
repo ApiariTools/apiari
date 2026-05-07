@@ -249,7 +249,7 @@ impl SwarmReconciler {
             _ => return Ok(()), // already terminal, nothing to do
         }
 
-        // Worker disappeared — check if its PR merged.
+        // Worker disappeared — check its PR state.
         if let Some(pr_url) = &worker.pr_url {
             let output = std::process::Command::new("gh")
                 .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
@@ -261,10 +261,15 @@ impl SwarmReconciler {
                     self.do_transition(worker, WorkerState::Done)?;
                     return Ok(());
                 }
+                if state == "OPEN" {
+                    // PR still open — worker just lost its worktree (daemon restart etc).
+                    // Leave it alone; user can still see and interact with the PR.
+                    return Ok(());
+                }
             }
         }
 
-        // No PR or PR not merged — worker disappeared, treat as abandoned after grace period.
+        // No PR, or PR is closed/unknown — worker disappeared, treat as abandoned after grace period.
         if let Ok(entered) = worker
             .state_entered_at
             .parse::<chrono::DateTime<chrono::Utc>>()
