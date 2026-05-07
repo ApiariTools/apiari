@@ -20,6 +20,7 @@ const mockWorkers: WorkerV2[] = [
     repo: "apiari",
     branch: "swarm/fix-auth",
     goal: "fix-auth-rate-limit",
+    display_title: "Fix auth rate limiting",
     tests_passing: true,
     branch_ready: false,
     pr_url: null,
@@ -131,7 +132,7 @@ describe("App shell", () => {
   it("renders workers from API in the sidebar", async () => {
     render(<App />);
     // Names appear in both sidebar and dashboard, so use findAllByText
-    expect((await screen.findAllByText("fix-auth-rate-limit")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Fix auth rate limiting")).length).toBeGreaterThan(0);
     expect((await screen.findAllByText("update-deps")).length).toBeGreaterThan(0);
   });
 
@@ -149,12 +150,11 @@ describe("App shell", () => {
     render(<App />);
     // Wait for sidebar to load then click the sidebar worker button
     const sidebarNav = await screen.findByRole("navigation", { name: "Sidebar" });
-    await screen.findAllByText("fix-auth-rate-limit");
+    await screen.findAllByText("Fix auth rate limiting");
     // Get all buttons with that name and click the first (sidebar) one
-    const workerBtns = screen.getAllByRole("button", { name: /fix-auth-rate-limit/ });
+    const workerBtns = screen.getAllByRole("button", { name: /Fix auth rate limiting/ });
     await user.click(workerBtns[0]);
-    // WorkerDetailV2 renders the goal as heading
-    expect(await screen.findByText("fix-auth-rate-limit", { selector: "h1" })).toBeInTheDocument();
+    expect(await screen.findByText("Fix auth rate limiting", { selector: "h1" })).toBeInTheDocument();
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
     // Keep sidebarNav reference to suppress unused warning
     expect(sidebarNav).toBeInTheDocument();
@@ -185,14 +185,14 @@ describe("App shell", () => {
     }));
     render(<App />);
     // Wait for sidebar buttons
-    await screen.findAllByText("fix-auth-rate-limit");
-    const workerBtns = screen.getAllByRole("button", { name: /fix-auth-rate-limit/ });
+    await screen.findAllByText("Fix auth rate limiting");
+    const workerBtns = screen.getAllByRole("button", { name: /Fix auth rate limiting/ });
     await user.click(workerBtns[0]);
-    expect(await screen.findByText("fix-auth-rate-limit", { selector: "h1" })).toBeInTheDocument();
+    expect(await screen.findByText("Fix auth rate limiting", { selector: "h1" })).toBeInTheDocument();
     const updateDepsBtns = screen.getAllByRole("button", { name: /update-deps/ });
     await user.click(updateDepsBtns[0]);
     await waitFor(() => {
-      expect(screen.queryByText("fix-auth-rate-limit", { selector: "h1" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Fix auth rate limiting", { selector: "h1" })).not.toBeInTheDocument();
     });
     expect(await screen.findByText("update-deps", { selector: "h1" })).toBeInTheDocument();
   });

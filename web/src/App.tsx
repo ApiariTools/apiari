@@ -57,13 +57,13 @@ function parseHash(hash: string): { ws: string; type?: EntityType; id?: string }
 }
 
 function workerToSidebarItem(w: WorkerV2): SidebarItem {
-  const goal = w.goal ?? w.branch ?? w.id
-  const shortGoal = goal.length > 40 ? goal.slice(0, 40).replace(/\s+\S*$/, '') + '…' : goal
+  const title = w.display_title ?? w.goal ?? w.branch ?? w.id
+  const shortTitle = title.length > 40 ? title.slice(0, 40).replace(/\s+\S*$/, '') + '…' : title
   const tags: SidebarItem['tags'] = []
   if (w.pr_url) tags.push({ label: 'PR', color: w.pr_approved ? 'green' : 'amber' })
   return {
     id: w.id,
-    name: shortGoal,
+    name: shortTitle,
     status: w.state,
     meta: w.id,
     tags,
