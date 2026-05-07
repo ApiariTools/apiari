@@ -497,26 +497,42 @@ fn read_session_id(db_path: &Path, workspace: &str, worker_id: &str) -> Option<S
 
 // ── Worker path resolution ─────────────────────────────────────────────
 
-/// Look up a worker's paths and agent kind from SQLite.
+/// Look up a worker's paths and agent kind — DB first, state.json fallback.
+///
+/// Workers created before the worktree_path/repo_path columns were added won't
+/// have those values in SQLite. Fall back to reading them from state.json so
+/// old workers still work.
 fn read_worker_paths(
     db_path: &Path,
     workspace: &str,
     worker_id: &str,
 ) -> Result<(PathBuf, PathBuf, PathBuf, AgentKind)> {
-    let store = crate::buzz::worker::WorkerStore::open(db_path)?;
-    let worker = store
-        .get(workspace, worker_id)?
-        .ok_or_else(|| eyre!("worker {worker_id} not found in DB"))?;
+    // Try DB first.
+    let (db_worktree, db_repo, db_kind) = {
+        let store = crate::buzz::worker::WorkerStore::open(db_path)?;
+        let worker = store.get(workspace, worker_id)?;
+        match worker {
+            Some(w) => (
+                w.worktree_path.map(PathBuf::from),
+                w.repo_path.map(PathBuf::from),
+                w.agent_kind.and_then(|k| k.parse::<AgentKind>().ok()),
+            ),
+            None => (None, None, None),
+        }
+    };
 
-    let worktree_path = worker
-        .worktree_path
-        .ok_or_else(|| eyre!("worker {worker_id} has no worktree_path in DB"))?;
-    let worktree_path = PathBuf::from(worktree_path);
-
-    let repo_path = worker
-        .repo_path
-        .ok_or_else(|| eyre!("worker {worker_id} has no repo_path in DB"))?;
-    let repo_path = PathBuf::from(repo_path);
+    // Fall back to state.json for paths missing from DB (old workers).
+    let (worktree_path, repo_path, kind) = match (db_worktree, db_repo) {
+        (Some(wt), Some(rp)) => (wt, rp, db_kind.unwrap_or(AgentKind::Codex)),
+        (db_wt, db_rp) => {
+            let (wt, rp, k) = read_paths_from_state(db_path, workspace, worker_id)?;
+            (
+                db_wt.unwrap_or(wt),
+                db_rp.unwrap_or(rp),
+                db_kind.unwrap_or(k),
+            )
+        }
+    };
 
     // work_dir is three levels above worktree_path (.swarm/wt/<id>)
     let work_dir = worktree_path
@@ -526,12 +542,45 @@ fn read_worker_paths(
         .ok_or_else(|| eyre!("cannot derive work_dir from {}", worktree_path.display()))?
         .to_path_buf();
 
-    let kind = worker
-        .agent_kind
+    Ok((work_dir, worktree_path, repo_path, kind))
+}
+
+/// Read worktree_path, repo_path, agent_kind from state.json for a given worker.
+fn read_paths_from_state(
+    _db_path: &Path,
+    workspace: &str,
+    worker_id: &str,
+) -> Result<(PathBuf, PathBuf, AgentKind)> {
+    let ws_root = crate::config::discover_workspaces()
+        .map_err(|e| eyre!("could not discover workspaces: {e}"))?
+        .into_iter()
+        .find(|ws| ws.name == workspace)
+        .ok_or_else(|| eyre!("workspace '{workspace}' not found in config"))?
+        .config
+        .root;
+
+    let state_path = ws_root.join(".swarm").join("state.json");
+    let raw = std::fs::read_to_string(&state_path)
+        .map_err(|_| eyre!("state.json not found at {}", state_path.display()))?;
+    let state: serde_json::Value = serde_json::from_str(&raw)?;
+
+    let wt = state["worktrees"]
+        .as_array()
+        .and_then(|arr| arr.iter().find(|e| e["id"].as_str() == Some(worker_id)))
+        .ok_or_else(|| eyre!("worker {worker_id} not found in state.json"))?;
+
+    let worktree_path = wt["worktree_path"]
+        .as_str()
+        .ok_or_else(|| eyre!("worker {worker_id} has no worktree_path in state.json"))?;
+    let repo_path = wt["repo_path"]
+        .as_str()
+        .ok_or_else(|| eyre!("worker {worker_id} has no repo_path in state.json"))?;
+    let kind = wt["agent_kind"]
+        .as_str()
         .and_then(|k| k.parse::<AgentKind>().ok())
         .unwrap_or(AgentKind::Codex);
 
-    Ok((work_dir, worktree_path, repo_path, kind))
+    Ok((PathBuf::from(worktree_path), PathBuf::from(repo_path), kind))
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
