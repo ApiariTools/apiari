@@ -149,6 +149,9 @@ pub struct SwarmReconcilerConfig {
     /// Broadcast sender for worker_v2_state WebSocket events.
     /// Optional — if not provided, events are not emitted.
     pub event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    /// DB path for opening TaskStore to auto-promote task stages.
+    /// Optional — task promotion is skipped when not provided.
+    pub db_path: Option<std::path::PathBuf>,
 }
 
 /// The actual reconciler logic — separated from the task for testability.
@@ -157,6 +160,7 @@ pub struct SwarmReconciler {
     swarm_dir: PathBuf,
     store: WorkerStore,
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    db_path: Option<std::path::PathBuf>,
 }
 
 impl SwarmReconciler {
@@ -171,6 +175,7 @@ impl SwarmReconciler {
             swarm_dir,
             store,
             event_tx: config.event_tx,
+            db_path: config.db_path,
         })
     }
 
@@ -488,12 +493,70 @@ impl SwarmReconciler {
             worker.id, worker.state, new_state
         );
         self.store
-            .transition(&self.workspace, &worker.id, new_state)?;
+            .transition(&self.workspace, &worker.id, new_state.clone())?;
         // Re-fetch to get fresh label for the event
         if let Some(updated) = self.store.get(&self.workspace, &worker.id)? {
             self.emit_event(&updated)?;
         }
+        // Auto-promote associated task stage based on the new worker state.
+        self.advance_task_for_worker(&worker.id, new_state);
         Ok(())
+    }
+
+    /// Advance the task stage for any task linked to this worker.
+    ///
+    /// - Worker → Running:  Triage → InProgress (work has started)
+    /// - Worker → Done:     InProgress → InAiReview (PR is open, needs review)
+    /// - Worker → Waiting:  no stage change (interim state)
+    fn advance_task_for_worker(&self, worker_id: &str, new_state: WorkerState) {
+        use crate::buzz::task::{TaskStage, store::TaskStore};
+
+        let target_from = match new_state {
+            WorkerState::Running => TaskStage::Triage,
+            WorkerState::Done => TaskStage::InProgress,
+            _ => return,
+        };
+        let target_to = match new_state {
+            WorkerState::Running => TaskStage::InProgress,
+            WorkerState::Done => TaskStage::InAiReview,
+            _ => return,
+        };
+
+        let Some(ref db_path) = self.db_path else {
+            return;
+        };
+
+        let task_store = match TaskStore::open(db_path) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("[reconciler] could not open task store for promotion: {e}");
+                return;
+            }
+        };
+
+        let task = match task_store.find_task_by_worker(&self.workspace, worker_id) {
+            Ok(Some(t)) => t,
+            Ok(None) => return,
+            Err(e) => {
+                warn!("[reconciler] find_task_by_worker error for {worker_id}: {e}");
+                return;
+            }
+        };
+
+        if task.stage != target_from {
+            return;
+        }
+
+        match task_store.update_task_stage(&task.id, &target_to) {
+            Ok(()) => info!(
+                "[reconciler] task {} promoted {:?} → {:?} (worker={worker_id})",
+                task.id, target_from, target_to
+            ),
+            Err(e) => warn!(
+                "[reconciler] failed to promote task {} for worker {worker_id}: {e}",
+                task.id
+            ),
+        }
     }
 
     fn emit_event(&self, worker: &Worker) -> Result<()> {
@@ -598,6 +661,7 @@ mod tests {
             swarm_dir: workspace_root.join(".swarm"),
             store,
             event_tx: None,
+            db_path: None,
         }
     }
 

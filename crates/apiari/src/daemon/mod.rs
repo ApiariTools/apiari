@@ -2930,6 +2930,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             workspace: slot.name.clone(),
             workspace_root: slot.config.root.clone(),
             event_tx: None,
+            db_path: Some(slot.db_path.clone()),
         };
         crate::buzz::swarm_reconciler::spawn_reconciler(reconciler_config, conn);
         info!("[{}] swarm reconciler started", slot.name);
