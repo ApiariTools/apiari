@@ -1028,6 +1028,8 @@ struct HiveWorkspaceSection {
     description: Option<String>,
     #[serde(default)]
     default_agent: Option<String>,
+    #[serde(default)]
+    worker_isolation: Option<WorkerIsolation>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1149,6 +1151,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
                 .dispatch
                 .as_ref()
                 .and_then(|dispatch| dispatch.default_dispatch_repo.clone()),
+            worker_isolation: value.workspace.worker_isolation.clone().unwrap_or_default(),
         },
         review: ReviewConfig::default(),
         commands: vec![],
@@ -1691,6 +1694,29 @@ pub struct CommandConfig {
     pub restart: bool,
 }
 
+/// How worker directories are created.
+///
+/// `worktree` — `git worktree add` (fast, low disk use, but no node_modules/build artifacts).
+/// `copy`     — full directory copy; on macOS/APFS uses clonefile (CoW, instant + near-zero
+///              extra disk); on Linux falls back to `cp -r`. Worker starts with all build
+///              artifacts and node_modules already present — no setup steps needed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerIsolation {
+    #[default]
+    Worktree,
+    Copy,
+}
+
+impl WorkerIsolation {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WorkerIsolation::Worktree => "worktree",
+            WorkerIsolation::Copy => "copy",
+        }
+    }
+}
+
 /// Swarm agent configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmConfig {
@@ -1702,6 +1728,9 @@ pub struct SwarmConfig {
     /// intentionally contains multiple repos.
     #[serde(default)]
     pub default_dispatch_repo: Option<String>,
+    /// How worker directories are created. See [`WorkerIsolation`].
+    #[serde(default)]
+    pub worker_isolation: WorkerIsolation,
 }
 
 impl Default for SwarmConfig {
@@ -1709,6 +1738,7 @@ impl Default for SwarmConfig {
         Self {
             default_agent: default_swarm_agent(),
             default_dispatch_repo: None,
+            worker_isolation: WorkerIsolation::default(),
         }
     }
 }

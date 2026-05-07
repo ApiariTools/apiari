@@ -657,6 +657,10 @@ mod tests {
             updated_at: now,
             display_title: None,
             label: String::new(),
+            worktree_path: None,
+            isolation_mode: None,
+            agent_kind: None,
+            repo_path: None,
         }
     }
 

@@ -49,7 +49,7 @@ impl WorkerManager {
         }
     }
 
-    /// Create a git worktree and spawn an agent. Returns the worker ID.
+    /// Create a worker directory and spawn an agent. Returns the worker ID.
     pub async fn create_worker(
         &self,
         work_dir: &Path,
@@ -57,11 +57,18 @@ impl WorkerManager {
         prompt: &str,
         agent: &str,
     ) -> Result<String> {
-        self.create_worker_with_task_dir(work_dir, repo, prompt, agent, None)
-            .await
+        self.create_worker_with_task_dir(
+            work_dir,
+            repo,
+            prompt,
+            agent,
+            None,
+            crate::config::WorkerIsolation::Worktree,
+        )
+        .await
     }
 
-    /// Create a git worktree, optionally seed .task/ artifacts, and spawn an agent.
+    /// Create a worker directory, optionally seed .task/ artifacts, and spawn an agent.
     pub async fn create_worker_with_task_dir(
         &self,
         work_dir: &Path,
@@ -69,6 +76,7 @@ impl WorkerManager {
         prompt: &str,
         agent: &str,
         task_dir: Option<TaskDirPayload>,
+        isolation: crate::config::WorkerIsolation,
     ) -> Result<String> {
         use apiari_swarm::core::git;
 
@@ -78,6 +86,7 @@ impl WorkerManager {
         let agent_str = agent.to_string();
         let work_dir_copy = work_dir.clone();
         let prompt_copy = prompt.clone();
+        let isolation_clone = isolation.clone();
 
         let (worker_id, branch, repo_path, worktree_path, effective_prompt) =
             tokio::task::spawn_blocking(move || -> Result<_> {
@@ -90,12 +99,23 @@ impl WorkerManager {
                 let branch = git::generate_branch_name(&prompt, short_id);
                 let worktree_path = work_dir.join(".swarm").join("wt").join(&worker_id);
 
-                git::create_worktree(&repo_path, &branch, &worktree_path, Some("origin/main"))?;
-                git::symlink_worktree_files(&repo_path, &worktree_path);
-
-                let cmds = git::read_worktree_setup_commands(&repo_path);
-                if !cmds.is_empty() {
-                    git::run_worktree_setup_commands(&worktree_path, &cmds)?;
+                match isolation_clone {
+                    crate::config::WorkerIsolation::Worktree => {
+                        git::create_worktree(
+                            &repo_path,
+                            &branch,
+                            &worktree_path,
+                            Some("origin/main"),
+                        )?;
+                        git::symlink_worktree_files(&repo_path, &worktree_path);
+                        let cmds = git::read_worktree_setup_commands(&repo_path);
+                        if !cmds.is_empty() {
+                            git::run_worktree_setup_commands(&worktree_path, &cmds)?;
+                        }
+                    }
+                    crate::config::WorkerIsolation::Copy => {
+                        create_repo_copy(&repo_path, &worktree_path, &branch)?;
+                    }
                 }
 
                 if let Some(ref payload) = task_dir {
@@ -150,6 +170,10 @@ impl WorkerManager {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default(),
             &prompt_copy,
+            &worktree_path,
+            isolation.as_str(),
+            &agent_str,
+            &repo_path,
         );
 
         let agent_dir = work_dir_copy.join(".swarm").join("agents").join(&worker_id);
@@ -245,7 +269,7 @@ impl WorkerManager {
         Ok(())
     }
 
-    /// Close a worker: remove from tracking and clean up its worktree.
+    /// Close a worker: remove from tracking and clean up its directory.
     pub async fn close_worker(&self, worker_id: &str) -> Result<()> {
         let was_live = self.live.lock().await.remove(worker_id);
         self.pending.lock().await.remove(worker_id);
@@ -254,21 +278,31 @@ impl WorkerManager {
             return Err(eyre!("worker {worker_id} not found or not running"));
         }
 
-        let (work_dir, worktree_path, repo_path, _) =
-            read_worker_paths(&self.db_path, &self.workspace, worker_id).unwrap_or_else(|_| {
-                (
-                    PathBuf::from("/tmp"),
-                    PathBuf::from("/tmp"),
-                    PathBuf::from("/tmp"),
-                    AgentKind::Codex,
-                )
-            });
+        // Best-effort: look up paths and isolation mode from DB for cleanup.
+        let paths = read_worker_paths(&self.db_path, &self.workspace, worker_id);
+        let isolation_mode = crate::buzz::worker::WorkerStore::open(&self.db_path)
+            .ok()
+            .and_then(|s| s.get(&self.workspace, worker_id).ok().flatten())
+            .and_then(|w| w.isolation_mode)
+            .unwrap_or_else(|| "worktree".to_string());
 
         let wt_id = worker_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let _ = apiari_swarm::core::git::remove_worktree(&repo_path, &worktree_path);
-            let _ = apiari_swarm::core::git::delete_branch(&repo_path, &wt_id);
-            update_state_phase(&work_dir, &wt_id, "failed");
+            if let Ok((work_dir, worktree_path, repo_path, _)) = paths {
+                match isolation_mode.as_str() {
+                    "copy" => {
+                        // Just delete the directory; branch lives only in the copy's .git
+                        let _ = std::fs::remove_dir_all(&worktree_path);
+                    }
+                    _ => {
+                        // git worktree remove + delete branch from main repo
+                        let _ =
+                            apiari_swarm::core::git::remove_worktree(&repo_path, &worktree_path);
+                        let _ = apiari_swarm::core::git::delete_branch(&repo_path, &wt_id);
+                    }
+                }
+                update_state_phase(&work_dir, &wt_id, "failed");
+            }
         });
 
         Ok(())
@@ -422,16 +456,28 @@ fn persist_session_id(work_dir: &Path, worker_id: &str, session_id: &str) {
     }
 }
 
-fn read_session_id(db_path: &Path, workspace: &str, _worker_id: &str) -> Option<String> {
-    // Try SQLite worker record first (future: store session_id there).
-    // Fall back to state.json.
-    let _ = (db_path, workspace); // reserved for future DB storage
-    None // state.json lookup requires knowing work_dir; callers handle it
+fn read_session_id(db_path: &Path, workspace: &str, worker_id: &str) -> Option<String> {
+    let store = crate::buzz::worker::WorkerStore::open(db_path).ok()?;
+    let worker = store.get(workspace, worker_id).ok()??;
+    let worktree_path = PathBuf::from(worker.worktree_path?);
+    // worktree_path is <work_dir>/.swarm/wt/<id> — climb three levels to work_dir
+    let work_dir = worktree_path.parent()?.parent()?.parent()?;
+    let raw = std::fs::read_to_string(work_dir.join(".swarm").join("state.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let worktrees = json
+        .get("worktrees")
+        .and_then(|v| v.as_array())
+        .or_else(|| json.as_array())?;
+    worktrees
+        .iter()
+        .find(|wt| wt.get("id").and_then(|v| v.as_str()) == Some(worker_id))
+        .and_then(|wt| wt.get("session_id").and_then(|v| v.as_str()))
+        .map(|s| s.to_string())
 }
 
 // ── Worker path resolution ─────────────────────────────────────────────
 
-/// Look up a worker's paths and agent kind from SQLite + state.json.
+/// Look up a worker's paths and agent kind from SQLite.
 fn read_worker_paths(
     db_path: &Path,
     workspace: &str,
@@ -442,26 +488,90 @@ fn read_worker_paths(
         .get(workspace, worker_id)?
         .ok_or_else(|| eyre!("worker {worker_id} not found in DB"))?;
 
-    let _repo_name = worker
-        .repo
-        .ok_or_else(|| eyre!("worker {worker_id} has no repo"))?;
+    let worktree_path = worker
+        .worktree_path
+        .ok_or_else(|| eyre!("worker {worker_id} has no worktree_path in DB"))?;
+    let worktree_path = PathBuf::from(worktree_path);
 
-    // We don't store full paths in SQLite yet — derive from state.json.
-    // For now return placeholder paths; v2_send_message's requeue path handles
-    // the full case when the agent isn't in the live map.
-    Err(eyre!(
-        "worker {worker_id} is not live — use requeue path to resume"
-    ))
+    let repo_path = worker
+        .repo_path
+        .ok_or_else(|| eyre!("worker {worker_id} has no repo_path in DB"))?;
+    let repo_path = PathBuf::from(repo_path);
+
+    // work_dir is three levels above worktree_path (.swarm/wt/<id>)
+    let work_dir = worktree_path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .ok_or_else(|| eyre!("cannot derive work_dir from {}", worktree_path.display()))?
+        .to_path_buf();
+
+    let kind = worker
+        .agent_kind
+        .and_then(|k| k.parse::<AgentKind>().ok())
+        .unwrap_or(AgentKind::Codex);
+
+    Ok((work_dir, worktree_path, repo_path, kind))
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
+/// Create a worker directory by copying the repo (APFS CoW on macOS, plain cp elsewhere).
+/// Returns the destination path on success.
+fn create_repo_copy(repo_path: &Path, dest_path: &Path, branch: &str) -> Result<()> {
+    use std::process::Command;
+
+    // On macOS, `-c` enables clonefile (CoW) — instant on APFS, near-zero extra disk.
+    // On other platforms, fall back to a plain recursive copy.
+    #[cfg(target_os = "macos")]
+    let status = Command::new("cp")
+        .args([
+            "-rc",
+            &repo_path.to_string_lossy(),
+            &dest_path.to_string_lossy(),
+        ])
+        .status()?;
+
+    #[cfg(not(target_os = "macos"))]
+    let status = Command::new("cp")
+        .args([
+            "-r",
+            &repo_path.to_string_lossy(),
+            &dest_path.to_string_lossy(),
+        ])
+        .status()?;
+
+    if !status.success() {
+        return Err(eyre!("failed to copy repo to {}", dest_path.display()));
+    }
+
+    // Create and switch to a new branch in the copy.
+    let out = Command::new("git")
+        .args(["checkout", "-b", branch])
+        .current_dir(dest_path)
+        .output()?;
+
+    if !out.status.success() {
+        return Err(eyre!(
+            "failed to create branch {branch}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn upsert_worker_db_record(
     db_path: &Path,
     workspace: &str,
     worker_id: &str,
     repo: &str,
     prompt: &str,
+    worktree_path: &Path,
+    isolation_mode: &str,
+    agent_kind: &str,
+    repo_path: &Path,
 ) {
     let Ok(store) = crate::buzz::worker::WorkerStore::open(db_path) else {
         tracing::warn!(worker_id, "failed to open worker store for DB upsert");
@@ -493,6 +603,10 @@ fn upsert_worker_db_record(
         state_entered_at: now.clone(),
         created_at: now.clone(),
         updated_at: now,
+        worktree_path: Some(worktree_path.to_string_lossy().to_string()),
+        isolation_mode: Some(isolation_mode.to_string()),
+        agent_kind: Some(agent_kind.to_string()),
+        repo_path: Some(repo_path.to_string_lossy().to_string()),
         label: String::new(),
     };
     if let Err(e) = store.upsert(&worker) {
@@ -954,7 +1068,18 @@ mod tests {
     fn upsert_worker_db_record_creates_findable_row() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
-        upsert_worker_db_record(&db_path, "myws", "w-abc1", "myrepo", "fix the bug");
+        let p = std::path::Path::new("/tmp");
+        upsert_worker_db_record(
+            &db_path,
+            "myws",
+            "w-abc1",
+            "myrepo",
+            "fix the bug",
+            p,
+            "worktree",
+            "codex",
+            p,
+        );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         let worker = store.get("myws", "w-abc1").unwrap().unwrap();
         assert_eq!(worker.id, "w-abc1");
@@ -968,12 +1093,17 @@ mod tests {
     fn upsert_worker_db_record_trims_goal_from_multiline_prompt() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
+        let p = std::path::Path::new("/tmp");
         upsert_worker_db_record(
             &db_path,
             "ws",
             "w-0001",
             "repo",
             "\n\nfix auth bug\n\ncontext",
+            p,
+            "worktree",
+            "codex",
+            p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         let worker = store.get("ws", "w-0001").unwrap().unwrap();
@@ -984,8 +1114,13 @@ mod tests {
     fn upsert_worker_db_record_appears_in_list() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
-        upsert_worker_db_record(&db_path, "ws", "w-list1", "repo", "task one");
-        upsert_worker_db_record(&db_path, "ws", "w-list2", "repo", "task two");
+        let p = std::path::Path::new("/tmp");
+        upsert_worker_db_record(
+            &db_path, "ws", "w-list1", "repo", "task one", p, "worktree", "codex", p,
+        );
+        upsert_worker_db_record(
+            &db_path, "ws", "w-list2", "repo", "task two", p, "worktree", "codex", p,
+        );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         let workers = store.list("ws").unwrap();
         let ids: Vec<&str> = workers.iter().map(|w| w.id.as_str()).collect();
@@ -997,8 +1132,13 @@ mod tests {
     fn upsert_worker_db_record_workspace_isolation() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
-        upsert_worker_db_record(&db_path, "ws-a", "w-0001", "repo", "task");
-        upsert_worker_db_record(&db_path, "ws-b", "w-0002", "repo", "task");
+        let p = std::path::Path::new("/tmp");
+        upsert_worker_db_record(
+            &db_path, "ws-a", "w-0001", "repo", "task", p, "worktree", "codex", p,
+        );
+        upsert_worker_db_record(
+            &db_path, "ws-b", "w-0002", "repo", "task", p, "worktree", "codex", p,
+        );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         assert_eq!(store.list("ws-a").unwrap().len(), 1);
         assert_eq!(store.list("ws-b").unwrap().len(), 1);
@@ -1009,8 +1149,13 @@ mod tests {
     fn upsert_worker_db_record_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
-        upsert_worker_db_record(&db_path, "ws", "w-idem", "repo", "task");
-        upsert_worker_db_record(&db_path, "ws", "w-idem", "repo", "task");
+        let p = std::path::Path::new("/tmp");
+        upsert_worker_db_record(
+            &db_path, "ws", "w-idem", "repo", "task", p, "worktree", "codex", p,
+        );
+        upsert_worker_db_record(
+            &db_path, "ws", "w-idem", "repo", "task", p, "worktree", "codex", p,
+        );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         assert_eq!(
             store
@@ -1027,6 +1172,9 @@ mod tests {
     fn upsert_worker_db_record_survives_missing_db_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("nonexistent").join("test.db");
-        upsert_worker_db_record(&db_path, "ws", "w-0001", "repo", "task"); // no panic
+        let p = std::path::Path::new("/tmp");
+        upsert_worker_db_record(
+            &db_path, "ws", "w-0001", "repo", "task", p, "worktree", "codex", p,
+        ); // no panic
     }
 }

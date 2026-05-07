@@ -91,6 +91,16 @@ pub struct Worker {
     pub updated_at: String,
     /// Short LLM-generated title for display (stored in DB, filled in by row_to_worker).
     pub display_title: Option<String>,
+    /// Filesystem path to the worker's directory (worktree or copy). Stored so
+    /// the daemon can resume or clean up without reading state.json.
+    pub worktree_path: Option<String>,
+    /// How the directory was created: "worktree" or "copy". Determines cleanup
+    /// behaviour — `git worktree remove` vs `rm -rf`.
+    pub isolation_mode: Option<String>,
+    /// Agent kind: "claude", "codex", "gemini". Stored so resumes use the same agent.
+    pub agent_kind: Option<String>,
+    /// Filesystem path to the main repo (needed for worktree removal and branch deletion).
+    pub repo_path: Option<String>,
     /// Derived display label — computed, never stored in DB.
     #[serde(skip_deserializing)]
     pub label: String,
@@ -186,7 +196,11 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             state_entered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            display_title TEXT
+            display_title TEXT,
+            worktree_path TEXT,
+            isolation_mode TEXT,
+            agent_kind TEXT,
+            repo_path TEXT
         );
 
         CREATE TABLE IF NOT EXISTS worker_hooks (
@@ -203,12 +217,30 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         ",
     )
     .wrap_err("failed to create worker tables")?;
-    // Migration: add display_title column to existing databases.
-    // Ignore only "duplicate column" errors; surface anything else.
-    if let Err(e) = conn.execute_batch("ALTER TABLE workers ADD COLUMN display_title TEXT") {
-        let msg = e.to_string();
-        if !msg.contains("duplicate column") {
-            return Err(e).wrap_err("failed to migrate workers table (add display_title)");
+    // Migrations: add columns to existing databases. Ignore "duplicate column" errors.
+    for (col, ddl) in [
+        (
+            "display_title",
+            "ALTER TABLE workers ADD COLUMN display_title TEXT",
+        ),
+        (
+            "worktree_path",
+            "ALTER TABLE workers ADD COLUMN worktree_path TEXT",
+        ),
+        (
+            "isolation_mode",
+            "ALTER TABLE workers ADD COLUMN isolation_mode TEXT",
+        ),
+        (
+            "agent_kind",
+            "ALTER TABLE workers ADD COLUMN agent_kind TEXT",
+        ),
+        ("repo_path", "ALTER TABLE workers ADD COLUMN repo_path TEXT"),
+    ] {
+        if let Err(e) = conn.execute_batch(ddl)
+            && !e.to_string().contains("duplicate column")
+        {
+            return Err(e).wrap_err(format!("failed to migrate workers table (add {col})"));
         }
     }
     Ok(())
@@ -264,8 +296,9 @@ impl WorkerStore {
              (id, workspace, state, brief, repo, branch, goal,
               tests_passing, branch_ready, pr_url, pr_approved, is_stalled,
               revision_count, review_mode, blocked_reason,
-              last_output_at, state_entered_at, created_at, updated_at, display_title)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+              last_output_at, state_entered_at, created_at, updated_at, display_title,
+              worktree_path, isolation_mode, agent_kind, repo_path)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
              ON CONFLICT(id) DO UPDATE SET
                workspace       = excluded.workspace,
                state           = excluded.state,
@@ -284,7 +317,11 @@ impl WorkerStore {
                last_output_at  = excluded.last_output_at,
                state_entered_at= excluded.state_entered_at,
                updated_at      = excluded.updated_at,
-               display_title   = COALESCE(excluded.display_title, workers.display_title)",
+               display_title   = COALESCE(excluded.display_title, workers.display_title),
+               worktree_path   = COALESCE(excluded.worktree_path, workers.worktree_path),
+               isolation_mode  = COALESCE(excluded.isolation_mode, workers.isolation_mode),
+               agent_kind      = COALESCE(excluded.agent_kind, workers.agent_kind),
+               repo_path       = COALESCE(excluded.repo_path, workers.repo_path)",
             params![
                 worker.id,
                 worker.workspace,
@@ -306,6 +343,10 @@ impl WorkerStore {
                 worker.created_at,
                 worker.updated_at,
                 worker.display_title,
+                worker.worktree_path,
+                worker.isolation_mode,
+                worker.agent_kind,
+                worker.repo_path,
             ],
         )
         .wrap_err("upsert worker")?;
@@ -319,7 +360,8 @@ impl WorkerStore {
             "SELECT id,workspace,state,brief,repo,branch,goal,
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
-                    last_output_at,state_entered_at,created_at,updated_at,display_title
+                    last_output_at,state_entered_at,created_at,updated_at,display_title,
+                    worktree_path,isolation_mode,agent_kind,repo_path
              FROM workers WHERE workspace=?1 AND id=?2",
             params![workspace, id],
             row_to_worker,
@@ -341,7 +383,8 @@ impl WorkerStore {
             "SELECT id,workspace,state,brief,repo,branch,goal,
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
-                    last_output_at,state_entered_at,created_at,updated_at,display_title
+                    last_output_at,state_entered_at,created_at,updated_at,display_title,
+                    worktree_path,isolation_mode,agent_kind,repo_path
              FROM workers WHERE workspace=?1
              ORDER BY updated_at DESC",
         )?;
@@ -523,6 +566,10 @@ fn row_to_worker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worker> {
         created_at: row.get(17)?,
         updated_at: row.get(18)?,
         display_title: row.get(19)?,
+        worktree_path: row.get(20)?,
+        isolation_mode: row.get(21)?,
+        agent_kind: row.get(22)?,
+        repo_path: row.get(23)?,
         // label is filled in by the caller
         label: String::new(),
     })
@@ -557,6 +604,10 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             display_title: None,
+            worktree_path: None,
+            isolation_mode: None,
+            agent_kind: None,
+            repo_path: None,
             label: String::new(),
         }
     }

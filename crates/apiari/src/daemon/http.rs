@@ -1925,6 +1925,7 @@ async fn redispatch_workspace_worker(
             &prompt,
             &ws.config.swarm.default_agent,
             Some(task_dir),
+            ws.config.swarm.worker_isolation.clone(),
         )
         .await
         .map_err(|e| {
@@ -4409,6 +4410,10 @@ async fn v2_create_worker(
         created_at: now.clone(),
         updated_at: now,
         display_title: None,
+        worktree_path: None,
+        isolation_mode: None,
+        agent_kind: None,
+        repo_path: None,
         label: String::new(),
     };
 
@@ -4435,11 +4440,13 @@ async fn v2_create_worker(
     let _ = std::fs::remove_file(&prompt_file); // prompt content is passed directly
     let swarm_result = state
         .worker_manager
-        .create_worker(
+        .create_worker_with_task_dir(
             &ws.config.root,
             &body.repo,
             &prompt_content,
             &ws.config.swarm.default_agent,
+            None,
+            ws.config.swarm.worker_isolation.clone(),
         )
         .await;
 
@@ -4796,11 +4803,13 @@ async fn v2_send_message(
 
         let new_swarm_id = match state
             .worker_manager
-            .create_worker(
+            .create_worker_with_task_dir(
                 &ws.config.root,
                 &repo,
                 &prompt,
                 &ws.config.swarm.default_agent,
+                None,
+                ws.config.swarm.worker_isolation.clone(),
             )
             .await
         {
@@ -4851,6 +4860,10 @@ async fn v2_send_message(
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: worker.created_at.clone(),
             updated_at: chrono::Utc::now().to_rfc3339(),
+            worktree_path: None,
+            isolation_mode: None,
+            agent_kind: None,
+            repo_path: None,
             label: String::new(),
         };
         let _ = store.upsert(&updated_worker);
@@ -5036,11 +5049,13 @@ async fn v2_requeue_worker(
 
     let new_swarm_id = match state
         .worker_manager
-        .create_worker(
+        .create_worker_with_task_dir(
             &ws.config.root,
             &repo,
             &prompt,
             &ws.config.swarm.default_agent,
+            None,
+            ws.config.swarm.worker_isolation.clone(),
         )
         .await
     {
@@ -5095,6 +5110,10 @@ async fn v2_requeue_worker(
         created_at: worker.created_at.clone(),
         updated_at: now,
         display_title: worker.display_title.clone(),
+        worktree_path: None,
+        isolation_mode: None,
+        agent_kind: None,
+        repo_path: None,
         label: String::new(),
     };
     let _ = store.upsert(&updated_worker);
@@ -5167,7 +5186,7 @@ async fn auto_requeue_with_feedback(
 
     let new_id = match worker_manager
         .create_worker(workspace_root, &repo, &prompt, "codex")
-        .await
+        .await  // uses worktree isolation (no ws config available here)
     {
         Ok(id) => id,
         Err(e) => {
@@ -5227,6 +5246,10 @@ async fn auto_requeue_with_feedback(
         created_at: worker.created_at.clone(),
         updated_at: now,
         display_title: worker.display_title.clone(),
+        worktree_path: None,
+        isolation_mode: None,
+        agent_kind: None,
+        repo_path: None,
         label: String::new(),
     };
     let _ = store.upsert(&updated_worker);
@@ -8528,6 +8551,10 @@ model = "sonnet"
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
+            worktree_path: None,
+            isolation_mode: None,
+            agent_kind: None,
+            repo_path: None,
             label: String::new(),
         });
     }
@@ -8659,6 +8686,10 @@ model = "sonnet"
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: chrono::Utc::now().to_rfc3339(),
+            worktree_path: None,
+            isolation_mode: None,
+            agent_kind: None,
+            repo_path: None,
             label: String::new(),
         });
     }

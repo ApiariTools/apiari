@@ -1025,6 +1025,10 @@ mod tests {
             updated_at: now,
             display_title: None,
             label: "Queued".to_string(),
+            worktree_path: None,
+            isolation_mode: None,
+            agent_kind: None,
+            repo_path: None,
         }
     }
 
