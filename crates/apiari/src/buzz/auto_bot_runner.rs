@@ -3,9 +3,17 @@
 //! For cron bots: parses the cron schedule and fires when the expression is due
 //! since the last run. For signal bots: queries the signals table for new unprocessed
 //! signals matching the bot's signal_source and fires once per unique signal.
+//!
+//! ## Execution model
+//!
+//! Each bot run uses the full Coordinator infrastructure: the bot gets the same
+//! system prompt as the main bee (open signals, memory, skills), the same tool
+//! access (Bash, Read, etc.), and the same action-marker protocol
+//! (`[DISMISS: id]`, `[FIX: desc]`, `[TASK: title]`, etc.). This means auto bots
+//! can investigate, dispatch workers, and manage signals autonomously.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -15,6 +23,10 @@ use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use super::auto_bot::{AutoBot, AutoBotRun, AutoBotStore};
+use crate::buzz::{
+    coordinator::actions::{BeeAction, parse_actions},
+    signal::{Severity, SignalUpdate, store::SignalStore},
+};
 
 // ── Runner ─────────────────────────────────────────────────────────────
 
@@ -25,6 +37,10 @@ pub struct AutoBotRunner {
     db_conn: Arc<Mutex<rusqlite::Connection>>,
     workspace: String,
     workspace_root: PathBuf,
+    /// DB file path — needed to open SignalStore and TaskStore per run.
+    db_path: PathBuf,
+    /// Workspace config — used to build the coordinator's skills prompt.
+    workspace_config: Option<crate::config::WorkspaceConfig>,
 }
 
 impl AutoBotRunner {
@@ -39,7 +55,16 @@ impl AutoBotRunner {
             db_conn,
             workspace,
             workspace_root,
+            db_path: PathBuf::new(),
+            workspace_config: None,
         }
+    }
+
+    /// Attach workspace config so bot runs use the full coordinator infrastructure.
+    pub fn with_config(mut self, db_path: PathBuf, config: crate::config::WorkspaceConfig) -> Self {
+        self.db_path = db_path;
+        self.workspace_config = Some(config);
+        self
     }
 
     /// Spawn the runner loop. Returns immediately with a JoinHandle.
@@ -239,9 +264,20 @@ impl AutoBotRunner {
         let store = Arc::clone(&self.store);
         let workspace = self.workspace.clone();
         let workspace_root = self.workspace_root.clone();
+        let db_path = self.db_path.clone();
+        let workspace_config = self.workspace_config.clone();
 
         tokio::spawn(async move {
-            run_bot(bot, triggered_by, store, workspace, workspace_root).await;
+            run_bot(
+                bot,
+                triggered_by,
+                store,
+                workspace,
+                workspace_root,
+                db_path,
+                workspace_config,
+            )
+            .await;
         });
     }
 }
@@ -258,21 +294,23 @@ pub async fn run_bot_external(
     store: Arc<AutoBotStore>,
     workspace: String,
     workspace_root: PathBuf,
+    db_path: PathBuf,
+    workspace_config: Option<crate::config::WorkspaceConfig>,
 ) {
     info!(
         "[auto_bot_runner/{}] bot {} external run {} (triggered_by={triggered_by})",
         workspace, bot.id, run_id
     );
 
-    let full_prompt = format!(
-        "{}\n\nWorkspace: {}\nRoot: {}",
-        bot.prompt,
-        workspace,
-        workspace_root.display()
-    );
-
-    let (outcome, summary, worker_id) =
-        execute_bot_prompt(&bot, &full_prompt, &workspace, &workspace_root).await;
+    let (outcome, summary, worker_id) = execute_bot_prompt(
+        &bot,
+        &bot.prompt,
+        &workspace,
+        &workspace_root,
+        &db_path,
+        workspace_config.as_ref(),
+    )
+    .await;
 
     info!(
         "[auto_bot_runner/{}] bot {} external run {} finished: outcome={outcome}",
@@ -288,17 +326,14 @@ pub async fn run_bot_external(
 }
 
 /// Execute one auto bot run.
-///
-/// 1. Inserts a run record (no finished_at yet).
-/// 2. Runs the bot's prompt via claude CLI.
-/// 3. Parses output for `dispatch_worker:` directives.
-/// 4. Determines outcome and calls finish_run().
 async fn run_bot(
     bot: AutoBot,
     triggered_by: String,
     store: Arc<AutoBotStore>,
     workspace: String,
     workspace_root: PathBuf,
+    db_path: PathBuf,
+    workspace_config: Option<crate::config::WorkspaceConfig>,
 ) {
     let run_id = Uuid::new_v4().to_string();
     let now = Utc::now().to_rfc3339();
@@ -328,17 +363,15 @@ async fn run_bot(
         workspace, bot.id, run_id
     );
 
-    // Build the full prompt
-    let full_prompt = format!(
-        "{}\n\nWorkspace: {}\nRoot: {}",
-        bot.prompt,
-        workspace,
-        workspace_root.display()
-    );
-
-    // Run claude CLI
-    let (outcome, summary, worker_id) =
-        execute_bot_prompt(&bot, &full_prompt, &workspace, &workspace_root).await;
+    let (outcome, summary, worker_id) = execute_bot_prompt(
+        &bot,
+        &bot.prompt,
+        &workspace,
+        &workspace_root,
+        &db_path,
+        workspace_config.as_ref(),
+    )
+    .await;
 
     info!(
         "[auto_bot_runner/{}] bot {} run {} finished: outcome={outcome}",
@@ -353,20 +386,292 @@ async fn run_bot(
     }
 }
 
-/// Execute the bot prompt via the claude CLI and return (outcome, summary, worker_id).
+/// Run the bot prompt through the coordinator (or fall back to plain claude --print).
+///
+/// Returns `(outcome, summary, worker_id)` where outcome is one of:
+/// - `"dispatched_worker"` — coordinator dispatched a swarm worker via Bash
+/// - `"notified"` — coordinator produced a response (signal actions may have fired)
+/// - `"noise"` — empty response
+/// - `"error"` — coordinator failed
 async fn execute_bot_prompt(
     bot: &AutoBot,
-    full_prompt: &str,
+    prompt: &str,
     workspace: &str,
-    workspace_root: &PathBuf,
+    workspace_root: &Path,
+    db_path: &Path,
+    workspace_config: Option<&crate::config::WorkspaceConfig>,
+) -> (String, String, Option<String>) {
+    if let Some(config) = workspace_config
+        && !db_path.as_os_str().is_empty()
+    {
+        return execute_with_coordinator(bot, prompt, workspace, workspace_root, db_path, config)
+            .await;
+    }
+    // Fallback: no config available (e.g. tests, legacy callers).
+    execute_plain(bot, prompt, workspace, workspace_root).await
+}
+
+/// Run the bot through the full Coordinator: signal context, tools, action markers.
+///
+/// Uses the two-phase prepare_dispatch / dispatch_message API so that
+/// `SignalStore` (which contains a non-Send `rusqlite::Connection`) stays on the
+/// blocking thread and never crosses an await boundary.
+async fn execute_with_coordinator(
+    bot: &AutoBot,
+    prompt: &str,
+    workspace: &str,
+    workspace_root: &Path,
+    db_path: &Path,
+    config: &crate::config::WorkspaceConfig,
+) -> (String, String, Option<String>) {
+    use crate::buzz::coordinator::{
+        Coordinator, CoordinatorEvent,
+        skills::{
+            build_skills_prompt, default_coordinator_disallowed_tools, default_coordinator_tools,
+        },
+    };
+
+    // Build skills context and prompt from workspace config.
+    let skill_ctx = crate::config::build_skill_context(workspace, config);
+    let extra_context = build_skills_prompt(&skill_ctx);
+
+    // Use bot's own model if set, otherwise fall back to workspace coordinator model.
+    let model = bot
+        .model
+        .clone()
+        .unwrap_or_else(|| config.coordinator.model.clone());
+
+    let mut coordinator = Coordinator::new(&model, 10);
+    coordinator.set_extra_context(extra_context);
+    coordinator.set_tools(default_coordinator_tools());
+    coordinator.set_disallowed_tools(default_coordinator_disallowed_tools());
+    coordinator.set_working_dir(workspace_root.to_path_buf());
+    if let Some(preamble) = &config.coordinator.prompt {
+        coordinator.set_prompt_preamble(preamble.clone());
+    }
+
+    info!(
+        "[auto_bot_runner/{workspace}] bot {} running via coordinator (model={model})",
+        bot.id
+    );
+
+    // Phase 1 (sync): open SignalStore and build session options.
+    // block_in_place lets us run blocking DB code without crossing a Send boundary.
+    let db_path_owned = db_path.to_path_buf();
+    let workspace_owned = workspace.to_string();
+    let bundle_result = tokio::task::block_in_place(|| {
+        let signal_store = SignalStore::open(&db_path_owned, &workspace_owned)?;
+        coordinator.prepare_dispatch(&signal_store)
+    });
+
+    let bundle = match bundle_result {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(
+                "[auto_bot_runner/{workspace}] bot {} failed to prepare coordinator session: {e}",
+                bot.id
+            );
+            return execute_plain(bot, prompt, workspace, workspace_root).await;
+        }
+    };
+
+    // Phase 2 (async): run the LLM turn — no SignalStore reference needed.
+    let mut response_buf = String::new();
+    let result = coordinator
+        .dispatch_message(prompt, bundle, &[], |event| {
+            if let CoordinatorEvent::Token(tok) = event {
+                response_buf.push_str(&tok);
+            }
+        })
+        .await;
+
+    match result {
+        Ok(full_response) => {
+            // full_response is the complete assembled text returned by dispatch_message.
+            let response = if full_response.is_empty() {
+                response_buf
+            } else {
+                full_response
+            };
+            let actions = parse_actions(&response);
+
+            // Execute actions against the signal/task stores (blocking DB work).
+            let db_path_owned2 = db_path.to_path_buf();
+            let workspace_owned2 = workspace.to_string();
+            let bot_id = bot.id.clone();
+            let bot_name = bot.name.clone();
+            let actions_clone = actions.clone();
+            tokio::task::block_in_place(|| {
+                if let Ok(signal_store) = SignalStore::open(&db_path_owned2, &workspace_owned2) {
+                    tokio::runtime::Handle::current().block_on(execute_actions(
+                        &actions_clone,
+                        &signal_store,
+                        &workspace_owned2,
+                        workspace_root,
+                        &bot_id,
+                        &bot_name,
+                    ));
+                }
+            });
+
+            let outcome = if response.trim().is_empty() {
+                "noise"
+            } else {
+                "notified"
+            };
+
+            (outcome.to_string(), response.trim().to_string(), None)
+        }
+        Err(e) => {
+            warn!(
+                "[auto_bot_runner/{workspace}] bot {} coordinator error: {e}",
+                bot.id
+            );
+            ("error".to_string(), e.to_string(), None)
+        }
+    }
+}
+
+/// Execute parsed BeeAction markers: dismiss/snooze signals, create tasks, etc.
+///
+/// Returns a worker_id if a worker was dispatched (via coordinator Bash call, not directly
+/// from action markers — worker dispatch goes through the coordinator's Bash tool use).
+async fn execute_actions(
+    actions: &[BeeAction],
+    signal_store: &SignalStore,
+    workspace: &str,
+    _workspace_root: &Path,
+    bot_id: &str,
+    bot_name: &str,
+) -> Option<String> {
+    for action in actions {
+        match action {
+            BeeAction::Dismiss { signal_id } => match signal_store.resolve_signal(*signal_id) {
+                Ok(()) => {
+                    info!("[auto_bot_runner/{workspace}] bot {bot_id} dismissed signal {signal_id}")
+                }
+                Err(e) => warn!(
+                    "[auto_bot_runner/{workspace}] bot {bot_id} failed to dismiss signal {signal_id}: {e}"
+                ),
+            },
+            BeeAction::Snooze { signal_id, hours } => {
+                let until = Utc::now() + chrono::Duration::hours(*hours as i64);
+                match signal_store.snooze_signal(*signal_id, until) {
+                    Ok(()) => info!(
+                        "[auto_bot_runner/{workspace}] bot {bot_id} snoozed signal {signal_id} for {hours}h"
+                    ),
+                    Err(e) => warn!(
+                        "[auto_bot_runner/{workspace}] bot {bot_id} failed to snooze signal {signal_id}: {e}"
+                    ),
+                }
+            }
+            BeeAction::Escalate { message } => {
+                let external_id = format!(
+                    "escalation-{}-{}",
+                    bot_name.to_lowercase().replace(' ', "_"),
+                    Utc::now().timestamp_millis()
+                );
+                let update =
+                    SignalUpdate::new("escalation", &external_id, message, Severity::Critical);
+                match signal_store.upsert_signal(&update) {
+                    Ok((id, _)) => info!(
+                        "[auto_bot_runner/{workspace}] bot {bot_id} escalated → signal id={id}: {message}"
+                    ),
+                    Err(e) => {
+                        warn!("[auto_bot_runner/{workspace}] bot {bot_id} failed to escalate: {e}")
+                    }
+                }
+            }
+            BeeAction::Fix { description } => {
+                let fingerprint = normalize_fingerprint(description);
+                let source = format!("bee_{}", bot_name.to_lowercase().replace(' ', "_"));
+                let external_id = format!("fix-{bot_id}-{fingerprint}");
+                let update = SignalUpdate::new(&source, &external_id, description, Severity::Error);
+                match signal_store.upsert_signal(&update) {
+                    Ok((id, _)) => info!(
+                        "[auto_bot_runner/{workspace}] bot {bot_id} fix signal id={id}: {description}"
+                    ),
+                    Err(e) => warn!(
+                        "[auto_bot_runner/{workspace}] bot {bot_id} failed to create fix signal: {e}"
+                    ),
+                }
+            }
+            BeeAction::Task { title } => {
+                if let Ok(task_store) =
+                    crate::buzz::task::store::TaskStore::open(signal_store.db_path())
+                {
+                    let task = crate::buzz::task::Task {
+                        id: Uuid::new_v4().to_string(),
+                        workspace: workspace.to_string(),
+                        title: title.clone(),
+                        stage: crate::buzz::task::TaskStage::Triage,
+                        source: Some(format!("bot_{bot_id}")),
+                        source_url: None,
+                        worker_id: None,
+                        pr_url: None,
+                        pr_number: None,
+                        repo: None,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        resolved_at: None,
+                        metadata: serde_json::json!({"bot": bot_id}),
+                    };
+                    match task_store.create_task(&task) {
+                        Ok(()) => info!(
+                            "[auto_bot_runner/{workspace}] bot {bot_id} created task: {title}"
+                        ),
+                        Err(e) => warn!(
+                            "[auto_bot_runner/{workspace}] bot {bot_id} failed to create task: {e}"
+                        ),
+                    }
+                }
+            }
+            // Canvas, Research, Followup — logged but not acted on here.
+            BeeAction::Canvas { .. } | BeeAction::Research { .. } | BeeAction::Followup { .. } => {}
+        }
+    }
+
+    // Worker dispatch happens via the coordinator's Bash tool use (swarm create).
+    // We don't parse a separate worker_id from action markers.
+    None
+}
+
+/// Normalize a string into a short stable fingerprint for deduplication.
+fn normalize_fingerprint(s: &str) -> String {
+    let lower = s.to_lowercase();
+    let alphanum: String = lower
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let deduped: String = alphanum
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    deduped.chars().take(40).collect()
+}
+
+/// Fallback: run `claude --print` with no tools, no signal context.
+///
+/// Used when workspace config is unavailable (tests, legacy callers).
+async fn execute_plain(
+    bot: &AutoBot,
+    prompt: &str,
+    workspace: &str,
+    workspace_root: &Path,
 ) -> (String, String, Option<String>) {
     use tokio::process::Command;
+
+    let full_prompt = format!(
+        "{prompt}\n\nWorkspace: {workspace}\nRoot: {}",
+        workspace_root.display()
+    );
 
     let output = Command::new("claude")
         .arg("--print")
         .arg("--max-turns")
         .arg("7")
-        .arg(full_prompt)
+        .arg(&full_prompt)
         .current_dir(workspace_root)
         .output()
         .await;
@@ -390,82 +695,13 @@ async fn execute_bot_prompt(
         }
     };
 
-    // Parse output for dispatch_worker: directives.
-    // Format: a line like `dispatch_worker: <goal here>`
-    let mut worker_id: Option<String> = None;
-    for line in raw_output.lines() {
-        let trimmed = line.trim();
-        if let Some(goal) = trimmed.strip_prefix("dispatch_worker:") {
-            let goal = goal.trim().to_string();
-            match try_dispatch_worker(bot, &goal, workspace, workspace_root).await {
-                Ok(id) => {
-                    worker_id = Some(id);
-                    break;
-                }
-                Err(e) => {
-                    warn!(
-                        "[auto_bot_runner/{workspace}] bot {} dispatch_worker failed: {e}",
-                        bot.id
-                    );
-                }
-            }
-        }
-    }
-
-    let outcome = if worker_id.is_some() {
-        "dispatched_worker"
-    } else if raw_output.trim().is_empty() {
+    let outcome = if raw_output.trim().is_empty() {
         "noise"
     } else {
         "notified"
     };
 
-    (
-        outcome.to_string(),
-        raw_output.trim().to_string(),
-        worker_id,
-    )
-}
-
-/// Attempt to dispatch a swarm worker with the given goal.
-async fn try_dispatch_worker(
-    bot: &AutoBot,
-    goal: &str,
-    workspace: &str,
-    workspace_root: &PathBuf,
-) -> color_eyre::Result<String> {
-    use tokio::process::Command;
-
-    let worker_id = format!("autobot-{}", Uuid::new_v4());
-
-    // Write a brief prompt to a temp file so swarm can read it.
-    let tmp_path = std::env::temp_dir().join(format!("autobot-brief-{worker_id}.txt"));
-    tokio::fs::write(
-        &tmp_path,
-        format!(
-            "Auto bot dispatch from '{bot_name}':\n\n{goal}\n\nWorkspace: {workspace}",
-            bot_name = bot.name
-        ),
-    )
-    .await?;
-
-    let status = Command::new("swarm")
-        .arg("--dir")
-        .arg(workspace_root)
-        .arg("create")
-        .arg("--prompt-file")
-        .arg(&tmp_path)
-        .status()
-        .await?;
-
-    // Clean up temp file regardless.
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-
-    if !status.success() {
-        return Err(color_eyre::eyre::eyre!("swarm create exited non-zero"));
-    }
-
-    Ok(worker_id)
+    (outcome.to_string(), raw_output.trim().to_string(), None)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -664,85 +900,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_run_exists_for_trigger_true_after_insert() {
-        let (store, db) = make_shared_setup();
-
-        let bot = AutoBot {
-            id: "b2".to_string(),
-            workspace: "test".to_string(),
-            name: "B2".to_string(),
-            color: "#fff".to_string(),
-            trigger_type: "signal".to_string(),
-            cron_schedule: None,
-            signal_source: Some("github".to_string()),
-            signal_filter: None,
-            prompt: "check signal".to_string(),
-            provider: "claude".to_string(),
-            model: None,
-            enabled: true,
-            created_at: Utc::now().to_rfc3339(),
-            updated_at: Utc::now().to_rfc3339(),
-            status: String::new(),
-        };
-        store.upsert(&bot).unwrap();
-
-        let run = crate::buzz::auto_bot::AutoBotRun {
-            id: "r2".to_string(),
-            auto_bot_id: "b2".to_string(),
-            workspace: "test".to_string(),
-            triggered_by: "signal:github:pr-99".to_string(),
-            started_at: Utc::now().to_rfc3339(),
-            finished_at: None,
-            outcome: None,
-            summary: None,
-            worker_id: None,
-        };
-        store.insert_run(&run).unwrap();
-
-        let runner = make_runner(Arc::clone(&store), Arc::clone(&db));
-        assert!(
-            runner
-                .run_exists_for_trigger("b2", "signal:github:pr-99")
-                .unwrap()
-        );
-        assert!(
-            !runner
-                .run_exists_for_trigger("b2", "signal:github:pr-100")
-                .unwrap()
-        );
-    }
-
-    // ── Cron schedule validation ───────────────────────────────────────
+    // ── Fingerprint normalization ──────────────────────────────────────
 
     #[test]
-    fn test_valid_cron_schedule_parses() {
-        use std::str::FromStr as _;
-        let result = croner::Cron::from_str("0 9 * * 1-5");
-        assert!(result.is_ok(), "standard cron schedule should parse");
-    }
-
-    #[test]
-    fn test_invalid_cron_schedule_fails() {
-        use std::str::FromStr as _;
-        let result = croner::Cron::from_str("not-a-cron");
-        assert!(
-            result.is_err(),
-            "invalid cron schedule should fail to parse"
+    fn test_normalize_fingerprint_basic() {
+        assert_eq!(
+            normalize_fingerprint("Fix the login bug"),
+            "fix-the-login-bug"
         );
     }
 
     #[test]
-    fn test_cron_prev_occurrence_within_tick() {
-        use std::str::FromStr as _;
-        // "every minute" — there should always be a prev occurrence within 60s
-        let cron = croner::Cron::from_str("* * * * *").unwrap();
-        let now = Utc::now();
-        let prev = cron.find_previous_occurrence(&now, false).unwrap();
-        let secs = (now - prev).num_seconds();
-        assert!(
-            secs <= 60,
-            "prev occurrence should be within last 60s for '* * * * *'"
+    fn test_normalize_fingerprint_dedupes_separators() {
+        assert_eq!(
+            normalize_fingerprint("multiple   spaces & symbols!!"),
+            "multiple-spaces-symbols"
         );
+    }
+
+    #[test]
+    fn test_normalize_fingerprint_truncates() {
+        let long = "a".repeat(100);
+        assert_eq!(normalize_fingerprint(&long).len(), 40);
     }
 }

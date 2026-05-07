@@ -2956,12 +2956,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             warn!("[{}] auto_bot_runner: schema error: {e}", slot.name);
             continue;
         }
-        let runner = std::sync::Arc::new(crate::buzz::auto_bot_runner::AutoBotRunner::new(
-            auto_bot_store,
-            conn,
-            slot.name.clone(),
-            slot.config.root.clone(),
-        ));
+        let runner = std::sync::Arc::new(
+            crate::buzz::auto_bot_runner::AutoBotRunner::new(
+                auto_bot_store,
+                conn,
+                slot.name.clone(),
+                slot.config.root.clone(),
+            )
+            .with_config(slot.db_path.clone(), slot.config.clone()),
+        );
         runner.spawn();
         info!("[{}] auto bot runner started", slot.name);
     }

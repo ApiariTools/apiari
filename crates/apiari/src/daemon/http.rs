@@ -5858,6 +5858,8 @@ async fn v2_trigger_auto_bot(
     // Spawn the bot execution asynchronously
     let store = std::sync::Arc::new(store);
     let workspace_root = load_workspace_root(&workspace);
+    let db_path = (*state.db_path).clone();
+    let workspace_config = load_workspace_by_name(&workspace).map(|ws| ws.config);
     let updates_tx = state.updates_tx.clone();
     tokio::spawn(async move {
         crate::buzz::auto_bot_runner::run_bot_external(
@@ -5867,6 +5869,8 @@ async fn v2_trigger_auto_bot(
             store,
             workspace.clone(),
             workspace_root,
+            db_path,
+            workspace_config,
         )
         .await;
 

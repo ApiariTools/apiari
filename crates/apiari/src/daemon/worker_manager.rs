@@ -275,9 +275,7 @@ impl WorkerManager {
     }
 
     pub fn is_live(&self, worker_id: &str) -> bool {
-        self.live
-            .try_lock()
-            .is_ok_and(|m| m.contains(worker_id))
+        self.live.try_lock().is_ok_and(|m| m.contains(worker_id))
     }
 
     #[cfg(test)]
