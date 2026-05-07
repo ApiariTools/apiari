@@ -272,6 +272,19 @@ impl WorkerManager {
         .await
         .map_err(|e| eyre!("failed to resume worker {worker_id}: {e}"))?;
 
+        // Log the user message synchronously so the UI reflects it before the
+        // async task has a chance to write its own events.
+        let events_path = work_dir
+            .join(".swarm")
+            .join("agents")
+            .join(worker_id)
+            .join("events.jsonl");
+        let logger = EventLogger::new(events_path);
+        logger.log(&AgentEvent::UserMessage {
+            timestamp: Utc::now(),
+            text: message.to_string(),
+        });
+
         self.live.lock().await.insert(worker_id.to_string());
 
         let live = Arc::clone(&self.live);

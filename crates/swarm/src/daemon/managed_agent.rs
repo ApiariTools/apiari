@@ -55,8 +55,12 @@ pub struct SpawnOptions {
 /// [`MockManagedAgent`] that runs the given script — used for e2e tests.
 pub async fn spawn_managed_agent(opts: SpawnOptions) -> Result<Box<dyn ManagedAgent>> {
     if let Ok(script) = std::env::var("APIARI_E2E_AGENT") {
-        let agent = MockManagedAgent::spawn_initial(&script).await?;
-        return Ok(Box::new(agent));
+        let agent: Box<dyn ManagedAgent> = if opts.resume_session_id.is_some() {
+            Box::new(MockManagedAgent::spawn_resume(&script, &opts.prompt)?)
+        } else {
+            Box::new(MockManagedAgent::spawn_initial(&script).await?)
+        };
+        return Ok(agent);
     }
     match opts.kind {
         AgentKind::Claude => {
@@ -760,7 +764,7 @@ impl MockManagedAgent {
         })
     }
 
-    fn spawn_resume(script: &str, message: &str) -> Result<Self> {
+    pub fn spawn_resume(script: &str, message: &str) -> Result<Self> {
         let events = run_mock_script(script, &["resume", message])?;
         Ok(Self {
             events: events.into(),

@@ -1,6 +1,8 @@
 import { defineConfig } from "@playwright/test";
 import path from "path";
+import { fileURLToPath } from "url";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DAEMON_PORT = 4299;
 const UI_PORT = 4298;
 const REPO_ROOT = path.resolve(__dirname, "..");

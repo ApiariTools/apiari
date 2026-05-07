@@ -5,14 +5,13 @@
  * scripts/mock-agent (handled by playwright.e2e.config.ts webServer).
  *
  * Flow:
- *  1. Open the apiari workspace workers view
+ *  1. Open the apiari workspace
  *  2. Create a worker via the Quick Dispatch dialog
- *  3. Wait for the worker to appear and finish (mock agent exits fast)
- *  4. Assert the PR link is visible on the worker card
- *  5. Open the worker detail
- *  6. Send a revision message via the chat input
- *  7. Assert the message appears in the timeline
- *  8. Assert the mock agent's revision response appears
+ *  3. App auto-navigates to the new worker's detail view
+ *  4. Assert the PR link is visible in the detail header
+ *  5. Send a revision message via the instruction input
+ *  6. Assert the message appears in the timeline
+ *  7. Assert the mock agent's revision response appears
  */
 
 import { expect, test } from "@playwright/test";
@@ -30,16 +29,13 @@ test.describe("worker lifecycle", () => {
     await page.goto("/");
 
     // Switch to the apiari workspace if not already there.
-    // The workspace selector is in the sidebar.
     const workspaceBtn = page.getByRole("button", { name: WORKSPACE }).first();
     if (await workspaceBtn.isVisible()) {
       await workspaceBtn.click();
     }
 
-    // Open Workers mode.
-    await page.getByRole("button", { name: /Workers/i }).first().click();
-
     // ── 2. Open Quick Dispatch and create a worker ─────────────────────
+    // The "+" button in the Workers sidebar section has aria-label="New worker"
     await page.getByRole("button", { name: "New worker" }).click();
     await expect(
       page.getByRole("dialog", { name: "Quick dispatch" }),
@@ -60,43 +56,40 @@ test.describe("worker lifecycle", () => {
       page.getByRole("dialog", { name: "Quick dispatch" }),
     ).not.toBeVisible({ timeout: 5_000 });
 
-    // ── 3. Wait for the worker to appear in the list ───────────────────
-    // The worker card shows the prompt or a truncated version of it.
-    const workerCard = page
-      .locator("[data-worker-id]")
-      .or(page.getByText("e2e test"))
-      .first();
-    await expect(workerCard).toBeVisible({ timeout: 15_000 });
+    // ── 3. App auto-navigates to the new worker's detail ──────────────
+    // After dispatch App.tsx calls navigateTo('worker', id), which mounts
+    // WorkerDetailV2. Wait for the Timeline tab as a sign the detail loaded.
+    await expect(page.getByTestId("tab-timeline")).toBeVisible({
+      timeout: 15_000,
+    });
 
-    // ── 4. Wait for the PR link to appear ─────────────────────────────
-    // The mock agent outputs PR_OPENED: https://...pull/999
-    // The reconciler picks it up within one poll cycle (≤60s, but mock is fast).
-    const prLink = page.getByRole("link", { name: /PR/i }).first();
+    // ── 4. Wait for the PR link to appear in the detail header ─────────
+    // WorkerDetailV2 renders the PR as <a href="...pull/999">#999</a>.
+    // The mock agent emits PR_OPENED: in its output so the reconciler
+    // picks it up within one poll cycle.
+    const prLink = page.locator(`a[href="${MOCK_PR_URL}"]`).first();
     await expect(prLink).toBeVisible({ timeout: 30_000 });
     await expect(prLink).toHaveAttribute("href", MOCK_PR_URL);
 
-    // ── 5. Open worker detail ──────────────────────────────────────────
-    await workerCard.click();
-
-    // Worker detail panel should show the prompt somewhere.
-    await expect(page.getByText(PROMPT)).toBeVisible({ timeout: 5_000 });
-
-    // Switch to the Chat tab.
-    await page.getByRole("button", { name: "Chat" }).last().click();
-
-    // ── 6. Send a revision message ─────────────────────────────────────
-    const chatInput = page.getByPlaceholder("Message worker...");
+    // ── 5. Send a revision message ─────────────────────────────────────
+    // The Timeline tab is active by default. The instruction input
+    // placeholder is "Send async instruction…" (running/stalled) or
+    // "Send an instruction…" (done).
+    const chatInput = page.getByPlaceholder(/Send.*instruction/i);
     await expect(chatInput).toBeVisible();
     await chatInput.fill(REVISION_MSG);
-    await page.getByRole("button", { name: "Send message" }).click();
+    // The send button has title="Send"
+    await page.locator('button[title="Send"]').click();
 
-    // ── 7. Message appears in timeline immediately ─────────────────────
-    await expect(page.getByText(REVISION_MSG)).toBeVisible({ timeout: 5_000 });
+    // ── 6. Message appears in timeline immediately ─────────────────────
+    await expect(page.getByText(REVISION_MSG).first()).toBeVisible({
+      timeout: 5_000,
+    });
 
-    // ── 8. Mock agent's revision response appears ──────────────────────
-    // The mock agent outputs: "Got your feedback: ... Applying the fix now."
-    await expect(
-      page.getByText(/Got your feedback/i),
-    ).toBeVisible({ timeout: 30_000 });
+    // ── 7. Mock agent's revision response appears ──────────────────────
+    // The mock agent outputs: "Got your feedback: … Applying the fix now."
+    await expect(page.getByText(/Got your feedback/i)).toBeVisible({
+      timeout: 30_000,
+    });
   });
 });

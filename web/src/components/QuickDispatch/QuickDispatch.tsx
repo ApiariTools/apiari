@@ -89,7 +89,7 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
         // ignore — this is best-effort enrichment
       })
 
-      onDispatched(worker.id)
+      onDispatched(worker.worker_id)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Dispatch failed. Please try again.')
       setDispatching(false)

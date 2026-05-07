@@ -4725,11 +4725,16 @@ async fn v2_send_message(
     let worker = match store.get(&workspace, &id) {
         Ok(Some(w)) => w,
         Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": "worker not found"})),
-            )
-                .into_response();
+            // Worker not in DB (e.g. created via swarm CLI directly). Fall back to
+            // worker_manager.send_message which reads paths from state.json.
+            return match state.worker_manager.send_message(&id, &body.message).await {
+                Ok(()) => Json(serde_json::json!({"ok": true})).into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                )
+                    .into_response(),
+            };
         }
         Err(e) => {
             return (
@@ -4753,7 +4758,7 @@ async fn v2_send_message(
 
     // If branch_ready, OR the agent isn't in the live map (daemon restarted and
     // the agent process is gone), spawn a fresh agent with the message prepended.
-    if worker.branch_ready || !state.worker_manager.is_live(&id) {
+    if worker.branch_ready {
         let brief = match &worker.brief {
             Some(b) => b.clone(),
             None => serde_json::json!({}),
@@ -8588,6 +8593,8 @@ model = "sonnet"
         .into_response();
 
         // Must NOT be the WorkerManager "not found or not running" 500.
+        // The handler now takes the send_message/resume path for non-branch_ready
+        // workers; the error relates to missing state.json, not a dead channel.
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
@@ -8595,12 +8602,7 @@ model = "sonnet"
         let err = json["error"].as_str().unwrap_or("");
         assert!(
             !err.contains("not found or not running"),
-            "should have taken requeue path, not send_message 500: got '{err}'"
-        );
-        // The requeue path correctly rejects a worker with no repo.
-        assert!(
-            err.contains("no repo") || err.contains("repo"),
-            "expected 'no repo' error from requeue path, got: '{err}'"
+            "must not hit dead send_message path: got '{err}'"
         );
     }
 
@@ -8705,7 +8707,9 @@ model = "sonnet"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn send_message_404_when_worker_not_in_db() {
+    async fn send_message_error_when_worker_not_found_anywhere() {
+        // Worker not in DB → falls back to worker_manager.send_message (state.json path).
+        // Since state.json also doesn't exist in this test, we get a 500, not 404.
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let _home_guard = install_temp_home(temp.path());
@@ -8725,7 +8729,13 @@ model = "sonnet"
         .await
         .into_response();
 
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_ne!(resp.status(), StatusCode::OK);
+        let json = response_json(resp).await;
+        let err = json["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("not found or not running"),
+            "must not hit dead channel path: '{err}'"
+        );
     }
 
     #[tokio::test]
@@ -8850,7 +8860,11 @@ model = "sonnet"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn send_message_400_when_worker_has_no_repo_and_is_orphaned() {
+    async fn send_message_error_when_orphaned_worker_has_no_paths() {
+        // Worker in DB (no repo, not branch_ready, not live) → send_message →
+        // resume_worker → fails (no worktree_path in DB, no state.json) → 500.
+        // The old "requeue" path that checked for missing repo is no longer taken
+        // for non-branch_ready workers.
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let _home_guard = install_temp_home(temp.path());
@@ -8885,9 +8899,13 @@ model = "sonnet"
         .await
         .into_response();
 
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let json = response_json(resp).await;
-        assert!(json["error"].as_str().unwrap_or("").contains("repo"));
+        let err = json["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("not found or not running"),
+            "must not hit dead send_message path: '{err}'"
+        );
     }
 
     // ── v2_requeue_worker ─────────────────────────────────────────────────
@@ -9346,8 +9364,9 @@ model = "sonnet"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn send_message_404_when_worker_not_in_db_even_if_live() {
-        // Worker in live set but NOT in DB → 404. DB is the source of truth.
+    async fn send_message_200_when_worker_not_in_db_but_live() {
+        // Worker NOT in DB but IS in live set → falls back to worker_manager.send_message
+        // → worker is live → message queued in pending → 200 OK.
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let _home_guard = install_temp_home(temp.path());
@@ -9361,7 +9380,7 @@ model = "sonnet"
 
         let resp = v2_send_message(
             Path(("ws".to_string(), "ghost-xyz".to_string())),
-            State(state),
+            State(state.clone()),
             Json(V2SendMessageBody {
                 message: "hello ghost".to_string(),
             }),
@@ -9371,9 +9390,11 @@ model = "sonnet"
 
         assert_eq!(
             resp.status(),
-            StatusCode::NOT_FOUND,
-            "worker not in DB must be 404 even if live"
+            StatusCode::OK,
+            "live worker not in DB must be queued successfully"
         );
+        let pending = state.worker_manager.pending_for_test("ghost-xyz").await;
+        assert_eq!(pending, vec!["hello ghost"]);
     }
 
     #[tokio::test]
