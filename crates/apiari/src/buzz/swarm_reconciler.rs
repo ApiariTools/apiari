@@ -68,6 +68,63 @@ struct SwarmPr {
     url: Option<String>,
 }
 
+// ── GraphQL batch helpers ──────────────────────────────────────────────
+
+/// Sanitize a worker ID to a valid GraphQL alias (letters, digits, underscores).
+fn gql_alias(worker_id: &str) -> String {
+    let s = worker_id.replace(['-', '.'], "_");
+    format!("wt_{s}")
+}
+
+/// Parse `(owner, repo, pr_number)` from a GitHub PR URL.
+/// `https://github.com/ApiariTools/apiari/pull/21` → `("ApiariTools", "apiari", 21)`
+fn parse_pr_url(url: &str) -> Option<(String, String, u64)> {
+    let path = url.strip_prefix("https://github.com/")?;
+    let parts: Vec<&str> = path.splitn(4, '/').collect();
+    if parts.len() < 4 || parts[2] != "pull" {
+        return None;
+    }
+    Some((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[3].parse().ok()?,
+    ))
+}
+
+/// Fetch the GitHub owner+repo for the workspace root using `gh repo view`.
+fn get_repo_nwo(workspace_root: &Path) -> Option<(String, String)> {
+    let out = std::process::Command::new("gh")
+        .args(["repo", "view", "--json", "owner,name"])
+        .current_dir(workspace_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let val: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).ok()?;
+    Some((
+        val["owner"]["login"].as_str()?.to_string(),
+        val["name"].as_str()?.to_string(),
+    ))
+}
+
+/// Execute a GraphQL query via `gh api graphql -f query=...`.
+fn run_graphql(query: &str) -> Option<serde_json::Value> {
+    let out = std::process::Command::new("gh")
+        .args(["api", "graphql", "-f", &format!("query={query}")])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        warn!(
+            "[graphql] gh api graphql failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return None;
+    }
+    serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).ok()
+}
+
 // ── Per-worker last-seen event timestamp tracking ──────────────────────
 
 /// Read `.swarm/agents/{worker_id}/report.json` written by the worker to
@@ -574,14 +631,12 @@ impl SwarmReconciler {
     /// Check PR approval state for tasks in `InAiReview` and advance to `HumanReview`
     /// when the PR is approved.
     ///
-    /// Called on a slow background interval (every 5 minutes), NOT in the hot
-    /// 5-second reconciler loop. `gh` is an external subprocess — running it
-    /// every 5s per task would be unacceptable.
+    /// Uses a single batched GraphQL query (one alias per PR) instead of N separate
+    /// `gh pr view` calls. Tasks are grouped by owner/repo so multi-repo workspaces
+    /// each get one query.
     ///
-    /// Merged detection is intentionally excluded: when a worker's worktree is
-    /// closed after merging, `apply_disappeared` already calls `gh pr view` once
-    /// at that exact moment and advances the task to Done/Merged. No periodic
-    /// polling needed for that transition.
+    /// Called on a slow background interval (every 5 minutes), NOT in the hot
+    /// 5-second reconciler loop.
     pub fn poll_pr_approvals(&self) {
         use crate::buzz::task::{TaskStage, store::TaskStore};
 
@@ -604,62 +659,67 @@ impl SwarmReconciler {
                 return;
             }
         };
-
-        // No tasks to check — common case, return immediately without spawning gh.
         if tasks.is_empty() {
             return;
         }
 
-        for task in tasks {
-            let pr_url = match &task.pr_url {
-                Some(url) if !url.is_empty() => url.clone(),
-                _ => continue, // task has no PR yet — skip
+        // Parse PR info and group tasks by (owner, repo).
+        let mut by_repo: HashMap<(String, String), Vec<(String, u64)>> = HashMap::new(); // (owner,repo) → [(task_id, pr_number)]
+        for task in &tasks {
+            let Some(ref url) = task.pr_url else { continue };
+            if url.is_empty() {
+                continue;
+            }
+            let Some((owner, repo, number)) = parse_pr_url(url) else {
+                continue;
             };
+            by_repo
+                .entry((owner, repo))
+                .or_default()
+                .push((task.id.clone(), number));
+        }
 
-            // One gh call per task with a PR. Only reaches here if there are
-            // tasks in InAiReview, which should be a small number.
-            let output = std::process::Command::new("gh")
-                .args([
-                    "pr",
-                    "view",
-                    &pr_url,
-                    "--json",
-                    "state,reviewDecision",
-                    "--jq",
-                    "[.state, (.reviewDecision // \"\")]",
-                ])
-                .output();
-
-            let (pr_state, review_decision) = match output {
-                Ok(out) if out.status.success() => {
-                    let raw = String::from_utf8_lossy(&out.stdout);
-                    let parts: Vec<String> = serde_json::from_str(raw.trim()).unwrap_or_default();
-                    (
-                        parts.first().cloned().unwrap_or_default(),
-                        parts.get(1).cloned().unwrap_or_default(),
+        for ((owner, repo), task_prs) in &by_repo {
+            // One alias per PR: pr_{number}: pullRequest(number: N) { state reviewDecision }
+            let aliases: String = task_prs
+                .iter()
+                .map(|(_, number)| {
+                    format!(
+                        r#"pr_{number}: pullRequest(number: {number}) {{ state reviewDecision }}"#
                     )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            let query =
+                format!(r#"{{ repository(owner: "{owner}", name: "{repo}") {{ {aliases} }} }}"#);
+
+            let resp = match run_graphql(&query) {
+                Some(v) => v,
+                None => {
+                    warn!("[reconciler/pr-poll] GraphQL call failed for {owner}/{repo} — skipping");
+                    continue;
                 }
-                _ => continue, // gh unavailable or PR not found — try again next interval
             };
 
-            if review_decision == "APPROVED" && pr_state == "OPEN" {
-                info!(
-                    "[reconciler/pr-poll] task {} PR approved → HumanReview",
-                    task.id
-                );
-                if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::HumanReview) {
-                    warn!(
-                        "[reconciler/pr-poll] task {} → HumanReview failed: {e}",
-                        task.id
-                    );
-                }
-            } else if pr_state == "MERGED" {
-                // Belt-and-suspenders: apply_disappeared handles this when the worker
-                // closes, but catches the rare case where the PR was merged outside
-                // swarm (e.g. merged from GitHub UI after the worktree was already gone).
-                info!("[reconciler/pr-poll] task {} PR merged → Merged", task.id);
-                if let Err(e) = task_store.update_task_stage(&task.id, &TaskStage::Merged) {
-                    warn!("[reconciler/pr-poll] task {} → Merged failed: {e}", task.id);
+            for (task_id, number) in task_prs {
+                let pr_data = &resp["data"]["repository"][format!("pr_{number}")];
+                let state = pr_data["state"].as_str().unwrap_or("");
+                let review_decision = pr_data["reviewDecision"].as_str().unwrap_or("");
+
+                if review_decision == "APPROVED" && state == "OPEN" {
+                    info!("[reconciler/pr-poll] task {task_id} PR approved → HumanReview");
+                    if let Err(e) = task_store.update_task_stage(task_id, &TaskStage::HumanReview) {
+                        warn!("[reconciler/pr-poll] task {task_id} → HumanReview failed: {e}");
+                    }
+                } else if state == "MERGED" {
+                    // Belt-and-suspenders: apply_disappeared handles this when the worker
+                    // closes, but catches the rare case where the PR was merged outside
+                    // swarm (e.g. merged from GitHub UI after the worktree was already gone).
+                    info!("[reconciler/pr-poll] task {task_id} PR merged → Merged");
+                    if let Err(e) = task_store.update_task_stage(task_id, &TaskStage::Merged) {
+                        warn!("[reconciler/pr-poll] task {task_id} → Merged failed: {e}");
+                    }
                 }
             }
         }
@@ -675,79 +735,108 @@ impl SwarmReconciler {
             .or_insert(3);
     }
 
-    /// Call `gh pr view` from the worktree directory to discover an open PR.
-    /// Returns the PR URL on success, None if no PR exists or gh fails.
-    fn discover_pr_url(&self, _worker_id: &str, worktree_path: &Path) -> Option<String> {
-        if !worktree_path.exists() {
-            return None;
-        }
-        let output = std::process::Command::new("gh")
-            .args(["pr", "view", "--json", "url"])
-            .current_dir(worktree_path)
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        let val: serde_json::Value = serde_json::from_str(text.trim()).ok()?;
-        val["url"].as_str().map(|s| s.to_string())
-    }
-
-    /// Drain the PR discovery queue: for each queued worker, attempt `gh pr view`
-    /// from its worktree. On success, write pr_url to DB and dequeue. On miss,
-    /// decrement the attempt counter and dequeue when exhausted.
+    /// Drain the PR discovery queue in a single batched GraphQL query.
     ///
-    /// Called in the 5-min slow loop alongside poll_pr_approvals so we never
-    /// hit GitHub on the hot 5-second path.
+    /// Looks up each queued worker's branch from SQLite, then fires one
+    /// `gh api graphql` call with all branches as aliased `pullRequests` fields.
+    /// Found URLs are written to DB immediately. Missed workers have their attempt
+    /// counter decremented; they are dropped after 3 misses.
+    ///
+    /// If the GraphQL call itself fails (network/auth), all attempts are preserved
+    /// and we retry next cycle — don't penalise workers for infrastructure hiccups.
     pub fn discover_prs_from_queue(&self) {
-        // Snapshot the queue without holding the lock during gh calls.
         let snapshot: Vec<(String, u32)> = {
             let q = self.pr_discovery_queue.lock().unwrap();
             q.iter().map(|(k, v)| (k.clone(), *v)).collect()
         };
-
         if snapshot.is_empty() {
             return;
         }
 
-        for (worker_id, attempts) in snapshot {
-            // Derive worktree path from convention: .swarm/wt/{worker_id}.
-            // Also check if state.json has an explicit path (populated after deserialization).
-            let worktree_path = self.swarm_dir.join("wt").join(&worker_id);
+        // Resolve branch for each queued worker from SQLite.
+        let jobs: Vec<(String, String, u32)> = snapshot
+            .into_iter()
+            .filter_map(|(worker_id, attempts)| {
+                let branch = self
+                    .store
+                    .get(&self.workspace, &worker_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|w| w.branch)?;
+                Some((worker_id, branch, attempts))
+            })
+            .collect();
 
-            match self.discover_pr_url(&worker_id, &worktree_path) {
+        if jobs.is_empty() {
+            return;
+        }
+
+        let workspace_root = self.swarm_dir.parent().unwrap_or(self.swarm_dir.as_path());
+
+        let Some((owner, repo)) = get_repo_nwo(workspace_root) else {
+            return;
+        };
+
+        // One alias per worker: wt_{id}: pullRequests(headRefName: "...") { nodes { url } }
+        let aliases: String = jobs
+            .iter()
+            .map(|(id, branch, _)| {
+                let alias = gql_alias(id);
+                let branch = branch.replace('"', "");
+                format!(
+                    r#"{alias}: pullRequests(headRefName: "{branch}", first: 1, states: [OPEN, MERGED]) {{ nodes {{ url }} }}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let query =
+            format!(r#"{{ repository(owner: "{owner}", name: "{repo}") {{ {aliases} }} }}"#);
+
+        let resp = run_graphql(&query);
+
+        if resp.is_none() {
+            // Whole call failed — preserve all attempts and retry next cycle.
+            warn!("[reconciler/pr-discovery] GraphQL call failed — attempts preserved");
+            return;
+        }
+
+        let repo_data = resp
+            .as_ref()
+            .and_then(|v| v["data"]["repository"].as_object());
+
+        for (worker_id, _branch, attempts) in &jobs {
+            let alias = gql_alias(worker_id);
+            let found_url = repo_data
+                .and_then(|d| d.get(&alias))
+                .and_then(|v| v["nodes"][0]["url"].as_str())
+                .map(|s| s.to_string());
+
+            match found_url {
                 Some(url) => {
-                    info!(
-                        "[reconciler/pr-discovery] {} found PR {} — writing to DB",
-                        worker_id, url
-                    );
+                    info!("[reconciler/pr-discovery] {worker_id} found PR {url} — writing to DB");
                     let _ = self.store.update_properties(
                         &self.workspace,
-                        &worker_id,
+                        worker_id,
                         WorkerPropertyUpdate {
                             pr_url: Some(Some(url)),
                             ..Default::default()
                         },
                     );
-                    if let Ok(Some(w)) = self.store.get(&self.workspace, &worker_id) {
+                    if let Ok(Some(w)) = self.store.get(&self.workspace, worker_id) {
                         let _ = self.emit_event(&w);
                     }
-                    self.pr_discovery_queue.lock().unwrap().remove(&worker_id);
+                    self.pr_discovery_queue.lock().unwrap().remove(worker_id);
                 }
                 None => {
                     let mut q = self.pr_discovery_queue.lock().unwrap();
-                    if attempts <= 1 {
-                        info!(
-                            "[reconciler/pr-discovery] {} gave up after 3 attempts — no PR found",
-                            worker_id
-                        );
-                        q.remove(&worker_id);
+                    if *attempts <= 1 {
+                        info!("[reconciler/pr-discovery] {worker_id} gave up after 3 attempts");
+                        q.remove(worker_id);
                     } else {
                         q.insert(worker_id.clone(), attempts - 1);
                         debug!(
-                            "[reconciler/pr-discovery] {} no PR yet, {} attempts left",
-                            worker_id,
+                            "[reconciler/pr-discovery] {worker_id} no PR yet, {} attempts left",
                             attempts - 1
                         );
                     }
@@ -1185,40 +1274,48 @@ mod tests {
     }
 
     #[test]
-    fn discover_prs_from_queue_removes_after_exhausted_attempts() {
+    fn discover_prs_from_queue_skips_workers_without_branch() {
+        // Workers with no branch in DB are skipped — queue entry stays untouched
+        // because get_repo_nwo will also fail (no git repo in tmp), so the whole
+        // batch returns early before touching attempts.
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
 
-        // Seed with 1 attempt and a path that doesn't exist (gh will fail)
+        // Worker exists in DB but has no branch
+        let w = default_worker("w-no-branch");
+        r.store.upsert(&w).unwrap();
         r.pr_discovery_queue
             .lock()
             .unwrap()
-            .insert("w-missing".to_string(), 1);
+            .insert("w-no-branch".to_string(), 3);
 
         r.discover_prs_from_queue();
 
+        // No branch → no jobs → early return → attempt count unchanged
         let queue = r.pr_discovery_queue.lock().unwrap();
-        assert!(
-            !queue.contains_key("w-missing"),
-            "should be removed after last attempt"
-        );
+        assert_eq!(queue.get("w-no-branch"), Some(&3));
     }
 
     #[test]
-    fn discover_prs_from_queue_decrements_attempts_on_miss() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r = make_reconciler(&tmp);
+    fn parse_pr_url_extracts_owner_repo_number() {
+        let (owner, repo, number) =
+            parse_pr_url("https://github.com/ApiariTools/apiari/pull/21").unwrap();
+        assert_eq!(owner, "ApiariTools");
+        assert_eq!(repo, "apiari");
+        assert_eq!(number, 21);
+    }
 
-        r.pr_discovery_queue
-            .lock()
-            .unwrap()
-            .insert("w-miss".to_string(), 2);
+    #[test]
+    fn parse_pr_url_rejects_non_pr_url() {
+        assert!(parse_pr_url("https://github.com/ApiariTools/apiari").is_none());
+        assert!(parse_pr_url("https://github.com/ApiariTools/apiari/issues/5").is_none());
+        assert!(parse_pr_url("not-a-url").is_none());
+    }
 
-        r.discover_prs_from_queue();
-
-        let queue = r.pr_discovery_queue.lock().unwrap();
-        // Still present, decremented to 1
-        assert_eq!(queue.get("w-miss"), Some(&1));
+    #[test]
+    fn gql_alias_sanitizes_hyphens() {
+        assert_eq!(gql_alias("apiari-e6bf"), "wt_apiari_e6bf");
+        assert_eq!(gql_alias("worker.1"), "wt_worker_1");
     }
 
     #[test]
