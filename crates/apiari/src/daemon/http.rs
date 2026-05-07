@@ -9504,4 +9504,126 @@ model = "sonnet"
             );
         }
     }
+
+    // ── Regression: !is_live must not trigger create_worker ───────────────
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_idle_non_branch_ready_does_not_create_new_worker() {
+        // Regression: before the fix, a worker that was idle (not in live map)
+        // but not branch_ready incorrectly triggered create_worker_with_task_dir,
+        // creating a new worktree and losing session context. The condition was:
+        //   `if worker.branch_ready || !is_live(&id)`
+        // which fired for ANY idle worker. Now only branch_ready triggers requeue.
+        //
+        // The tell-tale sign of the old bug: response contains "new_id".
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        seed_worker(
+            &db_path,
+            "idle-abc1",
+            "ws",
+            crate::buzz::worker::WorkerState::Waiting,
+            Some("myrepo"),
+            Some(serde_json::json!({"goal": "fix the bug"})),
+            false, // branch_ready = false — key condition
+            None,
+            false,
+            false,
+            Some("feat/fix-bug"),
+            None,
+            0,
+        );
+
+        let state = make_test_state_with_db(&db_path);
+        // NOT inject_live_for_test — worker is idle, simulates daemon restart or
+        // agent that finished its first pass.
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "idle-abc1".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "please also add tests".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        let json = response_json(resp).await;
+        assert!(
+            json["new_id"].is_null(),
+            "non-branch_ready idle worker must not trigger requeue: got new_id={:?}",
+            json["new_id"]
+        );
+        let err = json["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("not found or not running"),
+            "must not hit dead send_message path: '{err}'"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_branch_ready_still_creates_new_worker() {
+        // Confirm that branch_ready=true still triggers create_worker_with_task_dir.
+        // The response either succeeds with "new_id" (real repo) or fails at repo
+        // resolution — but must NOT queue in pending like a live worker would.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        seed_worker(
+            &db_path,
+            "ready-abc1",
+            "ws",
+            crate::buzz::worker::WorkerState::Waiting,
+            Some("myrepo"),
+            Some(serde_json::json!({"goal": "fix the bug", "review_mode": "local_first"})),
+            true, // branch_ready = true
+            Some("https://github.com/org/repo/pull/1"),
+            false,
+            false,
+            Some("feat/fix-bug"),
+            None,
+            0,
+        );
+
+        let state = make_test_state_with_db(&db_path);
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "ready-abc1".to_string())),
+            State(state.clone()),
+            Json(V2SendMessageBody {
+                message: "address the review comments".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        let json = response_json(resp).await;
+        let err = json["error"].as_str().unwrap_or("");
+        // Fails at repo resolution (no real git repo) — that's fine.
+        // Key check: must NOT have queued in pending (that would mean it took
+        // the send_message path instead of the requeue path).
+        let pending = state.worker_manager.pending_for_test("ready-abc1").await;
+        assert!(
+            pending.is_empty(),
+            "branch_ready worker must not queue in pending: {:?}",
+            pending
+        );
+        assert!(
+            !err.contains("not found or not running"),
+            "must not hit dead send_message path: '{err}'"
+        );
+    }
 }
