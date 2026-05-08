@@ -183,11 +183,10 @@ export default function Dashboard({ workspace, workers, onSelectWorker, onOpenCo
       <div className={styles.header}>
         <LayoutDashboard size={16} className={styles.headerIcon} />
         <span className={styles.headerTitle}>Overview</span>
-        {onOpenContextBot && (
-          <button
+        <button
             className={styles.askBtn}
             type="button"
-            onClick={() => onOpenContextBot(
+            onClick={() => onOpenContextBot?.(
               {
                 view: 'dashboard',
                 entity_id: null,
@@ -207,7 +206,6 @@ export default function Dashboard({ workspace, workers, onSelectWorker, onOpenCo
             <MessageSquare size={14} />
             <span>Ask</span>
           </button>
-        )}
       </div>
 
       {/* Alert banners — always at top */}
