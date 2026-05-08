@@ -11,8 +11,6 @@ CONFIG_DIR="${HOME}/.config/apiari"
 mkdir -p "$CONFIG_DIR/workspaces"
 
 cat > "$CONFIG_DIR/workspaces/apiari.toml" << EOF
-[workspace]
-name = "apiari"
 root = "$REPO_ROOT"
 repos = ["ApiariTools/apiari"]
 EOF
