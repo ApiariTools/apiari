@@ -159,6 +159,11 @@
   border-color: rgba(232, 160, 32, 0.25);
 }
 
+.pillRed {
+  color: var(--red);
+  border-color: rgba(232, 85, 85, 0.25);
+}
+
 /* Third row: PR link */
 .headerPrRow {
   display: flex;

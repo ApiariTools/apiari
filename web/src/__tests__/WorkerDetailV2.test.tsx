@@ -22,6 +22,7 @@ const mockWorker: WorkerDetailV2Data = {
   branch_ready: false,
   pr_url: null,
   pr_approved: false,
+  ci_passing: null,
   is_stalled: false,
   revision_count: 0,
   review_mode: "local_first",

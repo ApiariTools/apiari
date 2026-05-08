@@ -260,6 +260,7 @@ export interface WorkerV2 {
   branch_ready: boolean;
   pr_url: string | null;
   pr_approved: boolean;
+  ci_passing: boolean | null;
   is_stalled: boolean;
   revision_count: number;
   review_mode: 'local_first' | 'pr_first';

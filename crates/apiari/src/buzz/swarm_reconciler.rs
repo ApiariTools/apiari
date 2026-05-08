@@ -9,10 +9,9 @@
 //! 2. `apply_disappeared` — for workers no longer in state.json:
 //!    marks them abandoned after a grace period (if no open PR).
 //!
-//! 3. `check_merged_prs` — for ANY active worker with a pr_url:
-//!    checks GitHub; transitions to Done when merged.
-//!    Throttled to once per 60 seconds per worker.
-//!    Runs regardless of whether the worker is in state.json or not.
+//! 3. `check_pr_status` — for ANY active worker with a pr_url:
+//!    polls GitHub once per 60s; transitions to Done on merge,
+//!    and keeps `ci_passing` current from the PR's statusCheckRollup.
 
 use std::{
     collections::HashMap,
@@ -298,9 +297,9 @@ impl SwarmReconciler {
             }
         }
 
-        // Single unified pass: check if any waiting worker's PR was merged.
+        // Single unified pass: check PR status (merged + CI) for all active workers.
         // Runs independently of state.json — SQLite is the only source of truth here.
-        self.check_merged_prs(&workers)?;
+        self.check_pr_status(&workers)?;
 
         let _ = swarm_map;
         let _ = worker_map;
@@ -352,9 +351,9 @@ impl SwarmReconciler {
     }
 
     /// Unified pass: for any active worker with a known PR URL, check if it was
-    /// merged on GitHub and transition to Done. Runs once per reconcile cycle,
-    /// throttled per-worker to at most once per 60 seconds.
-    fn check_merged_prs(&self, workers: &[Worker]) -> Result<()> {
+    /// Check PR status (merged + CI) for all active workers with a pr_url.
+    /// Throttled per-worker to at most once per 60 seconds.
+    fn check_pr_status(&self, workers: &[Worker]) -> Result<()> {
         for worker in workers {
             match worker.state {
                 WorkerState::Running | WorkerState::Waiting | WorkerState::Stalled => {}
@@ -379,13 +378,58 @@ impl SwarmReconciler {
                 .insert(worker.id.clone(), std::time::Instant::now());
 
             let out = std::process::Command::new("gh")
-                .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
+                .args(["pr", "view", pr_url, "--json", "state,statusCheckRollup"])
                 .output();
-            if let Ok(out) = out {
-                let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if state == "MERGED" {
-                    info!("[reconciler] {} PR merged → done", worker.id);
-                    self.do_transition(worker, WorkerState::Done)?;
+
+            let Ok(out) = out else { continue };
+            let Ok(val) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+                continue;
+            };
+
+            // Merge detection
+            if val["state"].as_str() == Some("MERGED") {
+                info!("[reconciler] {} PR merged → done", worker.id);
+                self.do_transition(worker, WorkerState::Done)?;
+                continue;
+            }
+
+            // CI status from statusCheckRollup
+            // Each entry has a `conclusion`: SUCCESS | FAILURE | NEUTRAL | CANCELLED |
+            // SKIPPED | TIMED_OUT | ACTION_REQUIRED | null (still running)
+            if let Some(checks) = val["statusCheckRollup"].as_array() {
+                let ci_passing = if checks.is_empty() {
+                    None // no CI configured
+                } else {
+                    let all_done = checks.iter().all(|c| {
+                        !matches!(
+                            c["status"].as_str(),
+                            Some("IN_PROGRESS") | Some("QUEUED") | Some("PENDING")
+                        )
+                    });
+                    if !all_done {
+                        None // still running
+                    } else {
+                        let passing = checks.iter().all(|c| {
+                            matches!(
+                                c["conclusion"].as_str(),
+                                Some("SUCCESS") | Some("NEUTRAL") | Some("SKIPPED")
+                            )
+                        });
+                        Some(passing)
+                    }
+                };
+
+                if ci_passing != worker.ci_passing {
+                    debug!("[reconciler] {} CI status → {:?}", worker.id, ci_passing);
+                    self.store.update_properties(
+                        &self.workspace,
+                        &worker.id,
+                        WorkerPropertyUpdate {
+                            ci_passing: Some(ci_passing),
+                            ..Default::default()
+                        },
+                    )?;
+                    self.emit_event(worker)?;
                 }
             }
         }
@@ -1052,6 +1096,7 @@ mod tests {
             branch_ready: false,
             pr_url: None,
             pr_approved: false,
+            ci_passing: None,
             is_stalled: false,
             revision_count: 0,
             review_mode: "local_first".to_string(),
@@ -1423,15 +1468,18 @@ mod tests {
         assert_eq!(updated.state, WorkerState::Waiting);
     }
 
-    // ── check_merged_prs tests ──────────────────────────────────────────
+    // ── check_pr_status tests ───────────────────────────────────────────
     //
     // These use a fake `gh` binary (a shell script in a temp dir) injected via
-    // a thread-local, so parallel tests don't race on PATH.
+    // PATH + a mutex, so parallel tests don't race.
+    //
+    // The fake `gh` outputs JSON matching `gh pr view --json state,statusCheckRollup`.
+    // Helper `gh_json(state, ci)` builds common variants.
 
-    thread_local! {
-        static TEST_GH_BIN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
-    }
+    /// Mutex so PATH-mutating tests don't run concurrently.
+    static GH_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Write a fake `gh` shell script that prints `output` and make it executable.
     fn write_fake_gh(dir: &std::path::Path, output: &str) -> std::path::PathBuf {
         let script = dir.join("gh");
         let escaped = output.replace('\'', "'\\''");
@@ -1444,18 +1492,7 @@ mod tests {
         script
     }
 
-    fn with_fake_gh<F: FnOnce()>(gh_path: &std::path::Path, f: F) {
-        TEST_GH_BIN.with(|b| *b.borrow_mut() = Some(gh_path.to_string_lossy().to_string()));
-        f();
-        TEST_GH_BIN.with(|b| *b.borrow_mut() = None);
-    }
-
-    /// Override `gh` for the reconciler's `check_merged_prs` call.
-    /// We patch PATH because `check_merged_prs` uses `Command::new("gh")` directly
-    /// (unlike worker_manager which has a `gh_cmd()` helper). The mutex ensures
-    /// these tests don't run concurrently with each other.
-    static GH_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
+    /// Prepend `gh_path`'s parent dir to PATH for the duration of `f`.
     fn with_gh_on_path<F: FnOnce()>(gh_path: &std::path::Path, f: F) {
         let _guard = GH_PATH_LOCK.lock().unwrap();
         let original = std::env::var("PATH").unwrap_or_default();
@@ -1465,8 +1502,23 @@ mod tests {
         unsafe { std::env::set_var("PATH", original) };
     }
 
+    /// Build JSON matching `gh pr view --json state,statusCheckRollup`.
+    /// `ci`: None = no checks, Some(true) = all SUCCESS, Some(false) = one FAILURE.
+    fn gh_pr_json(state: &str, ci: Option<bool>) -> String {
+        let checks = match ci {
+            None => "[]".to_string(),
+            Some(true) => {
+                r#"[{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]"#.to_string()
+            }
+            Some(false) => {
+                r#"[{"name":"CI","status":"COMPLETED","conclusion":"FAILURE"}]"#.to_string()
+            }
+        };
+        format!(r#"{{"state":"{state}","statusCheckRollup":{checks}}}"#)
+    }
+
     #[test]
-    fn check_merged_prs_transitions_waiting_worker_to_done() {
+    fn check_pr_status_merged_transitions_to_done() {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
 
@@ -1475,36 +1527,53 @@ mod tests {
         w.pr_url = Some("https://github.com/owner/repo/pull/1".to_string());
         r.store.upsert(&w).unwrap();
 
-        let gh = write_fake_gh(tmp.path(), "MERGED");
-        with_gh_on_path(&gh, || {
-            r.check_merged_prs(&[w]).unwrap();
-        });
+        let gh = write_fake_gh(tmp.path(), &gh_pr_json("MERGED", Some(true)));
+        with_gh_on_path(&gh, || r.check_pr_status(&[w]).unwrap());
 
-        let updated = r.store.get("test", "w-merged").unwrap().unwrap();
-        assert_eq!(updated.state, WorkerState::Done);
+        assert_eq!(
+            r.store.get("test", "w-merged").unwrap().unwrap().state,
+            WorkerState::Done
+        );
     }
 
     #[test]
-    fn check_merged_prs_leaves_open_pr_alone() {
+    fn check_pr_status_open_ci_passing_updates_ci_passing() {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
 
-        let mut w = default_worker("w-open");
+        let mut w = default_worker("w-ci-pass");
         w.state = WorkerState::Waiting;
         w.pr_url = Some("https://github.com/owner/repo/pull/2".to_string());
+        w.ci_passing = None; // unknown initially
         r.store.upsert(&w).unwrap();
 
-        let gh = write_fake_gh(tmp.path(), "OPEN");
-        with_gh_on_path(&gh, || {
-            r.check_merged_prs(&[w]).unwrap();
-        });
+        let gh = write_fake_gh(tmp.path(), &gh_pr_json("OPEN", Some(true)));
+        with_gh_on_path(&gh, || r.check_pr_status(&[w]).unwrap());
 
-        let updated = r.store.get("test", "w-open").unwrap().unwrap();
-        assert_eq!(updated.state, WorkerState::Waiting);
+        let updated = r.store.get("test", "w-ci-pass").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting); // not merged
+        assert_eq!(updated.ci_passing, Some(true));
     }
 
     #[test]
-    fn check_merged_prs_skips_workers_without_pr_url() {
+    fn check_pr_status_open_ci_failing_updates_ci_passing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w-ci-fail");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/owner/repo/pull/3".to_string());
+        r.store.upsert(&w).unwrap();
+
+        let gh = write_fake_gh(tmp.path(), &gh_pr_json("OPEN", Some(false)));
+        with_gh_on_path(&gh, || r.check_pr_status(&[w]).unwrap());
+
+        let updated = r.store.get("test", "w-ci-fail").unwrap().unwrap();
+        assert_eq!(updated.ci_passing, Some(false));
+    }
+
+    #[test]
+    fn check_pr_status_skips_workers_without_pr_url() {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
 
@@ -1513,44 +1582,44 @@ mod tests {
         w.pr_url = None;
         r.store.upsert(&w).unwrap();
 
-        // gh script that panics if called — it must not be called
-        let gh = write_fake_gh(tmp.path(), "MERGED");
-        with_gh_on_path(&gh, || {
-            r.check_merged_prs(&[w]).unwrap();
-        });
+        // No gh needed — must not be called
+        let gh = write_fake_gh(tmp.path(), &gh_pr_json("MERGED", Some(true)));
+        with_gh_on_path(&gh, || r.check_pr_status(&[w]).unwrap());
 
-        let updated = r.store.get("test", "w-no-pr").unwrap().unwrap();
-        assert_eq!(updated.state, WorkerState::Waiting);
+        assert_eq!(
+            r.store.get("test", "w-no-pr").unwrap().unwrap().state,
+            WorkerState::Waiting
+        );
     }
 
     #[test]
-    fn check_merged_prs_skips_terminal_workers() {
+    fn check_pr_status_skips_terminal_workers() {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
 
         let mut w = default_worker("w-done");
         w.state = WorkerState::Done;
-        w.pr_url = Some("https://github.com/owner/repo/pull/3".to_string());
+        w.pr_url = Some("https://github.com/owner/repo/pull/4".to_string());
         r.store.upsert(&w).unwrap();
 
-        let gh = write_fake_gh(tmp.path(), "MERGED");
-        with_gh_on_path(&gh, || {
-            r.check_merged_prs(&[w]).unwrap();
-        });
+        let gh = write_fake_gh(tmp.path(), &gh_pr_json("MERGED", Some(true)));
+        with_gh_on_path(&gh, || r.check_pr_status(&[w]).unwrap());
 
-        let updated = r.store.get("test", "w-done").unwrap().unwrap();
         // Already Done — must not be touched
-        assert_eq!(updated.state, WorkerState::Done);
+        assert_eq!(
+            r.store.get("test", "w-done").unwrap().unwrap().state,
+            WorkerState::Done
+        );
     }
 
     #[test]
-    fn check_merged_prs_throttles_per_worker() {
+    fn check_pr_status_throttles_per_worker() {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
 
         let mut w = default_worker("w-throttle");
         w.state = WorkerState::Waiting;
-        w.pr_url = Some("https://github.com/owner/repo/pull/4".to_string());
+        w.pr_url = Some("https://github.com/owner/repo/pull/5".to_string());
         r.store.upsert(&w).unwrap();
 
         // Seed the throttle map as if we just checked this worker.
@@ -1559,14 +1628,14 @@ mod tests {
             .unwrap()
             .insert("w-throttle".to_string(), std::time::Instant::now());
 
-        // gh returns MERGED — but the check is throttled so it won't be called.
-        let gh = write_fake_gh(tmp.path(), "MERGED");
-        with_gh_on_path(&gh, || {
-            r.check_merged_prs(&[w]).unwrap();
-        });
+        // gh returns MERGED — but the check is throttled so it must not be called.
+        let gh = write_fake_gh(tmp.path(), &gh_pr_json("MERGED", Some(true)));
+        with_gh_on_path(&gh, || r.check_pr_status(&[w]).unwrap());
 
-        let updated = r.store.get("test", "w-throttle").unwrap().unwrap();
         // Still Waiting — throttle prevented the gh call
-        assert_eq!(updated.state, WorkerState::Waiting);
+        assert_eq!(
+            r.store.get("test", "w-throttle").unwrap().unwrap().state,
+            WorkerState::Waiting
+        );
     }
 }

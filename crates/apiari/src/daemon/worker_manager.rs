@@ -826,6 +826,7 @@ fn upsert_worker_db_record(
         branch_ready: false,
         pr_url: None,
         pr_approved: false,
+        ci_passing: None,
         is_stalled: false,
         revision_count: 0,
         review_mode: "local_first".to_string(),

@@ -64,7 +64,13 @@ function StatusBadge({ worker }: { worker: WorkerV2 }) {
 function Pills({ worker }: { worker: WorkerV2 }) {
   return (
     <div className={styles.pills} data-testid="property-pills">
-      {worker.tests_passing && (
+      {worker.ci_passing === true && (
+        <span className={`${styles.pill} ${styles.pillGreen}`}>CI ✓</span>
+      )}
+      {worker.ci_passing === false && (
+        <span className={`${styles.pill} ${styles.pillRed}`}>CI ✗</span>
+      )}
+      {worker.tests_passing && worker.ci_passing === null && (
         <span className={`${styles.pill} ${styles.pillGreen}`}>
           Local tests ✓
         </span>
@@ -875,6 +881,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                         revision_count: data.revision_count,
                         goal: data.goal,
                         tests_passing: data.tests_passing,
+                        ci_passing: data.ci_passing,
                       },
                     },
                     `Viewing: ${data.goal ?? data.branch ?? data.id}`,

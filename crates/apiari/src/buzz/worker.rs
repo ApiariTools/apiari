@@ -80,6 +80,8 @@ pub struct Worker {
     pub branch_ready: bool,
     pub pr_url: Option<String>,
     pub pr_approved: bool,
+    /// CI check status on the latest PR commit. `None` = unknown/no CI yet.
+    pub ci_passing: Option<bool>,
     pub is_stalled: bool,
     pub revision_count: i64,
     /// `local_first` | `pr_first`
@@ -131,9 +133,14 @@ pub fn derived_label(worker: &Worker) -> String {
             if worker.blocked_reason.is_some() {
                 "Needs input".to_string()
             } else if worker.pr_url.is_some() {
-                if worker.tests_passing && worker.pr_approved {
+                // Use CI status when known; fall back to local tests_passing otherwise.
+                let ci_ok = match worker.ci_passing {
+                    Some(v) => v,
+                    None => worker.tests_passing,
+                };
+                if ci_ok && worker.pr_approved {
                     "Ready to merge".to_string()
-                } else if !worker.tests_passing {
+                } else if !ci_ok {
                     "Tests failing".to_string()
                 } else {
                     "Has feedback".to_string()
@@ -159,6 +166,8 @@ pub fn derived_label(worker: &Worker) -> String {
 pub struct WorkerPropertyUpdate {
     pub tests_passing: Option<bool>,
     pub branch_ready: Option<bool>,
+    /// `Some(Some(true/false))` to set, `Some(None)` to clear.
+    pub ci_passing: Option<Option<bool>>,
     /// `Some(Some(url))` to set, `Some(None)` to clear.
     pub pr_url: Option<Option<String>>,
     pub pr_approved: Option<bool>,
@@ -236,6 +245,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             "ALTER TABLE workers ADD COLUMN agent_kind TEXT",
         ),
         ("repo_path", "ALTER TABLE workers ADD COLUMN repo_path TEXT"),
+        (
+            "ci_passing",
+            "ALTER TABLE workers ADD COLUMN ci_passing BOOLEAN",
+        ),
     ] {
         if let Err(e) = conn.execute_batch(ddl)
             && !e.to_string().contains("duplicate column")
@@ -297,8 +310,8 @@ impl WorkerStore {
               tests_passing, branch_ready, pr_url, pr_approved, is_stalled,
               revision_count, review_mode, blocked_reason,
               last_output_at, state_entered_at, created_at, updated_at, display_title,
-              worktree_path, isolation_mode, agent_kind, repo_path)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
+              worktree_path, isolation_mode, agent_kind, repo_path, ci_passing)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
              ON CONFLICT(id) DO UPDATE SET
                workspace       = excluded.workspace,
                state           = excluded.state,
@@ -321,7 +334,8 @@ impl WorkerStore {
                worktree_path   = COALESCE(excluded.worktree_path, workers.worktree_path),
                isolation_mode  = COALESCE(excluded.isolation_mode, workers.isolation_mode),
                agent_kind      = COALESCE(excluded.agent_kind, workers.agent_kind),
-               repo_path       = COALESCE(excluded.repo_path, workers.repo_path)",
+               repo_path       = COALESCE(excluded.repo_path, workers.repo_path),
+               ci_passing      = excluded.ci_passing",
             params![
                 worker.id,
                 worker.workspace,
@@ -347,6 +361,7 @@ impl WorkerStore {
                 worker.isolation_mode,
                 worker.agent_kind,
                 worker.repo_path,
+                worker.ci_passing.map(|v| v as i64),
             ],
         )
         .wrap_err("upsert worker")?;
@@ -361,7 +376,7 @@ impl WorkerStore {
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
                     last_output_at,state_entered_at,created_at,updated_at,display_title,
-                    worktree_path,isolation_mode,agent_kind,repo_path
+                    worktree_path,isolation_mode,agent_kind,repo_path,ci_passing
              FROM workers WHERE workspace=?1 AND id=?2",
             params![workspace, id],
             row_to_worker,
@@ -384,7 +399,7 @@ impl WorkerStore {
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
                     last_output_at,state_entered_at,created_at,updated_at,display_title,
-                    worktree_path,isolation_mode,agent_kind,repo_path
+                    worktree_path,isolation_mode,agent_kind,repo_path,ci_passing
              FROM workers WHERE workspace=?1
              ORDER BY updated_at DESC",
         )?;
@@ -451,6 +466,11 @@ impl WorkerStore {
         }
         if let Some(v) = update.branch_ready {
             push_field!(v as i64, "branch_ready");
+        }
+        if let Some(v) = update.ci_passing {
+            sets.push(format!("ci_passing = ?{idx}"));
+            values.push(Box::new(v.map(|b| b as i64)));
+            idx += 1;
         }
         if let Some(v) = update.pr_url {
             // v is Option<String>; store null if None
@@ -570,6 +590,7 @@ fn row_to_worker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worker> {
         isolation_mode: row.get(21)?,
         agent_kind: row.get(22)?,
         repo_path: row.get(23)?,
+        ci_passing: row.get::<_, Option<i64>>(24)?.map(|v| v != 0),
         // label is filled in by the caller
         label: String::new(),
     })
@@ -595,6 +616,7 @@ mod tests {
             branch_ready: false,
             pr_url: None,
             pr_approved: false,
+            ci_passing: None,
             is_stalled: false,
             revision_count: 0,
             review_mode: "local_first".to_string(),
