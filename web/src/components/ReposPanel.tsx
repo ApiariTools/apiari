@@ -1,4 +1,5 @@
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { repoSyncLabel } from "../repoSync";
 import type { Repo, ResearchTask } from "../types";
 import { EmptyState } from "../primitives/EmptyState";
 import { StatusBadge } from "../primitives/StatusBadge";
@@ -37,6 +38,10 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
               {!repo.is_clean && (
                 <StatusBadge tone="accent">modified</StatusBadge>
               )}
+            </div>
+            <div className={styles.repoMeta}>
+              <span>{repo.is_clean ? "clean" : "modified"}</span>
+              <span>{repoSyncLabel(repo, { includeUpstream: true })}</span>
             </div>
             {repo.workers.length > 0 && (
               <div className={styles.workerList}>

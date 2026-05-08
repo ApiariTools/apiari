@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, BellRing, BookOpen, Bot, FolderGit2, Sparkles, Wrench } from "lucide-react";
+import { repoSyncLabel } from "../repoSync";
 import type { Bot as BotType, Followup, Repo, ResearchTask, Worker } from "../types";
 import type { WorkspaceMode } from "../consoleConfig";
 import * as api from "../api";
@@ -331,7 +332,7 @@ export function OverviewPanel({
                 <ObjectRow
                   key={repo.path}
                   title={repo.name}
-                  meta={`${repo.branch} · ${repo.workers.length} workers`}
+                  meta={`${repo.branch} · ${repo.is_clean ? "clean" : "modified"} · ${repoSyncLabel(repo)} · ${repo.workers.length} workers`}
                   right={(
                     <StatusBadge tone={repo.is_clean ? "success" : "accent"}>
                       {repo.is_clean ? "clean" : "modified"}

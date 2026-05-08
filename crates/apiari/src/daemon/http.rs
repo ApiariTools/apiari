@@ -873,6 +873,10 @@ struct RepoListItem {
     has_swarm: bool,
     is_clean: bool,
     branch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream: Option<String>,
+    behind_count: usize,
+    ahead_count: usize,
     workers: Vec<WorkerView>,
 }
 
@@ -1461,6 +1465,36 @@ fn current_git_branch(path: &std::path::Path) -> String {
     git_output(path, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default()
 }
 
+fn current_git_upstream(path: &std::path::Path) -> Option<String> {
+    git_output(
+        path,
+        &[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ],
+    )
+}
+
+fn git_ahead_behind_counts(path: &std::path::Path, upstream: &str) -> (usize, usize) {
+    let range = format!("{upstream}...HEAD");
+    let Some(output) = git_output(path, &["rev-list", "--left-right", "--count", &range]) else {
+        return (0, 0);
+    };
+
+    let mut parts = output.split_whitespace();
+    let behind = parts
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let ahead = parts
+        .next()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    (ahead, behind)
+}
+
 fn build_repo_list_items(
     config: &crate::config::WorkspaceConfig,
     workspace_workers: &[WorkerView],
@@ -1474,6 +1508,11 @@ fn build_repo_list_items(
                 .map(|name| name.to_string_lossy().to_string())
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(&repo).to_string());
+            let upstream = current_git_upstream(&local_path);
+            let (ahead_count, behind_count) = upstream
+                .as_deref()
+                .map(|upstream| git_ahead_behind_counts(&local_path, upstream))
+                .unwrap_or((0, 0));
 
             RepoListItem {
                 name: basename.clone(),
@@ -1481,6 +1520,9 @@ fn build_repo_list_items(
                 has_swarm: local_path.join(".swarm").exists(),
                 is_clean: is_git_clean(&local_path),
                 branch: current_git_branch(&local_path),
+                upstream,
+                behind_count,
+                ahead_count,
                 workers: workspace_workers
                     .iter()
                     .filter(|worker| worker.branch.starts_with(&basename))
@@ -6851,6 +6893,39 @@ mod tests {
             .unwrap();
     }
 
+    fn set_git_identity(path: &Path) {
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(path)
+            .status()
+            .unwrap();
+    }
+
+    fn git(path: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "git {:?} failed in {}",
+            args,
+            path.display()
+        );
+    }
+
+    fn write_and_commit(path: &Path, name: &str, content: &str, message: &str) {
+        fs::write(path.join(name), content).unwrap();
+        git(path, &["add", name]);
+        git(path, &["commit", "-m", message]);
+    }
+
     fn test_workspace_config(
         root: std::path::PathBuf,
         repos: Vec<&str>,
@@ -7154,6 +7229,45 @@ mod tests {
         assert_eq!(repos[0].workers[0].id, "worker-apiari");
         assert_eq!(repos[1].workers.len(), 1);
         assert_eq!(repos[1].workers[0].id, "worker-common");
+    }
+
+    #[test]
+    fn git_ahead_behind_counts_reports_tracking_delta_without_github_api() {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("origin.git");
+        let local = temp.path().join("local");
+        let other = temp.path().join("other");
+
+        git(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
+
+        git(
+            temp.path(),
+            &["clone", remote.to_str().unwrap(), local.to_str().unwrap()],
+        );
+        set_git_identity(&local);
+        write_and_commit(&local, "README.md", "base\n", "initial");
+        git(&local, &["branch", "-M", "main"]);
+        git(&local, &["push", "-u", "origin", "main"]);
+
+        git(
+            temp.path(),
+            &[
+                "clone",
+                "--branch",
+                "main",
+                remote.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
+        );
+        set_git_identity(&other);
+        write_and_commit(&other, "remote.txt", "remote\n", "remote");
+        git(&other, &["push", "origin", "main"]);
+
+        git(&local, &["fetch", "origin"]);
+        write_and_commit(&local, "local.txt", "local\n", "local");
+
+        assert_eq!(current_git_upstream(&local).as_deref(), Some("origin/main"));
+        assert_eq!(git_ahead_behind_counts(&local, "origin/main"), (1, 1));
     }
 
     #[test]

@@ -5,11 +5,21 @@ import { ReposPanel } from "../components/ReposPanel";
 import type { Repo, ResearchTask } from "../types";
 
 const repos: Repo[] = [
-  { name: "hive", path: "/dev/hive", has_swarm: true, is_clean: true, branch: "main", workers: [] },
-  { name: "swarm", path: "/dev/swarm", has_swarm: true, is_clean: false, branch: "feat/test", workers: [
+  {
+    name: "hive",
+    path: "/dev/hive",
+    has_swarm: true,
+    is_clean: true,
+    branch: "main",
+    upstream: "origin/main",
+    ahead_count: 0,
+    behind_count: 0,
+    workers: [],
+  },
+  { name: "swarm", path: "/dev/swarm", has_swarm: true, is_clean: false, branch: "feat/test", upstream: "origin/feat/test", ahead_count: 1, behind_count: 2, workers: [
     { id: "cli-3", branch: "swarm/fix-bug", status: "running", agent: "claude", pr_url: "https://github.com/test/pull/1", pr_title: "Fix bug", description: null, elapsed_secs: 120, dispatched_by: "Main" },
   ]},
-  { name: "common", path: "/dev/common", has_swarm: false, is_clean: true, branch: "main", workers: [] },
+  { name: "common", path: "/dev/common", has_swarm: false, is_clean: true, branch: "main", upstream: null, ahead_count: 0, behind_count: 0, workers: [] },
 ];
 
 const defaultProps = {
@@ -36,7 +46,14 @@ describe("ReposPanel", () => {
 
   it("shows modified badge for dirty repos", () => {
     render(<ReposPanel {...defaultProps} />);
-    expect(screen.getByText("modified")).toBeInTheDocument();
+    expect(screen.getAllByText("modified").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows git sync labels", () => {
+    render(<ReposPanel {...defaultProps} />);
+    expect(screen.getByText("in sync with origin/main")).toBeInTheDocument();
+    expect(screen.getByText("1 ahead · 2 behind origin/feat/test")).toBeInTheDocument();
+    expect(screen.getByText("no upstream")).toBeInTheDocument();
   });
 
   it("does not show modified badge for clean repos", () => {
