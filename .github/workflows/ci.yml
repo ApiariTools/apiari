@@ -73,10 +73,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Pre-build apiari binary
+      - name: Build frontend (embedded into binary)
+        run: npm install && npx vite build
+      - name: Build apiari binary (with embedded frontend)
         working-directory: .
         run: cargo build -p apiari
-      - run: npm install
       - run: npx playwright install --with-deps chromium
       - name: Create e2e workspace config
         working-directory: .
