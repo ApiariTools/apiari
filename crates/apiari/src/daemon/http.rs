@@ -4247,10 +4247,18 @@ async fn v2_get_worker(
     } else {
         vec![]
     };
+    let task_packet = worker
+        .worktree_path
+        .as_deref()
+        .map(std::path::Path::new)
+        .and_then(read_worker_task_packet);
 
     let mut response = serde_json::to_value(&worker).unwrap_or_default();
     if let Some(obj) = response.as_object_mut() {
         obj.insert("events".to_string(), serde_json::json!(events));
+        if let Some(task_packet) = task_packet {
+            obj.insert("task_packet".to_string(), serde_json::json!(task_packet));
+        }
     }
     Json(response).into_response()
 }
@@ -9225,6 +9233,77 @@ model = "sonnet"
 
         // Transition on a missing worker returns error (not 404 — store returns Err).
         assert_ne!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn v2_get_worker_includes_task_packet_from_worktree() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        let worktree = root.join(".swarm/wt/w-1");
+        let task_dir = worktree.join(".task");
+        fs::create_dir_all(&task_dir).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        fs::write(
+            task_dir.join("TASK.md"),
+            "# Task\n\nShip the full coordinator packet.\n",
+        )
+        .unwrap();
+        fs::write(
+            task_dir.join("PLAN.md"),
+            "# Plan\n\n1. Return task_packet in v2 detail\n",
+        )
+        .unwrap();
+
+        let db_path = temp.path().join("test.db");
+        let store = open_worker_store_from_path(&db_path).unwrap();
+        store
+            .upsert(&crate::buzz::worker::Worker {
+                id: "w-1".to_string(),
+                workspace: "ws".to_string(),
+                state: crate::buzz::worker::WorkerState::Running,
+                brief: Some(serde_json::json!({"goal": "ship it"})),
+                repo: Some("apiari".to_string()),
+                branch: Some("swarm/ship-it".to_string()),
+                goal: Some("ship it".to_string()),
+                tests_passing: false,
+                branch_ready: false,
+                pr_url: None,
+                pr_approved: false,
+                is_stalled: false,
+                revision_count: 0,
+                review_mode: "local_first".to_string(),
+                blocked_reason: None,
+                display_title: None,
+                last_output_at: None,
+                state_entered_at: chrono::Utc::now().to_rfc3339(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                worktree_path: Some(worktree.display().to_string()),
+                isolation_mode: None,
+                agent_kind: None,
+                repo_path: Some(root.display().to_string()),
+                label: String::new(),
+            })
+            .unwrap();
+
+        let state = make_test_state_with_db(&db_path);
+        let resp = v2_get_worker(Path(("ws".to_string(), "w-1".to_string())), State(state))
+            .await
+            .into_response();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = response_json(resp).await;
+        assert_eq!(
+            json["task_packet"]["task_md"].as_str(),
+            Some("# Task\n\nShip the full coordinator packet.\n")
+        );
+        assert_eq!(
+            json["task_packet"]["plan_md"].as_str(),
+            Some("# Plan\n\n1. Return task_packet in v2 detail\n")
+        );
     }
 
     // ── v2_create_worker ──────────────────────────────────────────────────

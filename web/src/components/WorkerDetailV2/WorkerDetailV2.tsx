@@ -2,7 +2,15 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ExternalLink, MessageSquare, ArrowUp, ChevronLeft } from 'lucide-react'
-import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, WorkerBrief, ContextBotContext, WorkerEvent } from '../../types'
+import type {
+  WorkerDetailV2 as WorkerDetailV2Data,
+  WorkerV2,
+  WorkerReview,
+  WorkerBrief,
+  WorkerTaskPacket,
+  ContextBotContext,
+  WorkerEvent,
+} from '../../types'
 import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
 import styles from './WorkerDetailV2.module.css'
 
@@ -369,8 +377,29 @@ function BriefSection({ label, children }: { label: string; children: React.Reac
   )
 }
 
-function BriefTab({ brief, goal }: { brief: WorkerBrief | null; goal: string | null }) {
-  if (!brief) {
+function BriefMarkdown({ content }: { content: string }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+}
+
+function BriefTab({
+  brief,
+  goal,
+  taskPacket,
+}: {
+  brief: WorkerBrief | null
+  goal: string | null
+  taskPacket?: WorkerTaskPacket | null
+}) {
+  const hasTaskPacket = Boolean(
+    taskPacket?.task_md ||
+    taskPacket?.context_md ||
+    taskPacket?.shaping_md ||
+    taskPacket?.plan_md ||
+    taskPacket?.progress_md ||
+    taskPacket?.worker_mode,
+  )
+
+  if (!brief && !hasTaskPacket) {
     return (
       <div className={styles.briefEmpty}>
         No brief recorded for this worker.
@@ -380,33 +409,73 @@ function BriefTab({ brief, goal }: { brief: WorkerBrief | null; goal: string | n
 
   return (
     <div className={styles.briefBody}>
-      <BriefSection label="Goal">
-        <p>{brief.goal ?? goal}</p>
-      </BriefSection>
+      {brief && (
+        <>
+          <BriefSection label="Goal">
+            <p>{brief.goal ?? goal}</p>
+          </BriefSection>
 
-      {brief.context?.recent_changes && (
-        <BriefSection label="Context">
-          <p>{brief.context.recent_changes}</p>
+          {brief.context?.recent_changes && (
+            <BriefSection label="Context">
+              <p>{brief.context.recent_changes}</p>
+            </BriefSection>
+          )}
+
+          {brief.constraints && brief.constraints.length > 0 && (
+            <BriefSection label="Constraints">
+              <ul className={styles.briefList}>
+                {brief.constraints.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </BriefSection>
+          )}
+
+          {brief.acceptance_criteria && brief.acceptance_criteria.length > 0 && (
+            <BriefSection label="Acceptance Criteria">
+              <ul className={styles.briefList}>
+                {brief.acceptance_criteria.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </BriefSection>
+          )}
+        </>
+      )}
+
+      {taskPacket?.worker_mode && (
+        <BriefSection label="Worker Mode">
+          <p>{taskPacket.worker_mode}</p>
         </BriefSection>
       )}
 
-      {brief.constraints && brief.constraints.length > 0 && (
-        <BriefSection label="Constraints">
-          <ul className={styles.briefList}>
-            {brief.constraints.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
-          </ul>
+      {taskPacket?.task_md && (
+        <BriefSection label="Inherited Task">
+          <BriefMarkdown content={taskPacket.task_md} />
         </BriefSection>
       )}
 
-      {brief.acceptance_criteria && brief.acceptance_criteria.length > 0 && (
-        <BriefSection label="Acceptance Criteria">
-          <ul className={styles.briefList}>
-            {brief.acceptance_criteria.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
-          </ul>
+      {taskPacket?.context_md && (
+        <BriefSection label="Inherited Context">
+          <BriefMarkdown content={taskPacket.context_md} />
+        </BriefSection>
+      )}
+
+      {taskPacket?.shaping_md && (
+        <BriefSection label="Coordinator Shaping">
+          <BriefMarkdown content={taskPacket.shaping_md} />
+        </BriefSection>
+      )}
+
+      {taskPacket?.plan_md && (
+        <BriefSection label="Execution Plan">
+          <BriefMarkdown content={taskPacket.plan_md} />
+        </BriefSection>
+      )}
+
+      {taskPacket?.progress_md && (
+        <BriefSection label="Worker Notes">
+          <BriefMarkdown content={taskPacket.progress_md} />
         </BriefSection>
       )}
     </div>
@@ -871,7 +940,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
         {activeTab === 'brief' && (
           <div className={styles.briefPanel}>
-            <BriefTab brief={data.brief} goal={data.goal} />
+            <BriefTab brief={data.brief} goal={data.goal} taskPacket={data.task_packet} />
           </div>
         )}
       </div>
