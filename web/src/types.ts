@@ -364,6 +364,7 @@ export interface ContextBotContext {
 export interface ContextBotChatResponse {
   response: string
   session_id: string
+  model: string
   dispatched_worker_id?: string
 }
 
@@ -378,6 +379,7 @@ export interface ContextBotSession {
   server_session_id?: string    // echoed from first server response; sent on follow-up turns
   context: ContextBotContext
   title: string                 // e.g. "Viewing: fix-auth" or "Dashboard"
+  model: string                 // claude model for this session
   messages: ContextBotMessage[]
   minimized: boolean
   loading: boolean

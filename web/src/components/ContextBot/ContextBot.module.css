@@ -79,6 +79,32 @@
   flex-shrink: 0;
 }
 
+.modelBadge {
+  font-size: 11px;
+  color: var(--text-faint);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+
+.modelSelect {
+  font-size: 11px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-family: var(--font);
+  cursor: pointer;
+  outline: none;
+}
+
+.modelSelect:focus {
+  border-color: var(--accent);
+}
+
 .iconBtn {
   background: none;
   border: none;

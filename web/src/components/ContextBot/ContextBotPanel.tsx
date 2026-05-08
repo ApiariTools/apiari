@@ -7,12 +7,24 @@ import styles from './ContextBot.module.css'
 export interface ContextBotPanelProps {
   session: ContextBotSession
   onSend: (sessionId: string, message: string) => void
+  onChangeModel: (sessionId: string, model: string) => void
   onMinimize: (sessionId: string) => void
   onClose: (sessionId: string) => void
 }
 
-export default function ContextBotPanel({ session, onSend, onMinimize, onClose }: ContextBotPanelProps) {
+const MODELS = [
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { id: 'claude-opus-4-7', label: 'Opus 4.7' },
+]
+
+function modelLabel(id: string): string {
+  return MODELS.find((m) => m.id === id)?.label ?? id
+}
+
+export default function ContextBotPanel({ session, onSend, onChangeModel, onMinimize, onClose }: ContextBotPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const locked = session.messages.length > 0
 
   const handleSend = () => {
     const input = inputRef.current
@@ -45,6 +57,20 @@ export default function ContextBotPanel({ session, onSend, onMinimize, onClose }
           <span className={styles.headerTitle} data-testid="panel-title">{session.title}</span>
         </div>
         <div className={styles.headerActions}>
+          {locked ? (
+            <span className={styles.modelBadge} title={session.model}>{modelLabel(session.model)}</span>
+          ) : (
+            <select
+              className={styles.modelSelect}
+              value={session.model}
+              onChange={(e) => onChangeModel(session.id, e.target.value)}
+              data-testid="model-select"
+            >
+              {MODELS.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          )}
           <button
             className={styles.iconBtn}
             onClick={() => onMinimize(session.id)}

@@ -371,6 +371,10 @@ pub struct WorkspaceConfig {
     /// Individual coordinators/bees can override specific fields.
     #[serde(default)]
     pub token_controls: TokenControls,
+
+    /// Default model for the context bot (Ask chat). Falls back to claude-sonnet-4-6.
+    #[serde(default)]
+    pub context_bot_model: Option<String>,
 }
 
 /// A single daemon TCP endpoint (host + port).
@@ -1165,6 +1169,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
         schedule: None,
         activity: ActivityConfig::default(),
         token_controls: TokenControls::default(),
+        context_bot_model: None,
     }
 }
 
@@ -2108,6 +2113,7 @@ max_session_turns = 0
             schedule: None,
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
+            context_bot_model: None,
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -2139,6 +2145,7 @@ max_session_turns = 0
             schedule: None,
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
+            context_bot_model: None,
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -2174,6 +2181,7 @@ max_session_turns = 0
             schedule: None,
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
+            context_bot_model: None,
         };
 
         let buzz = to_buzz_config(&ws);
@@ -2563,6 +2571,7 @@ watch = ["sentry"]
             schedule: None,
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
+            context_bot_model: None,
         }
     }
 

@@ -266,6 +266,7 @@ mod tests {
             schedule: None,
             activity: crate::config::ActivityConfig::default(),
             token_controls: TokenControls::default(),
+            context_bot_model: None,
         }
     }
 

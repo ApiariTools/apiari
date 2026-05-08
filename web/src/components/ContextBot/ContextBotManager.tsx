@@ -5,11 +5,12 @@ import styles from './ContextBot.module.css'
 export interface ContextBotManagerProps {
   sessions: ContextBotSession[]
   onSend: (sessionId: string, message: string) => void
+  onChangeModel: (sessionId: string, model: string) => void
   onMinimize: (sessionId: string) => void
   onClose: (sessionId: string) => void
 }
 
-export default function ContextBotManager({ sessions, onSend, onMinimize, onClose }: ContextBotManagerProps) {
+export default function ContextBotManager({ sessions, onSend, onChangeModel, onMinimize, onClose }: ContextBotManagerProps) {
   if (sessions.length === 0) return null
 
   return (
@@ -19,6 +20,7 @@ export default function ContextBotManager({ sessions, onSend, onMinimize, onClos
           key={session.id}
           session={session}
           onSend={onSend}
+          onChangeModel={onChangeModel}
           onMinimize={onMinimize}
           onClose={onClose}
         />

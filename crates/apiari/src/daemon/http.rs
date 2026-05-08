@@ -6179,6 +6179,10 @@ struct ContextBotChatBody {
     #[serde(default)]
     session_id: Option<String>,
     context: ContextBotContext,
+    /// Optional model override for this session. Falls back to workspace
+    /// config `context_bot_model`, then to `claude-sonnet-4-6`.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// Response from the context bot endpoint.
@@ -6186,6 +6190,7 @@ struct ContextBotChatBody {
 struct ContextBotChatResponse {
     response: String,
     session_id: String,
+    model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     dispatched_worker_id: Option<String>,
 }
@@ -6240,6 +6245,14 @@ async fn v2_context_bot_chat(
         .session_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    // Resolve model: request body → workspace config → default.
+    const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+    let model = body.model.clone().unwrap_or_else(|| {
+        load_workspace_by_name(&workspace)
+            .and_then(|ws| ws.config.context_bot_model)
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+    });
+
     // Verify claude CLI is available.
     let which = tokio::process::Command::new("which")
         .arg("claude")
@@ -6262,6 +6275,8 @@ async fn v2_context_bot_chat(
             .arg("--print")
             .arg("--max-turns")
             .arg("3")
+            .arg("--model")
+            .arg(&model)
             .arg("--system-prompt")
             .arg(&system_prompt)
             .arg(&body.message)
@@ -6337,6 +6352,7 @@ async fn v2_context_bot_chat(
     Json(ContextBotChatResponse {
         response: raw,
         session_id,
+        model,
         dispatched_worker_id,
     })
     .into_response()
@@ -6821,7 +6837,9 @@ mod tests {
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
     }
 
     struct HomeGuard {
@@ -6956,6 +6974,7 @@ mod tests {
             schedule: None,
             activity: crate::config::ActivityConfig::default(),
             token_controls: crate::config::TokenControls::default(),
+            context_bot_model: None,
         }
     }
 
@@ -8656,6 +8675,7 @@ model = "sonnet"
         let resp = ContextBotChatResponse {
             response: "The tests are failing because...".to_string(),
             session_id: "ctx-abc123".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
             dispatched_worker_id: None,
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -8695,6 +8715,7 @@ model = "sonnet"
             response: "Dispatching worker.\n\nDISPATCH_WORKER: Fix the failing auth tests"
                 .to_string(),
             session_id: "ctx-xyz".to_string(),
+            model: "claude-opus-4-7".to_string(),
             dispatched_worker_id: Some("apiari-5".to_string()),
         };
         let json = serde_json::to_value(&resp).unwrap();
@@ -9981,6 +10002,7 @@ model = "sonnet"
             axum::extract::Json(ContextBotChatBody {
                 message: "What's the status?".to_string(),
                 session_id: None,
+                model: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,
@@ -9996,6 +10018,10 @@ model = "sonnet"
         assert!(
             json["session_id"].as_str().is_some(),
             "session_id must be present"
+        );
+        assert!(
+            json["model"].as_str().is_some(),
+            "model must be present in response"
         );
         assert!(
             json.get("dispatched_worker_id").is_none(),
@@ -10018,6 +10044,7 @@ model = "sonnet"
             axum::extract::Json(ContextBotChatBody {
                 message: "Hello".to_string(),
                 session_id: Some("my-session-42".to_string()),
+                model: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,
@@ -10073,6 +10100,7 @@ model = "sonnet"
             axum::extract::Json(ContextBotChatBody {
                 message: "hi".to_string(),
                 session_id: None,
+                model: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,
@@ -10099,6 +10127,10 @@ model = "sonnet"
             logged.contains("--max-turns"),
             "handler must pass --max-turns, got: {logged}"
         );
+        assert!(
+            logged.contains("--model"),
+            "handler must pass --model, got: {logged}"
+        );
     }
 
     #[tokio::test]
@@ -10124,6 +10156,7 @@ model = "sonnet"
             axum::extract::Json(ContextBotChatBody {
                 message: "hi".to_string(),
                 session_id: None,
+                model: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,

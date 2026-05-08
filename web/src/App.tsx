@@ -140,7 +140,9 @@ export default function App() {
 
   // ── Context bot handlers ────────────────────────────────────────────
 
-  function openContextBot(context: ContextBotContext, title: string) {
+  const DEFAULT_CONTEXT_BOT_MODEL = 'claude-sonnet-4-6'
+
+  function openContextBot(context: ContextBotContext, title: string, model?: string) {
     const id = nextSessionId()
     setContextSessions((prev) => [
       ...prev,
@@ -148,6 +150,7 @@ export default function App() {
         id,
         context,
         title,
+        model: model ?? DEFAULT_CONTEXT_BOT_MODEL,
         messages: [],
         minimized: false,
         loading: false,
@@ -176,7 +179,7 @@ export default function App() {
     )
 
     try {
-      const res = await chatWithContextBot(workspace, message, session.context, session.server_session_id)
+      const res = await chatWithContextBot(workspace, message, session.context, session.server_session_id, session.model)
 
       setContextSessions((prev) =>
         prev.map((s) =>
@@ -185,6 +188,7 @@ export default function App() {
                 ...s,
                 loading: false,
                 server_session_id: res.session_id,
+                model: res.model,
                 messages: [
                   ...s.messages,
                   { role: 'assistant' as const, content: res.response, timestamp: new Date().toISOString() },
@@ -533,6 +537,11 @@ export default function App() {
       <ContextBotManager
         sessions={contextSessions}
         onSend={handleContextBotSend}
+        onChangeModel={(id, model) =>
+          setContextSessions((prev) =>
+            prev.map((s) => (s.id === id ? { ...s, model } : s)),
+          )
+        }
         onMinimize={(id) =>
           setContextSessions((prev) =>
             prev.map((s) => (s.id === id ? { ...s, minimized: !s.minimized } : s)),
