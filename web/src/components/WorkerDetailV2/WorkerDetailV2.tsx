@@ -378,7 +378,157 @@ function BriefSection({ label, children }: { label: string; children: React.Reac
 }
 
 function BriefMarkdown({ content }: { content: string }) {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: '0.75rem',
+        minWidth: 0,
+      }}
+    >
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ node: _node, ...props }) => (
+            <p
+              style={{
+                margin: 0,
+                lineHeight: 1.6,
+              }}
+              {...props}
+            />
+          ),
+          ul: ({ node: _node, ...props }) => (
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: '1.5rem',
+                display: 'grid',
+                gap: '0.375rem',
+              }}
+              {...props}
+            />
+          ),
+          ol: ({ node: _node, ...props }) => (
+            <ol
+              style={{
+                margin: 0,
+                paddingLeft: '1.5rem',
+                display: 'grid',
+                gap: '0.375rem',
+              }}
+              {...props}
+            />
+          ),
+          li: ({ node: _node, ...props }) => (
+            <li
+              style={{
+                margin: 0,
+              }}
+              {...props}
+            />
+          ),
+          h1: ({ node: _node, ...props }) => (
+            <h1
+              style={{
+                margin: 0,
+                fontSize: '1.25rem',
+                lineHeight: 1.3,
+              }}
+              {...props}
+            />
+          ),
+          h2: ({ node: _node, ...props }) => (
+            <h2
+              style={{
+                margin: 0,
+                fontSize: '1.125rem',
+                lineHeight: 1.35,
+              }}
+              {...props}
+            />
+          ),
+          h3: ({ node: _node, ...props }) => (
+            <h3
+              style={{
+                margin: 0,
+                fontSize: '1rem',
+                lineHeight: 1.4,
+              }}
+              {...props}
+            />
+          ),
+          h4: ({ node: _node, ...props }) => (
+            <h4
+              style={{
+                margin: 0,
+                fontSize: '0.95rem',
+                lineHeight: 1.4,
+              }}
+              {...props}
+            />
+          ),
+          blockquote: ({ node: _node, ...props }) => (
+            <blockquote
+              style={{
+                margin: 0,
+                paddingLeft: '1rem',
+                borderLeft: '3px solid rgba(148, 163, 184, 0.5)',
+                color: 'inherit',
+                opacity: 0.9,
+              }}
+              {...props}
+            />
+          ),
+          pre: ({ node: _node, ...props }) => (
+            <pre
+              style={{
+                margin: 0,
+                padding: '0.75rem',
+                overflowX: 'auto',
+                whiteSpace: 'pre',
+                borderRadius: '0.5rem',
+                background: 'rgba(15, 23, 42, 0.06)',
+              }}
+              {...props}
+            />
+          ),
+          code: ({ node: _node, inline, className, children, ...props }) =>
+            inline ? (
+              <code
+                className={className}
+                style={{
+                  padding: '0.125rem 0.375rem',
+                  borderRadius: '0.375rem',
+                  background: 'rgba(15, 23, 42, 0.06)',
+                  wordBreak: 'break-word',
+                }}
+                {...props}
+              >
+                {children}
+              </code>
+            ) : (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            ),
+          hr: ({ node: _node, ...props }) => (
+            <hr
+              style={{
+                width: '100%',
+                margin: 0,
+                border: 0,
+                borderTop: '1px solid rgba(148, 163, 184, 0.35)',
+              }}
+              {...props}
+            />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
 }
 
 function BriefTab({
