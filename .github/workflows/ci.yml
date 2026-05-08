@@ -59,3 +59,32 @@ jobs:
           name: playwright-report
           path: web/playwright-report/
           retention-days: 7
+
+  e2e-lifecycle:
+    name: E2E (Playwright / worker lifecycle)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Pre-build apiari binary
+        working-directory: .
+        run: cargo build -p apiari
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      - name: Create e2e workspace config
+        working-directory: .
+        run: bash scripts/setup-e2e-workspace.sh
+      - run: npx playwright test --config playwright.e2e.config.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-e2e-lifecycle-report
+          path: web/playwright-report/
+          retention-days: 7

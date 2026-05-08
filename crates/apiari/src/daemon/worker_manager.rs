@@ -337,6 +337,7 @@ impl WorkerManager {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn is_live(&self, worker_id: &str) -> bool {
         self.live.try_lock().is_ok_and(|m| m.contains(worker_id))
     }
@@ -526,40 +527,44 @@ fn read_session_id(db_path: &Path, workspace: &str, worker_id: &str) -> Option<S
 
 // ── Worker path resolution ─────────────────────────────────────────────
 
-/// Look up a worker's paths and agent kind — DB first, state.json fallback.
+/// Look up a worker's paths and agent kind.
 ///
-/// Workers created before the worktree_path/repo_path columns were added won't
-/// have those values in SQLite. Fall back to reading them from state.json so
-/// old workers still work.
+/// SQLite is the authoritative source. state.json is consulted only when the
+/// worker is not in the DB at all (e.g. created by an older version before the
+/// worktree_path/repo_path columns existed).
+///
+/// If the worker IS in SQLite but its paths are missing, that is a data-integrity
+/// error and we surface it loudly rather than silently masking it with a stale
+/// state.json value.
 fn read_worker_paths(
     db_path: &Path,
     workspace: &str,
     worker_id: &str,
 ) -> Result<(PathBuf, PathBuf, PathBuf, AgentKind)> {
-    // Try DB first.
-    let (db_worktree, db_repo, db_kind) = {
-        let store = crate::buzz::worker::WorkerStore::open(db_path)?;
-        let worker = store.get(workspace, worker_id)?;
-        match worker {
-            Some(w) => (
-                w.worktree_path.map(PathBuf::from),
-                w.repo_path.map(PathBuf::from),
-                w.agent_kind.and_then(|k| k.parse::<AgentKind>().ok()),
-            ),
-            None => (None, None, None),
-        }
-    };
+    let store = crate::buzz::worker::WorkerStore::open(db_path)?;
+    let db_worker = store.get(workspace, worker_id)?;
 
-    // Fall back to state.json for paths missing from DB (old workers).
-    let (worktree_path, repo_path, kind) = match (db_worktree, db_repo) {
-        (Some(wt), Some(rp)) => (wt, rp, db_kind.unwrap_or(AgentKind::Codex)),
-        (db_wt, db_rp) => {
+    let (worktree_path, repo_path, kind) = match db_worker {
+        Some(w) => {
+            // Worker is in SQLite — use its paths. Missing paths here is a bug,
+            // not a legacy-compat case, so we return a hard error.
+            let wt = w.worktree_path.map(PathBuf::from).ok_or_else(|| {
+                eyre!("worker {worker_id} is in DB but missing worktree_path — data integrity error")
+            })?;
+            let rp = w.repo_path.map(PathBuf::from).ok_or_else(|| {
+                eyre!("worker {worker_id} is in DB but missing repo_path — data integrity error")
+            })?;
+            let kind = w
+                .agent_kind
+                .and_then(|k| k.parse::<AgentKind>().ok())
+                .unwrap_or(AgentKind::Codex);
+            (wt, rp, kind)
+        }
+        None => {
+            // Worker not in SQLite at all — legitimate for workers created before
+            // the DB columns were added. Fall back to state.json.
             let (wt, rp, k) = read_paths_from_state(db_path, workspace, worker_id)?;
-            (
-                db_wt.unwrap_or(wt),
-                db_rp.unwrap_or(rp),
-                db_kind.unwrap_or(k),
-            )
+            (wt, rp, k)
         }
     };
 
