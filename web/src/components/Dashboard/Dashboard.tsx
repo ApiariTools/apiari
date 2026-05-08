@@ -8,10 +8,36 @@ import styles from './Dashboard.module.css'
 
 // ── Worker summary (built-in stat_row widget) ──────────────────────────────
 
+function formatWorkerStatus(state: WorkerV2['state']): string {
+  switch (state) {
+    case 'done':
+      return 'Completed'
+    case 'abandoned':
+      return 'Abandoned'
+    case 'waiting':
+      return 'Waiting'
+    case 'stalled':
+      return 'Stalled'
+    case 'running':
+      return 'Running'
+    default:
+      return state
+  }
+}
+
+function sortNewestFirst(a: WorkerV2, b: WorkerV2): number {
+  return b.updated_at.localeCompare(a.updated_at)
+}
+
 function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSelectWorker: (id: string) => void }) {
-  const running = workers.filter((w) => w.state === 'running')
-  const waiting = workers.filter((w) => w.state === 'waiting')
-  const stalled = workers.filter((w) => w.state === 'stalled')
+  const activeWorkers = workers.filter((w) => w.state !== 'done' && w.state !== 'abandoned')
+  const recentWorkers = workers
+    .filter((w) => w.state === 'done' || w.state === 'abandoned')
+    .slice()
+    .sort(sortNewestFirst)
+  const running = activeWorkers.filter((w) => w.state === 'running')
+  const waiting = activeWorkers.filter((w) => w.state === 'waiting')
+  const stalled = activeWorkers.filter((w) => w.state === 'stalled')
 
   const attentionWorkers = [...stalled, ...waiting]
 
@@ -29,7 +55,7 @@ function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSel
             <span className={styles.statPillLabel}>{s.label}</span>
           </div>
         ))}
-        {workers.length === 0 && <span className={styles.emptyMsg}>No active workers</span>}
+        {activeWorkers.length === 0 && <span className={styles.emptyMsg}>No active workers</span>}
       </div>
 
       {/* Attention list */}
@@ -48,6 +74,26 @@ function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSel
               </button>
             )
           })}
+        </div>
+      )}
+
+      {recentWorkers.length > 0 && (
+        <div className={styles.attentionList}>
+          <span className={styles.attentionHeading}>Recent workers</span>
+          {recentWorkers.slice(0, 8).map((w) => (
+            <button key={w.id} className={styles.attentionRow} onClick={() => onSelectWorker(w.id)}>
+              <span
+                className={styles.attentionDot}
+                style={{ background: w.state === 'abandoned' ? 'var(--status-abandoned)' : 'var(--status-merged)' }}
+              />
+              <span className={styles.attentionName}>{getWorkerTitle(w)}</span>
+              <span
+                className={`${styles.historyState} ${w.state === 'abandoned' ? styles.historyStateAbandoned : styles.historyStateDone}`}
+              >
+                {formatWorkerStatus(w.state)}
+              </span>
+            </button>
+          ))}
         </div>
       )}
     </div>
