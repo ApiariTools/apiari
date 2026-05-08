@@ -194,9 +194,10 @@ interface EventRowProps {
   created_at: string
   tool?: string
   input?: Record<string, unknown>
+  session_id?: string | null
 }
 
-function EventRow({ event_type, content, created_at, tool, input }: EventRowProps) {
+function EventRow({ event_type, content, created_at, tool, input, session_id }: EventRowProps) {
   const time = formatTime(created_at)
 
   if (event_type === 'assistant_text') {
@@ -242,6 +243,16 @@ function EventRow({ event_type, content, created_at, tool, input }: EventRowProp
         </div>
       </div>
     )
+  }
+
+  if (event_type === 'session_start') {
+    return <div className={styles.sessionBoundary}>{time} · session start</div>
+  }
+
+  if (event_type === 'session_result') {
+    const sid = session_id ?? content
+    const label = sid ? `session ${sid.slice(0, 12)}` : 'session end'
+    return <div className={styles.sessionBoundary}>{time} · {label}</div>
   }
 
   // fallback for unknown event types
@@ -1024,6 +1035,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                       created_at={e.created_at}
                       tool={e.tool}
                       input={e.input}
+                      session_id={e.session_id}
                     />
                   )
                 })}

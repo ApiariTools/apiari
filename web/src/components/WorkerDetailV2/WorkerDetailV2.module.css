@@ -438,6 +438,28 @@
   40% { transform: translateY(-4px); opacity: 0.9; }
 }
 
+/* Session boundary debug dividers */
+.sessionBoundary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--text-faint);
+  opacity: 0.6;
+  user-select: text;
+}
+
+.sessionBoundary::before,
+.sessionBoundary::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+  opacity: 0.5;
+}
+
 /* Events list */
 .events {
   padding: var(--space-5) var(--space-6) var(--space-7);

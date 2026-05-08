@@ -4339,6 +4339,24 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
                         "created_at": created_at,
                     }))
                 }
+                "session_result" => {
+                    let session_id = val.get("session_id").and_then(|v| v.as_str());
+                    let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    Some(serde_json::json!({
+                        "event_type": "session_result",
+                        "content": session_id.unwrap_or(""),
+                        "session_id": session_id,
+                        "created_at": created_at,
+                    }))
+                }
+                "start" => {
+                    let created_at = val.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+                    Some(serde_json::json!({
+                        "event_type": "session_start",
+                        "content": "",
+                        "created_at": created_at,
+                    }))
+                }
                 _ => None,
             }
         })

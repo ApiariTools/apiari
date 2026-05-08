@@ -186,6 +186,7 @@ impl WorkerManager {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default(),
             &prompt_copy,
+            &branch,
             &worktree_path,
             isolation.as_str(),
             &agent_str,
@@ -214,6 +215,8 @@ impl WorkerManager {
         let wdir = work_dir_copy.clone();
         let wt_path = worktree_path.clone();
         let rpath = repo_path.clone();
+        let db = self.db_path.clone();
+        let ws = self.workspace.clone();
 
         tokio::spawn(run_agent_task(
             agent,
@@ -224,6 +227,8 @@ impl WorkerManager {
             rpath,
             live,
             pending,
+            db,
+            ws,
         ));
 
         Ok(worker_id)
@@ -306,9 +311,11 @@ impl WorkerManager {
         let live = Arc::clone(&self.live);
         let pending = Arc::clone(&self.pending);
         let wid = worker_id.to_string();
+        let db = self.db_path.clone();
+        let ws = self.workspace.clone();
 
         tokio::spawn(run_agent_task(
-            agent, wid, msg_clone, work_dir, wt_clone, repo_path, live, pending,
+            agent, wid, msg_clone, work_dir, wt_clone, repo_path, live, pending, db, ws,
         ));
 
         Ok(())
@@ -388,6 +395,8 @@ async fn run_agent_task(
     repo_path: PathBuf,
     live: Arc<Mutex<HashSet<String>>>,
     pending: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
+    db_path: PathBuf,
+    workspace: String,
 ) {
     let events_path = work_dir
         .join(".swarm")
@@ -403,9 +412,6 @@ async fn run_agent_task(
 
     update_state_phase(&work_dir, &worker_id, "running");
 
-    let mut accumulated_text = String::new();
-    let mut pr_url_written = false;
-
     loop {
         // Drain all events from the current agent run.
         let mut last_session_id: Option<String> = None;
@@ -416,17 +422,6 @@ async fn run_agent_task(
             } = ev
             {
                 last_session_id = Some(sid.clone());
-            }
-            // Fast path: capture PR_OPENED from streamed text immediately.
-            // Covers mock agent and any real agent that outputs the marker.
-            if let AgentEventWire::TextDelta { ref text } = ev {
-                accumulated_text.push_str(text);
-                if !pr_url_written
-                    && let Some(url) = apiari_swarm::core::state::parse_pr_opened(&accumulated_text)
-                {
-                    update_state_pr(&work_dir, &worker_id, &url);
-                    pr_url_written = true;
-                }
             }
             log_event(&mut logger, &ev);
         }
@@ -481,12 +476,9 @@ async fn run_agent_task(
             }
             None => {
                 update_state_phase(&work_dir, &worker_id, "waiting");
-                // Fallback: if text scan didn't find a PR URL, ask GitHub.
-                if !pr_url_written && let Some(url) = lookup_pr_by_branch(&work_dir, &worker_id) {
-                    update_state_pr(&work_dir, &worker_id, &url);
-                    pr_url_written = true;
-                }
-                let _ = pr_url_written;
+                // Agent is now idle. Look up the PR via gh — branch was written
+                // to SQLite at creation, so we don't need state.json here.
+                lookup_and_persist_pr(&db_path, &workspace, &worker_id, &work_dir);
                 break;
             }
         }
@@ -496,6 +488,124 @@ async fn run_agent_task(
         apiari_swarm::core::git::pull_main(&repo_path);
     })
     .await;
+}
+
+/// Read the worker's branch from SQLite, ask GitHub for the PR URL, and write
+/// it back to SQLite directly. No text parsing, no state.json hop.
+fn lookup_and_persist_pr(db_path: &Path, workspace: &str, worker_id: &str, work_dir: &Path) {
+    let Ok(store) = crate::buzz::worker::WorkerStore::open(db_path) else {
+        return;
+    };
+    let Ok(Some(worker)) = store.get(workspace, worker_id) else {
+        return;
+    };
+    // Skip if we already have a URL (e.g. written by the reconciler concurrently).
+    if worker.pr_url.is_some() {
+        return;
+    }
+
+    // Strategy 1: `gh pr view` from the worktree — gh resolves the remote tracking
+    // ref itself, so local-branch != remote-branch is handled correctly.
+    let worktree_path = worker.worktree_path.as_deref().map(std::path::Path::new);
+    if let Some(wt) = worktree_path
+        && let Some(url) = gh_pr_view_url(wt)
+    {
+        tracing::info!(
+            worker_id,
+            url,
+            "PR URL resolved via gh pr view — writing to DB"
+        );
+        let _ = store.update_properties(
+            workspace,
+            worker_id,
+            crate::buzz::worker::WorkerPropertyUpdate {
+                pr_url: Some(Some(url)),
+                ..Default::default()
+            },
+        );
+        return;
+    }
+
+    // Strategy 2: fallback — `gh pr list --head <local-branch>` from work_dir.
+    // Covers the case where the worktree directory no longer exists but the
+    // branch name matches the remote head (the common case).
+    let Some(branch) = worker.branch else { return };
+    let out = gh_cmd()
+        .args([
+            "pr", "list", "--head", &branch, "--state", "all", "--json", "url", "--limit", "1",
+        ])
+        .current_dir(work_dir)
+        .output();
+    let Ok(out) = out else { return };
+    if !out.status.success() {
+        return;
+    }
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return;
+    };
+    let Some(url) = json
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|v| v.get("url"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+    else {
+        return;
+    };
+    tracing::info!(
+        worker_id,
+        url,
+        "PR URL resolved via gh pr list — writing to DB"
+    );
+    let _ = store.update_properties(
+        workspace,
+        worker_id,
+        crate::buzz::worker::WorkerPropertyUpdate {
+            pr_url: Some(Some(url)),
+            ..Default::default()
+        },
+    );
+}
+
+/// Run `gh pr view --json url` from inside the worktree directory.
+/// gh resolves the remote tracking ref internally, so this handles
+/// local-branch != remote-branch correctly.
+fn gh_pr_view_url(worktree_path: &Path) -> Option<String> {
+    if !worktree_path.exists() {
+        return None;
+    }
+    let out = gh_cmd()
+        .args(["pr", "view", "--json", "url", "--jq", ".url"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if url.is_empty() || !url.starts_with("https://") {
+        return None;
+    }
+    Some(url)
+}
+
+/// In tests, each thread can override which `gh` binary is used.
+/// Thread-local so parallel tests don't race on a global.
+#[cfg(test)]
+thread_local! {
+    static TEST_GH_BIN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Returns a `Command` for the `gh` binary.
+/// In tests, a thread-local override lets each test inject its own fake `gh`
+/// without races — parallel test threads each get their own path.
+fn gh_cmd() -> std::process::Command {
+    #[cfg(test)]
+    if let Some(bin) = TEST_GH_BIN.with(|b: &std::cell::RefCell<Option<String>>| b.borrow().clone())
+    {
+        return std::process::Command::new(bin);
+    }
+    std::process::Command::new("gh")
 }
 
 // ── Session ID persistence ─────────────────────────────────────────────
@@ -689,6 +799,7 @@ fn upsert_worker_db_record(
     worker_id: &str,
     repo: &str,
     prompt: &str,
+    branch: &str,
     worktree_path: &Path,
     isolation_mode: &str,
     agent_kind: &str,
@@ -709,7 +820,7 @@ fn upsert_worker_db_record(
         state: crate::buzz::worker::WorkerState::Running,
         brief: Some(serde_json::json!({"goal": goal})),
         repo: Some(repo.to_string()),
-        branch: None,
+        branch: Some(branch.to_string()),
         goal: Some(goal.to_string()),
         tests_passing: false,
         branch_ready: false,
@@ -805,56 +916,6 @@ fn update_state_phase(work_dir: &Path, worker_id: &str, phase: &str) {
                     } else {
                         "done".to_string()
                     });
-                break;
-            }
-        }
-    }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_string(&state).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(tmp, path);
-    }
-}
-
-fn lookup_pr_by_branch(work_dir: &Path, worker_id: &str) -> Option<String> {
-    let path = work_dir.join(".swarm").join("state.json");
-    let raw = std::fs::read_to_string(&path).ok()?;
-    let state: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let branch = state["worktrees"]
-        .as_array()?
-        .iter()
-        .find(|wt| wt["id"].as_str() == Some(worker_id))?
-        .get("branch")
-        .and_then(|v| v.as_str())?
-        .to_string();
-
-    let out = std::process::Command::new("gh")
-        .args([
-            "pr", "list", "--head", &branch, "--state", "all", "--json", "url", "--limit", "1",
-        ])
-        .current_dir(work_dir)
-        .output()
-        .ok()?;
-
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    json.as_array()?
-        .first()?
-        .get("url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn update_state_pr(work_dir: &Path, worker_id: &str, pr_url: &str) {
-    let path = work_dir.join(".swarm").join("state.json");
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return;
-    };
-    if let Some(worktrees) = state["worktrees"].as_array_mut() {
-        for wt in worktrees.iter_mut() {
-            if wt["id"].as_str() == Some(worker_id) {
-                wt["pr"] = serde_json::json!({ "url": pr_url });
                 break;
             }
         }
@@ -1246,6 +1307,7 @@ mod tests {
             "w-abc1",
             "myrepo",
             "fix the bug",
+            "feat/fix-the-bug",
             p,
             "worktree",
             "codex",
@@ -1257,6 +1319,7 @@ mod tests {
         assert_eq!(worker.workspace, "myws");
         assert_eq!(worker.repo.as_deref(), Some("myrepo"));
         assert_eq!(worker.goal.as_deref(), Some("fix the bug"));
+        assert_eq!(worker.branch.as_deref(), Some("feat/fix-the-bug"));
         assert_eq!(worker.state, crate::buzz::worker::WorkerState::Running);
     }
 
@@ -1271,6 +1334,7 @@ mod tests {
             "w-0001",
             "repo",
             "\n\nfix auth bug\n\ncontext",
+            "feat/fix-auth-bug",
             p,
             "worktree",
             "codex",
@@ -1287,10 +1351,28 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let p = std::path::Path::new("/tmp");
         upsert_worker_db_record(
-            &db_path, "ws", "w-list1", "repo", "task one", p, "worktree", "codex", p,
+            &db_path,
+            "ws",
+            "w-list1",
+            "repo",
+            "task one",
+            "feat/list1",
+            p,
+            "worktree",
+            "codex",
+            p,
         );
         upsert_worker_db_record(
-            &db_path, "ws", "w-list2", "repo", "task two", p, "worktree", "codex", p,
+            &db_path,
+            "ws",
+            "w-list2",
+            "repo",
+            "task two",
+            "feat/list2",
+            p,
+            "worktree",
+            "codex",
+            p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         let workers = store.list("ws").unwrap();
@@ -1305,10 +1387,10 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let p = std::path::Path::new("/tmp");
         upsert_worker_db_record(
-            &db_path, "ws-a", "w-0001", "repo", "task", p, "worktree", "codex", p,
+            &db_path, "ws-a", "w-0001", "repo", "task", "feat/a", p, "worktree", "codex", p,
         );
         upsert_worker_db_record(
-            &db_path, "ws-b", "w-0002", "repo", "task", p, "worktree", "codex", p,
+            &db_path, "ws-b", "w-0002", "repo", "task", "feat/b", p, "worktree", "codex", p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         assert_eq!(store.list("ws-a").unwrap().len(), 1);
@@ -1322,10 +1404,28 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let p = std::path::Path::new("/tmp");
         upsert_worker_db_record(
-            &db_path, "ws", "w-idem", "repo", "task", p, "worktree", "codex", p,
+            &db_path,
+            "ws",
+            "w-idem",
+            "repo",
+            "task",
+            "feat/idem",
+            p,
+            "worktree",
+            "codex",
+            p,
         );
         upsert_worker_db_record(
-            &db_path, "ws", "w-idem", "repo", "task", p, "worktree", "codex", p,
+            &db_path,
+            "ws",
+            "w-idem",
+            "repo",
+            "task",
+            "feat/idem",
+            p,
+            "worktree",
+            "codex",
+            p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         assert_eq!(
@@ -1345,7 +1445,155 @@ mod tests {
         let db_path = tmp.path().join("nonexistent").join("test.db");
         let p = std::path::Path::new("/tmp");
         upsert_worker_db_record(
-            &db_path, "ws", "w-0001", "repo", "task", p, "worktree", "codex", p,
+            &db_path,
+            "ws",
+            "w-0001",
+            "repo",
+            "task",
+            "feat/my-branch",
+            p,
+            "worktree",
+            "codex",
+            p,
         ); // no panic
+    }
+
+    // ── lookup_and_persist_pr ─────────────────────────────────────────────
+
+    /// Write a fake `gh` shell script that always exits 0 and prints `output`.
+    fn write_fake_gh(dir: &std::path::Path, output: &str) -> std::path::PathBuf {
+        let script = dir.join("gh");
+        // Escape single quotes in output for the shell printf.
+        let escaped = output.replace('\'', "'\\''");
+        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s' '{escaped}'\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        script
+    }
+
+    /// Run `f` with the thread-local `gh` binary set to `gh_path`, then restore.
+    fn with_fake_gh<F: FnOnce()>(gh_path: &std::path::Path, f: F) {
+        super::TEST_GH_BIN.with(|b| *b.borrow_mut() = Some(gh_path.to_string_lossy().to_string()));
+        f();
+        super::TEST_GH_BIN.with(|b| *b.borrow_mut() = None);
+    }
+
+    #[test]
+    fn lookup_and_persist_pr_uses_gh_pr_view_and_writes_to_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let worktree = tmp.path().join("wt").join("w-pr01");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        upsert_worker_db_record(
+            &db_path,
+            "ws",
+            "w-pr01",
+            "repo",
+            "task",
+            "feat/my-branch",
+            &worktree,
+            "worktree",
+            "codex",
+            tmp.path(),
+        );
+
+        let gh = write_fake_gh(tmp.path(), "https://github.com/owner/repo/pull/42");
+        with_fake_gh(&gh, || {
+            lookup_and_persist_pr(&db_path, "ws", "w-pr01", tmp.path());
+        });
+
+        let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
+        let worker = store.get("ws", "w-pr01").unwrap().unwrap();
+        assert_eq!(
+            worker.pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/42")
+        );
+    }
+
+    #[test]
+    fn lookup_and_persist_pr_falls_back_to_gh_pr_list_when_worktree_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        // worktree_path points somewhere that doesn't exist — gh pr view is skipped.
+        let missing_wt = tmp.path().join("wt").join("gone");
+
+        upsert_worker_db_record(
+            &db_path,
+            "ws",
+            "w-pr02",
+            "repo",
+            "task",
+            "feat/fallback-branch",
+            &missing_wt,
+            "worktree",
+            "codex",
+            tmp.path(),
+        );
+
+        // Fake gh returns a JSON array — the shape expected by `gh pr list`.
+        let gh = write_fake_gh(
+            tmp.path(),
+            r#"[{"url":"https://github.com/owner/repo/pull/99"}]"#,
+        );
+        with_fake_gh(&gh, || {
+            lookup_and_persist_pr(&db_path, "ws", "w-pr02", tmp.path());
+        });
+
+        let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
+        let worker = store.get("ws", "w-pr02").unwrap().unwrap();
+        assert_eq!(
+            worker.pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/99")
+        );
+    }
+
+    #[test]
+    fn lookup_and_persist_pr_skips_if_url_already_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let worktree = tmp.path().join("wt").join("w-pr03");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        upsert_worker_db_record(
+            &db_path,
+            "ws",
+            "w-pr03",
+            "repo",
+            "task",
+            "feat/already-set",
+            &worktree,
+            "worktree",
+            "codex",
+            tmp.path(),
+        );
+        let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
+        store
+            .update_properties(
+                "ws",
+                "w-pr03",
+                crate::buzz::worker::WorkerPropertyUpdate {
+                    pr_url: Some(Some("https://github.com/owner/repo/pull/1".to_string())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        drop(store);
+
+        // Fake gh would overwrite to /pull/999 if called — it must not be called.
+        let gh = write_fake_gh(tmp.path(), "https://github.com/owner/repo/pull/999");
+        with_fake_gh(&gh, || {
+            lookup_and_persist_pr(&db_path, "ws", "w-pr03", tmp.path());
+        });
+
+        let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
+        let worker = store.get("ws", "w-pr03").unwrap().unwrap();
+        assert_eq!(
+            worker.pr_url.as_deref(),
+            Some("https://github.com/owner/repo/pull/1")
+        );
     }
 }

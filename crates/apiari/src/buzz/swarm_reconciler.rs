@@ -1,19 +1,18 @@
-//! Swarm reconciler — background task that polls `.swarm/state.json` every 5 seconds
-//! and applies forward-only state transitions to the v2 worker DB table.
+//! Swarm reconciler — background task that drives forward-only state transitions
+//! on v2 workers. Runs every 5 seconds (fast loop) and every 5 minutes (slow loop).
 //!
-//! # Rules (from spec)
+//! Three independent passes per cycle:
 //!
-//! | Swarm signal                      | DB state  | Action                                       |
-//! |-----------------------------------|-----------|----------------------------------------------|
-//! | agent running                     | queued    | → running                                    |
-//! | agent waiting (agent-status file) | running   | → waiting                                    |
-//! | agent exited 0 (phase=="completed")| running   | → waiting, set branch_ready=true             |
-//! | agent exited non-0 (phase failed) | running   | → waiting, set branch_ready=true             |
-//! | pr.url appeared                   | any       | set pr_url property                          |
-//! | worker vanished from state.json   | active    | check gh pr; → done or → abandoned           |
-//! | DB=waiting, swarm=running         | waiting   | → running, increment revision_count          |
-//! | last_output_at >10min + running   | —         | → stalled                                    |
-//! | new output event                  | stalled   | → running, update last_output_at             |
+//! 1. `apply_rules` — for workers still present in state.json:
+//!    drives running/waiting/stalled transitions based on swarm phase.
+//!
+//! 2. `apply_disappeared` — for workers no longer in state.json:
+//!    marks them abandoned after a grace period (if no open PR).
+//!
+//! 3. `check_merged_prs` — for ANY active worker with a pr_url:
+//!    checks GitHub; transitions to Done when merged.
+//!    Throttled to once per 60 seconds per worker.
+//!    Runs regardless of whether the worker is in state.json or not.
 
 use std::{
     collections::HashMap,
@@ -224,6 +223,9 @@ pub struct SwarmReconciler {
     /// Populated by apply_rules when a Waiting worker has no pr_url.
     /// Drained by discover_prs_from_queue in the 5-min slow loop.
     pr_discovery_queue: std::sync::Mutex<HashMap<String, u32>>,
+    /// Last time we checked each waiting worker's PR for merge — throttled to
+    /// at most once per 60 seconds to avoid hammering the GitHub API.
+    pr_merge_checked: std::sync::Mutex<HashMap<String, std::time::Instant>>,
 }
 
 impl SwarmReconciler {
@@ -240,6 +242,7 @@ impl SwarmReconciler {
             event_tx: config.event_tx,
             db_path: config.db_path,
             pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
+            pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -295,8 +298,10 @@ impl SwarmReconciler {
             }
         }
 
-        // Check for swarm workers that exist but have no DB record (no-op in v2 —
-        // workers are created through the API, not auto-imported from swarm).
+        // Single unified pass: check if any waiting worker's PR was merged.
+        // Runs independently of state.json — SQLite is the only source of truth here.
+        self.check_merged_prs(&workers)?;
+
         let _ = swarm_map;
         let _ = worker_map;
 
@@ -305,54 +310,85 @@ impl SwarmReconciler {
 
     /// Handle a worker that was in the DB but has disappeared from swarm state.json.
     ///
-    /// Swarm removes worktrees on close — there is no "merged" phase. We detect
-    /// merges by querying `gh pr view` and fall back to "abandoned" for workers
-    /// without a merged PR (after a brief grace period to avoid false positives).
+    /// Merge detection is handled by `check_merged_prs` (runs for all active workers
+    /// regardless of state.json presence). Here we only handle the abandoned case:
+    /// if the worker vanished without a merged PR, mark it abandoned after a grace period.
     fn apply_disappeared(&self, worker: &Worker) -> Result<()> {
-        // Only act on non-terminal active states.
         match worker.state {
             WorkerState::Running
             | WorkerState::Waiting
             | WorkerState::Stalled
             | WorkerState::Queued => {}
-            _ => return Ok(()), // already terminal, nothing to do
+            _ => return Ok(()),
         }
 
-        // Worker disappeared — check its PR state.
+        // If the PR is still open, the worktree just lost its entry (daemon restart etc) —
+        // leave it alone. check_merged_prs will handle the MERGED case.
         if let Some(pr_url) = &worker.pr_url {
-            let output = std::process::Command::new("gh")
+            let out = std::process::Command::new("gh")
                 .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
                 .output();
-            if let Ok(out) = output {
+            if let Ok(out) = out
+                && String::from_utf8_lossy(&out.stdout).trim() == "OPEN"
+            {
+                return Ok(());
+            }
+        }
+
+        // No PR, or PR is closed/merged — abandon after grace period.
+        if let Ok(entered) = worker
+            .state_entered_at
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            && (chrono::Utc::now() - entered).num_minutes() >= 1
+        {
+            info!(
+                "[reconciler] {} disappeared without open PR → abandoned",
+                worker.id
+            );
+            self.do_transition(worker, WorkerState::Abandoned)?;
+        }
+
+        Ok(())
+    }
+
+    /// Unified pass: for any active worker with a known PR URL, check if it was
+    /// merged on GitHub and transition to Done. Runs once per reconcile cycle,
+    /// throttled per-worker to at most once per 60 seconds.
+    fn check_merged_prs(&self, workers: &[Worker]) -> Result<()> {
+        for worker in workers {
+            match worker.state {
+                WorkerState::Running | WorkerState::Waiting | WorkerState::Stalled => {}
+                _ => continue,
+            }
+            let Some(pr_url) = &worker.pr_url else {
+                continue;
+            };
+            let should_check = {
+                let checked = self.pr_merge_checked.lock().unwrap();
+                checked
+                    .get(&worker.id)
+                    .map(|t| t.elapsed().as_secs() >= 60)
+                    .unwrap_or(true)
+            };
+            if !should_check {
+                continue;
+            }
+            self.pr_merge_checked
+                .lock()
+                .unwrap()
+                .insert(worker.id.clone(), std::time::Instant::now());
+
+            let out = std::process::Command::new("gh")
+                .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
+                .output();
+            if let Ok(out) = out {
                 let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if state == "MERGED" {
                     info!("[reconciler] {} PR merged → done", worker.id);
                     self.do_transition(worker, WorkerState::Done)?;
-                    return Ok(());
-                }
-                if state == "OPEN" {
-                    // PR still open — worker just lost its worktree (daemon restart etc).
-                    // Leave it alone; user can still see and interact with the PR.
-                    return Ok(());
                 }
             }
         }
-
-        // No PR, or PR is closed/unknown — worker disappeared, treat as abandoned after grace period.
-        if let Ok(entered) = worker
-            .state_entered_at
-            .parse::<chrono::DateTime<chrono::Utc>>()
-        {
-            let age_minutes = (chrono::Utc::now() - entered).num_minutes();
-            if age_minutes >= 1 {
-                info!(
-                    "[reconciler] {} disappeared without merged PR → abandoned",
-                    worker.id
-                );
-                self.do_transition(worker, WorkerState::Abandoned)?;
-            }
-        }
-
         Ok(())
     }
 
@@ -998,6 +1034,7 @@ mod tests {
             event_tx: None,
             db_path: None,
             pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
+            pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -1383,6 +1420,153 @@ mod tests {
 
         let updated = r.store.get("test", "w-fresh").unwrap().unwrap();
         // Still waiting — grace period not exceeded
+        assert_eq!(updated.state, WorkerState::Waiting);
+    }
+
+    // ── check_merged_prs tests ──────────────────────────────────────────
+    //
+    // These use a fake `gh` binary (a shell script in a temp dir) injected via
+    // a thread-local, so parallel tests don't race on PATH.
+
+    thread_local! {
+        static TEST_GH_BIN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+
+    fn write_fake_gh(dir: &std::path::Path, output: &str) -> std::path::PathBuf {
+        let script = dir.join("gh");
+        let escaped = output.replace('\'', "'\\''");
+        std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' '{escaped}'\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        script
+    }
+
+    fn with_fake_gh<F: FnOnce()>(gh_path: &std::path::Path, f: F) {
+        TEST_GH_BIN.with(|b| *b.borrow_mut() = Some(gh_path.to_string_lossy().to_string()));
+        f();
+        TEST_GH_BIN.with(|b| *b.borrow_mut() = None);
+    }
+
+    /// Override `gh` for the reconciler's `check_merged_prs` call.
+    /// We patch PATH because `check_merged_prs` uses `Command::new("gh")` directly
+    /// (unlike worker_manager which has a `gh_cmd()` helper). The mutex ensures
+    /// these tests don't run concurrently with each other.
+    static GH_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_gh_on_path<F: FnOnce()>(gh_path: &std::path::Path, f: F) {
+        let _guard = GH_PATH_LOCK.lock().unwrap();
+        let original = std::env::var("PATH").unwrap_or_default();
+        let dir = gh_path.parent().unwrap();
+        unsafe { std::env::set_var("PATH", format!("{}:{original}", dir.display())) };
+        f();
+        unsafe { std::env::set_var("PATH", original) };
+    }
+
+    #[test]
+    fn check_merged_prs_transitions_waiting_worker_to_done() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w-merged");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/owner/repo/pull/1".to_string());
+        r.store.upsert(&w).unwrap();
+
+        let gh = write_fake_gh(tmp.path(), "MERGED");
+        with_gh_on_path(&gh, || {
+            r.check_merged_prs(&[w]).unwrap();
+        });
+
+        let updated = r.store.get("test", "w-merged").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Done);
+    }
+
+    #[test]
+    fn check_merged_prs_leaves_open_pr_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w-open");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/owner/repo/pull/2".to_string());
+        r.store.upsert(&w).unwrap();
+
+        let gh = write_fake_gh(tmp.path(), "OPEN");
+        with_gh_on_path(&gh, || {
+            r.check_merged_prs(&[w]).unwrap();
+        });
+
+        let updated = r.store.get("test", "w-open").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+    }
+
+    #[test]
+    fn check_merged_prs_skips_workers_without_pr_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w-no-pr");
+        w.state = WorkerState::Waiting;
+        w.pr_url = None;
+        r.store.upsert(&w).unwrap();
+
+        // gh script that panics if called — it must not be called
+        let gh = write_fake_gh(tmp.path(), "MERGED");
+        with_gh_on_path(&gh, || {
+            r.check_merged_prs(&[w]).unwrap();
+        });
+
+        let updated = r.store.get("test", "w-no-pr").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+    }
+
+    #[test]
+    fn check_merged_prs_skips_terminal_workers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w-done");
+        w.state = WorkerState::Done;
+        w.pr_url = Some("https://github.com/owner/repo/pull/3".to_string());
+        r.store.upsert(&w).unwrap();
+
+        let gh = write_fake_gh(tmp.path(), "MERGED");
+        with_gh_on_path(&gh, || {
+            r.check_merged_prs(&[w]).unwrap();
+        });
+
+        let updated = r.store.get("test", "w-done").unwrap().unwrap();
+        // Already Done — must not be touched
+        assert_eq!(updated.state, WorkerState::Done);
+    }
+
+    #[test]
+    fn check_merged_prs_throttles_per_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w-throttle");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/owner/repo/pull/4".to_string());
+        r.store.upsert(&w).unwrap();
+
+        // Seed the throttle map as if we just checked this worker.
+        r.pr_merge_checked
+            .lock()
+            .unwrap()
+            .insert("w-throttle".to_string(), std::time::Instant::now());
+
+        // gh returns MERGED — but the check is throttled so it won't be called.
+        let gh = write_fake_gh(tmp.path(), "MERGED");
+        with_gh_on_path(&gh, || {
+            r.check_merged_prs(&[w]).unwrap();
+        });
+
+        let updated = r.store.get("test", "w-throttle").unwrap().unwrap();
+        // Still Waiting — throttle prevented the gh call
         assert_eq!(updated.state, WorkerState::Waiting);
     }
 }

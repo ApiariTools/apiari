@@ -385,9 +385,14 @@ impl ManagedAgent for CodexManagedAgent {
                     }
                 }
                 Ok(None) => {
-                    // EOF — execution finished.
+                    // EOF — emit SessionResult with thread_id so the daemon
+                    // can resume this session later, then signal completion.
                     self.state = CodexState::Waiting;
-                    return Ok(None);
+                    return Ok(Some(AgentEventWire::SessionResult {
+                        turns: 0,
+                        cost_usd: None,
+                        session_id: self.thread_id.clone(),
+                    }));
                 }
                 Err(e) => {
                     self.state = CodexState::Finished;
@@ -494,13 +499,11 @@ fn translate_codex_event(event: &apiari_codex_sdk::Event) -> Option<AgentEventWi
                 input: files.join(", "),
             })
         }
-        Event::TurnCompleted { usage } => {
-            let turns = usage.as_ref().map(|u| u.total_tokens).unwrap_or(0);
-            Some(AgentEventWire::SessionResult {
-                turns,
-                cost_usd: None,
-                session_id: None,
-            })
+        Event::TurnCompleted { .. } => {
+            // SessionResult is emitted at EOF in next_event() with the tracked
+            // thread_id — same pattern as Gemini. Don't emit it here because
+            // translate_codex_event has no access to self.thread_id.
+            None
         }
         Event::TurnFailed { error, .. } => {
             let msg = error
@@ -938,6 +941,15 @@ mod tests {
             Some(AgentEventWire::Error { message }) => assert_eq!(message, "something broke"),
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn translate_codex_turn_completed_returns_none() {
+        // TurnCompleted must NOT emit SessionResult here — the session_id lives
+        // in self.thread_id, which translate_codex_event can't access. The
+        // SessionResult is emitted at EOF in next_event() instead.
+        let event = apiari_codex_sdk::Event::TurnCompleted { usage: None };
+        assert!(translate_codex_event(&event).is_none());
     }
 
     #[test]

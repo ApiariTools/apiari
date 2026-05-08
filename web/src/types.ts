@@ -276,6 +276,7 @@ export interface WorkerEvent {
   created_at: string;
   tool?: string;
   input?: Record<string, unknown>;
+  session_id?: string | null;
 }
 
 export interface WorkerTaskPacket {
