@@ -7273,6 +7273,28 @@ mod tests {
     }
 
     #[test]
+    fn git_output_ignores_git_dir_env_var() {
+        // Regression: when the daemon is launched from within Claude Code's sandbox,
+        // GIT_DIR is set in the environment. Without env_remove("GIT_DIR"), git ignores
+        // current_dir and operates on the wrong repo, returning None for upstream info.
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        git(temp.path(), &["init", repo.to_str().unwrap()]);
+        set_git_identity(&repo);
+        write_and_commit(&repo, "f.txt", "x\n", "init");
+
+        // Simulate the Claude Code sandbox environment
+        unsafe { std::env::set_var("GIT_DIR", "/nonexistent/.git") };
+        let branch = git_output(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+        unsafe { std::env::remove_var("GIT_DIR") };
+
+        assert!(
+            branch.is_some(),
+            "git_output should succeed despite GIT_DIR being set"
+        );
+    }
+
+    #[test]
     fn swarm_state_path_defaults_to_workspace_root_when_watcher_config_is_missing() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("apiari");
