@@ -44,6 +44,13 @@
   opacity: 0.9;
 }
 
+@media (max-width: 767px) {
+  .fab {
+    bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 16px);
+    right: 20px;
+  }
+}
+
 .fabBadge {
   position: absolute;
   top: -4px;
