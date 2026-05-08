@@ -1477,11 +1477,9 @@ fn current_git_upstream(path: &std::path::Path) -> Option<String> {
     )
 }
 
-fn git_ahead_behind_counts(path: &std::path::Path) -> (usize, usize) {
-    let Some(output) = git_output(
-        path,
-        &["rev-list", "--left-right", "--count", "@{upstream}...HEAD"],
-    ) else {
+fn git_ahead_behind_counts(path: &std::path::Path, upstream: &str) -> (usize, usize) {
+    let range = format!("{upstream}...HEAD");
+    let Some(output) = git_output(path, &["rev-list", "--left-right", "--count", &range]) else {
         return (0, 0);
     };
 
@@ -1511,7 +1509,10 @@ fn build_repo_list_items(
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| repo.rsplit('/').next().unwrap_or(&repo).to_string());
             let upstream = current_git_upstream(&local_path);
-            let (ahead_count, behind_count) = git_ahead_behind_counts(&local_path);
+            let (ahead_count, behind_count) = upstream
+                .as_deref()
+                .map(|upstream| git_ahead_behind_counts(&local_path, upstream))
+                .unwrap_or((0, 0));
 
             RepoListItem {
                 name: basename.clone(),
@@ -7208,7 +7209,13 @@ mod tests {
 
         git(
             temp.path(),
-            &["clone", remote.to_str().unwrap(), other.to_str().unwrap()],
+            &[
+                "clone",
+                "--branch",
+                "main",
+                remote.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
         );
         set_git_identity(&other);
         write_and_commit(&other, "remote.txt", "remote\n", "remote");
@@ -7218,7 +7225,7 @@ mod tests {
         write_and_commit(&local, "local.txt", "local\n", "local");
 
         assert_eq!(current_git_upstream(&local).as_deref(), Some("origin/main"));
-        assert_eq!(git_ahead_behind_counts(&local), (1, 1));
+        assert_eq!(git_ahead_behind_counts(&local, "origin/main"), (1, 1));
     }
 
     #[test]

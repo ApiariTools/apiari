@@ -1,4 +1,5 @@
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { repoSyncLabel } from "../repoSync";
 import type { Repo, ResearchTask } from "../types";
 import { EmptyState } from "../primitives/EmptyState";
 import { StatusBadge } from "../primitives/StatusBadge";
@@ -15,16 +16,6 @@ interface Props {
 
 function branchName(branch: string): string {
   return branch.replace(/^swarm\//, "");
-}
-
-function repoSyncLabel(repo: Repo): string {
-  const ahead = repo.ahead_count ?? 0;
-  const behind = repo.behind_count ?? 0;
-  if (!repo.upstream) return "no upstream";
-  if (ahead === 0 && behind === 0) return `in sync with ${repo.upstream}`;
-  if (ahead > 0 && behind > 0) return `${ahead} ahead · ${behind} behind ${repo.upstream}`;
-  if (ahead > 0) return `${ahead} ahead of ${repo.upstream}`;
-  return `${behind} behind ${repo.upstream}`;
 }
 
 export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, onClose }: Props) {
@@ -50,7 +41,7 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
             </div>
             <div className={styles.repoMeta}>
               <span>{repo.is_clean ? "clean" : "modified"}</span>
-              <span>{repoSyncLabel(repo)}</span>
+              <span>{repoSyncLabel(repo, { includeUpstream: true })}</span>
             </div>
             {repo.workers.length > 0 && (
               <div className={styles.workerList}>
