@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import type { WorkerV2, AutoBot } from '../../types'
+import { getWorkerTitle } from '../../utils/workerTitle'
 import styles from './CommandPalette.module.css'
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ export default function CommandPalette({
 
   // Build filtered results
   const filteredWorkers = workers.filter((w) =>
-    matches(query, w.goal, w.branch, w.id),
+    matches(query, w.display_title, w.goal, w.branch, w.id),
   )
   const filteredBots = autoBots.filter((b) =>
     matches(query, b.name),
@@ -175,7 +176,7 @@ export default function CommandPalette({
                 const globalIdx = workerSectionStart + i
                 const isActive = globalIdx === activeIndex
                 const dotCls = workerDotClass(w.state)
-                const name = w.goal ?? w.branch ?? w.id
+                const name = getWorkerTitle(w)
 
                 return (
                   <button
