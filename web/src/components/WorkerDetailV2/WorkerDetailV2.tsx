@@ -898,7 +898,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                         ci_passing: data.ci_passing,
                       },
                     },
-                    `Viewing: ${data.goal ?? data.branch ?? data.id}`,
+                    data.goal ?? data.branch ?? data.id,
                   )
                 }}
                 title="Ask about this worker"

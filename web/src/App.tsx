@@ -176,12 +176,19 @@ export default function App() {
     const session = contextSessions.find((s) => s.id === sessionId)
     if (!session) return
 
+    // On first message, title becomes the question (truncated)
+    const isFirstMessage = session.messages.length === 0
+    const newTitle = isFirstMessage
+      ? (message.length > 52 ? message.slice(0, 49) + '…' : message)
+      : session.title
+
     // Add user message + set loading
     setContextSessions((prev) =>
       prev.map((s) =>
         s.id === sessionId
           ? {
               ...s,
+              title: newTitle,
               loading: true,
               messages: [
                 ...s.messages,
@@ -200,7 +207,7 @@ export default function App() {
         { role: 'user' as const, content: message, timestamp: new Date().toISOString() },
         { role: 'assistant' as const, content: res.response, timestamp: new Date().toISOString() },
       ]
-      const updatedSession = { ...session, loading: false, server_session_id: res.session_id, model: res.model, messages: updatedMessages }
+      const updatedSession = { ...session, title: newTitle, loading: false, server_session_id: res.session_id, model: res.model, messages: updatedMessages }
 
       setContextSessions((prev) =>
         prev.map((s) => s.id === sessionId ? updatedSession : s),
@@ -552,12 +559,12 @@ export default function App() {
             const w = workers.find(w => w.id === selected.id)
             return {
               context: { view: 'worker_detail', entity_id: selected.id, entity_snapshot: w ? { state: w.state, goal: w.goal } : {} },
-              title: w ? `Worker: ${getWorkerTitle(w)}` : `Worker: ${selected.id}`,
+              title: w ? getWorkerTitle(w) : selected.id,
             }
           }
           return {
             context: { view: 'workspace_overview', entity_id: workspace, entity_snapshot: { workspace } },
-            title: `Workspace: ${workspace}`,
+            title: workspace,
           }
         })()}
         onNewSession={openContextBot}

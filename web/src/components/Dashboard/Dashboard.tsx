@@ -199,7 +199,7 @@ export default function Dashboard({ workspace, workers, onSelectWorker, onOpenCo
                   repos: repos.map((r) => ({ name: r.name, branch: r.branch, is_clean: r.is_clean })),
                 },
               },
-              'Dashboard',
+              workspace,
             )}
             title="Ask about this workspace"
           >
