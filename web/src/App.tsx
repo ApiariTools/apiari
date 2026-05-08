@@ -368,6 +368,7 @@ export default function App() {
   const activeWorkers = workers.filter((w) => !DONE_STATES.includes(w.state))
   const doneWorkers = workers.filter((w) => DONE_STATES.includes(w.state))
   const sidebarWorkers = activeWorkers.map(workerToSidebarItem)
+  const sidebarDoneWorkers = doneWorkers.map(workerToSidebarItem)
   const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
   const activityItems = workers
@@ -386,6 +387,7 @@ export default function App() {
       autoBots={sidebarAutoBots}
       workers={sidebarWorkers}
       doneWorkerCount={doneWorkers.length}
+      doneWorkers={sidebarDoneWorkers}
       workspaces={workspaces}
       workspace={workspace}
       onWorkspaceChange={(ws) => { setWorkspace(ws); setSelected(null); updateHash(ws) }}
@@ -484,6 +486,7 @@ export default function App() {
             autoBots={sidebarAutoBots}
             workers={sidebarWorkers}
             doneWorkerCount={doneWorkers.length}
+            doneWorkers={sidebarDoneWorkers}
             workspaces={workspaces}
             workspace={workspace}
             onWorkspaceChange={(ws) => {
