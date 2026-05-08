@@ -480,6 +480,7 @@ export default function App() {
         autoBots={autoBots}
         onSelectWorker={(id) => navigateTo('worker', id)}
         onSelectAutoBot={(id) => navigateTo('auto_bot', id)}
+        onOpenContextBot={openContextBot}
       />
     )
   })()
