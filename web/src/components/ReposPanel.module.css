@@ -53,6 +53,15 @@
   margin-left: auto;
 }
 
+.repoMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 .workerList {
   margin-top: 10px;
   display: flex;

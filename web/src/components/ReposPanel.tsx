@@ -17,6 +17,16 @@ function branchName(branch: string): string {
   return branch.replace(/^swarm\//, "");
 }
 
+function repoSyncLabel(repo: Repo): string {
+  const ahead = repo.ahead_count ?? 0;
+  const behind = repo.behind_count ?? 0;
+  if (!repo.upstream) return "no upstream";
+  if (ahead === 0 && behind === 0) return `in sync with ${repo.upstream}`;
+  if (ahead > 0 && behind > 0) return `${ahead} ahead · ${behind} behind ${repo.upstream}`;
+  if (ahead > 0) return `${ahead} ahead of ${repo.upstream}`;
+  return `${behind} behind ${repo.upstream}`;
+}
+
 export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, onClose }: Props) {
   return (
     <ToolPanel
@@ -37,6 +47,10 @@ export function ReposPanel({ repos, researchTasks, onSelectWorker, mobileOpen, o
               {!repo.is_clean && (
                 <StatusBadge tone="accent">modified</StatusBadge>
               )}
+            </div>
+            <div className={styles.repoMeta}>
+              <span>{repo.is_clean ? "clean" : "modified"}</span>
+              <span>{repoSyncLabel(repo)}</span>
             </div>
             {repo.workers.length > 0 && (
               <div className={styles.workerList}>

@@ -46,6 +46,16 @@ function previewLabel(content?: string | null) {
   return content.length > 84 ? `${content.slice(0, 84).trimEnd()}…` : content;
 }
 
+function repoSyncLabel(repo: Repo) {
+  const ahead = repo.ahead_count ?? 0;
+  const behind = repo.behind_count ?? 0;
+  if (!repo.upstream) return "no upstream";
+  if (ahead === 0 && behind === 0) return "in sync";
+  if (ahead > 0 && behind > 0) return `${ahead} ahead · ${behind} behind`;
+  if (ahead > 0) return `${ahead} ahead`;
+  return `${behind} behind`;
+}
+
 export function OverviewPanel({
   workspace,
   remote,
@@ -327,11 +337,11 @@ export function OverviewPanel({
             <div className={styles.empty}>No repos discovered.</div>
           ) : (
             <div className={styles.list}>
-              {repos.slice(0, 5).map((repo) => (
+              {repos.map((repo) => (
                 <ObjectRow
                   key={repo.path}
                   title={repo.name}
-                  meta={`${repo.branch} · ${repo.workers.length} workers`}
+                  meta={`${repo.branch} · ${repo.is_clean ? "clean" : "modified"} · ${repoSyncLabel(repo)} · ${repo.workers.length} workers`}
                   right={(
                     <StatusBadge tone={repo.is_clean ? "success" : "accent"}>
                       {repo.is_clean ? "clean" : "modified"}

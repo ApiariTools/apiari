@@ -98,6 +98,9 @@ export interface Repo {
   has_swarm: boolean;
   is_clean: boolean;
   branch: string;
+  upstream?: string | null;
+  behind_count?: number;
+  ahead_count?: number;
   workers: Worker[];
 }
 
