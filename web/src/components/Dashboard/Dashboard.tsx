@@ -1,8 +1,9 @@
 import { useEffect, useState, useCallback } from 'react'
 import { LayoutDashboard } from 'lucide-react'
-import type { WorkerV2, AutoBot, DashboardWidget } from '../../types'
-import { listWidgets } from '../../api'
+import type { WorkerV2, AutoBot, DashboardWidget, Repo } from '../../types'
+import { listWidgets, getRepos } from '../../api'
 import { getWorkerTitle } from '../../utils/workerTitle'
+import { repoSyncLabel } from '../../repoSync'
 import Widget from '../widgets/Widget'
 import styles from './Dashboard.module.css'
 
@@ -100,6 +101,33 @@ function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSel
   )
 }
 
+// ── Repo summary ──────────────────────────────────────────────────────────
+
+function RepoSummary({ repos }: { repos: Repo[] }) {
+  if (repos.length === 0) return null
+  return (
+    <div className={styles.builtinSection}>
+      <span className={styles.attentionHeading}>Repos</span>
+      {repos.map((repo) => {
+        const syncLabel = repoSyncLabel(repo)
+        const outOfSync = (repo.behind_count ?? 0) > 0 || (repo.ahead_count ?? 0) > 0
+        return (
+          <div key={repo.path} className={styles.repoRow}>
+            <span
+              className={styles.attentionDot}
+              style={{ background: repo.is_clean ? 'var(--status-merged)' : 'var(--accent)' }}
+            />
+            <span className={styles.attentionName}>{repo.name}</span>
+            <span className={styles.repoBranch}>{repo.branch}</span>
+            {!repo.is_clean && <span className={styles.repoTag}>modified</span>}
+            {outOfSync && <span className={styles.repoTagWarn}>{syncLabel}</span>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────
 
 export interface DashboardProps {
@@ -112,10 +140,16 @@ export interface DashboardProps {
 
 export default function Dashboard({ workspace, workers, onSelectWorker }: DashboardProps) {
   const [widgets, setWidgets] = useState<DashboardWidget[]>([])
+  const [repos, setRepos] = useState<Repo[]>([])
 
   const fetchWidgets = useCallback(() => {
     if (!workspace) return
     listWidgets(workspace).then(setWidgets).catch((e) => console.error('[dashboard] fetch widgets:', e))
+  }, [workspace])
+
+  const fetchRepos = useCallback(() => {
+    if (!workspace) return
+    getRepos(workspace).then(setRepos).catch(() => {})
   }, [workspace])
 
   useEffect(() => {
@@ -123,6 +157,12 @@ export default function Dashboard({ workspace, workers, onSelectWorker }: Dashbo
     const interval = setInterval(fetchWidgets, 30_000)
     return () => clearInterval(interval)
   }, [fetchWidgets])
+
+  useEffect(() => {
+    fetchRepos()
+    const interval = setInterval(fetchRepos, 30_000)
+    return () => clearInterval(interval)
+  }, [fetchRepos])
 
   // Debug
   useEffect(() => {
@@ -147,6 +187,9 @@ export default function Dashboard({ workspace, workers, onSelectWorker }: Dashbo
           {alerts.map((w) => <Widget key={w.slot} widget={w} />)}
         </div>
       )}
+
+      {/* Built-in repo summary */}
+      <RepoSummary repos={repos} />
 
       {/* Built-in worker summary */}
       <WorkerSummary workers={workers} onSelectWorker={onSelectWorker} />

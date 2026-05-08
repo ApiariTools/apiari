@@ -5,6 +5,7 @@ import type { WorkerV2, AutoBot } from "../types";
 
 vi.mock("../api", () => ({
   listWidgets: vi.fn().mockResolvedValue([]),
+  getRepos: vi.fn().mockResolvedValue([]),
 }));
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
@@ -20,6 +21,7 @@ function makeWorker(overrides: Partial<WorkerV2> = {}): WorkerV2 {
     branch: "swarm/fix-auth",
     goal: "Fix auth rate limiting",
     tests_passing: true,
+    ci_passing: null,
     branch_ready: false,
     pr_url: null,
     pr_approved: false,

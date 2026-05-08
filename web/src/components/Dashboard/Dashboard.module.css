@@ -164,6 +164,38 @@
   color: #b4b4b4;
 }
 
+/* ── Repo summary ────────────────────────────────────────────────────────── */
+
+.repoRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+.repoBranch {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.repoTag {
+  font-size: 10px;
+  color: var(--accent);
+  border: 1px solid rgba(245, 197, 66, 0.3);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.repoTagWarn {
+  font-size: 10px;
+  color: var(--red);
+  border: 1px solid rgba(232, 85, 85, 0.3);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
 /* ── Widget grid ─────────────────────────────────────────────────────────── */
 
 .widgetGrid {
