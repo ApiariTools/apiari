@@ -11,13 +11,41 @@
   align-items: flex-end;
 }
 
-/* Session tab strip — hidden on desktop, shown on mobile/iPad when multiple sessions */
-.sessionTabs {
+.panelHidden {
   display: none;
 }
 
-.panelHidden {
-  display: none;
+/* ── Session tab strip ───────────────────────────────────────────────── */
+
+.sessionTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 8px 0;
+  justify-content: flex-end;
+}
+
+.sessionTab {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-faint);
+  cursor: pointer;
+  font-family: var(--font);
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sessionTabActive {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* ── FAB (floating bubble when all sessions minimized) ───────────────── */
@@ -411,37 +439,17 @@
   }
 
   .sessionTabs {
-    display: flex;
     overflow-x: auto;
-    gap: 6px;
+    flex-wrap: nowrap;
     padding: 8px 12px;
     background: var(--bg-card);
     border-top: 1px solid var(--border);
     scrollbar-width: none;
     order: 99;
+    justify-content: flex-start;
   }
 
   .sessionTabs::-webkit-scrollbar { display: none; }
-
-  .sessionTab {
-    flex-shrink: 0;
-    padding: 6px 14px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 500;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--text-faint);
-    cursor: pointer;
-    font-family: var(--font);
-    white-space: nowrap;
-  }
-
-  .sessionTabActive {
-    background: color-mix(in srgb, var(--accent) 15%, transparent);
-    border-color: var(--accent);
-    color: var(--accent);
-  }
 
   .panel {
     width: 100%;
@@ -481,40 +489,23 @@
   }
 
   .sessionTabs {
-    display: flex;
     overflow-x: auto;
-    gap: 6px;
+    flex-wrap: nowrap;
     padding: 10px 12px;
     background: var(--bg-card);
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     scrollbar-width: none;
+    justify-content: flex-start;
   }
 
   .sessionTabs::-webkit-scrollbar { display: none; }
 
   .sessionTab {
-    flex-shrink: 0;
     padding: 8px 16px;
-    border-radius: 999px;
-    font-size: 13px;
-    font-weight: 500;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    color: var(--text-faint);
-    cursor: pointer;
-    font-family: var(--font);
-    white-space: nowrap;
-    /* 44px minimum tap target */
     min-height: 44px;
     display: flex;
     align-items: center;
-  }
-
-  .sessionTabActive {
-    background: color-mix(in srgb, var(--accent) 15%, transparent);
-    border-color: var(--accent);
-    color: var(--accent);
   }
 
   .panel {
