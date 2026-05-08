@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { MessageSquare } from 'lucide-react'
 import type { ContextBotSession } from '../../types'
 import ContextBotPanel from './ContextBotPanel'
 import styles from './ContextBot.module.css'
@@ -27,9 +28,9 @@ export default function ContextBotManager({ sessions, onSend, onChangeModel, onM
   if (sessions.length === 0) return null
 
   const effectiveActiveId = activeId ?? sessions[sessions.length - 1].id
+  const allMinimized = sessions.every((s) => s.minimized)
 
   const handleClose = (id: string) => {
-    // If closing the active session, switch to the most recent remaining one
     if (id === effectiveActiveId) {
       const remaining = sessions.filter((s) => s.id !== id)
       setActiveId(remaining.length > 0 ? remaining[remaining.length - 1].id : null)
@@ -37,9 +38,33 @@ export default function ContextBotManager({ sessions, onSend, onChangeModel, onM
     onClose(id)
   }
 
+  const handleFabClick = () => {
+    // Un-minimize the active session (or most recent)
+    onMinimize(effectiveActiveId)
+  }
+
+  // On mobile: when all sessions are minimized, show a FAB bubble instead of
+  // keeping the full-screen overlay alive
+  if (allMinimized) {
+    return (
+      <button
+        className={styles.fab}
+        onClick={handleFabClick}
+        type="button"
+        aria-label={`Open chat (${sessions.length})`}
+        data-testid="context-bot-fab"
+      >
+        <MessageSquare size={22} />
+        {sessions.length > 1 && (
+          <span className={styles.fabBadge}>{sessions.length}</span>
+        )}
+      </button>
+    )
+  }
+
   return (
     <div className={styles.manager} data-testid="context-bot-manager">
-      {/* Session tab strip — shown on mobile when multiple sessions open */}
+      {/* Session tab strip — shown when multiple sessions open */}
       {sessions.length > 1 && (
         <div className={styles.sessionTabs} data-testid="session-tabs">
           {sessions.map((s) => (

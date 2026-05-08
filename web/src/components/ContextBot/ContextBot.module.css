@@ -20,6 +20,47 @@
   display: none;
 }
 
+/* ── FAB (floating bubble when all sessions minimized) ───────────────── */
+
+.fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 100;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #111;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.fab:hover {
+  opacity: 0.9;
+}
+
+.fabBadge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 /* ── Panel ──────────────────────────────────────────────────────────── */
 
 .panel {
@@ -478,12 +519,7 @@
     min-height: 0;
   }
 
-  .panelMinimized {
-    flex: 0;
-    height: 44px;
-  }
-
-  /* On mobile, hide inactive panels — active tracked via JS, not :last-child */
+  /* On mobile, hide inactive panels — active tracked via JS */
   .panelHidden {
     display: none;
   }
@@ -493,10 +529,5 @@
     min-width: 44px;
     min-height: 44px;
     padding: 0;
-  }
-
-  /* Minimized strip is tappable to re-expand */
-  .panelMinimized .header {
-    cursor: pointer;
   }
 }
