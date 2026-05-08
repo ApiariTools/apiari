@@ -596,9 +596,16 @@ function BriefTab({
             <p>{brief.goal ?? goal}</p>
           </BriefSection>
 
-          {brief.context?.recent_changes && (
+          {brief.context && Object.keys(brief.context).length > 0 && (
             <BriefSection label="Context">
-              <p>{brief.context.recent_changes}</p>
+              {Object.entries(brief.context).map(([k, v]) => (
+                <div key={k} className={styles.briefContextRow}>
+                  <span className={styles.briefContextKey}>{k.replace(/_/g, ' ')}</span>
+                  <span className={styles.briefContextVal}>
+                    {typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v ?? '')}
+                  </span>
+                </div>
+              ))}
             </BriefSection>
           )}
 

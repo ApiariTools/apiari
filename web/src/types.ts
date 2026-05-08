@@ -236,12 +236,7 @@ export interface BotDebugData {
 
 export interface WorkerBrief {
   goal: string;
-  context: {
-    relevant_files: string[];
-    recent_changes: string;
-    known_issues: string[];
-    conventions: string;
-  };
+  context: Record<string, unknown>;
   constraints: string[];
   repo: string;
   scope: string[];

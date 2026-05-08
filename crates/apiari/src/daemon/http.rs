@@ -6322,25 +6322,89 @@ async fn v2_context_bot_chat(
         if let Some(goal) = trimmed.strip_prefix("DISPATCH_WORKER:") {
             let goal = goal.trim().to_string();
             if !goal.is_empty() {
-                let worker_id = format!("ctx-{}", uuid::Uuid::new_v4());
-                let prompt_path = std::env::temp_dir().join(format!("ctx-worker-{worker_id}.txt"));
-
-                // Determine repo from workspace config (use first configured repo if available).
                 let repo = ws
                     .as_ref()
                     .and_then(|w| w.config.repos.first())
                     .map(String::as_str)
                     .unwrap_or("");
 
-                let brief = format!("Context bot dispatch:\n\n{goal}\n\nWorkspace: {workspace}");
-                let _ = tokio::fs::remove_file(&prompt_path).await;
-                if state
-                    .worker_manager
-                    .create_worker(&workspace_root, repo, &brief, "codex", None)
-                    .await
-                    .is_ok()
-                {
-                    dispatched_worker_id = Some(worker_id);
+                // Build a structured brief — same shape as the modal dispatch path — so the
+                // worker gets full instructions and the Brief tab has content to display.
+                let brief_json = serde_json::json!({
+                    "goal": goal,
+                    "context": {
+                        "view": body.context.view,
+                        "entity_id": body.context.entity_id,
+                        "snapshot": body.context.entity_snapshot,
+                    },
+                    "constraints": [],
+                    "acceptance_criteria": [],
+                    "review_mode": "local_first",
+                });
+                let prompt_content = format_brief_as_prompt(&brief_json);
+
+                // Save to SQLite before dispatch so the Brief tab shows content immediately.
+                if let Ok(store) = open_worker_store_from_path(&state.db_path) {
+                    let pre_id = uuid::Uuid::new_v4().to_string();
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let worker = crate::buzz::worker::Worker {
+                        id: pre_id.clone(),
+                        workspace: workspace.clone(),
+                        state: crate::buzz::worker::WorkerState::Briefed,
+                        brief: Some(brief_json),
+                        repo: Some(repo.to_string()),
+                        branch: None,
+                        goal: Some(goal.clone()),
+                        tests_passing: false,
+                        branch_ready: false,
+                        pr_url: None,
+                        pr_approved: false,
+                        ci_passing: None,
+                        is_stalled: false,
+                        revision_count: 0,
+                        review_mode: "local_first".to_string(),
+                        blocked_reason: None,
+                        last_output_at: None,
+                        state_entered_at: now.clone(),
+                        created_at: now.clone(),
+                        updated_at: now,
+                        display_title: None,
+                        worktree_path: None,
+                        isolation_mode: None,
+                        agent_kind: Some("codex".to_string()),
+                        model: None,
+                        repo_path: None,
+                        label: String::new(),
+                    };
+                    let _ = store.upsert(&worker);
+
+                    if let Ok(swarm_id) = state
+                        .worker_manager
+                        .create_worker_with_task_dir(
+                            &workspace_root,
+                            repo,
+                            &prompt_content,
+                            "codex",
+                            None,
+                            None,
+                            crate::config::WorkerIsolation::default(),
+                        )
+                        .await
+                    {
+                        // Re-key to the real swarm ID if it differs
+                        let final_id = if !swarm_id.is_empty() && swarm_id != pre_id {
+                            let _ = store.rekey(&pre_id, &swarm_id);
+                            swarm_id
+                        } else {
+                            let _ = store.transition(
+                                &workspace,
+                                &pre_id,
+                                crate::buzz::worker::WorkerState::Queued,
+                            );
+                            pre_id
+                        };
+                        dispatched_worker_id = Some(final_id);
+                    }
                 }
                 break;
             }

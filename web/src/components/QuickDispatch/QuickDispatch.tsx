@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getRepos, createWorkerV2, chatWithContextBot } from '../../api'
+import { getRepos, createWorkerV2 } from '../../api'
 import type { Repo } from '../../types'
 import styles from './QuickDispatch.module.css'
 
@@ -113,19 +113,6 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
         },
         repo: selectedRepo,
         ...(agent !== 'auto' ? { agent, model } : {}),
-      })
-
-      // Fire-and-forget: enrich the brief with context bot in background
-      chatWithContextBot(
-        workspace,
-        'Generate a detailed implementation brief for: ' + intent.trim(),
-        {
-          view: 'quick_dispatch',
-          entity_id: null,
-          entity_snapshot: { goal: intent.trim(), repo: selectedRepo },
-        },
-      ).catch(() => {
-        // ignore — this is best-effort enrichment
       })
 
       onDispatched(worker.worker_id)
