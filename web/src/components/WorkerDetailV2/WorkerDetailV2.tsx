@@ -2,7 +2,15 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ExternalLink, MessageSquare, ArrowUp, ChevronLeft } from 'lucide-react'
-import type { WorkerDetailV2 as WorkerDetailV2Data, WorkerV2, WorkerReview, WorkerBrief, ContextBotContext, WorkerEvent } from '../../types'
+import type {
+  WorkerDetailV2 as WorkerDetailV2Data,
+  WorkerV2,
+  WorkerReview,
+  WorkerBrief,
+  WorkerTaskPacket,
+  ContextBotContext,
+  WorkerEvent,
+} from '../../types'
 import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
 import styles from './WorkerDetailV2.module.css'
 
@@ -369,8 +377,179 @@ function BriefSection({ label, children }: { label: string; children: React.Reac
   )
 }
 
-function BriefTab({ brief, goal }: { brief: WorkerBrief | null; goal: string | null }) {
-  if (!brief) {
+function BriefMarkdown({ content }: { content: string }) {
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: '0.75rem',
+        minWidth: 0,
+      }}
+    >
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          p: ({ node: _node, ...props }) => (
+            <p
+              style={{
+                margin: 0,
+                lineHeight: 1.6,
+              }}
+              {...props}
+            />
+          ),
+          ul: ({ node: _node, ...props }) => (
+            <ul
+              style={{
+                margin: 0,
+                paddingLeft: '1.5rem',
+                display: 'grid',
+                gap: '0.375rem',
+              }}
+              {...props}
+            />
+          ),
+          ol: ({ node: _node, ...props }) => (
+            <ol
+              style={{
+                margin: 0,
+                paddingLeft: '1.5rem',
+                display: 'grid',
+                gap: '0.375rem',
+              }}
+              {...props}
+            />
+          ),
+          li: ({ node: _node, ...props }) => (
+            <li
+              style={{
+                margin: 0,
+              }}
+              {...props}
+            />
+          ),
+          h1: ({ node: _node, ...props }) => (
+            <h1
+              style={{
+                margin: 0,
+                fontSize: '1.25rem',
+                lineHeight: 1.3,
+              }}
+              {...props}
+            />
+          ),
+          h2: ({ node: _node, ...props }) => (
+            <h2
+              style={{
+                margin: 0,
+                fontSize: '1.125rem',
+                lineHeight: 1.35,
+              }}
+              {...props}
+            />
+          ),
+          h3: ({ node: _node, ...props }) => (
+            <h3
+              style={{
+                margin: 0,
+                fontSize: '1rem',
+                lineHeight: 1.4,
+              }}
+              {...props}
+            />
+          ),
+          h4: ({ node: _node, ...props }) => (
+            <h4
+              style={{
+                margin: 0,
+                fontSize: '0.95rem',
+                lineHeight: 1.4,
+              }}
+              {...props}
+            />
+          ),
+          blockquote: ({ node: _node, ...props }) => (
+            <blockquote
+              style={{
+                margin: 0,
+                paddingLeft: '1rem',
+                borderLeft: '3px solid rgba(148, 163, 184, 0.5)',
+                color: 'inherit',
+                opacity: 0.9,
+              }}
+              {...props}
+            />
+          ),
+          pre: ({ node: _node, ...props }) => (
+            <pre
+              style={{
+                margin: 0,
+                padding: '0.75rem',
+                overflowX: 'auto',
+                whiteSpace: 'pre',
+                borderRadius: '0.5rem',
+                background: 'rgba(15, 23, 42, 0.06)',
+              }}
+              {...props}
+            />
+          ),
+          code: ({ node: _node, inline, className, children, ...props }) =>
+            inline ? (
+              <code
+                className={className}
+                style={{
+                  padding: '0.125rem 0.375rem',
+                  borderRadius: '0.375rem',
+                  background: 'rgba(15, 23, 42, 0.06)',
+                  wordBreak: 'break-word',
+                }}
+                {...props}
+              >
+                {children}
+              </code>
+            ) : (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            ),
+          hr: ({ node: _node, ...props }) => (
+            <hr
+              style={{
+                width: '100%',
+                margin: 0,
+                border: 0,
+                borderTop: '1px solid rgba(148, 163, 184, 0.35)',
+              }}
+              {...props}
+            />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+function BriefTab({
+  brief,
+  goal,
+  taskPacket,
+}: {
+  brief: WorkerBrief | null
+  goal: string | null
+  taskPacket?: WorkerTaskPacket | null
+}) {
+  const hasTaskPacket = Boolean(
+    taskPacket?.task_md ||
+    taskPacket?.context_md ||
+    taskPacket?.shaping_md ||
+    taskPacket?.plan_md ||
+    taskPacket?.progress_md ||
+    taskPacket?.worker_mode,
+  )
+
+  if (!brief && !hasTaskPacket) {
     return (
       <div className={styles.briefEmpty}>
         No brief recorded for this worker.
@@ -380,33 +559,73 @@ function BriefTab({ brief, goal }: { brief: WorkerBrief | null; goal: string | n
 
   return (
     <div className={styles.briefBody}>
-      <BriefSection label="Goal">
-        <p>{brief.goal ?? goal}</p>
-      </BriefSection>
+      {brief && (
+        <>
+          <BriefSection label="Goal">
+            <p>{brief.goal ?? goal}</p>
+          </BriefSection>
 
-      {brief.context?.recent_changes && (
-        <BriefSection label="Context">
-          <p>{brief.context.recent_changes}</p>
+          {brief.context?.recent_changes && (
+            <BriefSection label="Context">
+              <p>{brief.context.recent_changes}</p>
+            </BriefSection>
+          )}
+
+          {brief.constraints && brief.constraints.length > 0 && (
+            <BriefSection label="Constraints">
+              <ul className={styles.briefList}>
+                {brief.constraints.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </BriefSection>
+          )}
+
+          {brief.acceptance_criteria && brief.acceptance_criteria.length > 0 && (
+            <BriefSection label="Acceptance Criteria">
+              <ul className={styles.briefList}>
+                {brief.acceptance_criteria.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </BriefSection>
+          )}
+        </>
+      )}
+
+      {taskPacket?.worker_mode && (
+        <BriefSection label="Worker Mode">
+          <p>{taskPacket.worker_mode}</p>
         </BriefSection>
       )}
 
-      {brief.constraints && brief.constraints.length > 0 && (
-        <BriefSection label="Constraints">
-          <ul className={styles.briefList}>
-            {brief.constraints.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
-          </ul>
+      {taskPacket?.task_md && (
+        <BriefSection label="Inherited Task">
+          <BriefMarkdown content={taskPacket.task_md} />
         </BriefSection>
       )}
 
-      {brief.acceptance_criteria && brief.acceptance_criteria.length > 0 && (
-        <BriefSection label="Acceptance Criteria">
-          <ul className={styles.briefList}>
-            {brief.acceptance_criteria.map((c, i) => (
-              <li key={i}>{c}</li>
-            ))}
-          </ul>
+      {taskPacket?.context_md && (
+        <BriefSection label="Inherited Context">
+          <BriefMarkdown content={taskPacket.context_md} />
+        </BriefSection>
+      )}
+
+      {taskPacket?.shaping_md && (
+        <BriefSection label="Coordinator Shaping">
+          <BriefMarkdown content={taskPacket.shaping_md} />
+        </BriefSection>
+      )}
+
+      {taskPacket?.plan_md && (
+        <BriefSection label="Execution Plan">
+          <BriefMarkdown content={taskPacket.plan_md} />
+        </BriefSection>
+      )}
+
+      {taskPacket?.progress_md && (
+        <BriefSection label="Worker Notes">
+          <BriefMarkdown content={taskPacket.progress_md} />
         </BriefSection>
       )}
     </div>
@@ -871,7 +1090,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
         {activeTab === 'brief' && (
           <div className={styles.briefPanel}>
-            <BriefTab brief={data.brief} goal={data.goal} />
+            <BriefTab brief={data.brief} goal={data.goal} taskPacket={data.task_packet} />
           </div>
         )}
       </div>

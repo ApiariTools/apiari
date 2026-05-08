@@ -115,14 +115,7 @@ export interface WorkerDetail extends Worker {
   prompt: string | null;
   output: string | null;
   conversation: WorkerMessage[];
-  task_packet?: {
-    worker_mode?: string | null;
-    task_md?: string | null;
-    context_md?: string | null;
-    plan_md?: string | null;
-    shaping_md?: string | null;
-    progress_md?: string | null;
-  } | null;
+  task_packet?: WorkerTaskPacket | null;
 }
 
 export interface WorkerMessage {
@@ -285,8 +278,18 @@ export interface WorkerEvent {
   input?: Record<string, unknown>;
 }
 
+export interface WorkerTaskPacket {
+  worker_mode?: string | null;
+  task_md?: string | null;
+  context_md?: string | null;
+  plan_md?: string | null;
+  shaping_md?: string | null;
+  progress_md?: string | null;
+}
+
 export interface WorkerDetailV2 extends WorkerV2 {
   events: WorkerEvent[];
+  task_packet?: WorkerTaskPacket | null;
 }
 
 // ── Worker Review types ────────────────────────────────────────────────

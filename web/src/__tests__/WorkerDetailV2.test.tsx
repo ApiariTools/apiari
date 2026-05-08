@@ -242,6 +242,29 @@ describe("WorkerDetailV2", () => {
     expect(screen.getByText("Works end to end")).toBeInTheDocument();
   });
 
+  it("Brief tab renders coordinator task packet sections", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      task_packet: {
+        worker_mode: "implementation",
+        task_md: "# Task\n\nShip the worker brief panel.\n",
+        context_md: "# Context\n\n- Worker detail view\n",
+        plan_md: "# Plan\n\n1. Add API field\n",
+        shaping_md: "# Coordinator Shaping\n\nInclude the full task packet.\n",
+        progress_md: "# Progress\n\n- Wired through UI\n",
+      },
+    });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    await screen.findByTestId("status-badge");
+    fireEvent.click(screen.getByTestId("tab-brief"));
+    expect(await screen.findByText("implementation")).toBeInTheDocument();
+    expect(screen.getByText(/Ship the worker brief panel\./)).toBeInTheDocument();
+    expect(screen.getByText(/Worker detail view/)).toBeInTheDocument();
+    expect(screen.getByText(/Add API field/)).toBeInTheDocument();
+    expect(screen.getByText(/Include the full task packet\./)).toBeInTheDocument();
+    expect(screen.getByText(/Wired through UI/)).toBeInTheDocument();
+  });
+
   // ── Input state tests ─────────────────────────────────────────────────────
 
   it("input is enabled with async placeholder when state is running", async () => {
