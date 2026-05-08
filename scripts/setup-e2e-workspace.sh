@@ -14,6 +14,7 @@ cat > "$CONFIG_DIR/workspaces/apiari.toml" << EOF
 [workspace]
 name = "apiari"
 root = "$REPO_ROOT"
+repos = ["ApiariTools/apiari"]
 EOF
 
 echo "E2E workspace config written:"
