@@ -91,7 +91,12 @@ impl WorkerManager {
         let (worker_id, branch, repo_path, worktree_path, effective_prompt) =
             tokio::task::spawn_blocking(move || -> Result<_> {
                 let repo_path = resolve_repo(&work_dir, &repo)?;
-                git::pull_main(&repo_path);
+                // Skip network fetch in e2e tests — the CI checkout is shallow
+                // and an unconditional `git fetch origin` would unshallow the
+                // entire repo, blocking the API for minutes.
+                if std::env::var("APIARI_E2E_AGENT").is_err() {
+                    git::pull_main(&repo_path);
+                }
 
                 let short_id = &uuid::Uuid::new_v4().to_string()[..4];
                 let name = git::repo_name(&repo_path);
