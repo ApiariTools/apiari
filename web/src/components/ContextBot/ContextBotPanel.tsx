@@ -1,6 +1,6 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Minus, X } from 'lucide-react'
+import { Minus } from 'lucide-react'
 import type { ContextBotSession } from '../../types'
 import styles from './ContextBot.module.css'
 
@@ -25,6 +25,7 @@ function modelLabel(id: string): string {
 
 export default function ContextBotPanel({ session, isActive = true, onSend, onChangeModel, onMinimize, onClose }: ContextBotPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const [confirmingEnd, setConfirmingEnd] = useState(false)
   const locked = session.messages.length > 0
 
   const handleSend = () => {
@@ -61,38 +62,48 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
           <span className={styles.headerTitle} data-testid="panel-title">{session.title}</span>
         </div>
         <div className={styles.headerActions}>
-          {locked ? (
-            <span className={styles.modelBadge} title={session.model}>{modelLabel(session.model)}</span>
+          {confirmingEnd ? (
+            <>
+              <span className={styles.confirmLabel}>End chat?</span>
+              <button className={styles.confirmNo} onClick={() => setConfirmingEnd(false)} type="button">Cancel</button>
+              <button className={styles.confirmYes} onClick={() => onClose(session.id)} type="button" data-testid="confirm-end-btn">End</button>
+            </>
           ) : (
-            <select
-              className={styles.modelSelect}
-              value={session.model}
-              onChange={(e) => onChangeModel(session.id, e.target.value)}
-              data-testid="model-select"
-            >
-              {MODELS.map((m) => (
-                <option key={m.id} value={m.id}>{m.label}</option>
-              ))}
-            </select>
+            <>
+              {locked ? (
+                <span className={styles.modelBadge} title={session.model}>{modelLabel(session.model)}</span>
+              ) : (
+                <select
+                  className={styles.modelSelect}
+                  value={session.model}
+                  onChange={(e) => onChangeModel(session.id, e.target.value)}
+                  data-testid="model-select"
+                >
+                  {MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                className={`${styles.iconBtn} ${styles.iconBtnMinimize}`}
+                onClick={() => onMinimize(session.id)}
+                type="button"
+                aria-label="Minimize"
+                data-testid="minimize-btn"
+              >
+                <Minus size={14} />
+              </button>
+              <button
+                className={styles.endBtn}
+                onClick={() => setConfirmingEnd(true)}
+                type="button"
+                aria-label="End chat"
+                data-testid="close-btn"
+              >
+                End
+              </button>
+            </>
           )}
-          <button
-            className={`${styles.iconBtn} ${styles.iconBtnMinimize}`}
-            onClick={() => onMinimize(session.id)}
-            type="button"
-            aria-label="Minimize"
-            data-testid="minimize-btn"
-          >
-            <Minus size={14} />
-          </button>
-          <button
-            className={`${styles.iconBtn} ${styles.iconBtnClose}`}
-            onClick={() => onClose(session.id)}
-            type="button"
-            aria-label="Close"
-            data-testid="close-btn"
-          >
-            <X size={14} />
-          </button>
         </div>
       </div>
 

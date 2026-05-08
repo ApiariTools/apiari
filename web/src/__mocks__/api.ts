@@ -179,4 +179,8 @@ export const createWorkerV2 = vi.fn().mockResolvedValue({
 export const chatWithContextBot = vi.fn().mockResolvedValue({
   response: 'Here is your brief.',
   session_id: 'session-1',
+  model: 'claude-sonnet-4-6',
 });
+export const listContextBotSessions = vi.fn().mockResolvedValue([]);
+export const upsertContextBotSession = vi.fn().mockResolvedValue(undefined);
+export const deleteContextBotSession = vi.fn().mockResolvedValue(undefined);

@@ -10,7 +10,7 @@ import ContextBotManager from './components/ContextBot/ContextBotManager'
 import CommandPalette from './components/CommandPalette/CommandPalette'
 import QuickDispatch from './components/QuickDispatch/QuickDispatch'
 import { Bot, Wrench, LayoutDashboard } from 'lucide-react'
-import { getWorkspaces, listWorkersV2, listAutoBots, connectWebSocket, chatWithContextBot } from './api'
+import { getWorkspaces, listWorkersV2, listAutoBots, connectWebSocket, chatWithContextBot, listContextBotSessions, upsertContextBotSession, deleteContextBotSession } from './api'
 import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from './types'
 import type { SidebarItem } from './components/Sidebar/Sidebar'
 import { getWorkerTitle } from './utils/workerTitle'
@@ -142,20 +142,27 @@ export default function App() {
 
   const DEFAULT_CONTEXT_BOT_MODEL = 'claude-sonnet-4-6'
 
+  // Load persisted sessions whenever workspace changes
+  useEffect(() => {
+    if (!workspace) return
+    listContextBotSessions(workspace).then((sessions) => {
+      if (sessions.length > 0) setContextSessions(sessions)
+    }).catch(() => {})
+  }, [workspace])
+
   function openContextBot(context: ContextBotContext, title: string, model?: string) {
     const id = nextSessionId()
-    setContextSessions((prev) => [
-      ...prev,
-      {
-        id,
-        context,
-        title,
-        model: model ?? DEFAULT_CONTEXT_BOT_MODEL,
-        messages: [],
-        minimized: false,
-        loading: false,
-      },
-    ])
+    const session: ContextBotSession = {
+      id,
+      context,
+      title,
+      model: model ?? DEFAULT_CONTEXT_BOT_MODEL,
+      messages: [],
+      minimized: false,
+      loading: false,
+    }
+    setContextSessions((prev) => [...prev, session])
+    upsertContextBotSession(workspace, session).catch(() => {})
   }
 
   async function handleContextBotSend(sessionId: string, message: string) {
@@ -181,22 +188,18 @@ export default function App() {
     try {
       const res = await chatWithContextBot(workspace, message, session.context, session.server_session_id, session.model)
 
+      const updatedMessages = [
+        ...session.messages,
+        { role: 'user' as const, content: message, timestamp: new Date().toISOString() },
+        { role: 'assistant' as const, content: res.response, timestamp: new Date().toISOString() },
+      ]
+      const updatedSession = { ...session, loading: false, server_session_id: res.session_id, model: res.model, messages: updatedMessages }
+
       setContextSessions((prev) =>
-        prev.map((s) =>
-          s.id === sessionId
-            ? {
-                ...s,
-                loading: false,
-                server_session_id: res.session_id,
-                model: res.model,
-                messages: [
-                  ...s.messages,
-                  { role: 'assistant' as const, content: res.response, timestamp: new Date().toISOString() },
-                ],
-              }
-            : s,
-        ),
+        prev.map((s) => s.id === sessionId ? updatedSession : s),
       )
+
+      upsertContextBotSession(workspace, updatedSession).catch(() => {})
 
       // If backend dispatched a worker, refresh workers and select it
       if (res.dispatched_worker_id) {
@@ -547,9 +550,10 @@ export default function App() {
             prev.map((s) => (s.id === id ? { ...s, minimized: !s.minimized } : s)),
           )
         }
-        onClose={(id) =>
+        onClose={(id) => {
           setContextSessions((prev) => prev.filter((s) => s.id !== id))
-        }
+          deleteContextBotSession(workspace, id).catch(() => {})
+        }}
       />
       {paletteOpen && (
         <CommandPalette

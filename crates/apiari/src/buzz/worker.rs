@@ -214,6 +214,19 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             repo_path TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS context_bot_sessions (
+            id TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            title TEXT NOT NULL,
+            model TEXT NOT NULL,
+            context_view TEXT NOT NULL,
+            context_entity_id TEXT,
+            context_snapshot TEXT,
+            messages TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS worker_hooks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             workspace TEXT NOT NULL,

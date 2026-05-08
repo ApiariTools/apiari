@@ -490,6 +490,49 @@ export async function chatWithContextBot(
   return res.json();
 }
 
+export async function listContextBotSessions(workspace: string): Promise<ContextBotSession[]> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/sessions`);
+  if (!res.ok) return [];
+  const rows = await res.json();
+  // Map server row shape back to ContextBotSession
+  return rows.map((r: {
+    id: string; title: string; model: string;
+    context_view: string; context_entity_id: string | null;
+    context_snapshot: Record<string, unknown> | null;
+    messages: Array<{ role: string; content: string; timestamp: string }>;
+  }) => ({
+    id: r.id,
+    server_session_id: r.id,
+    title: r.title,
+    model: r.model,
+    context: { view: r.context_view, entity_id: r.context_entity_id ?? null, entity_snapshot: r.context_snapshot ?? {} },
+    messages: r.messages,
+    minimized: true,   // load as minimized so they don't flood the screen
+    loading: false,
+  }))
+}
+
+export async function upsertContextBotSession(workspace: string, session: ContextBotSession): Promise<void> {
+  await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/sessions/${session.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: session.title,
+      model: session.model,
+      context_view: session.context.view,
+      context_entity_id: session.context.entity_id ?? null,
+      context_snapshot: session.context.entity_snapshot ?? null,
+      messages: session.messages,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }),
+  });
+}
+
+export async function deleteContextBotSession(workspace: string, sessionId: string): Promise<void> {
+  await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/sessions/${sessionId}`, { method: 'DELETE' });
+}
+
 export async function sendMessage(
   workspace: string,
   bot: string,

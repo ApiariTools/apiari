@@ -6360,6 +6360,142 @@ async fn v2_context_bot_chat(
 
 // ── Dashboard widget handlers ──────────────────────────────────────────
 
+// ── Context-bot session persistence ───────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ContextBotSessionRow {
+    id: String,
+    workspace: String,
+    title: String,
+    model: String,
+    context_view: String,
+    context_entity_id: Option<String>,
+    context_snapshot: Option<serde_json::Value>,
+    messages: serde_json::Value,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertContextBotSessionBody {
+    title: String,
+    model: String,
+    context_view: String,
+    #[serde(default)]
+    context_entity_id: Option<String>,
+    #[serde(default)]
+    context_snapshot: Option<serde_json::Value>,
+    messages: serde_json::Value,
+    created_at: String,
+    updated_at: String,
+}
+
+async fn v2_list_context_bot_sessions(
+    Path(workspace): Path<String>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let db_path = state.db_path.as_ref().clone();
+    let rows =
+        tokio::task::spawn_blocking(move || -> rusqlite::Result<Vec<ContextBotSessionRow>> {
+            let conn = rusqlite::Connection::open(&db_path)?;
+            let mut stmt = conn.prepare(
+                "SELECT id, workspace, title, model, context_view, context_entity_id,
+                    context_snapshot, messages, created_at, updated_at
+             FROM context_bot_sessions WHERE workspace = ?1
+             ORDER BY updated_at DESC",
+            )?;
+            let rows = stmt
+                .query_map(rusqlite::params![workspace], |row| {
+                    let snapshot_str: Option<String> = row.get(6)?;
+                    let messages_str: String = row.get(7)?;
+                    Ok(ContextBotSessionRow {
+                        id: row.get(0)?,
+                        workspace: row.get(1)?,
+                        title: row.get(2)?,
+                        model: row.get(3)?,
+                        context_view: row.get(4)?,
+                        context_entity_id: row.get(5)?,
+                        context_snapshot: snapshot_str.and_then(|s| serde_json::from_str(&s).ok()),
+                        messages: serde_json::from_str(&messages_str)
+                            .unwrap_or(serde_json::Value::Array(vec![])),
+                        created_at: row.get(8)?,
+                        updated_at: row.get(9)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .await;
+
+    match rows {
+        Ok(Ok(rows)) => Json(rows).into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn v2_upsert_context_bot_session(
+    Path((workspace, session_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    Json(body): Json<UpsertContextBotSessionBody>,
+) -> impl IntoResponse {
+    let db_path = state.db_path.as_ref().clone();
+    let result = tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute(
+            "INSERT INTO context_bot_sessions
+                (id, workspace, title, model, context_view, context_entity_id,
+                 context_snapshot, messages, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                model = excluded.model,
+                context_snapshot = excluded.context_snapshot,
+                messages = excluded.messages,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                session_id,
+                workspace,
+                body.title,
+                body.model,
+                body.context_view,
+                body.context_entity_id,
+                body.context_snapshot.as_ref().map(|v| v.to_string()),
+                body.messages.to_string(),
+                body.created_at,
+                body.updated_at,
+            ],
+        )?;
+        Ok(())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn v2_delete_context_bot_session(
+    Path((workspace, session_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+) -> impl IntoResponse {
+    let db_path = state.db_path.as_ref().clone();
+    let result = tokio::task::spawn_blocking(move || -> rusqlite::Result<()> {
+        let conn = rusqlite::Connection::open(&db_path)?;
+        conn.execute(
+            "DELETE FROM context_bot_sessions WHERE id = ?1 AND workspace = ?2",
+            rusqlite::params![session_id, workspace],
+        )?;
+        Ok(())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// GET /api/workspaces/{workspace}/v2/widgets — return all active widget slots.
 async fn v2_list_widgets(
     Path(workspace): Path<String>,
@@ -6677,6 +6813,14 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/v2/context-bot/chat",
             post(v2_context_bot_chat),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/context-bot/sessions",
+            get(v2_list_context_bot_sessions),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/context-bot/sessions/{session_id}",
+            put(v2_upsert_context_bot_session).delete(v2_delete_context_bot_session),
         )
         // v2 dashboard widget routes
         .route(
