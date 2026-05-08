@@ -81,6 +81,15 @@ export default defineConfig({
       },
     },
   },
+  preview: {
+    proxy: {
+      '/api': `http://localhost:${process.env.VITE_API_PORT ?? '4200'}`,
+      '/ws': {
+        target: `ws://localhost:${process.env.VITE_API_PORT ?? '4200'}`,
+        ws: true,
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     setupFiles: './src/test-setup.ts',
