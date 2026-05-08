@@ -10,12 +10,39 @@ export interface QuickDispatchProps {
 }
 
 type ReviewMode = 'local_first' | 'pr_first'
+type AgentChoice = 'auto' | 'claude' | 'codex' | 'gemini'
+
+const MODEL_OPTIONS: Record<Exclude<AgentChoice, 'auto'>, Array<{ value: string | null; label: string }>> = {
+  claude: [
+    { value: null, label: 'Default' },
+    { value: 'opus', label: 'Opus' },
+    { value: 'sonnet', label: 'Sonnet' },
+    { value: 'haiku', label: 'Haiku' },
+  ],
+  codex: [
+    { value: null, label: 'Default' },
+    { value: 'gpt-5.5', label: 'GPT-5.5' },
+    { value: 'gpt-5.4', label: 'GPT-5.4' },
+    { value: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'o4-mini', label: 'o4-mini' },
+    { value: 'o3', label: 'o3' },
+  ],
+  gemini: [
+    { value: null, label: 'Default' },
+    { value: 'gemini-2.5-pro', label: '2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: '2.5 Flash' },
+    { value: 'gemini-2.0-flash', label: '2.0 Flash' },
+  ],
+}
 
 export default function QuickDispatch({ workspace, onClose, onDispatched }: QuickDispatchProps) {
   const [intent, setIntent] = useState('')
   const [repos, setRepos] = useState<Repo[]>([])
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null)
   const [reviewMode, setReviewMode] = useState<ReviewMode>('local_first')
+  const [agent, setAgent] = useState<AgentChoice>('auto')
+  const [model, setModel] = useState<string | null>(null)
   const [dispatching, setDispatching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -57,6 +84,17 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intent, selectedRepo, dispatching])
 
+  useEffect(() => {
+    if (agent === 'auto') {
+      setModel(null)
+      return
+    }
+    const options = MODEL_OPTIONS[agent]
+    if (!options.some((option) => option.value === model)) {
+      setModel(options[0]?.value ?? null)
+    }
+  }, [agent, model])
+
   async function handleDispatch() {
     if (!intent.trim() || !selectedRepo || dispatching) return
     setDispatching(true)
@@ -74,6 +112,7 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
           acceptance_criteria: [],
         },
         repo: selectedRepo,
+        ...(agent !== 'auto' ? { agent, model } : {}),
       })
 
       // Fire-and-forget: enrich the brief with context bot in background
@@ -149,6 +188,44 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
         </div>
 
         {/* Review mode */}
+        <div className={styles.reviewSection}>
+          <span className={styles.label}>Worker</span>
+          <div className={styles.pills} data-testid="agent-pills">
+            {(['auto', 'claude', 'codex', 'gemini'] as AgentChoice[]).map((choice) => (
+              <button
+                key={choice}
+                type="button"
+                className={`${styles.pill} ${agent === choice ? styles.pillSelected : ''}`}
+                onClick={() => setAgent(choice)}
+                aria-pressed={agent === choice}
+                data-testid={`agent-pill-${choice}`}
+              >
+                {choice === 'auto' ? 'Auto' : choice.charAt(0).toUpperCase() + choice.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {agent !== 'auto' && (
+          <div className={styles.reviewSection}>
+            <span className={styles.label}>Model</span>
+            <div className={styles.pills} data-testid="model-pills">
+              {MODEL_OPTIONS[agent].map((option) => (
+                <button
+                  key={option.value ?? 'default'}
+                  type="button"
+                  className={`${styles.pill} ${model === option.value ? styles.pillSelected : ''}`}
+                  onClick={() => setModel(option.value)}
+                  aria-pressed={model === option.value}
+                  data-testid={`model-pill-${option.value ?? 'default'}`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className={styles.reviewSection}>
           <span className={styles.label}>Review mode</span>
           <div className={styles.pills} data-testid="review-mode-pills">

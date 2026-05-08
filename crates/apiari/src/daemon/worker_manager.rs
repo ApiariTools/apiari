@@ -56,12 +56,14 @@ impl WorkerManager {
         repo: &str,
         prompt: &str,
         agent: &str,
+        model: Option<&str>,
     ) -> Result<String> {
         self.create_worker_with_task_dir(
             work_dir,
             repo,
             prompt,
             agent,
+            model,
             None,
             crate::config::WorkerIsolation::Worktree,
         )
@@ -75,6 +77,7 @@ impl WorkerManager {
         repo: &str,
         prompt: &str,
         agent: &str,
+        model: Option<&str>,
         task_dir: Option<TaskDirPayload>,
         isolation: crate::config::WorkerIsolation,
     ) -> Result<String> {
@@ -84,6 +87,7 @@ impl WorkerManager {
         let repo = repo.to_string();
         let prompt = prompt.to_string();
         let agent_str = agent.to_string();
+        let model_str = model.map(str::to_string);
         let work_dir_copy = work_dir.clone();
         let prompt_copy = prompt.clone();
         let isolation_clone = isolation.clone();
@@ -190,6 +194,7 @@ impl WorkerManager {
             &worktree_path,
             isolation.as_str(),
             &agent_str,
+            model_str.as_deref(),
             &repo_path,
         );
 
@@ -197,8 +202,9 @@ impl WorkerManager {
         std::fs::create_dir_all(&agent_dir)?;
 
         let agent = spawn_managed_agent(SpawnOptions {
-            kind,
+            kind: kind.clone(),
             prompt: effective_prompt.clone(),
+            model: model_str.clone(),
             working_dir: worktree_path.clone(),
             dangerously_skip_permissions: true,
             resume_session_id: None,
@@ -229,6 +235,8 @@ impl WorkerManager {
             pending,
             db,
             ws,
+            kind,
+            model_str,
         ));
 
         Ok(worker_id)
@@ -244,7 +252,7 @@ impl WorkerManager {
         if is_running {
             // Log the user message immediately so it appears in the timeline
             // before the current agent run finishes and dequeues it.
-            if let Ok((work_dir, _, _, _)) =
+            if let Ok((work_dir, _, _, _, _)) =
                 read_worker_paths(&self.db_path, &self.workspace, worker_id)
             {
                 let events_path = work_dir
@@ -276,15 +284,16 @@ impl WorkerManager {
     async fn resume_worker(&self, worker_id: &str, message: &str) -> Result<()> {
         let session_id = read_session_id(&self.db_path, &self.workspace, worker_id);
 
-        let (work_dir, worktree_path, repo_path, kind) =
+        let (work_dir, worktree_path, repo_path, kind, model) =
             read_worker_paths(&self.db_path, &self.workspace, worker_id)?;
 
         let wt_clone = worktree_path.clone();
         let msg_clone = message.to_string();
 
         let agent = spawn_managed_agent(SpawnOptions {
-            kind,
+            kind: kind.clone(),
             prompt: message.to_string(),
+            model: model.clone(),
             working_dir: worktree_path.clone(),
             dangerously_skip_permissions: true,
             resume_session_id: session_id,
@@ -315,7 +324,8 @@ impl WorkerManager {
         let ws = self.workspace.clone();
 
         tokio::spawn(run_agent_task(
-            agent, wid, msg_clone, work_dir, wt_clone, repo_path, live, pending, db, ws,
+            agent, wid, msg_clone, work_dir, wt_clone, repo_path, live, pending, db, ws, kind,
+            model,
         ));
 
         Ok(())
@@ -340,7 +350,7 @@ impl WorkerManager {
 
         let wt_id = worker_id.to_string();
         tokio::task::spawn_blocking(move || {
-            if let Ok((work_dir, worktree_path, repo_path, _)) = paths {
+            if let Ok((work_dir, worktree_path, repo_path, _, _)) = paths {
                 match isolation_mode.as_str() {
                     "copy" => {
                         // Just delete the directory; branch lives only in the copy's .git
@@ -397,6 +407,8 @@ async fn run_agent_task(
     pending: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
     db_path: PathBuf,
     workspace: String,
+    kind: AgentKind,
+    model: Option<String>,
 ) {
     let events_path = work_dir
         .join(".swarm")
@@ -407,7 +419,7 @@ async fn run_agent_task(
     logger.log(&AgentEvent::Start {
         timestamp: Utc::now(),
         prompt: prompt.clone(),
-        model: None,
+        model: model.clone(),
     });
 
     update_state_phase(&work_dir, &worker_id, "running");
@@ -450,8 +462,9 @@ async fn run_agent_task(
                 update_state_phase(&work_dir, &worker_id, "running");
 
                 match spawn_managed_agent(SpawnOptions {
-                    kind: AgentKind::Codex,
+                    kind: kind.clone(),
                     prompt: msg,
+                    model: model.clone(),
                     working_dir: worktree_path.clone(),
                     dangerously_skip_permissions: true,
                     resume_session_id: last_session_id,
@@ -666,11 +679,11 @@ fn read_worker_paths(
     db_path: &Path,
     workspace: &str,
     worker_id: &str,
-) -> Result<(PathBuf, PathBuf, PathBuf, AgentKind)> {
+) -> Result<(PathBuf, PathBuf, PathBuf, AgentKind, Option<String>)> {
     let store = crate::buzz::worker::WorkerStore::open(db_path)?;
     let db_worker = store.get(workspace, worker_id)?;
 
-    let (worktree_path, repo_path, kind) = match db_worker {
+    let (worktree_path, repo_path, kind, model) = match db_worker {
         Some(w) => {
             // Worker is in SQLite — use its paths. Missing paths here is a bug,
             // not a legacy-compat case, so we return a hard error.
@@ -686,13 +699,13 @@ fn read_worker_paths(
                 .agent_kind
                 .and_then(|k| k.parse::<AgentKind>().ok())
                 .unwrap_or(AgentKind::Codex);
-            (wt, rp, kind)
+            (wt, rp, kind, w.model)
         }
         None => {
             // Worker not in SQLite at all — legitimate for workers created before
             // the DB columns were added. Fall back to state.json.
             let (wt, rp, k) = read_paths_from_state(db_path, workspace, worker_id)?;
-            (wt, rp, k)
+            (wt, rp, k, None)
         }
     };
 
@@ -704,7 +717,7 @@ fn read_worker_paths(
         .ok_or_else(|| eyre!("cannot derive work_dir from {}", worktree_path.display()))?
         .to_path_buf();
 
-    Ok((work_dir, worktree_path, repo_path, kind))
+    Ok((work_dir, worktree_path, repo_path, kind, model))
 }
 
 /// Read worktree_path, repo_path, agent_kind from state.json for a given worker.
@@ -803,6 +816,7 @@ fn upsert_worker_db_record(
     worktree_path: &Path,
     isolation_mode: &str,
     agent_kind: &str,
+    model: Option<&str>,
     repo_path: &Path,
 ) {
     let Ok(store) = crate::buzz::worker::WorkerStore::open(db_path) else {
@@ -839,6 +853,7 @@ fn upsert_worker_db_record(
         worktree_path: Some(worktree_path.to_string_lossy().to_string()),
         isolation_mode: Some(isolation_mode.to_string()),
         agent_kind: Some(agent_kind.to_string()),
+        model: model.map(str::to_string),
         repo_path: Some(repo_path.to_string_lossy().to_string()),
         label: String::new(),
     };
@@ -1312,6 +1327,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1339,6 +1355,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1361,6 +1378,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         upsert_worker_db_record(
@@ -1373,6 +1391,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1388,10 +1407,10 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let p = std::path::Path::new("/tmp");
         upsert_worker_db_record(
-            &db_path, "ws-a", "w-0001", "repo", "task", "feat/a", p, "worktree", "codex", p,
+            &db_path, "ws-a", "w-0001", "repo", "task", "feat/a", p, "worktree", "codex", None, p,
         );
         upsert_worker_db_record(
-            &db_path, "ws-b", "w-0002", "repo", "task", "feat/b", p, "worktree", "codex", p,
+            &db_path, "ws-b", "w-0002", "repo", "task", "feat/b", p, "worktree", "codex", None, p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         assert_eq!(store.list("ws-a").unwrap().len(), 1);
@@ -1414,6 +1433,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         upsert_worker_db_record(
@@ -1426,6 +1446,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1455,6 +1476,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         ); // no panic
     }
@@ -1499,6 +1521,7 @@ mod tests {
             &worktree,
             "worktree",
             "codex",
+            None,
             tmp.path(),
         );
 
@@ -1532,6 +1555,7 @@ mod tests {
             &missing_wt,
             "worktree",
             "codex",
+            None,
             tmp.path(),
         );
 
@@ -1569,6 +1593,7 @@ mod tests {
             &worktree,
             "worktree",
             "codex",
+            None,
             tmp.path(),
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();

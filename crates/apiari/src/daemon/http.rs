@@ -1924,6 +1924,7 @@ async fn redispatch_workspace_worker(
             &repo,
             &prompt,
             &ws.config.swarm.default_agent,
+            None,
             Some(task_dir),
             ws.config.swarm.worker_isolation.clone(),
         )
@@ -4368,6 +4369,8 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
 struct V2CreateWorkerBody {
     brief: serde_json::Value,
     repo: String,
+    agent: Option<String>,
+    model: Option<String>,
 }
 
 async fn v2_create_worker(
@@ -4399,6 +4402,24 @@ async fn v2_create_worker(
 
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+    let selected_agent = body
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty())
+        .filter(|agent| {
+            agent
+                .parse::<apiari_swarm::core::agent::AgentKind>()
+                .is_ok()
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| ws.config.swarm.default_agent.clone());
+    let selected_model = body
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
 
     // Extract optional goal from brief
     let goal = body
@@ -4439,7 +4460,8 @@ async fn v2_create_worker(
         display_title: None,
         worktree_path: None,
         isolation_mode: None,
-        agent_kind: None,
+        agent_kind: Some(selected_agent.clone()),
+        model: selected_model.clone(),
         repo_path: None,
         label: String::new(),
     };
@@ -4471,7 +4493,8 @@ async fn v2_create_worker(
             &ws.config.root,
             &body.repo,
             &prompt_content,
-            &ws.config.swarm.default_agent,
+            &selected_agent,
+            selected_model.as_deref(),
             None,
             ws.config.swarm.worker_isolation.clone(),
         )
@@ -4484,6 +4507,8 @@ async fn v2_create_worker(
                 let mut rekeyed = worker.clone();
                 rekeyed.id = swarm_id.clone();
                 rekeyed.state = crate::buzz::worker::WorkerState::Queued;
+                rekeyed.agent_kind = Some(selected_agent.clone());
+                rekeyed.model = selected_model.clone();
                 let _ = store.upsert(&rekeyed);
                 swarm_id
             } else {
@@ -4839,7 +4864,11 @@ async fn v2_send_message(
                 &ws.config.root,
                 &repo,
                 &prompt,
-                &ws.config.swarm.default_agent,
+                worker
+                    .agent_kind
+                    .as_deref()
+                    .unwrap_or(&ws.config.swarm.default_agent),
+                worker.model.as_deref(),
                 None,
                 ws.config.swarm.worker_isolation.clone(),
             )
@@ -4895,7 +4924,8 @@ async fn v2_send_message(
             updated_at: chrono::Utc::now().to_rfc3339(),
             worktree_path: None,
             isolation_mode: None,
-            agent_kind: None,
+            agent_kind: worker.agent_kind.clone(),
+            model: worker.model.clone(),
             repo_path: None,
             label: String::new(),
         };
@@ -5086,7 +5116,11 @@ async fn v2_requeue_worker(
             &ws.config.root,
             &repo,
             &prompt,
-            &ws.config.swarm.default_agent,
+            worker
+                .agent_kind
+                .as_deref()
+                .unwrap_or(&ws.config.swarm.default_agent),
+            worker.model.as_deref(),
             None,
             ws.config.swarm.worker_isolation.clone(),
         )
@@ -5146,7 +5180,8 @@ async fn v2_requeue_worker(
         display_title: worker.display_title.clone(),
         worktree_path: None,
         isolation_mode: None,
-        agent_kind: None,
+        agent_kind: worker.agent_kind.clone(),
+        model: worker.model.clone(),
         repo_path: None,
         label: String::new(),
     };
@@ -5219,7 +5254,13 @@ async fn auto_requeue_with_feedback(
     ));
 
     let new_id = match worker_manager
-        .create_worker(workspace_root, &repo, &prompt, "codex")
+        .create_worker(
+            workspace_root,
+            &repo,
+            &prompt,
+            worker.agent_kind.as_deref().unwrap_or("codex"),
+            worker.model.as_deref(),
+        )
         .await  // uses worktree isolation (no ws config available here)
     {
         Ok(id) => id,
@@ -5283,7 +5324,8 @@ async fn auto_requeue_with_feedback(
         display_title: worker.display_title.clone(),
         worktree_path: None,
         isolation_mode: None,
-        agent_kind: None,
+        agent_kind: worker.agent_kind.clone(),
+        model: worker.model.clone(),
         repo_path: None,
         label: String::new(),
     };
@@ -6235,7 +6277,7 @@ async fn v2_context_bot_chat(
                 let _ = tokio::fs::remove_file(&prompt_path).await;
                 if state
                     .worker_manager
-                    .create_worker(&workspace_root, repo, &brief, "codex")
+                    .create_worker(&workspace_root, repo, &brief, "codex", None)
                     .await
                     .is_ok()
                 {
@@ -8590,6 +8632,7 @@ model = "sonnet"
             worktree_path: None,
             isolation_mode: None,
             agent_kind: None,
+            model: None,
             repo_path: None,
             label: String::new(),
         });
@@ -8723,6 +8766,7 @@ model = "sonnet"
             worktree_path: None,
             isolation_mode: None,
             agent_kind: None,
+            model: None,
             repo_path: None,
             label: String::new(),
         });
@@ -9309,6 +9353,7 @@ model = "sonnet"
                 worktree_path: Some(worktree.display().to_string()),
                 isolation_mode: None,
                 agent_kind: None,
+                model: None,
                 repo_path: Some(root.display().to_string()),
                 label: String::new(),
             })
@@ -9348,6 +9393,8 @@ model = "sonnet"
             Json(V2CreateWorkerBody {
                 brief: serde_json::json!({"goal": "fix bug"}),
                 repo: "myrepo".to_string(),
+                agent: None,
+                model: None,
             }),
         )
         .await
@@ -9379,6 +9426,8 @@ model = "sonnet"
             Json(V2CreateWorkerBody {
                 brief: serde_json::json!({"goal": "add feature", "review_mode": "pr_first"}),
                 repo: "myrepo".to_string(),
+                agent: None,
+                model: None,
             }),
         )
         .await

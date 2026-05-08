@@ -124,6 +124,26 @@ describe("QuickDispatch", () => {
     });
   });
 
+  it("includes agent and model when explicitly selected", async () => {
+    render(<QuickDispatch {...defaultProps} />);
+    await screen.findByTestId("repo-pill-apiari");
+
+    fireEvent.click(screen.getByTestId("agent-pill-claude"));
+    fireEvent.click(screen.getByTestId("model-pill-opus"));
+    fireEvent.change(screen.getByTestId("intent-textarea"), { target: { value: "Fix auth flow" } });
+    fireEvent.click(screen.getByTestId("dispatch-btn"));
+
+    await waitFor(() => {
+      expect(api.createWorkerV2).toHaveBeenCalledWith(
+        "apiari",
+        expect.objectContaining({
+          agent: "claude",
+          model: "opus",
+        }),
+      );
+    });
+  });
+
   it("shows error message when dispatch fails", async () => {
     vi.mocked(api.createWorkerV2).mockRejectedValue(new Error("Network error"));
     render(<QuickDispatch {...defaultProps} />);

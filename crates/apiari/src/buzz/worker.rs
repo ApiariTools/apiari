@@ -101,6 +101,8 @@ pub struct Worker {
     pub isolation_mode: Option<String>,
     /// Agent kind: "claude", "codex", "gemini". Stored so resumes use the same agent.
     pub agent_kind: Option<String>,
+    /// Requested model override for this worker, if any.
+    pub model: Option<String>,
     /// Filesystem path to the main repo (needed for worktree removal and branch deletion).
     pub repo_path: Option<String>,
     /// Derived display label — computed, never stored in DB.
@@ -244,6 +246,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             "agent_kind",
             "ALTER TABLE workers ADD COLUMN agent_kind TEXT",
         ),
+        ("model", "ALTER TABLE workers ADD COLUMN model TEXT"),
         ("repo_path", "ALTER TABLE workers ADD COLUMN repo_path TEXT"),
         (
             "ci_passing",
@@ -308,10 +311,10 @@ impl WorkerStore {
             "INSERT INTO workers
              (id, workspace, state, brief, repo, branch, goal,
               tests_passing, branch_ready, pr_url, pr_approved, is_stalled,
-              revision_count, review_mode, blocked_reason,
+             revision_count, review_mode, blocked_reason,
               last_output_at, state_entered_at, created_at, updated_at, display_title,
-              worktree_path, isolation_mode, agent_kind, repo_path, ci_passing)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
+              worktree_path, isolation_mode, agent_kind, model, repo_path, ci_passing)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
              ON CONFLICT(id) DO UPDATE SET
                workspace       = excluded.workspace,
                state           = excluded.state,
@@ -334,6 +337,7 @@ impl WorkerStore {
                worktree_path   = COALESCE(excluded.worktree_path, workers.worktree_path),
                isolation_mode  = COALESCE(excluded.isolation_mode, workers.isolation_mode),
                agent_kind      = COALESCE(excluded.agent_kind, workers.agent_kind),
+               model           = COALESCE(excluded.model, workers.model),
                repo_path       = COALESCE(excluded.repo_path, workers.repo_path),
                ci_passing      = excluded.ci_passing",
             params![
@@ -360,6 +364,7 @@ impl WorkerStore {
                 worker.worktree_path,
                 worker.isolation_mode,
                 worker.agent_kind,
+                worker.model,
                 worker.repo_path,
                 worker.ci_passing.map(|v| v as i64),
             ],
@@ -376,7 +381,7 @@ impl WorkerStore {
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
                     last_output_at,state_entered_at,created_at,updated_at,display_title,
-                    worktree_path,isolation_mode,agent_kind,repo_path,ci_passing
+                    worktree_path,isolation_mode,agent_kind,model,repo_path,ci_passing
              FROM workers WHERE workspace=?1 AND id=?2",
             params![workspace, id],
             row_to_worker,
@@ -399,7 +404,7 @@ impl WorkerStore {
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
                     last_output_at,state_entered_at,created_at,updated_at,display_title,
-                    worktree_path,isolation_mode,agent_kind,repo_path,ci_passing
+                    worktree_path,isolation_mode,agent_kind,model,repo_path,ci_passing
              FROM workers WHERE workspace=?1
              ORDER BY updated_at DESC",
         )?;
@@ -589,8 +594,9 @@ fn row_to_worker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worker> {
         worktree_path: row.get(20)?,
         isolation_mode: row.get(21)?,
         agent_kind: row.get(22)?,
-        repo_path: row.get(23)?,
-        ci_passing: row.get::<_, Option<i64>>(24)?.map(|v| v != 0),
+        model: row.get(23)?,
+        repo_path: row.get(24)?,
+        ci_passing: row.get::<_, Option<i64>>(25)?.map(|v| v != 0),
         // label is filled in by the caller
         label: String::new(),
     })
@@ -629,6 +635,7 @@ mod tests {
             worktree_path: None,
             isolation_mode: None,
             agent_kind: None,
+            model: None,
             repo_path: None,
             label: String::new(),
         }

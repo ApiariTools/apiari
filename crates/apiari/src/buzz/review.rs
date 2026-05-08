@@ -661,6 +661,7 @@ mod tests {
             worktree_path: None,
             isolation_mode: None,
             agent_kind: None,
+            model: None,
             repo_path: None,
         }
     }

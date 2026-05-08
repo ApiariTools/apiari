@@ -61,6 +61,7 @@ pub async fn spawn_agent(opts: SpawnAgentOpts<'_>) -> color_eyre::Result<AgentHa
     let spawn_opts = SpawnOptions {
         kind: opts.kind,
         prompt: opts.prompt.to_string(),
+        model: None,
         working_dir: opts.worktree_path.to_path_buf(),
         dangerously_skip_permissions: opts.dangerously_skip_permissions,
         resume_session_id: opts.resume_session_id,
@@ -233,6 +234,7 @@ async fn agent_event_loop_impl(
                 let new_opts = SpawnOptions {
                     kind: kind.clone(),
                     prompt: prompt.to_string(),
+                    model: None,
                     working_dir: worktree_path.to_path_buf(),
                     dangerously_skip_permissions,
                     resume_session_id: resume_id,

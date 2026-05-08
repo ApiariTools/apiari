@@ -43,6 +43,7 @@ pub trait ManagedAgent: Send {
 pub struct SpawnOptions {
     pub kind: AgentKind,
     pub prompt: String,
+    pub model: Option<String>,
     pub working_dir: PathBuf,
     pub dangerously_skip_permissions: bool,
     pub resume_session_id: Option<String>,
@@ -103,6 +104,7 @@ impl ClaudeManagedAgent {
     async fn spawn(opts: SpawnOptions) -> Result<Self> {
         let session_opts = apiari_claude_sdk::SessionOptions {
             resume: opts.resume_session_id.clone(),
+            model: opts.model.clone(),
             dangerously_skip_permissions: opts.dangerously_skip_permissions,
             include_partial_messages: true,
             working_dir: Some(opts.working_dir.clone()),
@@ -327,6 +329,7 @@ impl CodexManagedAgent {
                     &opts.prompt,
                     apiari_codex_sdk::ResumeOptions {
                         session_id: Some(session_id.clone()),
+                        model: opts.model.clone(),
                         dangerously_bypass_sandbox: true,
                         working_dir: Some(opts.working_dir.clone()),
                         ..Default::default()
@@ -338,6 +341,7 @@ impl CodexManagedAgent {
                 .exec(
                     &opts.prompt,
                     apiari_codex_sdk::ExecOptions {
+                        model: opts.model.clone(),
                         dangerously_bypass_sandbox: true,
                         working_dir: Some(opts.working_dir.clone()),
                         ..Default::default()
@@ -548,9 +552,9 @@ impl GeminiManagedAgent {
                     &opts.prompt,
                     apiari_gemini_sdk::SessionOptions {
                         session_id: Some(session_id.clone()),
+                        model: opts.model.clone(),
                         working_dir: Some(opts.working_dir.clone()),
                         yolo: true,
-                        ..Default::default()
                     },
                 )
                 .await?
@@ -559,6 +563,7 @@ impl GeminiManagedAgent {
                 .exec(
                     &opts.prompt,
                     apiari_gemini_sdk::GeminiOptions {
+                        model: opts.model.clone(),
                         working_dir: Some(opts.working_dir.clone()),
                         yolo: true,
                         ..Default::default()

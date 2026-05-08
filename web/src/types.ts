@@ -251,6 +251,8 @@ export interface WorkerV2 {
   workspace: string;
   state: 'created' | 'briefed' | 'queued' | 'running' | 'waiting' | 'stalled' | 'done' | 'abandoned';
   label: string;
+  agent_kind?: string | null;
+  model?: string | null;
   brief: WorkerBrief | null;
   repo: string | null;
   branch: string | null;
