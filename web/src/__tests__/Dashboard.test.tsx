@@ -115,10 +115,11 @@ describe("Dashboard", () => {
   });
 
   it("shows attention list for waiting workers", () => {
-    const workers = [makeWorker({ id: "w-1", state: "waiting", goal: "Fix bug" })];
+    const workers = [makeWorker({ id: "w-1", state: "waiting", goal: "worker prompt", display_title: "Fix bug" })];
     render(<Dashboard {...defaultProps} workers={workers} />);
     expect(screen.getByText("Needs attention")).toBeInTheDocument();
     expect(screen.getByText("Fix bug")).toBeInTheDocument();
+    expect(screen.queryByText("worker prompt")).not.toBeInTheDocument();
   });
 
   it("shows attention list for stalled workers", () => {

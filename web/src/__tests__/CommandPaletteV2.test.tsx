@@ -54,8 +54,8 @@ function makeAutoBot(overrides: Partial<AutoBot> = {}): AutoBot {
 }
 
 const workers = [
-  makeWorker({ id: "w-1", goal: "Fix auth rate limiting", branch: "swarm/fix-auth" }),
-  makeWorker({ id: "w-2", goal: "Update deps", branch: "swarm/update-deps", state: "waiting", label: "Waiting" }),
+  makeWorker({ id: "w-1", goal: "worker prompt text", display_title: "Fix auth rate limiting", branch: "swarm/fix-auth" }),
+  makeWorker({ id: "w-2", goal: "secondary prompt", display_title: "Update deps", branch: "swarm/update-deps", state: "waiting", label: "Waiting" }),
 ];
 
 const autoBots = [
@@ -83,6 +83,7 @@ describe("CommandPalette", () => {
     render(<CommandPalette {...defaultProps} />);
     expect(screen.getByText("Fix auth rate limiting")).toBeInTheDocument();
     expect(screen.getByText("Update deps")).toBeInTheDocument();
+    expect(screen.queryByText("worker prompt text")).not.toBeInTheDocument();
   });
 
   it("renders auto bot rows", () => {
@@ -98,6 +99,14 @@ describe("CommandPalette", () => {
     await user.type(input, "auth");
     expect(screen.getByText("Fix auth rate limiting")).toBeInTheDocument();
     expect(screen.queryByText("Update deps")).not.toBeInTheDocument();
+  });
+
+  it("matches workers by display title", async () => {
+    const user = userEvent.setup();
+    render(<CommandPalette {...defaultProps} />);
+    const input = screen.getByTestId("command-palette-input");
+    await user.type(input, "secondary");
+    expect(screen.getByText("Update deps")).toBeInTheDocument();
   });
 
   it("filters auto bots by query", async () => {

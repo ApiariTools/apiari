@@ -12,6 +12,7 @@ import { Bot, Wrench, LayoutDashboard } from 'lucide-react'
 import { getWorkspaces, listWorkersV2, listAutoBots, connectWebSocket, chatWithContextBot } from './api'
 import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from './types'
 import type { SidebarItem } from './components/Sidebar/Sidebar'
+import { getWorkerTitle } from './utils/workerTitle'
 import './theme.css'
 
 let _nextSessionId = 0
@@ -60,13 +61,13 @@ function parseHash(hash: string): { ws: string; type?: EntityType; id?: string }
 }
 
 function workerToSidebarItem(w: WorkerV2): SidebarItem {
-  const goal = w.goal ?? w.branch ?? w.id
-  const shortGoal = goal.length > 40 ? goal.slice(0, 40).replace(/\s+\S*$/, '') + '…' : goal
+  const title = getWorkerTitle(w)
+  const shortTitle = title.length > 40 ? title.slice(0, 40).replace(/\s+\S*$/, '') + '…' : title
   const tags: SidebarItem['tags'] = []
   if (w.pr_url) tags.push({ label: 'PR', color: w.pr_approved ? 'green' : 'amber' })
   return {
     id: w.id,
-    name: shortGoal,
+    name: shortTitle,
     status: w.state,
     meta: w.id,
     tags,
@@ -372,7 +373,7 @@ export default function App() {
   const activityItems = workers
     .filter((w) => w.state === 'running')
     .map((w) => ({
-      label: `${(w.goal ?? w.id).slice(0, 35)} · running`,
+      label: `${getWorkerTitle(w).slice(0, 35)} · running`,
       color: 'var(--status-running)',
     }))
 

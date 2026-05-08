@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { LayoutDashboard } from 'lucide-react'
 import type { WorkerV2, AutoBot, DashboardWidget } from '../../types'
 import { listWidgets } from '../../api'
+import { getWorkerTitle } from '../../utils/workerTitle'
 import Widget from '../widgets/Widget'
 import styles from './Dashboard.module.css'
 
@@ -42,7 +43,7 @@ function WorkerSummary({ workers, onSelectWorker }: { workers: WorkerV2[]; onSel
             return (
               <button key={w.id} className={styles.attentionRow} onClick={() => onSelectWorker(w.id)}>
                 <span className={styles.attentionDot} style={{ background: dotColor }} />
-                <span className={styles.attentionName}>{w.goal ?? w.branch ?? w.id}</span>
+                <span className={styles.attentionName}>{getWorkerTitle(w)}</span>
                 <span className={styles.attentionId}>{w.id}</span>
               </button>
             )
