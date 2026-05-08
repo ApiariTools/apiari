@@ -6322,25 +6322,130 @@ async fn v2_context_bot_chat(
         if let Some(goal) = trimmed.strip_prefix("DISPATCH_WORKER:") {
             let goal = goal.trim().to_string();
             if !goal.is_empty() {
-                let worker_id = format!("ctx-{}", uuid::Uuid::new_v4());
-                let prompt_path = std::env::temp_dir().join(format!("ctx-worker-{worker_id}.txt"));
-
                 // Determine repo from workspace config (use first configured repo if available).
                 let repo = ws
                     .as_ref()
                     .and_then(|w| w.config.repos.first())
-                    .map(String::as_str)
-                    .unwrap_or("");
+                    .cloned()
+                    .unwrap_or_default();
 
-                let brief = format!("Context bot dispatch:\n\n{goal}\n\nWorkspace: {workspace}");
-                let _ = tokio::fs::remove_file(&prompt_path).await;
-                if state
-                    .worker_manager
-                    .create_worker(&workspace_root, repo, &brief, "codex", None)
-                    .await
-                    .is_ok()
-                {
-                    dispatched_worker_id = Some(worker_id);
+                // Build a rich brief matching the modal dispatch path.
+                let context_value = serde_json::json!({
+                    "view": body.context.view,
+                    "entity_id": body.context.entity_id,
+                    "entity_snapshot": body.context.entity_snapshot,
+                });
+                let brief_json = serde_json::json!({
+                    "goal": goal,
+                    "context": context_value,
+                    "constraints": [],
+                    "acceptance_criteria": [],
+                    "review_mode": "local_first",
+                });
+                let prompt_content = format_brief_as_prompt(&brief_json);
+
+                // Save the Worker row to SQLite before dispatching.
+                let worker_id = uuid::Uuid::new_v4().to_string();
+                let now = chrono::Utc::now().to_rfc3339();
+                let selected_agent = ws
+                    .as_ref()
+                    .map(|w| w.config.swarm.default_agent.clone())
+                    .unwrap_or_else(|| "codex".to_string());
+                let worker = crate::buzz::worker::Worker {
+                    id: worker_id.clone(),
+                    workspace: workspace.clone(),
+                    state: crate::buzz::worker::WorkerState::Briefed,
+                    brief: Some(brief_json.clone()),
+                    repo: Some(repo.clone()),
+                    branch: None,
+                    goal: Some(goal.clone()),
+                    tests_passing: false,
+                    branch_ready: false,
+                    pr_url: None,
+                    pr_approved: false,
+                    ci_passing: None,
+                    is_stalled: false,
+                    revision_count: 0,
+                    review_mode: "local_first".to_string(),
+                    blocked_reason: None,
+                    last_output_at: None,
+                    state_entered_at: now.clone(),
+                    created_at: now.clone(),
+                    updated_at: now,
+                    display_title: None,
+                    worktree_path: None,
+                    isolation_mode: None,
+                    agent_kind: Some(selected_agent.clone()),
+                    model: None,
+                    repo_path: None,
+                    label: String::new(),
+                };
+
+                let store_result = open_worker_store_from_path(&state.db_path);
+                if let Ok(store) = store_result {
+                    let _ = store.upsert(&worker);
+
+                    let isolation = ws
+                        .as_ref()
+                        .map(|w| w.config.swarm.worker_isolation.clone())
+                        .unwrap_or_default();
+                    let swarm_result = state
+                        .worker_manager
+                        .create_worker_with_task_dir(
+                            &workspace_root,
+                            &repo,
+                            &prompt_content,
+                            &selected_agent,
+                            None,
+                            None,
+                            isolation,
+                        )
+                        .await;
+
+                    if let Ok(swarm_id) = swarm_result {
+                        let final_id = if !swarm_id.is_empty() && swarm_id != worker_id {
+                            let _ = store.rekey(&worker_id, &swarm_id);
+                            let mut rekeyed = worker.clone();
+                            rekeyed.id = swarm_id.clone();
+                            rekeyed.state = crate::buzz::worker::WorkerState::Queued;
+                            let _ = store.upsert(&rekeyed);
+                            swarm_id
+                        } else {
+                            let _ = store.transition(
+                                &workspace,
+                                &worker_id,
+                                crate::buzz::worker::WorkerState::Queued,
+                            );
+                            worker_id.clone()
+                        };
+
+                        let _ =
+                            state
+                                .updates_tx
+                                .send(crate::daemon::http::WsUpdate::WorkerV2State {
+                                    workspace: workspace.clone(),
+                                    worker_id: final_id.clone(),
+                                    state: "queued".to_string(),
+                                    label: "Queued".to_string(),
+                                    properties: serde_json::json!({}),
+                                });
+
+                        let title_workspace = workspace.clone();
+                        let title_goal = goal.clone();
+                        let title_id = final_id.clone();
+                        let db_path = state.db_path.clone();
+                        tokio::spawn(async move {
+                            generate_and_store_worker_title(
+                                &title_workspace,
+                                &title_id,
+                                &title_goal,
+                                &db_path,
+                            )
+                            .await;
+                        });
+
+                        dispatched_worker_id = Some(final_id);
+                    }
                 }
                 break;
             }

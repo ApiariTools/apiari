@@ -398,6 +398,21 @@ function ReviewCard({ review }: { review: WorkerReview }) {
 
 // ── Brief tab ────────────────────────────────────────────────────────────
 
+function formatBriefAsText(brief: WorkerBrief): string {
+  const parts: string[] = []
+  parts.push(`Goal\n${'─'.repeat(4)}\n${brief.goal ?? ''}`)
+  if (brief.context) {
+    parts.push(`Context\n${'─'.repeat(7)}\n${JSON.stringify(brief.context, null, 2)}`)
+  }
+  if (brief.constraints?.length) {
+    parts.push(`Constraints\n${'─'.repeat(11)}\n${brief.constraints.map(c => `- ${c}`).join('\n')}`)
+  }
+  if (brief.acceptance_criteria?.length) {
+    parts.push(`Acceptance Criteria\n${'─'.repeat(19)}\n${brief.acceptance_criteria.map(c => `- ${c}`).join('\n')}`)
+  }
+  return parts.join('\n\n')
+}
+
 function BriefSection({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className={styles.briefSection}>
@@ -621,6 +636,11 @@ function BriefTab({
               </ul>
             </BriefSection>
           )}
+
+          <details className={styles.briefDisclosure}>
+            <summary className={styles.briefDisclosureSummary}>Full prompt</summary>
+            <pre className={styles.briefDisclosurePre}>{formatBriefAsText(brief)}</pre>
+          </details>
         </>
       )}
 

@@ -965,6 +965,49 @@
   flex-shrink: 0;
 }
 
+.briefDisclosure {
+  margin-top: var(--space-2);
+}
+
+.briefDisclosureSummary {
+  font-size: var(--font-size-meta);
+  font-variant: small-caps;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.briefDisclosureSummary::-webkit-details-marker {
+  display: none;
+}
+
+.briefDisclosureSummary::before {
+  content: '▶ ';
+  font-size: 0.7em;
+  vertical-align: middle;
+}
+
+details[open] .briefDisclosureSummary::before {
+  content: '▼ ';
+}
+
+.briefDisclosurePre {
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
 /* ── Action bar (input) ──────────────────────────────────────────────────── */
 
 .actionBar {
