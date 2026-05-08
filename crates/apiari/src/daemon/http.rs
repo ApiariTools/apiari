@@ -6262,7 +6262,7 @@ async fn v2_context_bot_chat(
             .arg("--print")
             .arg("--max-turns")
             .arg("3")
-            .arg("--system")
+            .arg("--system-prompt")
             .arg(&system_prompt)
             .arg(&body.message)
             .output(),
