@@ -9917,4 +9917,223 @@ model = "sonnet"
             "must not hit dead send_message path: '{err}'"
         );
     }
+
+    // ── Context-bot integration tests ──────────────────────────────────────
+    //
+    // These tests call v2_context_bot_chat directly with a fake `claude` binary
+    // on PATH so we exercise the full handler path: arg construction, flag names,
+    // response parsing, and DISPATCH_WORKER detection.
+
+    struct FakePathGuard {
+        old_path: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for FakePathGuard {
+        fn drop(&mut self) {
+            match self.old_path.take() {
+                Some(p) => unsafe { std::env::set_var("PATH", p) },
+                None => unsafe { std::env::remove_var("PATH") },
+            }
+        }
+    }
+
+    fn install_fake_claude(dir: &Path, stdout: &str) -> FakePathGuard {
+        let bin_dir = dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("claude");
+        // Echo all args to stderr for inspection, print the canned response to stdout.
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{}'\n",
+            stdout.replace('\'', "'\"'\"'")
+        );
+        fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![bin_dir];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        let joined = std::env::join_paths(paths).unwrap();
+        unsafe { std::env::set_var("PATH", joined) };
+        FakePathGuard { old_path }
+    }
+
+    fn make_context_bot_state(db_path: &Path) -> HttpState {
+        make_test_state_with_db(db_path)
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn context_bot_chat_returns_claude_response() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _claude = install_fake_claude(temp.path(), "Everything looks good.");
+        let db = temp.path().join("test.db");
+        let state = make_context_bot_state(&db);
+
+        let resp = v2_context_bot_chat(
+            axum::extract::Path("apiari".to_string()),
+            axum::extract::State(state),
+            axum::extract::Json(ContextBotChatBody {
+                message: "What's the status?".to_string(),
+                session_id: None,
+                context: ContextBotContext {
+                    view: "dashboard".to_string(),
+                    entity_id: None,
+                    entity_snapshot: Some(serde_json::json!({"active_worker_count": 2})),
+                },
+            }),
+        )
+        .await
+        .into_response();
+
+        let json = response_json(resp).await;
+        assert_eq!(json["response"].as_str(), Some("Everything looks good."));
+        assert!(
+            json["session_id"].as_str().is_some(),
+            "session_id must be present"
+        );
+        assert!(
+            json.get("dispatched_worker_id").is_none(),
+            "no dispatch expected"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn context_bot_chat_echoes_provided_session_id() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _claude = install_fake_claude(temp.path(), "Got it.");
+        let db = temp.path().join("test.db");
+        let state = make_context_bot_state(&db);
+
+        let resp = v2_context_bot_chat(
+            axum::extract::Path("apiari".to_string()),
+            axum::extract::State(state),
+            axum::extract::Json(ContextBotChatBody {
+                message: "Hello".to_string(),
+                session_id: Some("my-session-42".to_string()),
+                context: ContextBotContext {
+                    view: "dashboard".to_string(),
+                    entity_id: None,
+                    entity_snapshot: None,
+                },
+            }),
+        )
+        .await
+        .into_response();
+
+        let json = response_json(resp).await;
+        assert_eq!(json["session_id"].as_str(), Some("my-session-42"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn context_bot_chat_uses_system_prompt_flag() {
+        // Verifies the handler passes --system-prompt (not the old --system).
+        // The fake claude logs all args to stderr; we capture them via a log file.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("args.log");
+
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("claude");
+        let log_display = log.display().to_string();
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nprintf '%s' 'ok'\n",
+            log_display
+        );
+        fs::write(&script, &body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![bin_dir];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        let joined = std::env::join_paths(paths).unwrap();
+        unsafe { std::env::set_var("PATH", joined) };
+        let _path_guard = FakePathGuard { old_path };
+
+        let db = temp.path().join("test.db");
+        let state = make_context_bot_state(&db);
+
+        v2_context_bot_chat(
+            axum::extract::Path("apiari".to_string()),
+            axum::extract::State(state),
+            axum::extract::Json(ContextBotChatBody {
+                message: "hi".to_string(),
+                session_id: None,
+                context: ContextBotContext {
+                    view: "dashboard".to_string(),
+                    entity_id: None,
+                    entity_snapshot: None,
+                },
+            }),
+        )
+        .await;
+
+        let logged = fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            logged.contains("--system-prompt"),
+            "handler must pass --system-prompt, got: {logged}"
+        );
+        assert!(
+            !logged.contains("--system\n") && !logged.contains("--system "),
+            "handler must NOT pass bare --system flag, got: {logged}"
+        );
+        assert!(
+            logged.contains("--print"),
+            "handler must pass --print, got: {logged}"
+        );
+        assert!(
+            logged.contains("--max-turns"),
+            "handler must pass --max-turns, got: {logged}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn context_bot_chat_missing_claude_returns_503() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        // Put an empty bin dir with no claude binary on PATH.
+        let bin_dir = temp.path().join("empty_bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let old_path = std::env::var_os("PATH");
+        // Prepend empty bin dir so claude is not found anywhere.
+        let joined = std::env::join_paths(vec![bin_dir]).unwrap();
+        unsafe { std::env::set_var("PATH", &joined) };
+        let _path_guard = FakePathGuard { old_path };
+
+        let db = temp.path().join("test.db");
+        let state = make_context_bot_state(&db);
+
+        let resp = v2_context_bot_chat(
+            axum::extract::Path("apiari".to_string()),
+            axum::extract::State(state),
+            axum::extract::Json(ContextBotChatBody {
+                message: "hi".to_string(),
+                session_id: None,
+                context: ContextBotContext {
+                    view: "dashboard".to_string(),
+                    entity_id: None,
+                    entity_snapshot: None,
+                },
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
 }
