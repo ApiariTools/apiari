@@ -447,8 +447,8 @@
     padding: 0;
   }
 
-  /* Hide minimize on mobile — full screen doesn't make sense to minimize */
-  .iconBtnMinimize {
-    display: none;
+  /* Minimized strip is tappable to re-expand */
+  .panelMinimized .header {
+    cursor: pointer;
   }
 }

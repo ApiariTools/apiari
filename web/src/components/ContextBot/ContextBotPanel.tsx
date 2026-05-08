@@ -51,8 +51,11 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
       className={`${styles.panel} ${session.minimized ? styles.panelMinimized : ''} ${!isActive ? styles.panelHidden : ''}`}
       data-testid="context-bot-panel"
     >
-      {/* Header */}
-      <div className={styles.header}>
+      {/* Header — tappable when minimized to re-expand */}
+      <div
+        className={styles.header}
+        onClick={session.minimized ? () => onMinimize(session.id) : undefined}
+      >
         <div className={styles.headerInfo}>
           <span className={styles.headerDot} aria-hidden="true" />
           <span className={styles.headerTitle} data-testid="panel-title">{session.title}</span>
