@@ -31,7 +31,7 @@ export default defineConfig({
         {
           // CI: daemon serves the embedded frontend — no Vite proxy needed.
           command: `APIARI_E2E_AGENT=${MOCK_AGENT} ${REPO_ROOT}/target/debug/apiari daemon restart --foreground --port ${DAEMON_PORT}`,
-          url: `http://127.0.0.1:${DAEMON_PORT}`,
+          url: `http://127.0.0.1:${DAEMON_PORT}/api/workspaces`,
           cwd: REPO_ROOT,
           timeout: 30_000,
           reuseExistingServer: false,
