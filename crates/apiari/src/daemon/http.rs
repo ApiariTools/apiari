@@ -1447,6 +1447,8 @@ fn git_output(path: &std::path::Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(path)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output()
         .ok()?;
     if !output.status.success() {
