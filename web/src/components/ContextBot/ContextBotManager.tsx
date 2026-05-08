@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { MessageSquare } from 'lucide-react'
 import type { ContextBotSession } from '../../types'
 import ContextBotPanel from './ContextBotPanel'
@@ -14,16 +14,26 @@ export interface ContextBotManagerProps {
 
 export default function ContextBotManager({ sessions, onSend, onChangeModel, onMinimize, onClose }: ContextBotManagerProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [fabMenuOpen, setFabMenuOpen] = useState(false)
+  const fabRef = useRef<HTMLDivElement>(null)
 
-  // When a new session is added, make it active
   useEffect(() => {
-    if (sessions.length === 0) {
-      setActiveId(null)
-      return
-    }
+    if (sessions.length === 0) { setActiveId(null); return }
     const ids = new Set(sessions.map((s) => s.id))
     setActiveId((prev) => (prev && ids.has(prev) ? prev : sessions[sessions.length - 1].id))
   }, [sessions.map((s) => s.id).join(',')])
+
+  // Close fab menu when clicking outside
+  useEffect(() => {
+    if (!fabMenuOpen) return
+    const handler = (e: MouseEvent) => {
+      if (fabRef.current && !fabRef.current.contains(e.target as Node)) {
+        setFabMenuOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [fabMenuOpen])
 
   if (sessions.length === 0) return null
 
@@ -38,47 +48,59 @@ export default function ContextBotManager({ sessions, onSend, onChangeModel, onM
     onClose(id)
   }
 
-  const handleFabClick = () => {
-    // Un-minimize the active session (or most recent)
-    onMinimize(effectiveActiveId)
+  const openSession = (id: string) => {
+    setActiveId(id)
+    // Un-minimize if needed
+    const s = sessions.find((s) => s.id === id)
+    if (s?.minimized) onMinimize(id)
+    setFabMenuOpen(false)
   }
 
-  // On mobile: when all sessions are minimized, show a FAB bubble instead of
-  // keeping the full-screen overlay alive
+  const handleFabClick = () => {
+    if (sessions.length === 1) {
+      openSession(sessions[0].id)
+    } else {
+      setFabMenuOpen((v) => !v)
+    }
+  }
+
+  // Mobile: when all sessions are minimized, show FAB bubble
   if (allMinimized) {
     return (
-      <button
-        className={styles.fab}
-        onClick={handleFabClick}
-        type="button"
-        aria-label={`Open chat (${sessions.length})`}
-        data-testid="context-bot-fab"
-      >
-        <MessageSquare size={22} />
-        {sessions.length > 1 && (
-          <span className={styles.fabBadge}>{sessions.length}</span>
+      <div ref={fabRef} className={styles.fabWrap} data-testid="context-bot-fab-wrap">
+        {fabMenuOpen && (
+          <div className={styles.fabMenu} data-testid="fab-menu">
+            {sessions.map((s) => (
+              <button
+                key={s.id}
+                className={styles.fabMenuItem}
+                onClick={() => openSession(s.id)}
+                type="button"
+              >
+                <MessageSquare size={14} />
+                <span>{s.title}</span>
+              </button>
+            ))}
+          </div>
         )}
-      </button>
+        <button
+          className={styles.fab}
+          onClick={handleFabClick}
+          type="button"
+          aria-label={`Open chat (${sessions.length})`}
+          data-testid="context-bot-fab"
+        >
+          <MessageSquare size={22} />
+          {sessions.length > 1 && (
+            <span className={styles.fabBadge}>{sessions.length}</span>
+          )}
+        </button>
+      </div>
     )
   }
 
   return (
     <div className={styles.manager} data-testid="context-bot-manager">
-      {/* Session tab strip — shown when multiple sessions open */}
-      {sessions.length > 1 && (
-        <div className={styles.sessionTabs} data-testid="session-tabs">
-          {sessions.map((s) => (
-            <button
-              key={s.id}
-              className={`${styles.sessionTab} ${s.id === effectiveActiveId ? styles.sessionTabActive : ''}`}
-              onClick={() => setActiveId(s.id)}
-              type="button"
-            >
-              {s.title}
-            </button>
-          ))}
-        </div>
-      )}
       {sessions.map((session) => (
         <ContextBotPanel
           key={session.id}
@@ -86,7 +108,12 @@ export default function ContextBotManager({ sessions, onSend, onChangeModel, onM
           isActive={session.id === effectiveActiveId}
           onSend={onSend}
           onChangeModel={onChangeModel}
-          onMinimize={onMinimize}
+          onMinimize={(id) => {
+            // Switch active to another non-minimized session if available
+            const next = sessions.find(s => s.id !== id && !s.minimized)
+            if (next) setActiveId(next.id)
+            onMinimize(id)
+          }}
           onClose={handleClose}
         />
       ))}

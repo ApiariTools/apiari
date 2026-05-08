@@ -11,41 +11,9 @@
   align-items: flex-end;
 }
 
+/* Desktop: panelHidden unused — all panels are visible (minimized as strips) */
 .panelHidden {
   display: none;
-}
-
-/* ── Session tab strip ───────────────────────────────────────────────── */
-
-.sessionTabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 0 8px 0;
-  justify-content: flex-end;
-}
-
-.sessionTab {
-  flex-shrink: 0;
-  padding: 4px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text-faint);
-  cursor: pointer;
-  font-family: var(--font);
-  white-space: nowrap;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sessionTabActive {
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 /* ── FAB (floating bubble when all sessions minimized) ───────────────── */
@@ -72,10 +40,78 @@
   opacity: 0.9;
 }
 
+/* ── FAB wrap + session picker menu ─────────────────────────────────── */
+
+.fabWrap {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.fabMenu {
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 200px;
+  max-width: 280px;
+}
+
+.fabMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-strong);
+  font-size: 13px;
+  font-family: var(--font);
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fabMenuItem:last-child {
+  border-bottom: none;
+}
+
+.fabMenuItem:hover {
+  background: var(--bg-hover);
+}
+
+.fabMenuItem span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 @media (max-width: 767px) {
-  .fab {
+  .fabWrap {
     bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 16px);
     right: 20px;
+  }
+
+  .fab {
+    bottom: unset;
+    right: unset;
+    position: relative;
+  }
+
+  .fabMenuItem {
+    padding: 16px;
+    font-size: 15px;
+    min-height: 52px;
   }
 }
 
@@ -438,19 +474,6 @@
     gap: 0;
   }
 
-  .sessionTabs {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    padding: 8px 12px;
-    background: var(--bg-card);
-    border-top: 1px solid var(--border);
-    scrollbar-width: none;
-    order: 99;
-    justify-content: flex-start;
-  }
-
-  .sessionTabs::-webkit-scrollbar { display: none; }
-
   .panel {
     width: 100%;
     height: 60vh;
@@ -462,6 +485,7 @@
 
   .panelMinimized {
     height: 44px;
+    flex-shrink: 0;
   }
 
   .iconBtnMinimize {
@@ -488,26 +512,6 @@
     gap: 0;
   }
 
-  .sessionTabs {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    padding: 10px 12px;
-    background: var(--bg-card);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-    scrollbar-width: none;
-    justify-content: flex-start;
-  }
-
-  .sessionTabs::-webkit-scrollbar { display: none; }
-
-  .sessionTab {
-    padding: 8px 16px;
-    min-height: 44px;
-    display: flex;
-    align-items: center;
-  }
-
   .panel {
     width: 100%;
     flex: 1;
@@ -517,7 +521,7 @@
     min-height: 0;
   }
 
-  /* On mobile, hide inactive panels — active tracked via JS */
+  /* On mobile, one session at a time — hide all but the active one */
   .panelHidden {
     display: none;
   }
