@@ -6,6 +6,7 @@ import styles from './ContextBot.module.css'
 
 export interface ContextBotPanelProps {
   session: ContextBotSession
+  isActive?: boolean
   onSend: (sessionId: string, message: string) => void
   onChangeModel: (sessionId: string, model: string) => void
   onMinimize: (sessionId: string) => void
@@ -22,7 +23,7 @@ function modelLabel(id: string): string {
   return MODELS.find((m) => m.id === id)?.label ?? id
 }
 
-export default function ContextBotPanel({ session, onSend, onChangeModel, onMinimize, onClose }: ContextBotPanelProps) {
+export default function ContextBotPanel({ session, isActive = true, onSend, onChangeModel, onMinimize, onClose }: ContextBotPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const locked = session.messages.length > 0
 
@@ -47,7 +48,7 @@ export default function ContextBotPanel({ session, onSend, onChangeModel, onMini
 
   return (
     <div
-      className={`${styles.panel} ${session.minimized ? styles.panelMinimized : ''}`}
+      className={`${styles.panel} ${session.minimized ? styles.panelMinimized : ''} ${!isActive ? styles.panelHidden : ''}`}
       data-testid="context-bot-panel"
     >
       {/* Header */}
@@ -72,7 +73,7 @@ export default function ContextBotPanel({ session, onSend, onChangeModel, onMini
             </select>
           )}
           <button
-            className={styles.iconBtn}
+            className={`${styles.iconBtn} ${styles.iconBtnMinimize}`}
             onClick={() => onMinimize(session.id)}
             type="button"
             aria-label="Minimize"
@@ -81,7 +82,7 @@ export default function ContextBotPanel({ session, onSend, onChangeModel, onMini
             <Minus size={14} />
           </button>
           <button
-            className={styles.iconBtn}
+            className={`${styles.iconBtn} ${styles.iconBtnClose}`}
             onClick={() => onClose(session.id)}
             type="button"
             aria-label="Close"

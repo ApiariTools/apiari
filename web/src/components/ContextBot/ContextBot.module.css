@@ -11,6 +11,15 @@
   align-items: flex-end;
 }
 
+/* Session tab strip — hidden on desktop, shown on mobile/iPad when multiple sessions */
+.sessionTabs {
+  display: none;
+}
+
+.panelHidden {
+  display: none;
+}
+
 /* ── Panel ──────────────────────────────────────────────────────────── */
 
 .panel {
@@ -116,6 +125,8 @@
   align-items: center;
   justify-content: center;
   line-height: 1;
+  min-width: 24px;
+  min-height: 24px;
 }
 
 .iconBtn:hover {
@@ -303,6 +314,39 @@
     gap: 0;
   }
 
+  .sessionTabs {
+    display: flex;
+    overflow-x: auto;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--bg-card);
+    border-top: 1px solid var(--border);
+    scrollbar-width: none;
+    order: 99;
+  }
+
+  .sessionTabs::-webkit-scrollbar { display: none; }
+
+  .sessionTab {
+    flex-shrink: 0;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-faint);
+    cursor: pointer;
+    font-family: var(--font);
+    white-space: nowrap;
+  }
+
+  .sessionTabActive {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
   .panel {
     width: 100%;
     height: 60vh;
@@ -316,9 +360,14 @@
     height: 44px;
   }
 
-  /* Only show the last non-minimized panel on iPad */
-  .panel:not(:last-child):not(.panelMinimized) {
-    display: none;
+  .iconBtnMinimize {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .iconBtnClose {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 
@@ -328,32 +377,78 @@
   .manager {
     position: fixed;
     inset: 0;
-    bottom: 0;
-    right: 0;
-    left: 0;
-    top: 0;
     z-index: 100;
+    display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: 0;
-    /* Only show the last panel */
-    justify-content: flex-end;
+  }
+
+  .sessionTabs {
+    display: flex;
+    overflow-x: auto;
+    gap: 6px;
+    padding: 10px 12px;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    scrollbar-width: none;
+  }
+
+  .sessionTabs::-webkit-scrollbar { display: none; }
+
+  .sessionTab {
+    flex-shrink: 0;
+    padding: 8px 16px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-faint);
+    cursor: pointer;
+    font-family: var(--font);
+    white-space: nowrap;
+    /* 44px minimum tap target */
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  .sessionTabActive {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    border-color: var(--accent);
+    color: var(--accent);
   }
 
   .panel {
     width: 100%;
-    height: 100%;
+    flex: 1;
     border-radius: 0;
     border: none;
     box-shadow: none;
+    min-height: 0;
   }
 
   .panelMinimized {
+    flex: 0;
     height: 44px;
   }
 
-  /* On mobile, hide all panels except the most recent one */
-  .panel:not(:last-child) {
+  /* On mobile, hide inactive panels — active tracked via JS, not :last-child */
+  .panelHidden {
+    display: none;
+  }
+
+  /* Bigger tap targets on mobile */
+  .iconBtn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+  }
+
+  /* Hide minimize on mobile — full screen doesn't make sense to minimize */
+  .iconBtnMinimize {
     display: none;
   }
 }
