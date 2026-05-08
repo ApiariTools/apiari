@@ -697,6 +697,37 @@ mod tests {
         assert_eq!(derived_label(&w), "Tests failing");
     }
 
+    // ci_passing overrides tests_passing when a PR exists
+    #[test]
+    fn label_waiting_ci_failing_overrides_local_passing() {
+        let mut w = make_worker("w1", "acme");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/org/repo/pull/1".to_string());
+        w.tests_passing = true; // local passed — but CI failed
+        w.ci_passing = Some(false);
+        assert_eq!(derived_label(&w), "Tests failing");
+    }
+
+    #[test]
+    fn label_waiting_ci_passing_ready_to_merge() {
+        let mut w = make_worker("w1", "acme");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/org/repo/pull/1".to_string());
+        w.ci_passing = Some(true);
+        w.pr_approved = true;
+        assert_eq!(derived_label(&w), "Ready to merge");
+    }
+
+    #[test]
+    fn label_waiting_ci_passing_has_feedback() {
+        let mut w = make_worker("w1", "acme");
+        w.state = WorkerState::Waiting;
+        w.pr_url = Some("https://github.com/org/repo/pull/1".to_string());
+        w.ci_passing = Some(true);
+        w.pr_approved = false;
+        assert_eq!(derived_label(&w), "Has feedback");
+    }
+
     #[test]
     fn label_waiting_needs_input() {
         let mut w = make_worker("w1", "acme");

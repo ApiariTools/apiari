@@ -187,6 +187,30 @@ describe("WorkerDetailV2", () => {
     expect(pills).not.toHaveTextContent("Local tests ✓");
   });
 
+  it("shows 'CI ✓' pill when ci_passing is true", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, ci_passing: true });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const pills = await screen.findByTestId("property-pills");
+    expect(pills).toHaveTextContent("CI ✓");
+    expect(pills).not.toHaveTextContent("Local tests ✓");
+  });
+
+  it("shows 'CI ✗' pill when ci_passing is false", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, ci_passing: false });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const pills = await screen.findByTestId("property-pills");
+    expect(pills).toHaveTextContent("CI ✗");
+    expect(pills).not.toHaveTextContent("Local tests ✓");
+  });
+
+  it("shows 'Local tests ✓' when ci_passing is null even if tests_passing is true", async () => {
+    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, tests_passing: true, ci_passing: null });
+    render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
+    const pills = await screen.findByTestId("property-pills");
+    expect(pills).toHaveTextContent("Local tests ✓");
+    expect(pills).not.toHaveTextContent("CI");
+  });
+
   // ── Tab switching tests ───────────────────────────────────────────────────
 
   it("renders three tabs: Timeline, Reviews, Brief", async () => {
