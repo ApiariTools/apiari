@@ -111,22 +111,28 @@
 }
 
 @media (max-width: 767px) {
+  /* Sit above the tab bar + any bottom action bar (worker detail input ~72px) */
   .fabWrap {
-    bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 16px);
-    right: 20px;
+    bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 84px);
+    right: unset;
+    left: 16px;
+    align-items: flex-start;
   }
 
   .fab {
     bottom: unset;
     right: unset;
     position: relative;
+    width: 44px;
+    height: 44px;
   }
 
   .fabMobileOnly {
     display: block;
     position: fixed;
-    bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 16px);
-    right: 20px;
+    bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 84px);
+    left: 16px;
+    right: unset;
     z-index: 200;
   }
 
@@ -135,6 +141,7 @@
     position: static;
     bottom: unset;
     right: unset;
+    left: unset;
   }
 
   .fabMenuItem {
