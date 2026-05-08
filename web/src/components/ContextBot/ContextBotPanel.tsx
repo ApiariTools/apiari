@@ -91,7 +91,7 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
                 aria-label="Minimize"
                 data-testid="minimize-btn"
               >
-                <Minus size={14} />
+                <Minus size={18} />
               </button>
               <button
                 className={styles.endBtn}
