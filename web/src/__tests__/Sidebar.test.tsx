@@ -69,6 +69,19 @@ describe("Sidebar done workers filtering", () => {
     expect(footer).toHaveTextContent("3 completed");
   });
 
+  it("calls onShowDoneWorkers when the footer is clicked", () => {
+    const onShowDoneWorkers = vi.fn();
+    render(
+      <Sidebar
+        {...defaultProps}
+        doneWorkerCount={2}
+        onShowDoneWorkers={onShowDoneWorkers}
+      />,
+    );
+    screen.getByTestId("done-workers-footer").click();
+    expect(onShowDoneWorkers).toHaveBeenCalled();
+  });
+
   it("shows 'No workers yet' when workers is empty and doneWorkerCount is 0", () => {
     render(<Sidebar {...defaultProps} doneWorkerCount={0} />);
     expect(screen.getByText("No workers yet")).toBeInTheDocument();

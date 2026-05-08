@@ -309,11 +309,26 @@
 }
 
 .doneFooter {
+  display: block;
+  width: 100%;
   padding: 4px 12px 8px;
   font-size: 11px;
   color: var(--text-faint);
   font-family: var(--font);
   opacity: 0.6;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.doneFooter:hover {
+  opacity: 0.9;
+}
+
+.doneFooterSelected {
+  color: var(--accent);
+  opacity: 1;
 }
 
 /* ── Activity strip ──────────────────────────────────────────────────────── */

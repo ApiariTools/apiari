@@ -33,6 +33,8 @@ export interface SidebarProps {
   onQuickDispatch?: () => void
   /** Number of workers hidden because they are in a terminal state (merged/abandoned/failed). */
   doneWorkerCount?: number
+  onShowDoneWorkers?: () => void
+  doneWorkersSelected?: boolean
   /** Running background activity items shown at the bottom of the sidebar. */
   activityItems?: ActivityItem[]
 }
@@ -160,6 +162,8 @@ export default function Sidebar({
   onWorkspaceChange,
   onQuickDispatch,
   doneWorkerCount = 0,
+  onShowDoneWorkers,
+  doneWorkersSelected = false,
   activityItems,
 }: SidebarProps) {
   const homeSelected = selectedType === null && selectedId === null
@@ -228,9 +232,14 @@ export default function Sidebar({
           ))
         )}
         {doneWorkerCount > 0 && (
-          <p className={styles.doneFooter} data-testid="done-workers-footer">
+          <button
+            type="button"
+            className={`${styles.doneFooter} ${doneWorkersSelected ? styles.doneFooterSelected : ''}`}
+            data-testid="done-workers-footer"
+            onClick={onShowDoneWorkers}
+          >
             {doneWorkerCount} completed
-          </p>
+          </button>
         )}
       </div>
       {activityItems && activityItems.length > 0 && (
