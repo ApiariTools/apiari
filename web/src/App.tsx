@@ -151,18 +151,25 @@ export default function App() {
   }, [workspace])
 
   function openContextBot(context: ContextBotContext, title: string, model?: string) {
-    const id = nextSessionId()
-    const session: ContextBotSession = {
-      id,
-      context,
-      title,
-      model: model ?? DEFAULT_CONTEXT_BOT_MODEL,
-      messages: [],
-      minimized: false,
-      loading: false,
-    }
-    setContextSessions((prev) => [...prev, session])
-    upsertContextBotSession(workspace, session).catch(() => {})
+    setContextSessions((prev) => {
+      // If a session already exists for this entity, just un-minimize and surface it
+      const existing = prev.find((s) => s.context.entity_id === context.entity_id)
+      if (existing) {
+        return prev.map((s) => s.id === existing.id ? { ...s, minimized: false } : s)
+      }
+      const id = nextSessionId()
+      const session: ContextBotSession = {
+        id,
+        context,
+        title,
+        model: model ?? DEFAULT_CONTEXT_BOT_MODEL,
+        messages: [],
+        minimized: false,
+        loading: false,
+      }
+      upsertContextBotSession(workspace, session).catch(() => {})
+      return [...prev, session]
+    })
   }
 
   async function handleContextBotSend(sessionId: string, message: string) {
