@@ -16,6 +16,11 @@
   display: none;
 }
 
+/* FAB wrapper shown only on mobile when a panel is already open */
+.fabMobileOnly {
+  display: none;
+}
+
 /* ── FAB (floating bubble when all sessions minimized) ───────────────── */
 
 .fab {
@@ -96,6 +101,15 @@
   text-overflow: ellipsis;
 }
 
+.fabMenuItemNew {
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+}
+
+.fabMenuItemNew:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 @media (max-width: 767px) {
   .fabWrap {
     bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 16px);
@@ -106,6 +120,21 @@
     bottom: unset;
     right: unset;
     position: relative;
+  }
+
+  .fabMobileOnly {
+    display: block;
+    position: fixed;
+    bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 16px);
+    right: 20px;
+    z-index: 200;
+  }
+
+  /* fabMobileOnly hosts its own fabWrap; reset the fabWrap inside it */
+  .fabMobileOnly .fabWrap {
+    position: static;
+    bottom: unset;
+    right: unset;
   }
 
   .fabMenuItem {

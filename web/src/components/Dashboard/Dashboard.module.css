@@ -236,6 +236,11 @@
   .widgetGrid {
     grid-template-columns: 1fr;
   }
+
+  /* FAB handles chat on mobile — hide the Ask button */
+  .askBtn {
+    display: none;
+  }
 }
 
 /* ── Empty widget state ──────────────────────────────────────────────────── */

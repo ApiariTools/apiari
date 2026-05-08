@@ -546,6 +546,21 @@ export default function App() {
       />
       <ContextBotManager
         sessions={contextSessions}
+        currentTarget={(() => {
+          if (!workspace) return null
+          if (selected?.type === 'worker') {
+            const w = workers.find(w => w.id === selected.id)
+            return {
+              context: { view: 'worker_detail', entity_id: selected.id, entity_snapshot: w ? { state: w.state, goal: w.goal } : {} },
+              title: w ? `Worker: ${getWorkerTitle(w)}` : `Worker: ${selected.id}`,
+            }
+          }
+          return {
+            context: { view: 'workspace_overview', entity_id: workspace, entity_snapshot: { workspace } },
+            title: `Workspace: ${workspace}`,
+          }
+        })()}
+        onNewSession={openContextBot}
         onSend={handleContextBotSend}
         onChangeModel={(id, model) =>
           setContextSessions((prev) =>

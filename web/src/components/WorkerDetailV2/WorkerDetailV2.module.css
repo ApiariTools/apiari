@@ -47,6 +47,11 @@
     gap: var(--space-1);
   }
 
+  /* FAB handles chat on mobile — hide the Ask (MessageSquare) icon button */
+  [data-testid="ask-btn"] {
+    display: none;
+  }
+
   .tab {
     font-size: 12px;
     padding: 5px 10px;
