@@ -394,7 +394,12 @@ export async function requeueWorkerV2(workspace: string, id: string): Promise<{ 
 
 export async function createWorkerV2(
   workspace: string,
-  data: { brief: Partial<WorkerBrief> & { goal: string; repo: string }; repo: string },
+  data: {
+    brief: Partial<WorkerBrief> & { goal: string; repo: string };
+    repo: string;
+    agent?: string;
+    model?: string | null;
+  },
 ): Promise<{ ok: boolean; worker_id: string }> {
   const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers`, {
     method: "POST",

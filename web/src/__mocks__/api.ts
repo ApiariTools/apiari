@@ -175,6 +175,8 @@ export const createWorkerV2 = vi.fn().mockResolvedValue({
   workspace: 'apiari',
   state: 'briefed',
   label: 'Briefed',
+  agent_kind: 'codex',
+  model: null,
   brief: null,
   repo: 'apiari',
   branch: null,

@@ -62,8 +62,22 @@ function StatusBadge({ worker }: { worker: WorkerV2 }) {
 // ── Property pills ───────────────────────────────────────────────────────
 
 function Pills({ worker }: { worker: WorkerV2 }) {
+  const agentLabel = worker.agent_kind
+    ? worker.agent_kind.charAt(0).toUpperCase() + worker.agent_kind.slice(1)
+    : null
+
   return (
     <div className={styles.pills} data-testid="property-pills">
+      {agentLabel && (
+        <span className={styles.pill}>
+          {agentLabel}
+        </span>
+      )}
+      {worker.model && (
+        <span className={styles.pill}>
+          {worker.model}
+        </span>
+      )}
       {worker.ci_passing === true && (
         <span className={`${styles.pill} ${styles.pillGreen}`}>CI ✓</span>
       )}

@@ -14,6 +14,8 @@ const mockWorker: WorkerDetailV2Data = {
   workspace: "default",
   state: "running",
   label: "Working",
+  agent_kind: "claude",
+  model: "sonnet",
   brief: null,
   repo: "apiari",
   branch: "swarm/fix-auth",
@@ -75,6 +77,8 @@ describe("WorkerDetailV2", () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const pills = await screen.findByTestId("property-pills");
     expect(pills).toBeInTheDocument();
+    expect(pills).toHaveTextContent("Claude");
+    expect(pills).toHaveTextContent("sonnet");
     expect(pills).toHaveTextContent("Local tests ✓");
     expect(pills).toHaveTextContent("local first");
   });
