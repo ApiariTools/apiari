@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
-import { LayoutDashboard } from 'lucide-react'
-import type { WorkerV2, AutoBot, DashboardWidget, Repo } from '../../types'
+import { LayoutDashboard, MessageSquare } from 'lucide-react'
+import type { WorkerV2, AutoBot, DashboardWidget, Repo, ContextBotContext } from '../../types'
 import { listWidgets, getRepos } from '../../api'
 import { getWorkerTitle } from '../../utils/workerTitle'
 import { repoSyncLabel } from '../../repoSync'
@@ -136,9 +136,10 @@ export interface DashboardProps {
   autoBots: AutoBot[]
   onSelectWorker: (id: string) => void
   onSelectAutoBot: (id: string) => void
+  onOpenContextBot?: (context: ContextBotContext, title: string) => void
 }
 
-export default function Dashboard({ workspace, workers, onSelectWorker }: DashboardProps) {
+export default function Dashboard({ workspace, workers, onSelectWorker, onOpenContextBot }: DashboardProps) {
   const [widgets, setWidgets] = useState<DashboardWidget[]>([])
   const [repos, setRepos] = useState<Repo[]>([])
 
@@ -169,6 +170,9 @@ export default function Dashboard({ workspace, workers, onSelectWorker }: Dashbo
     console.log('[dashboard] widgets:', widgets.length, widgets.map(w => w.type))
   }, [widgets])
 
+  const activeWorkers = workers.filter((w) => w.state !== 'done' && w.state !== 'abandoned')
+  const stalledWorkers = workers.filter((w) => w.state === 'stalled')
+
   // Separate alert_banners (always shown first) from the rest
   const alerts  = widgets.filter((w) => w.type === 'alert_banner')
   const rest    = widgets.filter((w) => w.type !== 'alert_banner')
@@ -179,6 +183,31 @@ export default function Dashboard({ workspace, workers, onSelectWorker }: Dashbo
       <div className={styles.header}>
         <LayoutDashboard size={16} className={styles.headerIcon} />
         <span className={styles.headerTitle}>Overview</span>
+        {onOpenContextBot && (
+          <button
+            className={styles.askBtn}
+            type="button"
+            onClick={() => onOpenContextBot(
+              {
+                view: 'dashboard',
+                entity_id: null,
+                entity_snapshot: {
+                  workspace,
+                  active_worker_count: activeWorkers.length,
+                  stalled_worker_count: stalledWorkers.length,
+                  total_worker_count: workers.length,
+                  repo_count: repos.length,
+                  repos: repos.map((r) => ({ name: r.name, branch: r.branch, is_clean: r.is_clean })),
+                },
+              },
+              'Dashboard',
+            )}
+            title="Ask about this workspace"
+          >
+            <MessageSquare size={14} />
+            <span>Ask</span>
+          </button>
+        )}
       </div>
 
       {/* Alert banners — always at top */}
