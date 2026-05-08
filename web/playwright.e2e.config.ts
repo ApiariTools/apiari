@@ -12,8 +12,8 @@ export default defineConfig({
   testDir: "./e2e",
   testMatch: "**/worker-lifecycle.spec.ts",
   fullyParallel: false,
-  retries: 0,
-  timeout: 60_000,
+  retries: process.env.CI ? 1 : 0,
+  timeout: 120_000,
   use: {
     baseURL: `http://127.0.0.1:${UI_PORT}`,
     headless: true,

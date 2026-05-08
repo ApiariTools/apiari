@@ -549,7 +549,9 @@ fn read_worker_paths(
             // Worker is in SQLite — use its paths. Missing paths here is a bug,
             // not a legacy-compat case, so we return a hard error.
             let wt = w.worktree_path.map(PathBuf::from).ok_or_else(|| {
-                eyre!("worker {worker_id} is in DB but missing worktree_path — data integrity error")
+                eyre!(
+                    "worker {worker_id} is in DB but missing worktree_path — data integrity error"
+                )
             })?;
             let rp = w.repo_path.map(PathBuf::from).ok_or_else(|| {
                 eyre!("worker {worker_id} is in DB but missing repo_path — data integrity error")

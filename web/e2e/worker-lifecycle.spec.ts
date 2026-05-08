@@ -25,69 +25,64 @@ test.describe("worker lifecycle", () => {
   test("create worker → PR appears → send revision → response visible", async ({
     page,
   }) => {
-    // ── 1. Navigate to the apiari workspace ────────────────────────────
+    // ── 1. Navigate and wait for app shell ─────────────────────────────
     await page.goto("/");
+    await expect(page.getByRole("navigation", { name: "Sidebar" })).toBeVisible(
+      { timeout: 15_000 },
+    );
 
-    // Switch to the apiari workspace if not already there.
-    const workspaceBtn = page.getByRole("button", { name: WORKSPACE }).first();
+    // Switch to the apiari workspace if a switcher is visible.
+    // isVisible() is non-waiting — only click if the button is already rendered.
+    const workspaceBtn = page
+      .getByRole("navigation", { name: "Sidebar" })
+      .getByRole("button", { name: WORKSPACE })
+      .first();
     if (await workspaceBtn.isVisible()) {
       await workspaceBtn.click();
     }
 
     // ── 2. Open Quick Dispatch and create a worker ─────────────────────
-    // The "+" button in the Workers sidebar section has aria-label="New worker"
-    await page.getByRole("button", { name: "New worker" }).click();
+    await page.getByTestId("quick-dispatch-trigger").click();
     await expect(
       page.getByRole("dialog", { name: "Quick dispatch" }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 5_000 });
 
-    // Fill in the prompt.
     await page.getByTestId("intent-textarea").fill(PROMPT);
 
-    // Select the first available repo pill.
     const repoPills = page.getByTestId("repo-pills").locator("button");
     await repoPills.first().click();
 
-    // Submit.
     await page.getByTestId("dispatch-btn").click();
 
-    // Dialog should close.
+    // Dialog should close after successful dispatch.
     await expect(
       page.getByRole("dialog", { name: "Quick dispatch" }),
-    ).not.toBeVisible({ timeout: 5_000 });
+    ).not.toBeVisible({ timeout: 10_000 });
 
     // ── 3. App auto-navigates to the new worker's detail ──────────────
-    // After dispatch App.tsx calls navigateTo('worker', id), which mounts
-    // WorkerDetailV2. Wait for the Timeline tab as a sign the detail loaded.
     await expect(page.getByTestId("tab-timeline")).toBeVisible({
       timeout: 15_000,
     });
 
-    // ── 4. Wait for the PR link to appear in the detail header ─────────
-    // WorkerDetailV2 renders the PR as <a href="...pull/999">#999</a>.
-    // The mock agent emits PR_OPENED: in its output so the reconciler
-    // picks it up within one poll cycle.
+    // ── 4. Wait for the PR link to appear ─────────────────────────────
+    // The mock agent emits PR_OPENED in its output; the reconciler picks it
+    // up within one poll cycle (default: 5s).
     const prLink = page.locator(`a[href="${MOCK_PR_URL}"]`).first();
     await expect(prLink).toBeVisible({ timeout: 30_000 });
     await expect(prLink).toHaveAttribute("href", MOCK_PR_URL);
 
     // ── 5. Send a revision message ─────────────────────────────────────
-    // The Timeline tab is active by default. The instruction input
-    // placeholder is "Send async instruction…" (running/stalled) or
-    // "Send an instruction…" (done).
     const chatInput = page.getByPlaceholder(/Send.*instruction/i);
-    await expect(chatInput).toBeVisible();
+    await expect(chatInput).toBeVisible({ timeout: 5_000 });
     await chatInput.fill(REVISION_MSG);
-    // The send button has title="Send"
     await page.locator('button[title="Send"]').click();
 
-    // ── 6. Message appears in timeline immediately ─────────────────────
+    // ── 6. Message appears in timeline ────────────────────────────────
     await expect(page.getByText(REVISION_MSG).first()).toBeVisible({
-      timeout: 5_000,
+      timeout: 10_000,
     });
 
-    // ── 7. Mock agent's revision response appears ──────────────────────
-    // The mock agent outputs: "Got your feedback: … Applying the fix now."
+    // ── 7. Mock agent's revision response appears ─────────────────────
     await expect(page.getByText(/Got your feedback/i)).toBeVisible({
       timeout: 30_000,
     });

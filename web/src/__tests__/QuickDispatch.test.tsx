@@ -19,26 +19,8 @@ const defaultProps = {
 beforeEach(() => {
   vi.mocked(api.getRepos).mockResolvedValue(mockRepos);
   vi.mocked(api.createWorkerV2).mockResolvedValue({
-    id: "worker-new",
-    workspace: "apiari",
-    state: "briefed",
-    label: "Briefed",
-    brief: null,
-    repo: "apiari",
-    branch: null,
-    goal: "Test goal",
-    tests_passing: false,
-    branch_ready: false,
-    pr_url: null,
-    pr_approved: false,
-    is_stalled: false,
-    revision_count: 0,
-    review_mode: "local_first",
-    blocked_reason: null,
-    last_output_at: null,
-    state_entered_at: "2026-05-04T10:00:00Z",
-    created_at: "2026-05-04T10:00:00Z",
-    updated_at: "2026-05-04T10:00:00Z",
+    ok: true,
+    worker_id: "worker-new",
   });
   vi.mocked(api.chatWithContextBot).mockResolvedValue({
     response: "Brief generated.",
