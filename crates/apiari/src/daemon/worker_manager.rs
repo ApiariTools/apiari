@@ -90,36 +90,47 @@ impl WorkerManager {
 
         let (worker_id, branch, repo_path, worktree_path, effective_prompt) =
             tokio::task::spawn_blocking(move || -> Result<_> {
-                let repo_path = resolve_repo(&work_dir, &repo)?;
-                // Skip network fetch in e2e tests — the CI checkout is shallow
-                // and an unconditional `git fetch origin` would unshallow the
-                // entire repo, blocking the API for minutes.
-                if std::env::var("APIARI_E2E_AGENT").is_err() {
-                    git::pull_main(&repo_path);
-                }
-
                 let short_id = &uuid::Uuid::new_v4().to_string()[..4];
-                let name = git::repo_name(&repo_path);
-                let worker_id = format!("{}-{}", name, short_id);
-                let branch = git::generate_branch_name(&prompt, short_id);
-                let worktree_path = work_dir.join(".swarm").join("wt").join(&worker_id);
+                let worker_id;
+                let branch;
+                let repo_path;
+                let worktree_path;
 
-                match isolation_clone {
-                    crate::config::WorkerIsolation::Worktree => {
-                        git::create_worktree(
-                            &repo_path,
-                            &branch,
-                            &worktree_path,
-                            Some("origin/main"),
-                        )?;
-                        git::symlink_worktree_files(&repo_path, &worktree_path);
-                        let cmds = git::read_worktree_setup_commands(&repo_path);
-                        if !cmds.is_empty() {
-                            git::run_worktree_setup_commands(&worktree_path, &cmds)?;
+                // In e2e mode all git operations are skipped — CI uses a shallow
+                // clone and worktree creation would hang or fail.  The mock agent
+                // only needs the events directory to exist.
+                if std::env::var("APIARI_E2E_AGENT").is_ok() {
+                    repo_path = work_dir.clone();
+                    worker_id =
+                        format!("{}-{}", repo.rsplit('/').next().unwrap_or(&repo), short_id);
+                    branch = git::generate_branch_name(&prompt, short_id);
+                    worktree_path = work_dir.join(".swarm").join("wt").join(&worker_id);
+                    std::fs::create_dir_all(&worktree_path)?;
+                } else {
+                    repo_path = resolve_repo(&work_dir, &repo)?;
+                    git::pull_main(&repo_path);
+                    let name = git::repo_name(&repo_path);
+                    worker_id = format!("{}-{}", name, short_id);
+                    branch = git::generate_branch_name(&prompt, short_id);
+                    worktree_path = work_dir.join(".swarm").join("wt").join(&worker_id);
+
+                    match isolation_clone {
+                        crate::config::WorkerIsolation::Worktree => {
+                            git::create_worktree(
+                                &repo_path,
+                                &branch,
+                                &worktree_path,
+                                Some("origin/main"),
+                            )?;
+                            git::symlink_worktree_files(&repo_path, &worktree_path);
+                            let cmds = git::read_worktree_setup_commands(&repo_path);
+                            if !cmds.is_empty() {
+                                git::run_worktree_setup_commands(&worktree_path, &cmds)?;
+                            }
                         }
-                    }
-                    crate::config::WorkerIsolation::Copy => {
-                        create_repo_copy(&repo_path, &worktree_path, &branch)?;
+                        crate::config::WorkerIsolation::Copy => {
+                            create_repo_copy(&repo_path, &worktree_path, &branch)?;
+                        }
                     }
                 }
 
