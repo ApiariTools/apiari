@@ -57,6 +57,28 @@ const mockWorkers: WorkerV2[] = [
     created_at: "2026-05-04T09:00:00Z",
     updated_at: "2026-05-04T10:00:00Z",
   },
+  {
+    id: "w-3",
+    workspace: "default",
+    state: "done",
+    label: "Done",
+    brief: null,
+    repo: "apiari",
+    branch: "swarm/ship-auth",
+    goal: "ship-auth-fix",
+    tests_passing: true,
+    branch_ready: true,
+    pr_url: "https://github.com/example/apiari/pull/44",
+    pr_approved: true,
+    is_stalled: false,
+    revision_count: 0,
+    review_mode: "local_first",
+    blocked_reason: null,
+    last_output_at: null,
+    state_entered_at: "2026-05-04T11:00:00Z",
+    created_at: "2026-05-04T09:30:00Z",
+    updated_at: "2026-05-04T11:00:00Z",
+  },
 ];
 
 const mockWorkerDetail: WorkerDetailV2Data = {
@@ -210,5 +232,14 @@ describe("App shell", () => {
   it("sidebar navigation has accessible label", () => {
     render(<App />);
     expect(screen.getByRole("navigation", { name: "Sidebar" })).toBeInTheDocument();
+  });
+
+  it("opens the completed workers view from the sidebar footer", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const footer = await screen.findByTestId("done-workers-footer");
+    await user.click(footer);
+    expect(await screen.findByText("Completed workers", { selector: "h1" })).toBeInTheDocument();
+    expect(screen.getByText("ship-auth-fix")).toBeInTheDocument();
   });
 });

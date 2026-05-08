@@ -1,0 +1,131 @@
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-7) var(--space-7) var(--space-8);
+  background: var(--bg);
+  gap: var(--space-6);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1;
+  color: var(--text-strong);
+}
+
+.summary {
+  margin: 0;
+  max-width: 60ch;
+  color: var(--text-faint);
+  line-height: 1.5;
+}
+
+.empty {
+  color: var(--text-faint);
+  font-size: 14px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  width: 100%;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font);
+  transition: background 120ms, border-color 120ms;
+}
+
+.row:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.rowMain {
+  min-width: 0;
+}
+
+.rowTitle {
+  color: var(--text-strong);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.rowMeta {
+  margin-top: 4px;
+  color: var(--text-faint);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.rowSide {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.status,
+.metaPill {
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 8px;
+  border-radius: 999px;
+}
+
+.statusDone {
+  color: var(--status-merged);
+  background: color-mix(in srgb, var(--status-merged) 18%, transparent);
+}
+
+.statusAbandoned {
+  color: #bcbcbc;
+  background: color-mix(in srgb, var(--status-abandoned) 24%, transparent);
+}
+
+.metaPill {
+  color: var(--text-faint);
+  background: var(--bg-hover);
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: var(--space-4) var(--space-4) var(--space-6);
+    padding-bottom: calc(var(--bottom-bar-height) + var(--space-4));
+  }
+
+  .row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .rowSide {
+    flex-wrap: wrap;
+  }
+}

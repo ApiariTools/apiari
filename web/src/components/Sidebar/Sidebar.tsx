@@ -33,8 +33,8 @@ export interface SidebarProps {
   onQuickDispatch?: () => void
   /** Number of workers hidden because they are in a terminal state (merged/abandoned/failed). */
   doneWorkerCount?: number
-  /** Terminal workers that can be expanded from the completed footer. */
-  doneWorkers?: SidebarItem[]
+  onShowDoneWorkers?: () => void
+  doneWorkersSelected?: boolean
   /** Running background activity items shown at the bottom of the sidebar. */
   activityItems?: ActivityItem[]
 }
@@ -162,10 +162,10 @@ export default function Sidebar({
   onWorkspaceChange,
   onQuickDispatch,
   doneWorkerCount = 0,
-  doneWorkers = [],
+  onShowDoneWorkers,
+  doneWorkersSelected = false,
   activityItems,
 }: SidebarProps) {
-  const [doneOpen, setDoneOpen] = useState(false)
   const homeSelected = selectedType === null && selectedId === null
   return (
     <nav className={styles.sidebar} aria-label="Sidebar">
@@ -234,27 +234,12 @@ export default function Sidebar({
         {doneWorkerCount > 0 && (
           <button
             type="button"
-            className={styles.doneFooter}
+            className={`${styles.doneFooter} ${doneWorkersSelected ? styles.doneFooterSelected : ''}`}
             data-testid="done-workers-footer"
-            onClick={() => setDoneOpen((open) => !open)}
-            aria-expanded={doneOpen}
-            aria-controls="done-workers-list"
+            onClick={onShowDoneWorkers}
           >
             {doneWorkerCount} completed
           </button>
-        )}
-        {doneOpen && doneWorkers.length > 0 && (
-          <div id="done-workers-list" className={styles.doneList} data-testid="done-workers-list">
-            {doneWorkers.map((worker) => (
-              <SidebarItemRow
-                key={worker.id}
-                item={worker}
-                type="worker"
-                isSelected={selectedType === 'worker' && selectedId === worker.id}
-                onSelect={onSelect}
-              />
-            ))}
-          </div>
         )}
       </div>
       {activityItems && activityItems.length > 0 && (

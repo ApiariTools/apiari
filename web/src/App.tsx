@@ -5,6 +5,7 @@ import BottomTabBar from './components/BottomTabBar/BottomTabBar'
 import Dashboard from './components/Dashboard/Dashboard'
 import WorkerDetailV2 from './components/WorkerDetailV2/WorkerDetailV2'
 import AutoBotDetail from './components/AutoBotDetail/AutoBotDetail'
+import CompletedWorkersView from './components/CompletedWorkersView'
 import ContextBotManager from './components/ContextBot/ContextBotManager'
 import CommandPalette from './components/CommandPalette/CommandPalette'
 import QuickDispatch from './components/QuickDispatch/QuickDispatch'
@@ -91,6 +92,7 @@ export default function App() {
   const [workers, setWorkers] = useState<WorkerV2[]>([])
   const [autoBots, setAutoBots] = useState<AutoBot[]>([])
   const [loading, setLoading] = useState(true)
+  const [showDoneWorkers, setShowDoneWorkers] = useState(false)
   const [contextSessions, setContextSessions] = useState<ContextBotSession[]>([])
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [quickDispatchOpen, setQuickDispatchOpen] = useState(false)
@@ -113,6 +115,7 @@ export default function App() {
         if (parsed && names.includes(parsed.ws)) {
           setWorkspace(parsed.ws)
           if (parsed.type && parsed.id) {
+            setShowDoneWorkers(false)
             setSelected({ type: parsed.type, id: parsed.id })
           }
         } else {
@@ -126,6 +129,7 @@ export default function App() {
   }, [])
 
   const navigateTo = (type: EntityType, id: string) => {
+    setShowDoneWorkers(false)
     setSelected({ type, id })
     updateHash(workspace, type, id)
   }
@@ -355,9 +359,11 @@ export default function App() {
       if (!parsed) return
       if (parsed.ws) setWorkspace(parsed.ws)
       if (parsed.type && parsed.id) {
+        setShowDoneWorkers(false)
         setSelected({ type: parsed.type, id: parsed.id })
       } else {
         setSelected(null)
+        setShowDoneWorkers(false)
       }
     }
     window.addEventListener('hashchange', handleHashChange)
@@ -368,7 +374,6 @@ export default function App() {
   const activeWorkers = workers.filter((w) => !DONE_STATES.includes(w.state))
   const doneWorkers = workers.filter((w) => DONE_STATES.includes(w.state))
   const sidebarWorkers = activeWorkers.map(workerToSidebarItem)
-  const sidebarDoneWorkers = doneWorkers.map(workerToSidebarItem)
   const sidebarAutoBots = autoBots.map(autoBotToSidebarItem)
 
   const activityItems = workers
@@ -383,14 +388,15 @@ export default function App() {
       selectedType={selected?.type ?? null}
       selectedId={selected?.id ?? null}
       onSelect={handleSelect}
-      onHome={() => { setSelected(null); setMobileTab('dashboard'); updateHash(workspace) }}
+      onHome={() => { setSelected(null); setShowDoneWorkers(false); setMobileTab('dashboard'); updateHash(workspace) }}
       autoBots={sidebarAutoBots}
       workers={sidebarWorkers}
       doneWorkerCount={doneWorkers.length}
-      doneWorkers={sidebarDoneWorkers}
+      onShowDoneWorkers={() => { setSelected(null); setShowDoneWorkers(true); setMobileTab('dashboard') }}
+      doneWorkersSelected={showDoneWorkers}
       workspaces={workspaces}
       workspace={workspace}
-      onWorkspaceChange={(ws) => { setWorkspace(ws); setSelected(null); updateHash(ws) }}
+      onWorkspaceChange={(ws) => { setWorkspace(ws); setSelected(null); setShowDoneWorkers(false); updateHash(ws) }}
       onQuickDispatch={() => setQuickDispatchOpen(true)}
       activityItems={activityItems}
     />
@@ -416,6 +422,11 @@ export default function App() {
         onOpenContextBot={openContextBot}
       />
     )
+  ) : showDoneWorkers ? (
+    <CompletedWorkersView
+      workers={doneWorkers}
+      onSelectWorker={(id) => navigateTo('worker', id)}
+    />
   ) : (
     <Dashboard
       workspace={workspace}
@@ -434,7 +445,7 @@ export default function App() {
         <WorkerDetailV2
           workspace={workspace}
           workerId={selected.id}
-          onBack={() => { setSelected(null); updateHash(workspace) }}
+          onBack={() => { setSelected(null); setShowDoneWorkers(false); updateHash(workspace) }}
           onOpenContextBot={openContextBot}
           onNavigateToWorker={(id) => navigateTo('worker', id)}
         />
@@ -453,6 +464,14 @@ export default function App() {
     // No selection — show tab content
     if (mobileTab === 'workers') return mobileList
     if (mobileTab === 'auto_bots') return mobileList
+    if (showDoneWorkers) {
+      return (
+        <CompletedWorkersView
+          workers={doneWorkers}
+          onSelectWorker={(id) => navigateTo('worker', id)}
+        />
+      )
+    }
     return (
       <Dashboard
         workspace={workspace}
@@ -482,16 +501,18 @@ export default function App() {
             selectedType={selected?.type ?? null}
             selectedId={selected?.id ?? null}
             onSelect={handleSelect}
-            onHome={() => { setSelected(null); updateHash(workspace) }}
+            onHome={() => { setSelected(null); setShowDoneWorkers(false); updateHash(workspace) }}
             autoBots={sidebarAutoBots}
             workers={sidebarWorkers}
             doneWorkerCount={doneWorkers.length}
-            doneWorkers={sidebarDoneWorkers}
+            onShowDoneWorkers={() => { setSelected(null); setShowDoneWorkers(true) }}
+            doneWorkersSelected={showDoneWorkers}
             workspaces={workspaces}
             workspace={workspace}
             onWorkspaceChange={(ws) => {
               setWorkspace(ws)
               setSelected(null)
+              setShowDoneWorkers(false)
               updateHash(ws)
             }}
             onQuickDispatch={() => setQuickDispatchOpen(true)}
@@ -503,7 +524,7 @@ export default function App() {
           <BottomTabBar
             tabs={tabs}
             activeTab={mobileTab}
-            onTabChange={(id) => { setMobileTab(id); setSelected(null); updateHash(workspace) }}
+            onTabChange={(id) => { setMobileTab(id); setSelected(null); setShowDoneWorkers(false); updateHash(workspace) }}
           />
         }
       />

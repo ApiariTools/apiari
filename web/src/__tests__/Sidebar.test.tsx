@@ -1,5 +1,4 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import Sidebar from "../components/Sidebar/Sidebar";
 import type { SidebarItem } from "../components/Sidebar/Sidebar";
@@ -18,11 +17,6 @@ const defaultProps = {
 const workerItems: SidebarItem[] = [
   { id: "w-1", name: "Fix auth", status: "running" },
   { id: "w-2", name: "Update deps", status: "waiting" },
-];
-
-const doneWorkerItems: SidebarItem[] = [
-  { id: "w-9", name: "Ship auth fix", status: "done" },
-  { id: "w-10", name: "Close stale worker", status: "done" },
 ];
 
 const botItems: SidebarItem[] = [
@@ -75,35 +69,17 @@ describe("Sidebar done workers filtering", () => {
     expect(footer).toHaveTextContent("3 completed");
   });
 
-  it("expands completed workers when the footer is clicked", async () => {
-    const user = userEvent.setup();
+  it("calls onShowDoneWorkers when the footer is clicked", () => {
+    const onShowDoneWorkers = vi.fn();
     render(
       <Sidebar
         {...defaultProps}
         doneWorkerCount={2}
-        doneWorkers={doneWorkerItems}
+        onShowDoneWorkers={onShowDoneWorkers}
       />,
     );
-    await user.click(screen.getByTestId("done-workers-footer"));
-    expect(screen.getByTestId("done-workers-list")).toBeInTheDocument();
-    expect(screen.getByText("Ship auth fix")).toBeInTheDocument();
-    expect(screen.getByText("Close stale worker")).toBeInTheDocument();
-  });
-
-  it("calls onSelect when a completed worker is chosen from the expanded list", async () => {
-    const user = userEvent.setup();
-    const onSelect = vi.fn();
-    render(
-      <Sidebar
-        {...defaultProps}
-        onSelect={onSelect}
-        doneWorkerCount={1}
-        doneWorkers={[doneWorkerItems[0]]}
-      />,
-    );
-    await user.click(screen.getByTestId("done-workers-footer"));
-    await user.click(screen.getByText("Ship auth fix"));
-    expect(onSelect).toHaveBeenCalledWith("worker", "w-9");
+    screen.getByTestId("done-workers-footer").click();
+    expect(onShowDoneWorkers).toHaveBeenCalled();
   });
 
   it("shows 'No workers yet' when workers is empty and doneWorkerCount is 0", () => {

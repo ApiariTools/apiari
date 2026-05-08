@@ -326,10 +326,9 @@
   opacity: 0.9;
 }
 
-.doneList {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.doneFooterSelected {
+  color: var(--accent);
+  opacity: 1;
 }
 
 /* ── Activity strip ──────────────────────────────────────────────────────── */
