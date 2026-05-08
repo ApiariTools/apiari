@@ -1327,6 +1327,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1354,6 +1355,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1376,6 +1378,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         upsert_worker_db_record(
@@ -1388,6 +1391,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1403,10 +1407,10 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let p = std::path::Path::new("/tmp");
         upsert_worker_db_record(
-            &db_path, "ws-a", "w-0001", "repo", "task", "feat/a", p, "worktree", "codex", p,
+            &db_path, "ws-a", "w-0001", "repo", "task", "feat/a", p, "worktree", "codex", None, p,
         );
         upsert_worker_db_record(
-            &db_path, "ws-b", "w-0002", "repo", "task", "feat/b", p, "worktree", "codex", p,
+            &db_path, "ws-b", "w-0002", "repo", "task", "feat/b", p, "worktree", "codex", None, p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
         assert_eq!(store.list("ws-a").unwrap().len(), 1);
@@ -1429,6 +1433,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         upsert_worker_db_record(
@@ -1441,6 +1446,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
@@ -1470,6 +1476,7 @@ mod tests {
             p,
             "worktree",
             "codex",
+            None,
             p,
         ); // no panic
     }
@@ -1514,6 +1521,7 @@ mod tests {
             &worktree,
             "worktree",
             "codex",
+            None,
             tmp.path(),
         );
 
@@ -1547,6 +1555,7 @@ mod tests {
             &missing_wt,
             "worktree",
             "codex",
+            None,
             tmp.path(),
         );
 
@@ -1584,6 +1593,7 @@ mod tests {
             &worktree,
             "worktree",
             "codex",
+            None,
             tmp.path(),
         );
         let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();

@@ -555,7 +555,6 @@ impl GeminiManagedAgent {
                         model: opts.model.clone(),
                         working_dir: Some(opts.working_dir.clone()),
                         yolo: true,
-                        ..Default::default()
                     },
                 )
                 .await?

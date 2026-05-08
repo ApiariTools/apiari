@@ -4404,14 +4404,22 @@ async fn v2_create_worker(
     let now = chrono::Utc::now().to_rfc3339();
     let selected_agent = body
         .agent
-        .clone()
+        .as_deref()
+        .map(str::trim)
+        .filter(|agent| !agent.is_empty())
         .filter(|agent| {
             agent
                 .parse::<apiari_swarm::core::agent::AgentKind>()
                 .is_ok()
         })
+        .map(str::to_string)
         .unwrap_or_else(|| ws.config.swarm.default_agent.clone());
-    let selected_model = body.model.clone().filter(|model| !model.trim().is_empty());
+    let selected_model = body
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(str::to_string);
 
     // Extract optional goal from brief
     let goal = body
