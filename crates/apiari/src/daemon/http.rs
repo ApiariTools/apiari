@@ -6293,8 +6293,6 @@ async fn v2_context_bot_chat(
     let output = tokio::time::timeout(std::time::Duration::from_secs(300), async {
         let mut child = tokio::process::Command::new("claude")
             .arg("--print")
-            .arg("--max-turns")
-            .arg("15")
             .arg("--model")
             .arg(&model)
             .arg("--system-prompt")
