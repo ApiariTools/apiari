@@ -118,7 +118,7 @@ export function ChatLauncher({
   // ── Launcher button ─────────────────────────────────────────────────
   const openCount = openWindows.length;
   const hasUnread = totalUnread > 0;
-  const hasOpen = openCount > 0 && !hasUnread;
+  const hasOpen = openCount > 0;
 
   const launcherEl = renderLauncherButton ? (
     renderLauncherButton({
@@ -138,7 +138,11 @@ export function ChatLauncher({
         .filter(Boolean)
         .join(" ")}
       onClick={handleLauncherClick}
-      aria-label={hasUnread ? `${totalUnread} unread` : hasOpen ? `${openCount} open` : "Open chat"}
+      aria-label={
+        [hasOpen ? `${openCount} open` : "", hasUnread ? `${totalUnread} unread` : ""]
+          .filter(Boolean)
+          .join(", ") || "Open chat"
+      }
     >
       {showBotList ? (
         <X size={22} />
@@ -150,7 +154,9 @@ export function ChatLauncher({
       {hasUnread && (
         <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>
       )}
-      {hasOpen && <span className={styles.launcherOpenDot} />}
+      {hasOpen && (
+        <span className={styles.launcherOpenBadge}>{openCount > 99 ? "99+" : openCount}</span>
+      )}
     </button>
   );
 

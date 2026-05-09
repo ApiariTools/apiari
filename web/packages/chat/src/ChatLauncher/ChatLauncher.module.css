@@ -44,7 +44,7 @@
   left: 24px;
 }
 
-/* State: has open (but no unread) — live ring pulse */
+/* State: has open chats — live ring pulse (applies independently of unread) */
 .launcherHasOpen {
   border-color: var(--cl-accent);
   box-shadow:
@@ -109,17 +109,25 @@
   box-shadow: 0 2px 6px rgba(232, 85, 85, 0.5);
 }
 
-/* Open-chats indicator dot (bottom-left of button, no unread) */
-.launcherOpenDot {
+/* Open-chats count badge (bottom-left — opposite corner from unread badge) */
+.launcherOpenBadge {
   position: absolute;
-  bottom: 0px;
-  right: 0px;
-  width: 12px;
-  height: 12px;
+  bottom: -5px;
+  left: -5px;
+  min-width: 20px;
+  height: 20px;
   background: #5cb85c;
-  border-radius: 50%;
-  border: 2px solid #111;
+  color: #fff;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
   pointer-events: none;
+  border: 2px solid #111;
+  box-shadow: 0 2px 6px rgba(92, 184, 92, 0.4);
 }
 
 /* ── Bot list popover ───────────────────────────────────────────── */
