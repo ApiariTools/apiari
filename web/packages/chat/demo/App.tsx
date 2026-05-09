@@ -6,6 +6,7 @@ import {
   triggerStreamingResponse,
   triggerToolUse,
   triggerIdle,
+  resetMockStore,
   MOCK_BOTS,
 } from "./mockServer";
 
@@ -93,6 +94,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export default function App() {
   const [position, setPosition] = useState<Position>("right");
   const [themeName, setThemeName] = useState("dark");
+  const [launcherKey, setLauncherKey] = useState(0);
+
+  function reset() {
+    resetMockStore();
+    setLauncherKey((k) => k + 1);
+  }
 
   return (
     <div
@@ -180,7 +187,7 @@ export default function App() {
       </div>
 
       {/* Main content */}
-      <div style={{ flex: 1, display: "flex", gap: 0 }}>
+      <div style={{ flex: 1, display: "flex", gap: 0, minHeight: 0 }}>
         {/* Controls sidebar */}
         <div
           style={{
@@ -191,6 +198,7 @@ export default function App() {
             flexDirection: "column",
             gap: 24,
             flexShrink: 0,
+            overflowY: "auto",
           }}
         >
           <div style={{ fontSize: 11, color: "#333", lineHeight: 1.6 }}>
@@ -198,15 +206,9 @@ export default function App() {
             button is in the {position === "right" ? "bottom-right" : "bottom-left"} corner.
           </div>
 
-          {/* Launcher states */}
-          <Section title="Launcher button states">
-            <Btn
-              label="Default (no chats)"
-              onClick={() => {
-                // Can't directly reset the ChatLauncher from outside — hint text only
-                window.location.reload();
-              }}
-            />
+          {/* Reset */}
+          <Section title="Reset">
+            <Btn label="Reset everything" color="#1a1a0a" textColor="#f5c542" onClick={reset} />
           </Section>
 
           {/* Unread: trigger incoming messages */}
@@ -329,7 +331,12 @@ export default function App() {
         </div>
       </div>
 
-      <ChatLauncher workspace={WORKSPACE} position={position} theme={THEMES[themeName]} />
+      <ChatLauncher
+        key={launcherKey}
+        workspace={WORKSPACE}
+        position={position}
+        theme={THEMES[themeName]}
+      />
     </div>
   );
 }

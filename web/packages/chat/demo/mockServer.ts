@@ -311,6 +311,14 @@ export function triggerIdle(workspace: string, bot: string) {
   });
 }
 
+/** Clear all messages and re-seed initial data. */
+export function resetMockStore() {
+  for (const key of Object.keys(messageStore)) {
+    delete messageStore[key];
+  }
+  msgCounter = 100;
+}
+
 export const MOCK_BOTS = BOTS;
 
 // ── Install ────────────────────────────────────────────────────────────────
