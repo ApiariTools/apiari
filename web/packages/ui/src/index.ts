@@ -1,6 +1,10 @@
 export { Button } from "./primitives/Button";
 export type { ButtonProps } from "./primitives/Button";
 export { DocumentSurface } from "./primitives/DocumentSurface";
+export { Input, Textarea, Select } from "./primitives/Input";
+export type { InputProps, TextareaProps, SelectProps } from "./primitives/Input";
+export { Spinner, Dots, Skeleton } from "./primitives/Spinner";
+export type { SpinnerProps, DotsProps, SkeletonProps } from "./primitives/Spinner";
 export { EmptyState } from "./primitives/EmptyState";
 export { InspectorPane } from "./primitives/InspectorPane";
 export { ModeScaffold } from "./primitives/ModeScaffold";

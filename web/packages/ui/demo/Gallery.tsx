@@ -1,7 +1,13 @@
 import { useState } from "react";
-import { FileText, Inbox, Plus, Trash2, Settings } from "lucide-react";
+import { FileText, Inbox, Plus, Trash2, Settings, Search } from "lucide-react";
 import {
   Button,
+  Input,
+  Textarea,
+  Select,
+  Spinner,
+  Dots,
+  Skeleton,
   StatusBadge,
   ObjectRow,
   PageHeader,
@@ -66,6 +72,68 @@ export function Gallery() {
             <Trash2 size={13} />
             Delete
           </Button>
+        </div>
+      </section>
+
+      {/* Input / Textarea / Select */}
+      <section className="section">
+        <h2>Input</h2>
+        <div className="fill" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Input placeholder="Default (md)" />
+          <Input size="sm" placeholder="Small" />
+          <Input size="lg" placeholder="Large" />
+          <Input prefix={<Search size={13} />} placeholder="With prefix icon" />
+          <Input disabled placeholder="Disabled" />
+        </div>
+
+        <h2>Textarea</h2>
+        <div className="fill">
+          <Textarea placeholder="Write something…" rows={3} />
+        </div>
+
+        <h2>Select</h2>
+        <div className="fill" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Select size="sm">
+            <option>Small option A</option>
+            <option>Small option B</option>
+          </Select>
+          <Select>
+            <option>Default option A</option>
+            <option>Default option B</option>
+          </Select>
+          <Select size="lg">
+            <option>Large option A</option>
+            <option>Large option B</option>
+          </Select>
+          <Select disabled>
+            <option>Disabled</option>
+          </Select>
+        </div>
+      </section>
+
+      {/* Spinner / Dots / Skeleton */}
+      <section className="section">
+        <h2>Spinner</h2>
+        <div className="row" style={{ alignItems: "center" }}>
+          <Spinner size="sm" />
+          <Spinner size="md" />
+          <Spinner size="lg" />
+          <Spinner size="md" style={{ color: "var(--accent)" }} />
+          <Spinner size="md" style={{ color: "var(--red)" }} />
+        </div>
+
+        <h2>Dots</h2>
+        <div className="row" style={{ alignItems: "center" }}>
+          <Dots />
+          <Dots style={{ color: "var(--accent)" }} />
+        </div>
+
+        <h2>Skeleton</h2>
+        <div className="fill" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <Skeleton width="55%" height={22} />
+          <Skeleton width="30%" height={14} />
+          <Skeleton width="70%" height={14} />
+          <Skeleton width="45%" height={14} />
         </div>
       </section>
 

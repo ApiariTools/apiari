@@ -2,6 +2,12 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import {
   Button,
+  Input,
+  Textarea,
+  Select,
+  Spinner,
+  Dots,
+  Skeleton,
   StatusBadge,
   ObjectRow,
   PageHeader,
@@ -257,5 +263,125 @@ describe("Button", () => {
     const btn = screen.getByRole("button");
     expect(btn).toHaveAttribute("type", "submit");
     expect(btn).toHaveAttribute("aria-label", "submit form");
+  });
+});
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+
+describe("Input", () => {
+  it("renders an input element", () => {
+    render(<Input placeholder="Enter text" />);
+    expect(screen.getByPlaceholderText("Enter text")).toBeInTheDocument();
+  });
+
+  it("is disabled when disabled prop is set", () => {
+    render(<Input disabled placeholder="x" />);
+    expect(screen.getByPlaceholderText("x")).toBeDisabled();
+  });
+
+  it("renders prefix when provided", () => {
+    render(<Input prefix={<span>icon</span>} placeholder="search" />);
+    expect(screen.getByText("icon")).toBeInTheDocument();
+  });
+
+  it("fires onChange", () => {
+    const onChange = vi.fn();
+    render(<Input onChange={onChange} placeholder="x" />);
+    fireEvent.change(screen.getByPlaceholderText("x"), { target: { value: "hello" } });
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+});
+
+// ── Textarea ──────────────────────────────────────────────────────────────────
+
+describe("Textarea", () => {
+  it("renders a textarea element", () => {
+    render(<Textarea placeholder="Write here" />);
+    expect(screen.getByPlaceholderText("Write here")).toBeInTheDocument();
+  });
+
+  it("is disabled when disabled prop is set", () => {
+    render(<Textarea disabled placeholder="x" />);
+    expect(screen.getByPlaceholderText("x")).toBeDisabled();
+  });
+});
+
+// ── Select ────────────────────────────────────────────────────────────────────
+
+describe("Select", () => {
+  it("renders a select element with options", () => {
+    render(
+      <Select>
+        <option value="a">Option A</option>
+        <option value="b">Option B</option>
+      </Select>,
+    );
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
+    expect(screen.getByText("Option A")).toBeInTheDocument();
+  });
+
+  it("is disabled when disabled prop is set", () => {
+    render(
+      <Select disabled>
+        <option>x</option>
+      </Select>,
+    );
+    expect(screen.getByRole("combobox")).toBeDisabled();
+  });
+
+  it("fires onChange", () => {
+    const onChange = vi.fn();
+    render(
+      <Select onChange={onChange}>
+        <option value="a">A</option>
+        <option value="b">B</option>
+      </Select>,
+    );
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "b" } });
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+});
+
+// ── Spinner ───────────────────────────────────────────────────────────────────
+
+describe("Spinner", () => {
+  it("renders with role status", () => {
+    render(<Spinner />);
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+
+  it.each(["sm", "md", "lg"] as const)("renders %s size", (size) => {
+    render(<Spinner size={size} />);
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+});
+
+// ── Dots ──────────────────────────────────────────────────────────────────────
+
+describe("Dots", () => {
+  it("renders three dot spans", () => {
+    const { container } = render(<Dots />);
+    expect(container.querySelectorAll("span span").length).toBe(3);
+  });
+
+  it("has role status", () => {
+    render(<Dots />);
+    expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+});
+
+// ── Skeleton ──────────────────────────────────────────────────────────────────
+
+describe("Skeleton", () => {
+  it("renders with provided width and height", () => {
+    const { container } = render(<Skeleton width="60%" height={20} />);
+    const el = container.firstChild as HTMLElement;
+    expect(el.style.width).toBe("60%");
+    expect(el.style.height).toBe("20px");
+  });
+
+  it("is aria-hidden", () => {
+    const { container } = render(<Skeleton width={100} height={14} />);
+    expect(container.firstChild).toHaveAttribute("aria-hidden", "true");
   });
 });
