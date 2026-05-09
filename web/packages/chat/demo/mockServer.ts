@@ -88,8 +88,10 @@ function initStore(workspace: string) {
       });
     }
   }
-  // seed Research with 2 unread to demo the badge on first load
-  unreadStore[workspace] = { Research: 2 };
+  // only set unread if not already present — preserves cleared state after reset
+  if (!unreadStore[workspace]) {
+    unreadStore[workspace] = { Research: 2 };
+  }
 }
 
 function getMessages(workspace: string, bot: string, limit = 30): StoredMessage[] {
@@ -322,7 +324,9 @@ export function triggerIdle(workspace: string, bot: string) {
 /** Clear all messages and re-seed initial data. */
 export function resetMockStore() {
   for (const key of Object.keys(messageStore)) delete messageStore[key];
-  for (const key of Object.keys(unreadStore)) delete unreadStore[key];
+  // set to empty object rather than deleting — initStore checks presence
+  // to avoid re-seeding the initial unread badge after reset
+  for (const key of Object.keys(unreadStore)) unreadStore[key] = {};
   msgCounter = 100;
 }
 
