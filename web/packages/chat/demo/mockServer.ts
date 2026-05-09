@@ -276,7 +276,8 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
     const workspace = decodeURIComponent(chatMatch[1]);
     const bot = decodeURIComponent(chatMatch[2]);
     const body = JSON.parse((init?.body as string) ?? "{}");
-    addMessage(workspace, bot, "user", body.message ?? "");
+    const userMsg = addMessage(workspace, bot, "user", body.message ?? "");
+    broadcast({ type: "message", ...userMsg });
     // fire off async simulated response — don't await
     simulateResponse(workspace, bot);
     return Promise.resolve(jsonResponse({ ok: true }));

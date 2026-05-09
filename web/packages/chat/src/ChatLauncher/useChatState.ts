@@ -55,6 +55,7 @@ export function useChatState(workspace: string) {
 
       if (event.type === "message") {
         const msg = event as unknown as Message;
+        const isAssistant = msg.role === "assistant";
         setActiveConversationBots((prev) => (prev.includes(bot) ? prev : [...prev, bot]));
         setBotStates((prev) => {
           const cur = prev[bot];
@@ -65,17 +66,20 @@ export function useChatState(workspace: string) {
             [bot]: {
               ...cur,
               messages: [...cur.messages, msg],
-              loading: false,
-              streamingContent: "",
+              // Only clear loading/streaming when the assistant finishes; user messages
+              // arrive while the bot is still about to start thinking.
+              ...(isAssistant && { loading: false, streamingContent: "" }),
             },
           };
         });
-        // update unread for windows that are minimized or closed
+        // Only count unread for assistant messages — user sent it, so it's not unread
         // read from ref to avoid nesting setUnread inside setOpenWindows updater
         // (StrictMode calls updater functions twice, which would double-increment)
-        const win = openWindowsRef.current.find((w) => w.bot === bot);
-        if (!win || win.minimized) {
-          setUnread((prev) => ({ ...prev, [bot]: (prev[bot] ?? 0) + 1 }));
+        if (isAssistant) {
+          const win = openWindowsRef.current.find((w) => w.bot === bot);
+          if (!win || win.minimized) {
+            setUnread((prev) => ({ ...prev, [bot]: (prev[bot] ?? 0) + 1 }));
+          }
         }
       }
 
