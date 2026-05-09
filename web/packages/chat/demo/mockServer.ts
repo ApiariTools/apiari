@@ -70,6 +70,7 @@ type StoredMessage = {
 };
 
 const messageStore: Record<string, StoredMessage[]> = {};
+const unreadStore: Record<string, Record<string, number>> = {};
 
 function initStore(workspace: string) {
   if (messageStore[workspace]) return;
@@ -87,6 +88,8 @@ function initStore(workspace: string) {
       });
     }
   }
+  // seed Research with 2 unread to demo the badge on first load
+  unreadStore[workspace] = { Research: 2 };
 }
 
 function getMessages(workspace: string, bot: string, limit = 30): StoredMessage[] {
@@ -233,12 +236,17 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
   // GET /api/workspaces/:ws/unread
   const unreadMatch = url.match(/\/api\/workspaces\/([^/]+)\/unread$/);
   if (method === "GET" && unreadMatch) {
-    // seed Research with 2 unread to show off the badge
-    return Promise.resolve(jsonResponse({ Research: 2 }));
+    const workspace = decodeURIComponent(unreadMatch[1]);
+    initStore(workspace);
+    return Promise.resolve(jsonResponse(unreadStore[workspace] ?? {}));
   }
 
   // POST /api/workspaces/:ws/seen/:bot
-  if (method === "POST" && url.match(/\/api\/workspaces\/[^/]+\/seen\//)) {
+  const seenMatch = url.match(/\/api\/workspaces\/([^/]+)\/seen\/([^/?]+)/);
+  if (method === "POST" && seenMatch) {
+    const workspace = decodeURIComponent(seenMatch[1]);
+    const bot = decodeURIComponent(seenMatch[2]);
+    if (unreadStore[workspace]) unreadStore[workspace][bot] = 0;
     return Promise.resolve(jsonResponse({ ok: true }));
   }
 
@@ -313,9 +321,8 @@ export function triggerIdle(workspace: string, bot: string) {
 
 /** Clear all messages and re-seed initial data. */
 export function resetMockStore() {
-  for (const key of Object.keys(messageStore)) {
-    delete messageStore[key];
-  }
+  for (const key of Object.keys(messageStore)) delete messageStore[key];
+  for (const key of Object.keys(unreadStore)) delete unreadStore[key];
   msgCounter = 100;
 }
 
