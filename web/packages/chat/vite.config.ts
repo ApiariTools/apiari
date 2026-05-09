@@ -56,6 +56,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: "0.0.0.0",
     proxy: {
       "/api": `http://localhost:${process.env.VITE_API_PORT ?? "4200"}`,
       "/ws": { target: `ws://localhost:${process.env.VITE_API_PORT ?? "4200"}`, ws: true },

@@ -25,17 +25,31 @@ import { ChatPanel, ChatInput, FollowupCard } from "@apiari/chat";
 
 ## Standalone Dev Server
 
+Prerequisites: apiari daemon must already be running (`apiari daemon start`).
+
 ```bash
-cd web/packages/chat
-npm run dev           # starts Vite dev server on :5174
-                      # proxies /api and /ws to localhost:4200 (running apiari daemon)
+# From the repo root:
+cd web && npm install        # first time only
+cd packages/chat
+npm run dev
 ```
 
-Configure the target workspace/bot with URL params: `?ws=WORKSPACE&bot=BOT`
+The dev server binds to `0.0.0.0:5174` and is reachable on the local network:
+- **Mac Mini (local):** `http://localhost:5174`
+- **iPad / other device:** `http://<mac-mini-ip>:5174`
+  - Find your IP: `ipconfig getifaddr en0` (Wi-Fi) or `en1` (Ethernet)
 
-To build the demo bundle separately:
+Configure workspace and bot with URL params:
+```
+http://<host>:5174/?ws=WORKSPACE&bot=BOT
+```
+
+`/api` and `/ws` are proxied to the daemon on `localhost:4200` (same machine).
+Use `VITE_API_PORT=XXXX npm run dev` to point at a different port.
+
+To build the demo as a static bundle:
 ```bash
-npm run build:demo
+npm run build:demo   # outputs to demo-dist/
 ```
 
 ## Key Props — ChatPanel
