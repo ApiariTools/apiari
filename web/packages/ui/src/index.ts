@@ -1,3 +1,5 @@
+export { Button } from "./primitives/Button";
+export type { ButtonProps } from "./primitives/Button";
 export { DocumentSurface } from "./primitives/DocumentSurface";
 export { EmptyState } from "./primitives/EmptyState";
 export { InspectorPane } from "./primitives/InspectorPane";

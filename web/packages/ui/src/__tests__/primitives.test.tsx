@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import {
+  Button,
   StatusBadge,
   ObjectRow,
   PageHeader,
@@ -190,5 +191,71 @@ describe("DocumentSurface", () => {
     );
     expect(screen.getByText("sidebar content")).toBeInTheDocument();
     expect(screen.getByText("editor content")).toBeInTheDocument();
+  });
+});
+
+// ── Button ────────────────────────────────────────────────────────────────────
+
+describe("Button", () => {
+  it("renders children", () => {
+    render(<Button>Click me</Button>);
+    expect(screen.getByRole("button", { name: "Click me" })).toBeInTheDocument();
+  });
+
+  it("calls onClick when clicked", () => {
+    const onClick = vi.fn();
+    render(<Button onClick={onClick}>Go</Button>);
+    fireEvent.click(screen.getByRole("button"));
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  it("is disabled when disabled prop is set", () => {
+    render(<Button disabled>Disabled</Button>);
+    expect(screen.getByRole("button")).toBeDisabled();
+  });
+
+  it("is disabled when loading", () => {
+    render(<Button loading>Save</Button>);
+    expect(screen.getByRole("button")).toBeDisabled();
+  });
+
+  it("shows spinner when loading", () => {
+    const { container } = render(<Button loading>Save</Button>);
+    expect(container.querySelector("[class*='spinner']")).toBeInTheDocument();
+  });
+
+  it.each(["primary", "secondary", "ghost", "danger", "icon"] as const)(
+    "renders %s variant without error",
+    (variant) => {
+      render(<Button variant={variant}>label</Button>);
+      expect(screen.getByRole("button")).toBeInTheDocument();
+    },
+  );
+
+  it.each(["sm", "md", "lg"] as const)("renders %s size without error", (size) => {
+    render(<Button size={size}>label</Button>);
+    expect(screen.getByRole("button")).toBeInTheDocument();
+  });
+
+  it("does not fire onClick when disabled", () => {
+    const onClick = vi.fn();
+    render(
+      <Button disabled onClick={onClick}>
+        No
+      </Button>,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("forwards additional html button props", () => {
+    render(
+      <Button type="submit" aria-label="submit form">
+        Submit
+      </Button>,
+    );
+    const btn = screen.getByRole("button");
+    expect(btn).toHaveAttribute("type", "submit");
+    expect(btn).toHaveAttribute("aria-label", "submit form");
   });
 });

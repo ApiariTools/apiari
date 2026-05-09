@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { FileText, Inbox } from "lucide-react";
+import { FileText, Inbox, Plus, Trash2, Settings } from "lucide-react";
 import {
+  Button,
   StatusBadge,
   ObjectRow,
   PageHeader,
@@ -22,6 +23,51 @@ export function Gallery() {
         </h1>
         <p style={{ marginTop: 8 }}>Component gallery — all primitives in one place.</p>
       </div>
+
+      {/* Button */}
+      <section className="section">
+        <h2>Button — variants</h2>
+        <div className="row">
+          <Button variant="primary">Primary</Button>
+          <Button variant="secondary">Secondary</Button>
+          <Button variant="ghost">Ghost</Button>
+          <Button variant="danger">Danger</Button>
+          <Button variant="icon" aria-label="Settings">
+            <Settings size={15} />
+          </Button>
+        </div>
+
+        <h2>Button — sizes</h2>
+        <div className="row" style={{ alignItems: "center" }}>
+          <Button variant="primary" size="sm">
+            Small
+          </Button>
+          <Button variant="primary" size="md">
+            Medium
+          </Button>
+          <Button variant="primary" size="lg">
+            Large
+          </Button>
+        </div>
+
+        <h2>Button — states</h2>
+        <div className="row">
+          <Button variant="primary" loading>
+            Loading
+          </Button>
+          <Button variant="secondary" disabled>
+            Disabled
+          </Button>
+          <Button variant="primary" size="sm">
+            <Plus size={13} />
+            With icon
+          </Button>
+          <Button variant="danger" size="sm">
+            <Trash2 size={13} />
+            Delete
+          </Button>
+        </div>
+      </section>
 
       {/* StatusBadge */}
       <section className="section">
