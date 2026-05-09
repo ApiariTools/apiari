@@ -7,7 +7,21 @@
     ".": "./src/index.ts",
     "./theme.css": "./src/theme.css"
   },
+  "scripts": {
+    "dev": "vite",
+    "build:demo": "vite build",
+    "test": "vitest run"
+  },
   "peerDependencies": {
-    "react": "^19.0.0"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "lucide-react": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.10"
   }
 }
