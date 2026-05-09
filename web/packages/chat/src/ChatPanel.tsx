@@ -59,6 +59,10 @@ interface Props {
   unread?: Record<string, number>;
   onSelectBot?: (name: string) => void;
   compactHeader?: boolean;
+  /** Error message to show above the input (e.g. failed send). Cleared on next send. */
+  sendError?: string;
+  /** Custom content shown when the message list is empty and not loading */
+  emptyState?: React.ReactNode;
   /** Replace individual message bubbles. Receives the message + TTS controls. */
   renderMessage?: React.ComponentType<RenderMessageProps>;
   /** Replace the input area entirely. Receives send/cancel/voice props. */
@@ -100,6 +104,8 @@ export function ChatPanel({
   unread,
   onSelectBot,
   compactHeader = false,
+  sendError,
+  emptyState,
   renderMessage: RenderMessage,
   renderInput: RenderInput,
   renderMessageList: RenderMessageList,
@@ -397,7 +403,7 @@ export function ChatPanel({
               <div className={styles.empty}>Loading...</div>
             )}
             {!messagesLoading && messages.length === 0 && !loading && (
-              <div className={styles.empty}>Start a conversation with {bot}</div>
+              <div className={styles.empty}>{emptyState ?? `Start a conversation with ${bot}`}</div>
             )}
             {timeline.map((item) =>
               item.kind === "followup" ? (
@@ -497,6 +503,7 @@ export function ChatPanel({
         </div>
       )}
 
+      {sendError && <div className={styles.sendError}>{sendError}</div>}
       {RenderInput ? (
         <RenderInput
           placeholder={`Message ${bot}...`}
@@ -511,6 +518,7 @@ export function ChatPanel({
           disabled={loading}
           onSend={handleSendOrQueue}
           queueCount={messageQueue.length}
+          showMic={false}
         />
       )}
     </div>

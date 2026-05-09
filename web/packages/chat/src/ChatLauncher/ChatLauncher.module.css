@@ -171,31 +171,62 @@
 }
 .botItem {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 14px;
   cursor: pointer;
   border: none;
   background: none;
   width: 100%;
   text-align: left;
-  color: var(--cl-text-strong);
-  font-size: 14px;
   font-family: inherit;
   transition: background 0.1s;
-  position: relative;
 }
 .botItem:hover {
   background: rgba(255, 255, 255, 0.04);
 }
 .botDot {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
+  margin-top: 5px;
+}
+.botItemContent {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.botItemRow1 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.botItemName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cl-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.botItemTime {
+  font-size: 11px;
+  color: var(--cl-text-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.botItemPreview {
+  font-size: 12px;
+  color: var(--cl-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .botItemBadge {
-  margin-left: auto;
   min-width: 18px;
   height: 18px;
   background: #e85555;
@@ -207,6 +238,8 @@
   align-items: center;
   justify-content: center;
   padding: 0 4px;
+  flex-shrink: 0;
+  margin-top: 3px;
 }
 
 /* ── Desktop: minimized pill row ────────────────────────────────── */

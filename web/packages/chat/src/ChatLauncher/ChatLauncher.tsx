@@ -204,26 +204,41 @@ export function ChatLauncher({
   const popoverEl = showBotList && (
     <div className={`${styles.popover} ${isRight ? styles.popoverRight : styles.popoverLeft}`}>
       <div className={styles.popoverHeader}>Chats</div>
-      {bots.map((bot) =>
-        renderBotItem ? (
-          renderBotItem({
+      {bots.map((bot) => {
+        if (renderBotItem) {
+          return renderBotItem({
             bot,
             unreadCount: unread[bot.name] ?? 0,
             onClick: () => openBot(bot.name),
-          })
-        ) : (
+          });
+        }
+        const msgs = botStates[bot.name]?.messages ?? [];
+        const lastMsg = msgs[msgs.length - 1];
+        const badge = unread[bot.name] ?? 0;
+        return (
           <button key={bot.name} className={styles.botItem} onClick={() => openBot(bot.name)}>
             <span
               className={styles.botDot}
               style={{ background: (bot as { color?: string }).color ?? "var(--cl-accent)" }}
             />
-            {bot.name}
-            {(unread[bot.name] ?? 0) > 0 && (
-              <span className={styles.botItemBadge}>{unread[bot.name]}</span>
-            )}
+            <div className={styles.botItemContent}>
+              <div className={styles.botItemRow1}>
+                <span className={styles.botItemName}>{bot.name}</span>
+                {lastMsg && (
+                  <span className={styles.botItemTime}>{formatLastTime(lastMsg.created_at)}</span>
+                )}
+              </div>
+              {lastMsg && (
+                <div className={styles.botItemPreview}>
+                  {lastMsg.role === "user" ? "You: " : ""}
+                  {lastMsg.content.replace(/\n/g, " ")}
+                </div>
+              )}
+            </div>
+            {badge > 0 && <span className={styles.botItemBadge}>{badge}</span>}
           </button>
-        ),
-      )}
+        );
+      })}
     </div>
   );
 
@@ -260,6 +275,7 @@ export function ChatLauncher({
               loading={activeBotState.loading}
               loadingStatus={activeBotState.loadingStatus}
               streamingContent={activeBotState.streamingContent}
+              sendError={activeBotState.error}
               onSend={(text, attachments) => send(activeWindow.bot, text, attachments)}
               onCancel={() => cancel(activeWindow.bot)}
               workspace={workspace}
@@ -381,6 +397,7 @@ export function ChatLauncher({
                     loading={botState.loading}
                     loadingStatus={botState.loadingStatus}
                     streamingContent={botState.streamingContent}
+                    sendError={botState.error}
                     onSend={(text, attachments) => send(botName, text, attachments)}
                     onCancel={() => cancel(botName)}
                     workspace={workspace}

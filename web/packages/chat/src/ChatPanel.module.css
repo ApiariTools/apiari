@@ -359,6 +359,16 @@
   margin-top: 40px;
 }
 
+.sendError {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: #e85555;
+  background: rgba(232, 85, 85, 0.08);
+  border-top: 1px solid rgba(232, 85, 85, 0.2);
+  text-align: center;
+  flex-shrink: 0;
+}
+
 .msg {
   max-width: 720px;
   min-width: 0;

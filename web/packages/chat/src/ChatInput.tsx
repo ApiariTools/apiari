@@ -17,6 +17,8 @@ interface Props {
   disabled?: boolean;
   onSend: (text: string, attachments?: Attachment[]) => void;
   showAttachments?: boolean;
+  /** Show the mic button and enable voice recording. Default: true */
+  showMic?: boolean;
   voiceMode?: boolean;
   voiceState?: VoiceState;
   triggerRecord?: number;
@@ -31,6 +33,7 @@ export function ChatInput({
   disabled,
   onSend,
   showAttachments = true,
+  showMic = true,
   voiceMode,
   voiceState,
   triggerRecord,
@@ -591,7 +594,23 @@ export function ChatInput({
           onInput={autoGrow}
           onKeyDown={handleKeyDown}
         />
-        {micState === "loading" ? (
+        {!showMic ? (
+          (hasText || attachments.length > 0) && (
+            <button
+              type="button"
+              className={`${styles.actionBtn} ${styles.actionBtnSend}`}
+              aria-label="Send message"
+              onMouseDown={(e) => e.preventDefault()}
+              onMouseUp={send}
+              onTouchEnd={(e) => {
+                e.preventDefault();
+                send();
+              }}
+            >
+              <ArrowUp size={18} />
+            </button>
+          )
+        ) : micState === "loading" ? (
           <button
             type="button"
             className={`${styles.actionBtn} ${styles.micLoading}`}

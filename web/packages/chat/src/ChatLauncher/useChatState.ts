@@ -20,6 +20,7 @@ export interface BotChatState {
   loading: boolean;
   streamingContent: string;
   loadingStatus?: string;
+  error?: string;
 }
 
 export function useChatState(workspace: string) {
@@ -188,7 +189,11 @@ export function useChatState(workspace: string) {
     ) => {
       setBotStates((prev) => ({
         ...prev,
-        [botName]: { ...(prev[botName] ?? { messages: [], streamingContent: "" }), loading: true },
+        [botName]: {
+          ...(prev[botName] ?? { messages: [], streamingContent: "" }),
+          loading: true,
+          error: undefined,
+        },
       }));
       try {
         await sendMessage(workspace, botName, text, attachments);
@@ -198,6 +203,7 @@ export function useChatState(workspace: string) {
           [botName]: {
             ...(prev[botName] ?? { messages: [], streamingContent: "" }),
             loading: false,
+            error: "Failed to send. Check your connection and try again.",
           },
         }));
       }
