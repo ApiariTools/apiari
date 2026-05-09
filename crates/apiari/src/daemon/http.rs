@@ -179,6 +179,12 @@ pub enum WsUpdate {
         widget: serde_json::Value,
         updated_at: String,
     },
+    /// Context bot is mid-run — reports which tool it's currently using.
+    ContextBotActivity {
+        workspace: String,
+        session_id: String,
+        activity: String,
+    },
 }
 
 /// A test signal to inject (dev mode).
@@ -6244,6 +6250,19 @@ fn build_context_bot_system_prompt(
     prompt
 }
 
+fn format_tool_activity(name: &str, input: &serde_json::Value) -> String {
+    let detail = input
+        .get("command")
+        .or_else(|| input.get("file_path"))
+        .or_else(|| input.get("pattern"))
+        .or_else(|| input.get("query"))
+        .or_else(|| input.get("url"))
+        .and_then(|v| v.as_str())
+        .map(|s| format!(": {}", &s[..s.len().min(80)]))
+        .unwrap_or_default();
+    format!("{name}{detail}")
+}
+
 /// POST /api/workspaces/{ws}/v2/context-bot/chat — stateless context bot turn.
 ///
 /// Session history is managed client-side. Each call is independent; the
@@ -6295,11 +6314,16 @@ async fn v2_context_bot_chat(
     let workspace_root = load_workspace_root(&workspace);
     let system_prompt = build_context_bot_system_prompt(&body.context, &workspace_root);
 
-    // Run claude — pass message via stdin to avoid CLI arg length/quoting issues.
-    // Set cwd to the workspace root so git/file tools work without needing absolute paths.
-    let output = tokio::time::timeout(std::time::Duration::from_secs(300), async {
+    // Run claude with stream-json output so we can broadcast live tool activity.
+    // Message is passed via stdin; cwd is the workspace root for git/file access.
+    let raw = match tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
         let mut child = tokio::process::Command::new("claude")
             .arg("--print")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
             .arg("--model")
             .arg(&model)
             .arg("--system-prompt")
@@ -6309,17 +6333,68 @@ async fn v2_context_bot_chat(
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()?;
+
+        // Write message then close stdin so claude knows input is done.
         if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
             let _ = stdin.write_all(body.message.as_bytes()).await;
         }
-        child.wait_with_output().await
-    })
-    .await;
 
-    let raw = match output {
-        Ok(Ok(out)) if out.status.success() => {
-            let response = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // Read NDJSON lines and broadcast tool activity over WebSocket.
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut response = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line.is_empty() {
+                continue;
+            }
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                match val.get("type").and_then(|t| t.as_str()) {
+                    Some("assistant") => {
+                        if let Some(blocks) = val["message"]["content"].as_array() {
+                            for block in blocks {
+                                match block.get("type").and_then(|t| t.as_str()) {
+                                    Some("tool_use") => {
+                                        let name = block
+                                            .get("name")
+                                            .and_then(|n| n.as_str())
+                                            .unwrap_or("tool");
+                                        let input = block.get("input").cloned().unwrap_or_default();
+                                        let activity = format_tool_activity(name, &input);
+                                        let _ =
+                                            state.updates_tx.send(WsUpdate::ContextBotActivity {
+                                                workspace: workspace.clone(),
+                                                session_id: session_id.clone(),
+                                                activity,
+                                            });
+                                    }
+                                    Some("text") => {
+                                        if let Some(t) = block.get("text").and_then(|t| t.as_str())
+                                        {
+                                            response.push_str(t);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    Some("result") => {
+                        // result.result is the canonical final text
+                        if let Some(r) = val.get("result").and_then(|r| r.as_str()) {
+                            response = r.to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let status = child.wait().await?;
+        Ok::<(String, bool), std::io::Error>((response, status.success()))
+    })
+    .await
+    {
+        Ok(Ok((text, true))) => {
+            let response = text.trim().to_string();
             tracing::info!(
                 workspace = %workspace,
                 response_len = response.len(),
@@ -6327,20 +6402,17 @@ async fn v2_context_bot_chat(
             );
             response
         }
-        Ok(Ok(out)) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let code = out.status.code().unwrap_or(-1);
+        Ok(Ok((text, false))) => {
+            let code = -1i32;
             tracing::error!(
                 workspace = %workspace,
                 exit_code = code,
-                stderr = %stderr,
-                stdout = %stdout,
+                stdout = %text,
                 "[context-bot] claude exited non-zero"
             );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("claude exited non-zero (code {code}): {stderr}")})),
+                Json(serde_json::json!({"error": format!("claude exited non-zero: {text}")})),
             )
                 .into_response();
         }
@@ -6353,10 +6425,10 @@ async fn v2_context_bot_chat(
                 .into_response();
         }
         Err(_elapsed) => {
-            tracing::error!(workspace = %workspace, "[context-bot] claude timed out after 120s");
+            tracing::error!(workspace = %workspace, "[context-bot] claude timed out after 300s");
             return (
                 StatusCode::GATEWAY_TIMEOUT,
-                Json(serde_json::json!({"error": "claude timed out after 120s"})),
+                Json(serde_json::json!({"error": "claude timed out after 300s"})),
             )
                 .into_response();
         }
@@ -6364,7 +6436,6 @@ async fn v2_context_bot_chat(
 
     // Check for DISPATCH_WORKER: directive.
     let mut dispatched_worker_id: Option<String> = None;
-    let workspace_root = load_workspace_root(&workspace);
     let ws = load_workspace_by_name(&workspace);
 
     for line in raw.lines() {

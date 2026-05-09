@@ -416,6 +416,24 @@
   margin: 4px 0;
 }
 
+/* Loading activity */
+
+.loadingActivity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.loadingActivityLabel {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
 /* Loading dots */
 
 .loadingDots {

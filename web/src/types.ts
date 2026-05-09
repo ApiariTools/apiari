@@ -378,6 +378,7 @@ export interface ContextBotSession {
   messages: ContextBotMessage[]
   minimized: boolean
   loading: boolean
+  activity?: string             // current tool being used (e.g. "Bash: git log")
 }
 
 // ── Dashboard Widgets ──────────────────────────────────────────────────

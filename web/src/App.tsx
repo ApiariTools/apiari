@@ -208,7 +208,7 @@ export default function App() {
         { role: 'user' as const, content: message, timestamp: new Date().toISOString() },
         { role: 'assistant' as const, content: res.response, timestamp: new Date().toISOString() },
       ]
-      const updatedSession = { ...session, title: newTitle, loading: false, server_session_id: res.session_id, model: res.model, messages: updatedMessages }
+      const updatedSession = { ...session, title: newTitle, loading: false, activity: undefined, server_session_id: res.session_id, model: res.model, messages: updatedMessages }
 
       setContextSessions((prev) =>
         prev.map((s) => s.id === sessionId ? updatedSession : s),
@@ -352,6 +352,14 @@ export default function App() {
         if (workspaceRef.current) {
           listAutoBots(workspaceRef.current).then((list) => setAutoBots(list)).catch(() => {})
         }
+      }
+
+      if (event.type === 'context_bot_activity') {
+        const sid = event.session_id as string
+        const activity = event.activity as string
+        setContextSessions((prev) =>
+          prev.map((s) => s.server_session_id === sid ? { ...s, activity } : s)
+        )
       }
     })
     return () => ws.close()

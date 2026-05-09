@@ -132,10 +132,13 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
             )}
 
             {session.loading && (
-              <div className={styles.loadingDots} data-testid="loading-dots">
-                <span />
-                <span />
-                <span />
+              <div className={styles.loadingActivity} data-testid="loading-dots">
+                <div className={styles.loadingDots}>
+                  <span /><span /><span />
+                </div>
+                {session.activity && (
+                  <span className={styles.loadingActivityLabel}>{session.activity}</span>
+                )}
               </div>
             )}
           </div>
