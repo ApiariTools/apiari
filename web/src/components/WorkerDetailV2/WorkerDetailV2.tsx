@@ -295,28 +295,45 @@ interface ToolGroupRowProps {
 }
 
 
+function toolDetail(t: WorkerEvent): string {
+  const args = t.input ?? {}
+  if (typeof args.command === 'string') return args.command
+  if (typeof args.file_path === 'string') return args.file_path
+  if (typeof args.pattern === 'string') return args.pattern
+  if (typeof args.query === 'string') return args.query
+  if (typeof args.url === 'string') return args.url
+  if (typeof args.prompt === 'string') return args.prompt
+  return t.content
+}
+
 function ToolGroupRow({ group, expanded, onToggle }: ToolGroupRowProps) {
   const time = formatTime(group.created_at)
   const { tools } = group
+  const names = [...new Set(tools.map((t) => t.tool ?? t.content.split(':')[0].trim()))]
+  const label = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '')
 
   return (
     <div className={styles.toolGroup} data-testid="tool-group" onClick={onToggle}>
       <span className={styles.eventTime}>{time}</span>
       <div className={styles.toolGroupContent}>
-        <span className={styles.toolGroupExpander}>{expanded ? '▼' : '▶'}</span>
         {expanded ? (
           <div className={styles.toolGroupExpanded}>
-            <span className={styles.toolGroupCount}>{tools.length} tool call{tools.length !== 1 ? 's' : ''}</span>
-            {tools.map((t, i) => (
-              <div key={i} className={styles.toolGroupLine}>· {formatToolCall(t)}</div>
-            ))}
+            <span className={styles.toolGroupCount}>{tools.length} tool call{tools.length !== 1 ? 's' : ''} ▼</span>
+            {tools.map((t, i) => {
+              const name = t.tool ?? t.content.split(':')[0].trim()
+              const detail = toolDetail(t)
+              return (
+                <div key={i} className={styles.toolGroupItem}>
+                  <span className={styles.toolGroupItemName}>{name}</span>
+                  {detail && detail !== name && (
+                    <pre className={styles.toolGroupItemDetail}>{detail}</pre>
+                  )}
+                </div>
+              )
+            })}
           </div>
         ) : (
-          <div className={styles.toolGroupCollapsed}>
-            {tools.map((t, i) => (
-              <span key={i} className={styles.toolGroupPreviewItem}>{formatToolCall(t)}</span>
-            ))}
-          </div>
+          <span className={styles.toolGroupPill}>▶ {label} · {tools.length}</span>
         )}
       </div>
     </div>

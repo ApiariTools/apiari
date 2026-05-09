@@ -534,10 +534,10 @@ describe("WorkerDetailV2", () => {
     // All three consecutive tool calls are grouped into a single collapsed row
     const group = await screen.findByTestId("tool-group");
     expect(group).toBeInTheDocument();
-    // Collapsed preview shows first 3 formatted tool names
-    expect(group).toHaveTextContent("Bash · cd /path && git status");
-    expect(group).toHaveTextContent("Read · App.tsx");
-    expect(group).toHaveTextContent("Glob · .task/**/*");
+    // Collapsed pill shows tool names
+    expect(group).toHaveTextContent("Bash");
+    expect(group).toHaveTextContent("Read");
+    expect(group).toHaveTextContent("Glob");
     // Raw JSON should not appear
     expect(thread).not.toHaveTextContent('"command"');
     expect(thread).not.toHaveTextContent('"file_path"');
@@ -570,9 +570,9 @@ describe("WorkerDetailV2", () => {
     // The two tool calls should be merged into one group row
     const groups = thread.querySelectorAll('[data-testid="tool-group"]');
     expect(groups).toHaveLength(1);
-    // The group shows both tools in preview
-    expect(groups[0]).toHaveTextContent("Read · foo.ts");
-    expect(groups[0]).toHaveTextContent("Edit · foo.ts");
+    // The collapsed pill shows tool names
+    expect(groups[0]).toHaveTextContent("Read");
+    expect(groups[0]).toHaveTextContent("Edit");
   });
 
   it("expands tool group on click to show individual tools", async () => {
@@ -604,8 +604,10 @@ describe("WorkerDetailV2", () => {
     // Now shows ▼ and individual tool items
     expect(group).toHaveTextContent("▼");
     expect(group).toHaveTextContent("2 tool calls");
-    expect(group).toHaveTextContent("· Bash · npm test");
-    expect(group).toHaveTextContent("· Read · index.ts");
+    expect(group).toHaveTextContent("Bash");
+    expect(group).toHaveTextContent("npm test");
+    expect(group).toHaveTextContent("Read");
+    expect(group).toHaveTextContent("index.ts");
   });
 
   it("single tool_use event is still grouped (collapsed group of 1)", async () => {
@@ -624,6 +626,6 @@ describe("WorkerDetailV2", () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const group = await screen.findByTestId("tool-group");
     expect(group).toBeInTheDocument();
-    expect(group).toHaveTextContent("Bash · cargo build");
+    expect(group).toHaveTextContent("Bash");
   });
 });
