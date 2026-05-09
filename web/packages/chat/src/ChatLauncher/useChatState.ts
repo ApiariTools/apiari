@@ -26,9 +26,16 @@ export function useChatState(workspace: string) {
   const [bots, setBots] = useState<Bot[]>([]);
   const [openWindows, setOpenWindows] = useState<OpenWindow[]>([]);
   const [botStates, setBotStates] = useState<Record<string, BotChatState>>({});
+  const [activeConversationBots, setActiveConversationBots] = useState<string[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [showBotList, setShowBotList] = useState(false);
   const loadedBots = useRef<Set<string>>(new Set());
+  const openWindowsRef = useRef<OpenWindow[]>([]);
+  openWindowsRef.current = openWindows;
+
+  useEffect(() => {
+    setActiveConversationBots([]);
+  }, [workspace]);
 
   useEffect(() => {
     getBots(workspace)
@@ -46,6 +53,7 @@ export function useChatState(workspace: string) {
 
       if (event.type === "message") {
         const msg = event as unknown as Message;
+        setActiveConversationBots((prev) => (prev.includes(bot) ? prev : [...prev, bot]));
         setBotStates((prev) => {
           const cur = prev[bot];
           if (!cur) return prev;
@@ -61,13 +69,20 @@ export function useChatState(workspace: string) {
           };
         });
         // update unread for windows that are minimized or closed
-        setOpenWindows((wins) => {
-          const win = wins.find((w) => w.bot === bot);
-          if (!win || win.minimized) {
-            setUnread((prev) => ({ ...prev, [bot]: (prev[bot] ?? 0) + 1 }));
-          }
-          return wins;
-        });
+        // read from ref to avoid nesting setUnread inside setOpenWindows updater
+        // (StrictMode calls updater functions twice, which would double-increment)
+        const win = openWindowsRef.current.find((w) => w.bot === bot);
+        if (!win || win.minimized) {
+          setUnread((prev) => ({ ...prev, [bot]: (prev[bot] ?? 0) + 1 }));
+        }
+      }
+
+      if (event.type === "unread_sync") {
+        setUnread(event.unread as Record<string, number>);
+      }
+
+      if (event.type === "seen") {
+        setUnread((prev) => ({ ...prev, [bot]: 0 }));
       }
 
       if (event.type === "bot_status") {
@@ -114,6 +129,7 @@ export function useChatState(workspace: string) {
   const openBot = useCallback(
     (botName: string) => {
       loadBot(botName);
+      setActiveConversationBots((prev) => (prev.includes(botName) ? prev : [...prev, botName]));
       setOpenWindows((prev) => {
         if (prev.find((w) => w.bot === botName)) {
           return prev.map((w) => (w.bot === botName ? { ...w, minimized: false } : w));
@@ -189,9 +205,12 @@ export function useChatState(workspace: string) {
   );
 
   const totalUnread = Object.values(unread).reduce((a, b) => a + b, 0);
+  const activeConversationCount = activeConversationBots.length;
 
   return {
     bots,
+    activeConversationBots,
+    activeConversationCount,
     openWindows,
     botStates,
     unread,

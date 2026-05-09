@@ -69,8 +69,16 @@ type StoredMessage = {
   created_at: string;
 };
 
+const INITIAL_UNREAD: Record<string, Record<string, number>> = {
+  demo: {},
+};
+
+function freshUnread(): Record<string, Record<string, number>> {
+  return Object.fromEntries(Object.entries(INITIAL_UNREAD).map(([k, v]) => [k, { ...v }]));
+}
+
 const messageStore: Record<string, StoredMessage[]> = {};
-const unreadStore: Record<string, Record<string, number>> = {};
+const unreadStore: Record<string, Record<string, number>> = freshUnread();
 
 function initStore(workspace: string) {
   if (messageStore[workspace]) return;
@@ -88,10 +96,6 @@ function initStore(workspace: string) {
       });
     }
   }
-  // only set unread if not already present — preserves cleared state after reset
-  if (!unreadStore[workspace]) {
-    unreadStore[workspace] = { Research: 2 };
-  }
 }
 
 function getMessages(workspace: string, bot: string, limit = 30): StoredMessage[] {
@@ -108,7 +112,7 @@ function addMessage(workspace: string, bot: string, role: string, content: strin
 
 // ── Fake WebSocket ─────────────────────────────────────────────────────────
 
-let activeFakeWs: FakeWebSocket | null = null;
+const activeFakeWsSet = new Set<FakeWebSocket>();
 
 class FakeWebSocket {
   onopen: ((e: Event) => void) | null = null;
@@ -118,14 +122,18 @@ class FakeWebSocket {
   readyState = 1;
 
   constructor(_url: string) {
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    activeFakeWs = this;
-    setTimeout(() => this.onopen?.(new Event("open")), 30);
+    activeFakeWsSet.add(this);
+    setTimeout(() => {
+      this.onopen?.(new Event("open"));
+      for (const [workspace, unread] of Object.entries(unreadStore)) {
+        this.emit({ type: "unread_sync", workspace, unread });
+      }
+    }, 30);
   }
 
   send() {}
   close() {
-    activeFakeWs = null;
+    activeFakeWsSet.delete(this);
     this.readyState = 3;
   }
 
@@ -133,6 +141,15 @@ class FakeWebSocket {
     this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(data) }));
   }
 }
+
+/** Broadcast an event to all active WebSocket connections. */
+function broadcast(data: object) {
+  for (const ws of activeFakeWsSet) {
+    ws.emit(data);
+  }
+}
+
+let generation = 0;
 
 function delay(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -144,10 +161,8 @@ function pickResponse(bot: string): string {
 }
 
 async function simulateResponse(workspace: string, bot: string) {
-  const ws = activeFakeWs;
-  if (!ws) return;
-
-  const emit = (data: object) => ws.emit(data);
+  const myGen = generation;
+  const emit = (data: object) => { if (generation === myGen) broadcast(data); };
 
   // thinking
   emit({
@@ -249,6 +264,7 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
     const workspace = decodeURIComponent(seenMatch[1]);
     const bot = decodeURIComponent(seenMatch[2]);
     if (unreadStore[workspace]) unreadStore[workspace][bot] = 0;
+    broadcast({ type: "seen", workspace, bot });
     return Promise.resolve(jsonResponse({ ok: true }));
   }
 
@@ -281,11 +297,11 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
 
 /** Push an instant incoming assistant message to a bot (no streaming). */
 export function triggerIncomingMessage(workspace: string, bot: string, content?: string) {
-  const ws = activeFakeWs;
-  if (!ws) return;
   const text = content ?? pickResponse(bot);
   const msg = addMessage(workspace, bot, "assistant", text);
-  ws.emit({ type: "message", ...msg });
+  if (!unreadStore[workspace]) unreadStore[workspace] = {};
+  unreadStore[workspace][bot] = (unreadStore[workspace][bot] ?? 0) + 1;
+  broadcast({ type: "message", ...msg });
 }
 
 /** Run a full thinking → streaming → idle sequence for a bot. */
@@ -295,9 +311,7 @@ export function triggerStreamingResponse(workspace: string, bot: string) {
 
 /** Emit a tool-use thinking state for a bot (stays until reset or message arrives). */
 export function triggerToolUse(workspace: string, bot: string, toolName = "read_file") {
-  const ws = activeFakeWs;
-  if (!ws) return;
-  ws.emit({
+  broadcast({
     type: "bot_status",
     workspace,
     bot,
@@ -309,9 +323,7 @@ export function triggerToolUse(workspace: string, bot: string, toolName = "read_
 
 /** Reset a bot back to idle. */
 export function triggerIdle(workspace: string, bot: string) {
-  const ws = activeFakeWs;
-  if (!ws) return;
-  ws.emit({
+  broadcast({
     type: "bot_status",
     workspace,
     bot,
@@ -323,11 +335,16 @@ export function triggerIdle(workspace: string, bot: string) {
 
 /** Clear all messages and re-seed initial data. */
 export function resetMockStore() {
+  generation++; // cancel all in-flight simulateResponse calls
   for (const key of Object.keys(messageStore)) delete messageStore[key];
-  // set to empty object rather than deleting — initStore checks presence
-  // to avoid re-seeding the initial unread badge after reset
-  for (const key of Object.keys(unreadStore)) unreadStore[key] = {};
+  const fresh = freshUnread();
+  for (const key of Object.keys(unreadStore)) delete unreadStore[key];
+  Object.assign(unreadStore, fresh);
   msgCounter = 100;
+  // push fresh unread to all listeners immediately
+  for (const [workspace, unread] of Object.entries(unreadStore)) {
+    broadcast({ type: "unread_sync", workspace, unread });
+  }
 }
 
 export const MOCK_BOTS = BOTS;

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { getUnread, getBots } from "@apiari/api";
+import { getBots, getUnread, connectWebSocket } from "@apiari/api";
 import { ChatLauncher } from "../src/ChatLauncher/ChatLauncher";
 import type { ChatTheme } from "../src/ChatLauncher/chatTheme";
 import {
@@ -97,21 +97,27 @@ function DebugBar({ launcherKey }: { launcherKey: number }) {
   const [botCount, setBotCount] = useState(0);
 
   useEffect(() => {
-    let alive = true;
-    function poll() {
-      getUnread(WORKSPACE)
-        .then((u) => alive && setUnread(u))
-        .catch(() => {});
-      getBots(WORKSPACE)
-        .then((b) => alive && setBotCount(b.length))
-        .catch(() => {});
+    async function syncUnread() {
+      try {
+        setUnread(await getUnread(WORKSPACE));
+      } catch {}
     }
-    poll();
-    const t = setInterval(poll, 1000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
+
+    // initial fetch
+    getBots(WORKSPACE)
+      .then((b) => setBotCount(b.length))
+      .catch(() => {});
+    syncUnread();
+
+    // live updates via WebSocket — always re-read the mock store so the
+    // debug bar reflects actual unread state instead of inferring it locally.
+    const ws = connectWebSocket((event) => {
+      if (event.workspace !== WORKSPACE) return;
+      if (event.type === "unread_sync" || event.type === "message" || event.type === "seen") {
+        syncUnread();
+      }
+    });
+    return () => ws.close();
   }, [launcherKey]);
 
   const total = Object.values(unread).reduce((a, b) => a + b, 0);
@@ -131,6 +137,7 @@ function DebugBar({ launcherKey }: { launcherKey: number }) {
         color: "#666",
         zIndex: 99999,
         display: "flex",
+        flexWrap: "wrap",
         gap: 20,
       }}
     >

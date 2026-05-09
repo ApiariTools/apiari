@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, X, Minus, ChevronLeft } from "lucide-react";
+import { X, Minus, ChevronLeft, MessageCircle } from "lucide-react";
 import type { Bot } from "@apiari/types";
 import { ChatPanel } from "../ChatPanel";
 import type { ChatTheme } from "./chatTheme";
@@ -62,6 +62,7 @@ export function ChatLauncher({
   const rootRef = useRef<HTMLDivElement>(null);
   const {
     bots,
+    activeConversationCount,
     openWindows,
     botStates,
     unread,
@@ -116,10 +117,9 @@ export function ChatLauncher({
   }
 
   // ── Launcher button ─────────────────────────────────────────────────
-  const openCount = openWindows.length;
+  const openCount = activeConversationCount;
   const hasUnread = totalUnread > 0;
   const hasOpen = openCount > 0;
-
   const launcherEl = renderLauncherButton ? (
     renderLauncherButton({
       onClick: handleLauncherClick,
@@ -131,6 +131,7 @@ export function ChatLauncher({
     <div
       className={`${styles.launcherWrap} ${isRight ? styles.launcherRight : styles.launcherLeft}`}
     >
+      {hasUnread && <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>}
       <button
         className={[
           styles.launcher,
@@ -149,14 +150,11 @@ export function ChatLauncher({
         {showBotList ? (
           <X size={22} />
         ) : hasOpen ? (
-          <span className={styles.launcherOpenCount}>{openCount > 99 ? "99+" : openCount}</span>
+          <span className={styles.launcherCount}>{openCount > 99 ? "99+" : openCount}</span>
         ) : (
-          <MessageSquare size={22} />
+          <MessageCircle size={22} />
         )}
       </button>
-      {hasUnread && (
-        <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>
-      )}
     </div>
   );
 

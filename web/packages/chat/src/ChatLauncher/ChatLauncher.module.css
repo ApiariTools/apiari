@@ -113,14 +113,20 @@
   pointer-events: none;
   border: 2px solid #111;
   box-shadow: 0 2px 6px rgba(232, 85, 85, 0.5);
+  z-index: 1;
 }
 
-/* Open chat count shown inside the button */
-.launcherOpenCount {
+/* Unread count shown inside the button */
+.launcherCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1ch;
   font-size: 18px;
   font-weight: 700;
   line-height: 1;
-  color: #111;
+  color: rgba(17, 17, 17, 0.92);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.18);
   pointer-events: none;
 }
 

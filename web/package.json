@@ -15,7 +15,9 @@
     "format:check": "prettier --check \"**/*.{ts,tsx,css,json}\"",
     "check": "npm run typecheck && npm run lint && npm run format:check",
     "preview": "vite preview",
-    "test:e2e": "playwright test --config playwright.e2e.config.ts"
+    "test:e2e": "playwright test --config playwright.e2e.config.ts",
+    "test:chat": "playwright test --config playwright.chat.config.ts",
+    "chat:demo": "vite --config packages/chat/vite.config.ts --port 5174 --host 127.0.0.1"
   },
   "dependencies": {
     "@apiari/api": "*",
