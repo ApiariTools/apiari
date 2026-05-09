@@ -325,6 +325,11 @@
   min-height: 24px;
 }
 
+.iconBtnMinimize {
+  min-width: 36px;
+  min-height: 36px;
+}
+
 .iconBtn:hover {
   color: var(--text);
   background: var(--bg-hover);

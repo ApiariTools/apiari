@@ -279,8 +279,9 @@ test.describe("apiari web", () => {
   test("workspace switcher shows second workspace", async ({ page }) => {
     await bootApp(page, defaultFixture());
     // The sidebar shows a workspace dropdown/switcher
-    await expect(page.getByRole("navigation", { name: "Sidebar" })).toBeVisible();
-    await expect(page.getByText("apiari")).toBeVisible();
+    const sidebar = page.getByRole("navigation", { name: "Sidebar" });
+    await expect(sidebar).toBeVisible();
+    await expect(sidebar.getByRole("button", { name: "apiari" })).toBeVisible();
   });
 
   // ── QuickDispatch ────────────────────────────────────────────────────────
