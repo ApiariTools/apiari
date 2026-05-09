@@ -519,3 +519,77 @@
   flex: 1;
   overflow-y: auto;
 }
+
+/* Two-line mobile bot list item (conversation row) */
+.mobileBotItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  cursor: pointer;
+  border: none;
+  border-bottom: 1px solid var(--cl-border);
+  background: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  transition: background 0.1s;
+}
+.mobileBotItem:active {
+  background: rgba(255, 255, 255, 0.04);
+}
+.mobileBotItemDot {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+.mobileBotItemContent {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.mobileBotItemRow1 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mobileBotItemName {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--cl-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobileBotItemTime {
+  font-size: 12px;
+  color: var(--cl-text-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mobileBotItemPreview {
+  font-size: 13px;
+  color: var(--cl-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobileBotItemBadge {
+  min-width: 20px;
+  height: 20px;
+  background: #e85555;
+  color: #fff;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  flex-shrink: 0;
+}

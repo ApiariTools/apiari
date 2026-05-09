@@ -126,6 +126,33 @@ export function ChatLauncher({
     }
   }
 
+  // ── Helpers ─────────────────────────────────────────────────────────
+  function formatLastTime(iso: string): string {
+    const date = new Date(iso.includes("T") ? iso : `${iso}Z`);
+    if (Number.isNaN(date.getTime())) return "";
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    if (diffMs < 60_000) return "now";
+    if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m`;
+    if (
+      date.getFullYear() === now.getFullYear() &&
+      date.getMonth() === now.getMonth() &&
+      date.getDate() === now.getDate()
+    ) {
+      return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    if (
+      date.getFullYear() === yesterday.getFullYear() &&
+      date.getMonth() === yesterday.getMonth() &&
+      date.getDate() === yesterday.getDate()
+    ) {
+      return "Yesterday";
+    }
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
   // ── Launcher button ─────────────────────────────────────────────────
   const openCount = activeConversationCount;
   const hasUnread = totalUnread > 0;
@@ -248,26 +275,47 @@ export function ChatLauncher({
             </button>
           </div>
           <div className={styles.mobileBotListItems}>
-            {bots.map((b) =>
-              renderBotItem ? (
-                renderBotItem({
+            {bots.map((b) => {
+              if (renderBotItem) {
+                return renderBotItem({
                   bot: b,
                   unreadCount: unread[b.name] ?? 0,
                   onClick: () => openBot(b.name),
-                })
-              ) : (
-                <button key={b.name} className={styles.botItem} onClick={() => openBot(b.name)}>
+                });
+              }
+              const msgs = botStates[b.name]?.messages ?? [];
+              const lastMsg = msgs[msgs.length - 1];
+              const badge = unread[b.name] ?? 0;
+              return (
+                <button
+                  key={b.name}
+                  className={styles.mobileBotItem}
+                  onClick={() => openBot(b.name)}
+                >
                   <span
-                    className={styles.botDot}
+                    className={styles.mobileBotItemDot}
                     style={{ background: (b as { color?: string }).color ?? "var(--cl-accent)" }}
                   />
-                  {b.name}
-                  {(unread[b.name] ?? 0) > 0 && (
-                    <span className={styles.botItemBadge}>{unread[b.name]}</span>
-                  )}
+                  <div className={styles.mobileBotItemContent}>
+                    <div className={styles.mobileBotItemRow1}>
+                      <span className={styles.mobileBotItemName}>{b.name}</span>
+                      {lastMsg && (
+                        <span className={styles.mobileBotItemTime}>
+                          {formatLastTime(lastMsg.created_at)}
+                        </span>
+                      )}
+                    </div>
+                    {lastMsg && (
+                      <div className={styles.mobileBotItemPreview}>
+                        {lastMsg.role === "user" ? "You: " : ""}
+                        {lastMsg.content.replace(/\n/g, " ")}
+                      </div>
+                    )}
+                  </div>
+                  {badge > 0 && <span className={styles.mobileBotItemBadge}>{badge}</span>}
                 </button>
-              ),
-            )}
+              );
+            })}
           </div>
         </div>
       ) : null}

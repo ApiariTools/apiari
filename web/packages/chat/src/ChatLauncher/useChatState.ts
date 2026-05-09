@@ -132,6 +132,11 @@ export function useChatState(workspace: string) {
     [workspace],
   );
 
+  // Preload all bots' messages so the bot list can show last-message previews
+  useEffect(() => {
+    bots.forEach((b) => loadBot(b.name));
+  }, [bots, loadBot]);
+
   const openBot = useCallback(
     (botName: string) => {
       loadBot(botName);
