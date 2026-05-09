@@ -1,81 +1,89 @@
-import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Plus, LayoutDashboard } from 'lucide-react'
-import styles from './Sidebar.module.css'
+import { useEffect, useRef, useState } from "react";
+import { ChevronDown, Plus, LayoutDashboard } from "lucide-react";
+import styles from "./Sidebar.module.css";
 
 export interface SidebarTag {
-  label: string
-  color: 'green' | 'amber' | 'faint'
+  label: string;
+  color: "green" | "amber" | "faint";
 }
 
 export interface SidebarItem {
-  id: string
-  name: string
-  status: string // 'running' | 'waiting' | 'stalled' | 'failed' | 'merged' | 'idle'
-  meta?: string
-  tags?: SidebarTag[]
+  id: string;
+  name: string;
+  status: string; // 'running' | 'waiting' | 'stalled' | 'failed' | 'merged' | 'idle'
+  meta?: string;
+  tags?: SidebarTag[];
 }
 
 export interface ActivityItem {
-  label: string
-  color: string
+  label: string;
+  color: string;
 }
 
 export interface SidebarProps {
-  selectedType: 'auto_bot' | 'worker' | null
-  selectedId: string | null
-  onSelect: (type: 'auto_bot' | 'worker', id: string) => void
-  onHome: () => void
-  autoBots: SidebarItem[]
-  workers: SidebarItem[]
-  workspaces: string[]
-  workspace: string
-  onWorkspaceChange: (ws: string) => void
-  onQuickDispatch?: () => void
+  selectedType: "auto_bot" | "worker" | null;
+  selectedId: string | null;
+  onSelect: (type: "auto_bot" | "worker", id: string) => void;
+  onHome: () => void;
+  autoBots: SidebarItem[];
+  workers: SidebarItem[];
+  workspaces: string[];
+  workspace: string;
+  onWorkspaceChange: (ws: string) => void;
+  onQuickDispatch?: () => void;
   /** Number of workers hidden because they are in a terminal state (merged/abandoned/failed). */
-  doneWorkerCount?: number
-  onShowDoneWorkers?: () => void
-  doneWorkersSelected?: boolean
+  doneWorkerCount?: number;
+  onShowDoneWorkers?: () => void;
+  doneWorkersSelected?: boolean;
   /** Running background activity items shown at the bottom of the sidebar. */
-  activityItems?: ActivityItem[]
+  activityItems?: ActivityItem[];
 }
 
 function dotClass(status: string): string {
   switch (status) {
-    case 'running': return styles.dotRunning
-    case 'waiting': return styles.dotWaiting
-    case 'stalled': return styles.dotStalled
-    case 'done': return styles.dotDone
-    default: return styles.dotIdle
+    case "running":
+      return styles.dotRunning;
+    case "waiting":
+      return styles.dotWaiting;
+    case "stalled":
+      return styles.dotStalled;
+    case "done":
+      return styles.dotDone;
+    default:
+      return styles.dotIdle;
   }
 }
 
 interface ItemProps {
-  item: SidebarItem
-  type: 'auto_bot' | 'worker'
-  isSelected: boolean
-  onSelect: (type: 'auto_bot' | 'worker', id: string) => void
+  item: SidebarItem;
+  type: "auto_bot" | "worker";
+  isSelected: boolean;
+  onSelect: (type: "auto_bot" | "worker", id: string) => void;
 }
 
-function tagColorClass(color: SidebarTag['color']): string {
+function tagColorClass(color: SidebarTag["color"]): string {
   switch (color) {
-    case 'green': return styles.tagGreen
-    case 'amber': return styles.tagAmber
-    default: return styles.tagFaint
+    case "green":
+      return styles.tagGreen;
+    case "amber":
+      return styles.tagAmber;
+    default:
+      return styles.tagFaint;
   }
 }
 
 function SidebarItemRow({ item, type, isSelected, onSelect }: ItemProps) {
-  const showSecondLine = item.meta || (item.tags && item.tags.length > 0)
+  const showSecondLine = item.meta || (item.tags && item.tags.length > 0);
   return (
     <button
-      className={`${styles.item} ${isSelected ? styles.itemSelected : ''} ${showSecondLine ? styles.itemTall : ''}`}
+      className={`${styles.item} ${isSelected ? styles.itemSelected : ""} ${showSecondLine ? styles.itemTall : ""}`}
       onClick={() => onSelect(type, item.id)}
       type="button"
-      aria-current={isSelected ? 'true' : undefined}
+      aria-current={isSelected ? "true" : undefined}
     >
       <span className={`${styles.dot} ${dotClass(item.status)}`} aria-hidden="true" />
       <div className={styles.itemContent}>
-        <span className={`${styles.name} ${isSelected ? styles.nameSelected : ''}`}>
+        <span className={`${styles.name} ${isSelected ? styles.nameSelected : ""}`}>
           {item.name}
         </span>
         {showSecondLine && (
@@ -90,29 +98,29 @@ function SidebarItemRow({ item, type, isSelected, onSelect }: ItemProps) {
         )}
       </div>
     </button>
-  )
+  );
 }
 
 interface WorkspaceSelectorProps {
-  workspaces: string[]
-  workspace: string
-  onWorkspaceChange: (ws: string) => void
+  workspaces: string[];
+  workspace: string;
+  onWorkspaceChange: (ws: string) => void;
 }
 
 function WorkspaceSelector({ workspaces, workspace, onWorkspaceChange }: WorkspaceSelectorProps) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return
+    if (!open) return;
     function handleClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false)
+        setOpen(false);
       }
     }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [open])
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
 
   return (
     <div className={styles.workspaceSelector} ref={ref}>
@@ -124,7 +132,7 @@ function WorkspaceSelector({ workspaces, workspace, onWorkspaceChange }: Workspa
         aria-expanded={open}
       >
         <span className={styles.workspaceOrb} aria-hidden="true" />
-        <span className={styles.workspaceName}>{workspace || 'Loading...'}</span>
+        <span className={styles.workspaceName}>{workspace || "Loading..."}</span>
         <ChevronDown size={12} className={styles.workspaceChevron} />
       </button>
       {open && (
@@ -132,10 +140,10 @@ function WorkspaceSelector({ workspaces, workspace, onWorkspaceChange }: Workspa
           {workspaces.map((ws) => (
             <button
               key={ws}
-              className={`${styles.workspaceOption} ${ws === workspace ? styles.workspaceOptionActive : ''}`}
+              className={`${styles.workspaceOption} ${ws === workspace ? styles.workspaceOptionActive : ""}`}
               onClick={() => {
-                onWorkspaceChange(ws)
-                setOpen(false)
+                onWorkspaceChange(ws);
+                setOpen(false);
               }}
               type="button"
               role="option"
@@ -147,7 +155,7 @@ function WorkspaceSelector({ workspaces, workspace, onWorkspaceChange }: Workspa
         </div>
       )}
     </div>
-  )
+  );
 }
 
 export default function Sidebar({
@@ -166,7 +174,7 @@ export default function Sidebar({
   doneWorkersSelected = false,
   activityItems,
 }: SidebarProps) {
-  const homeSelected = selectedType === null && selectedId === null
+  const homeSelected = selectedType === null && selectedId === null;
   return (
     <nav className={styles.sidebar} aria-label="Sidebar">
       <WorkspaceSelector
@@ -176,13 +184,15 @@ export default function Sidebar({
       />
       <div className={styles.selectorDivider} />
       <button
-        className={`${styles.item} ${homeSelected ? styles.itemSelected : ''}`}
+        className={`${styles.item} ${homeSelected ? styles.itemSelected : ""}`}
         onClick={onHome}
         type="button"
       >
         <LayoutDashboard size={14} className={styles.itemIcon} aria-hidden="true" />
         <div className={styles.itemContent}>
-          <span className={`${styles.name} ${homeSelected ? styles.nameSelected : ''}`}>Overview</span>
+          <span className={`${styles.name} ${homeSelected ? styles.nameSelected : ""}`}>
+            Overview
+          </span>
         </div>
       </button>
       <div className={styles.divider} />
@@ -196,7 +206,7 @@ export default function Sidebar({
               key={bot.id}
               item={bot}
               type="auto_bot"
-              isSelected={selectedType === 'auto_bot' && selectedId === bot.id}
+              isSelected={selectedType === "auto_bot" && selectedId === bot.id}
               onSelect={onSelect}
             />
           ))
@@ -226,7 +236,7 @@ export default function Sidebar({
               key={worker.id}
               item={worker}
               type="worker"
-              isSelected={selectedType === 'worker' && selectedId === worker.id}
+              isSelected={selectedType === "worker" && selectedId === worker.id}
               onSelect={onSelect}
             />
           ))
@@ -234,7 +244,7 @@ export default function Sidebar({
         {doneWorkerCount > 0 && (
           <button
             type="button"
-            className={`${styles.doneFooter} ${doneWorkersSelected ? styles.doneFooterSelected : ''}`}
+            className={`${styles.doneFooter} ${doneWorkersSelected ? styles.doneFooterSelected : ""}`}
             data-testid="done-workers-footer"
             onClick={onShowDoneWorkers}
           >
@@ -253,5 +263,5 @@ export default function Sidebar({
         </div>
       )}
     </nav>
-  )
+  );
 }

@@ -115,12 +115,20 @@ export function WorkspaceLayoutDialog({
         <div className={styles.header}>
           <div>
             <div className={styles.eyebrow}>Workspace layout</div>
-            <h2 className={styles.title}>{workspace}{remote ? ` (${remote})` : ""}</h2>
+            <h2 className={styles.title}>
+              {workspace}
+              {remote ? ` (${remote})` : ""}
+            </h2>
             <p className={styles.subtitle}>
-              Configure how this workspace opens, how navigation is ordered, and whether chat keeps a repo rail visible.
+              Configure how this workspace opens, how navigation is ordered, and whether chat keeps
+              a repo rail visible.
             </p>
           </div>
-          <button className={styles.close} onClick={onClose} aria-label="Close workspace layout settings">
+          <button
+            className={styles.close}
+            onClick={onClose}
+            aria-label="Close workspace layout settings"
+          >
             ×
           </button>
         </div>
@@ -132,13 +140,17 @@ export function WorkspaceLayoutDialog({
               <select
                 className={styles.select}
                 value={draft.defaultDesktopMode}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  defaultDesktopMode: event.target.value as WorkspaceMode,
-                }))}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    defaultDesktopMode: event.target.value as WorkspaceMode,
+                  }))
+                }
               >
                 {draft.navModeOrder.map((mode) => (
-                  <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
+                  <option key={mode} value={mode}>
+                    {MODE_LABELS[mode]}
+                  </option>
                 ))}
               </select>
             </label>
@@ -148,13 +160,17 @@ export function WorkspaceLayoutDialog({
               <select
                 className={styles.select}
                 value={draft.defaultMobileMode}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  defaultMobileMode: event.target.value as WorkspaceMode,
-                }))}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    defaultMobileMode: event.target.value as WorkspaceMode,
+                  }))
+                }
               >
                 {draft.navModeOrder.map((mode) => (
-                  <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
+                  <option key={mode} value={mode}>
+                    {MODE_LABELS[mode]}
+                  </option>
                 ))}
               </select>
             </label>
@@ -164,13 +180,17 @@ export function WorkspaceLayoutDialog({
               <select
                 className={styles.select}
                 value={draft.overviewPrimaryBot}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  overviewPrimaryBot: event.target.value,
-                }))}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    overviewPrimaryBot: event.target.value,
+                  }))
+                }
               >
                 {botOptions.map((name) => (
-                  <option key={name} value={name}>{name}</option>
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -180,13 +200,17 @@ export function WorkspaceLayoutDialog({
               <select
                 className={styles.select}
                 value={draft.defaultMobileBot}
-                onChange={(event) => setDraft((current) => ({
-                  ...current,
-                  defaultMobileBot: event.target.value,
-                }))}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    defaultMobileBot: event.target.value,
+                  }))
+                }
               >
                 {botOptions.map((name) => (
-                  <option key={name} value={name}>{name}</option>
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -195,22 +219,28 @@ export function WorkspaceLayoutDialog({
           <div className={styles.toggle}>
             <div>
               <div className={styles.label}>Show repo rail during chat</div>
-              <div className={styles.hint}>Keep repos and research visible beside the active chat conversation.</div>
+              <div className={styles.hint}>
+                Keep repos and research visible beside the active chat conversation.
+              </div>
             </div>
             <input
               type="checkbox"
               checked={draft.showChatRepoRail}
-              onChange={(event) => setDraft((current) => ({
-                ...current,
-                showChatRepoRail: event.target.checked,
-              }))}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  showChatRepoRail: event.target.checked,
+                }))
+              }
               aria-label="Show repo rail during chat"
             />
           </div>
 
           <div className={styles.section}>
             <div className={styles.label}>Navigation order</div>
-            <div className={styles.hint}>Reorder primary workspace modes to match how you operate.</div>
+            <div className={styles.hint}>
+              Reorder primary workspace modes to match how you operate.
+            </div>
             <div className={styles.modeList}>
               {draft.navModeOrder.map((mode, index) => {
                 const Icon = MODE_ICONS[mode];
@@ -223,10 +253,12 @@ export function WorkspaceLayoutDialog({
                     <div className={styles.modeButtons}>
                       <button
                         className={styles.moveBtn}
-                        onClick={() => setDraft((current) => ({
-                          ...current,
-                          navModeOrder: moveMode(current.navModeOrder, index, -1),
-                        }))}
+                        onClick={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            navModeOrder: moveMode(current.navModeOrder, index, -1),
+                          }))
+                        }
                         disabled={index === 0}
                         aria-label={`Move ${MODE_LABELS[mode]} earlier`}
                       >
@@ -234,10 +266,12 @@ export function WorkspaceLayoutDialog({
                       </button>
                       <button
                         className={styles.moveBtn}
-                        onClick={() => setDraft((current) => ({
-                          ...current,
-                          navModeOrder: moveMode(current.navModeOrder, index, 1),
-                        }))}
+                        onClick={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            navModeOrder: moveMode(current.navModeOrder, index, 1),
+                          }))
+                        }
                         disabled={index === draft.navModeOrder.length - 1}
                         aria-label={`Move ${MODE_LABELS[mode]} later`}
                       >
@@ -251,11 +285,19 @@ export function WorkspaceLayoutDialog({
           </div>
 
           <div className={styles.footer}>
-            <div className={styles.hint}>Saved per workspace and remote target on this machine.</div>
+            <div className={styles.hint}>
+              Saved per workspace and remote target on this machine.
+            </div>
             <div className={styles.footerActions}>
-              <button className={styles.secondary} onClick={reset}>Reset defaults</button>
-              <button className={styles.secondary} onClick={onClose}>Cancel</button>
-              <button className={styles.primary} onClick={save}>Save layout</button>
+              <button className={styles.secondary} onClick={reset}>
+                Reset defaults
+              </button>
+              <button className={styles.secondary} onClick={onClose}>
+                Cancel
+              </button>
+              <button className={styles.primary} onClick={save}>
+                Save layout
+              </button>
             </div>
           </div>
         </div>

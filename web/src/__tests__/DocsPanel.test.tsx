@@ -95,7 +95,9 @@ describe("DocsPanel", () => {
     const user = userEvent.setup();
     render(<DocsPanel workspace="test" />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Back to document list" })).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Back to document list" })).toBeInTheDocument(),
+    );
     await user.click(screen.getByRole("button", { name: "Back to document list" }));
     await waitFor(() => expect(screen.getByText("Setup Guide")).toBeInTheDocument());
     await user.click(screen.getByText("Setup Guide"));
@@ -116,7 +118,9 @@ describe("DocsPanel", () => {
     const user = userEvent.setup();
     render(<DocsPanel workspace="test" />);
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Back to document list" })).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Back to document list" })).toBeInTheDocument(),
+    );
     expect(screen.getByRole("textbox")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Back to document list" }));

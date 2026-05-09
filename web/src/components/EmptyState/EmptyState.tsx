@@ -1,5 +1,5 @@
-import { LayoutGrid } from 'lucide-react'
-import styles from './EmptyState.module.css'
+import { LayoutGrid } from "lucide-react";
+import styles from "./EmptyState.module.css";
 
 export default function EmptyState() {
   return (
@@ -8,5 +8,5 @@ export default function EmptyState() {
       <p className={styles.heading}>Select something</p>
       <p className={styles.subtext}>Choose a worker or auto bot from the sidebar</p>
     </div>
-  )
+  );
 }

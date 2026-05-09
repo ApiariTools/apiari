@@ -36,8 +36,24 @@ import { ChatPanel } from "@apiari/chat";
 import type { Message, Followup } from "@apiari/types";
 
 const mockMessages: Message[] = [
-  { id: 1, workspace: "test", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
-  { id: 2, workspace: "test", bot: "Main", role: "assistant", content: "Hi there! How can I help?", attachments: null, created_at: new Date().toISOString() },
+  {
+    id: 1,
+    workspace: "test",
+    bot: "Main",
+    role: "user",
+    content: "hello",
+    attachments: null,
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 2,
+    workspace: "test",
+    bot: "Main",
+    role: "assistant",
+    content: "Hi there! How can I help?",
+    attachments: null,
+    created_at: new Date().toISOString(),
+  },
 ];
 
 const defaultProps = {
@@ -98,7 +114,14 @@ describe("ChatPanel", () => {
   });
 
   it("shows stop button when loading with onCancel", () => {
-    render(<ChatPanel {...defaultProps} loading={true} loadingStatus="Thinking..." onCancel={() => {}} />);
+    render(
+      <ChatPanel
+        {...defaultProps}
+        loading={true}
+        loadingStatus="Thinking..."
+        onCancel={() => {}}
+      />,
+    );
     expect(screen.getByText("Stop")).toBeInTheDocument();
   });
 
@@ -124,7 +147,15 @@ describe("ChatPanel", () => {
 
   it("renders markdown in assistant messages", () => {
     const msgs: Message[] = [
-      { id: 1, workspace: "test", bot: "Main", role: "assistant", content: "**bold text**", attachments: null, created_at: new Date().toISOString() },
+      {
+        id: 1,
+        workspace: "test",
+        bot: "Main",
+        role: "assistant",
+        content: "**bold text**",
+        attachments: null,
+        created_at: new Date().toISOString(),
+      },
     ];
     render(<ChatPanel {...defaultProps} messages={msgs} />);
     expect(screen.getByText("bold text")).toBeInTheDocument();
@@ -132,9 +163,17 @@ describe("ChatPanel", () => {
 
   it("renders image attachments", () => {
     const msgs: Message[] = [
-      { id: 1, workspace: "test", bot: "Main", role: "user", content: "see this",
-        attachments: JSON.stringify([{ name: "photo.jpg", type: "image/jpeg", dataUrl: "data:image/jpeg;base64,abc" }]),
-        created_at: new Date().toISOString() },
+      {
+        id: 1,
+        workspace: "test",
+        bot: "Main",
+        role: "user",
+        content: "see this",
+        attachments: JSON.stringify([
+          { name: "photo.jpg", type: "image/jpeg", dataUrl: "data:image/jpeg;base64,abc" },
+        ]),
+        created_at: new Date().toISOString(),
+      },
     ];
     render(<ChatPanel {...defaultProps} messages={msgs} />);
     const img = screen.getByAltText("photo.jpg");
@@ -143,14 +182,24 @@ describe("ChatPanel", () => {
 
   it("shows system messages", () => {
     const msgs: Message[] = [
-      { id: 1, workspace: "test", bot: "Main", role: "system", content: "Session reset — bot configuration was updated.", attachments: null, created_at: new Date().toISOString() },
+      {
+        id: 1,
+        workspace: "test",
+        bot: "Main",
+        role: "system",
+        content: "Session reset — bot configuration was updated.",
+        attachments: null,
+        created_at: new Date().toISOString(),
+      },
     ];
     render(<ChatPanel {...defaultProps} messages={msgs} />);
     expect(screen.getByText(/Session reset/)).toBeInTheDocument();
   });
 
   it("does not show loading and empty state simultaneously", () => {
-    render(<ChatPanel {...defaultProps} messages={[]} loading={true} loadingStatus="Thinking..." />);
+    render(
+      <ChatPanel {...defaultProps} messages={[]} loading={true} loadingStatus="Thinking..." />,
+    );
     expect(screen.queryByText(/Start a conversation/)).not.toBeInTheDocument();
     expect(screen.getByText("Thinking...")).toBeInTheDocument();
   });
@@ -161,11 +210,15 @@ describe("ChatPanel", () => {
   });
 
   it("renders provider badge when botProvider is set", () => {
-    render(<ChatPanel {...defaultProps} botProvider="claude" botModel="claude-sonnet-4-20250514" />);
+    render(
+      <ChatPanel {...defaultProps} botProvider="claude" botModel="claude-sonnet-4-20250514" />,
+    );
     const badge = screen.getByText("Claude");
     expect(badge).toBeInTheDocument();
     expect(badge.getAttribute("title")).toBe("claude-sonnet-4-20250514");
-    expect(badge.getAttribute("aria-label")).toBe("Provider: claude, model: claude-sonnet-4-20250514");
+    expect(badge.getAttribute("aria-label")).toBe(
+      "Provider: claude, model: claude-sonnet-4-20250514",
+    );
   });
 
   it("does not render provider badge when botProvider is not set", () => {
@@ -182,7 +235,15 @@ describe("ChatPanel", () => {
 
   it("displays time correctly for old timestamps without Z suffix", () => {
     const msgs: Message[] = [
-      { id: 1, workspace: "test", bot: "Main", role: "user", content: "old msg", attachments: null, created_at: "2026-04-26 15:30:00" },
+      {
+        id: 1,
+        workspace: "test",
+        bot: "Main",
+        role: "user",
+        content: "old msg",
+        attachments: null,
+        created_at: "2026-04-26 15:30:00",
+      },
     ];
     render(<ChatPanel {...defaultProps} messages={msgs} />);
     // Should render a valid time string (not "Invalid Date")
@@ -192,7 +253,15 @@ describe("ChatPanel", () => {
 
   it("displays time correctly for ISO timestamps with Z suffix", () => {
     const msgs: Message[] = [
-      { id: 1, workspace: "test", bot: "Main", role: "user", content: "new msg", attachments: null, created_at: "2026-04-26T15:30:00Z" },
+      {
+        id: 1,
+        workspace: "test",
+        bot: "Main",
+        role: "user",
+        content: "new msg",
+        attachments: null,
+        created_at: "2026-04-26T15:30:00Z",
+      },
     ];
     render(<ChatPanel {...defaultProps} messages={msgs} />);
     expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
@@ -221,7 +290,9 @@ describe("ChatPanel", () => {
 
   it("queues messages sent while loading and sends after loading completes", () => {
     const onSend = vi.fn();
-    const { rerender } = render(<ChatPanel {...defaultProps} onSend={onSend} loading={true} loadingStatus="Thinking..." />);
+    const { rerender } = render(
+      <ChatPanel {...defaultProps} onSend={onSend} loading={true} loadingStatus="Thinking..." />,
+    );
 
     // Send a message while bot is loading — should be queued, not sent
     const textarea = screen.getByPlaceholderText(/Message Main/);
@@ -272,7 +343,9 @@ describe("ChatPanel", () => {
     await user.click(screen.getByLabelText("Enter voice mode"));
 
     // Now set loading=true (bot is responding)
-    rerender(<ChatPanel {...defaultProps} onSend={onSend} loading={true} loadingStatus="Thinking..." />);
+    rerender(
+      <ChatPanel {...defaultProps} onSend={onSend} loading={true} loadingStatus="Thinking..." />,
+    );
 
     // Send a message while loading — in voice mode it should NOT be queued
     const textarea = screen.getByPlaceholderText(/Message Main/);
@@ -286,11 +359,35 @@ describe("ChatPanel", () => {
   it("renders fired followups inline in message feed", () => {
     const now = new Date();
     const msgs: Message[] = [
-      { id: 1, workspace: "test", bot: "Main", role: "user", content: "check PR", attachments: null, created_at: new Date(now.getTime() - 5000).toISOString() },
-      { id: 2, workspace: "test", bot: "Main", role: "assistant", content: "I'll check it", attachments: null, created_at: new Date(now.getTime() - 3000).toISOString() },
+      {
+        id: 1,
+        workspace: "test",
+        bot: "Main",
+        role: "user",
+        content: "check PR",
+        attachments: null,
+        created_at: new Date(now.getTime() - 5000).toISOString(),
+      },
+      {
+        id: 2,
+        workspace: "test",
+        bot: "Main",
+        role: "assistant",
+        content: "I'll check it",
+        attachments: null,
+        created_at: new Date(now.getTime() - 3000).toISOString(),
+      },
     ];
     const followups: Followup[] = [
-      { id: "fu_1", workspace: "test", bot: "Main", action: "Check PR status", created_at: new Date(now.getTime() - 4000).toISOString(), fires_at: new Date(now.getTime() - 3500).toISOString(), status: "fired" },
+      {
+        id: "fu_1",
+        workspace: "test",
+        bot: "Main",
+        action: "Check PR status",
+        created_at: new Date(now.getTime() - 4000).toISOString(),
+        fires_at: new Date(now.getTime() - 3500).toISOString(),
+        status: "fired",
+      },
     ];
     render(<ChatPanel {...defaultProps} messages={msgs} followups={followups} workspace="test" />);
     // Fired followup should render inline with "Follow-up triggered" label
@@ -300,7 +397,15 @@ describe("ChatPanel", () => {
 
   it("does not render cancelled followups", () => {
     const followups: Followup[] = [
-      { id: "fu_2", workspace: "test", bot: "Main", action: "Cancelled action", created_at: new Date().toISOString(), fires_at: new Date().toISOString(), status: "cancelled" },
+      {
+        id: "fu_2",
+        workspace: "test",
+        bot: "Main",
+        action: "Cancelled action",
+        created_at: new Date().toISOString(),
+        fires_at: new Date().toISOString(),
+        status: "cancelled",
+      },
     ];
     render(<ChatPanel {...defaultProps} followups={followups} workspace="test" />);
     expect(screen.queryByText(/Cancelled action/)).not.toBeInTheDocument();
@@ -308,7 +413,15 @@ describe("ChatPanel", () => {
 
   it("renders pending followups at bottom, not inline", () => {
     const followups: Followup[] = [
-      { id: "fu_3", workspace: "test", bot: "Main", action: "Future check", created_at: new Date().toISOString(), fires_at: new Date(Date.now() + 60000).toISOString(), status: "pending" },
+      {
+        id: "fu_3",
+        workspace: "test",
+        bot: "Main",
+        action: "Future check",
+        created_at: new Date().toISOString(),
+        fires_at: new Date(Date.now() + 60000).toISOString(),
+        status: "pending",
+      },
     ];
     render(<ChatPanel {...defaultProps} followups={followups} workspace="test" />);
     expect(screen.getByText(/Follow-up in/)).toBeInTheDocument();
@@ -321,14 +434,30 @@ describe("ChatPanel", () => {
     mockStartThinkingCue.mockClear();
 
     const msgs1: Message[] = [
-      { id: 1, workspace: "test", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
+      {
+        id: 1,
+        workspace: "test",
+        bot: "Main",
+        role: "user",
+        content: "hello",
+        attachments: null,
+        created_at: new Date().toISOString(),
+      },
     ];
     const { rerender } = render(<ChatPanel {...defaultProps} messages={msgs1} loading={true} />);
 
     // Add a user message — should NOT trigger sent cue since voice mode is off
     const msgs2: Message[] = [
       ...msgs1,
-      { id: 2, workspace: "test", bot: "Main", role: "user", content: "world", attachments: null, created_at: new Date().toISOString() },
+      {
+        id: 2,
+        workspace: "test",
+        bot: "Main",
+        role: "user",
+        content: "world",
+        attachments: null,
+        created_at: new Date().toISOString(),
+      },
     ];
     rerender(<ChatPanel {...defaultProps} messages={msgs2} loading={true} />);
 

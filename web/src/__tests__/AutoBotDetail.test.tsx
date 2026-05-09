@@ -222,9 +222,7 @@ describe("AutoBotDetail", () => {
   it("renders worker link and calls onSelectWorker when clicked", async () => {
     vi.mocked(api.getAutoBot).mockResolvedValue(botWithRuns);
     const onSelectWorker = vi.fn();
-    render(
-      <AutoBotDetail workspace="default" autoBotId="bot-1" onSelectWorker={onSelectWorker} />,
-    );
+    render(<AutoBotDetail workspace="default" autoBotId="bot-1" onSelectWorker={onSelectWorker} />);
     await screen.findByTestId("bot-name");
     const workerLink = screen.getByText(/Worker: w-abc/);
     fireEvent.click(workerLink);
@@ -235,6 +233,8 @@ describe("AutoBotDetail", () => {
     vi.mocked(api.getAutoBot).mockResolvedValue(botWithRuns);
     render(<AutoBotDetail workspace="default" autoBotId="bot-1" />);
     await screen.findByTestId("bot-name");
-    expect(screen.getByText("Dispatched fix-auth worker to address rate limiting issue.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Dispatched fix-auth worker to address rate limiting issue."),
+    ).toBeInTheDocument();
   });
 });

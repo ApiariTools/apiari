@@ -10,8 +10,16 @@
   gap: var(--space-6);
   padding: var(--space-6);
   background:
-    radial-gradient(circle at top, color-mix(in srgb, var(--accent) 14%, transparent), transparent 28%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-elevated) 94%, transparent), var(--surface));
+    radial-gradient(
+      circle at top,
+      color-mix(in srgb, var(--accent) 14%, transparent),
+      transparent 28%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-elevated) 94%, transparent),
+      var(--surface)
+    );
   border: 1px solid var(--border);
   border-radius: 24px;
 }
@@ -60,8 +68,16 @@
   border-radius: 22px;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 12%, transparent), transparent 24%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-raised) 98%, transparent), color-mix(in srgb, var(--surface) 98%, transparent));
+    radial-gradient(
+      circle at top right,
+      color-mix(in srgb, var(--accent) 12%, transparent),
+      transparent 24%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-raised) 98%, transparent),
+      color-mix(in srgb, var(--surface) 98%, transparent)
+    );
   text-align: left;
   color: inherit;
   cursor: pointer;
@@ -265,7 +281,11 @@
     border: 0;
     border-radius: 0;
     background:
-      radial-gradient(circle at top, color-mix(in srgb, var(--accent) 10%, transparent), transparent 28%),
+      radial-gradient(
+        circle at top,
+        color-mix(in srgb, var(--accent) 10%, transparent),
+        transparent 28%
+      ),
       transparent;
     gap: var(--space-3);
   }

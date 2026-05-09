@@ -112,106 +112,118 @@ export function SimulatorPanel({ open, onClose }: Props) {
     if (!frame) return;
     const rect = frame.getBoundingClientRect();
     const id = ++rippleId.current;
-    setRipples((prev) => [
-      ...prev,
-      { id, x: clientX - rect.left, y: clientY - rect.top },
-    ]);
+    setRipples((prev) => [...prev, { id, x: clientX - rect.left, y: clientY - rect.top }]);
     setTimeout(() => {
       setRipples((prev) => prev.filter((r) => r.id !== id));
     }, 400);
   }, []);
 
   // Mouse events
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    const coords = getNormCoords(e);
-    if (coords) {
-      dragRef.current = { startX: coords.x, startY: coords.y };
-    }
-  }, [getNormCoords]);
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      const coords = getNormCoords(e);
+      if (coords) {
+        dragRef.current = { startX: coords.x, startY: coords.y };
+      }
+    },
+    [getNormCoords],
+  );
 
-  const handleMouseUp = useCallback((e: React.MouseEvent) => {
-    const coords = getNormCoords(e);
-    if (!coords || !dragRef.current) return;
+  const handleMouseUp = useCallback(
+    (e: React.MouseEvent) => {
+      const coords = getNormCoords(e);
+      if (!coords || !dragRef.current) return;
 
-    const dx = Math.abs(coords.x - dragRef.current.startX);
-    const dy = Math.abs(coords.y - dragRef.current.startY);
+      const dx = Math.abs(coords.x - dragRef.current.startX);
+      const dy = Math.abs(coords.y - dragRef.current.startY);
 
-    if (dx < 0.02 && dy < 0.02) {
-      // Tap
-      sendInput({ type: "tap", x: coords.x, y: coords.y });
-      addRipple(e.clientX, e.clientY);
-    } else {
-      // Swipe
-      sendInput({
-        type: "swipe",
-        fromX: dragRef.current.startX,
-        fromY: dragRef.current.startY,
-        toX: coords.x,
-        toY: coords.y,
-      });
-    }
-    dragRef.current = null;
-  }, [getNormCoords, sendInput, addRipple]);
+      if (dx < 0.02 && dy < 0.02) {
+        // Tap
+        sendInput({ type: "tap", x: coords.x, y: coords.y });
+        addRipple(e.clientX, e.clientY);
+      } else {
+        // Swipe
+        sendInput({
+          type: "swipe",
+          fromX: dragRef.current.startX,
+          fromY: dragRef.current.startY,
+          toX: coords.x,
+          toY: coords.y,
+        });
+      }
+      dragRef.current = null;
+    },
+    [getNormCoords, sendInput, addRipple],
+  );
 
   // Touch events
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    if (e.touches.length !== 1) return;
-    const coords = getNormCoords(e.touches[0]);
-    if (coords) {
-      dragRef.current = { startX: coords.x, startY: coords.y };
-    }
-  }, [getNormCoords]);
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const coords = getNormCoords(e.touches[0]);
+      if (coords) {
+        dragRef.current = { startX: coords.x, startY: coords.y };
+      }
+    },
+    [getNormCoords],
+  );
 
-  const handleTouchEnd = useCallback((e: React.TouchEvent) => {
-    if (e.changedTouches.length !== 1 || !dragRef.current) return;
-    const touch = e.changedTouches[0];
-    const coords = getNormCoords(touch);
-    if (!coords) return;
+  const handleTouchEnd = useCallback(
+    (e: React.TouchEvent) => {
+      if (e.changedTouches.length !== 1 || !dragRef.current) return;
+      const touch = e.changedTouches[0];
+      const coords = getNormCoords(touch);
+      if (!coords) return;
 
-    const dx = Math.abs(coords.x - dragRef.current.startX);
-    const dy = Math.abs(coords.y - dragRef.current.startY);
+      const dx = Math.abs(coords.x - dragRef.current.startX);
+      const dy = Math.abs(coords.y - dragRef.current.startY);
 
-    if (dx < 0.02 && dy < 0.02) {
-      sendInput({ type: "tap", x: coords.x, y: coords.y });
-      addRipple(touch.clientX, touch.clientY);
-    } else {
-      sendInput({
-        type: "swipe",
-        fromX: dragRef.current.startX,
-        fromY: dragRef.current.startY,
-        toX: coords.x,
-        toY: coords.y,
-      });
-    }
-    dragRef.current = null;
-  }, [getNormCoords, sendInput, addRipple]);
+      if (dx < 0.02 && dy < 0.02) {
+        sendInput({ type: "tap", x: coords.x, y: coords.y });
+        addRipple(touch.clientX, touch.clientY);
+      } else {
+        sendInput({
+          type: "swipe",
+          fromX: dragRef.current.startX,
+          fromY: dragRef.current.startY,
+          toX: coords.x,
+          toY: coords.y,
+        });
+      }
+      dragRef.current = null;
+    },
+    [getNormCoords, sendInput, addRipple],
+  );
 
   // Keyboard events
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    // Don't capture if modifier keys are held (except shift for typing)
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      // Don't capture if modifier keys are held (except shift for typing)
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-    e.preventDefault();
-    e.stopPropagation();
+      e.preventDefault();
+      e.stopPropagation();
 
-    const specialKeys: Record<string, string> = {
-      Enter: "return",
-      Backspace: "delete",
-      Delete: "forwardDelete",
-      Escape: "escape",
-      Tab: "tab",
-      ArrowUp: "upArrow",
-      ArrowDown: "downArrow",
-      ArrowLeft: "leftArrow",
-      ArrowRight: "rightArrow",
-    };
+      const specialKeys: Record<string, string> = {
+        Enter: "return",
+        Backspace: "delete",
+        Delete: "forwardDelete",
+        Escape: "escape",
+        Tab: "tab",
+        ArrowUp: "upArrow",
+        ArrowDown: "downArrow",
+        ArrowLeft: "leftArrow",
+        ArrowRight: "rightArrow",
+      };
 
-    if (specialKeys[e.key]) {
-      sendInput({ type: "key", key: specialKeys[e.key] });
-    } else if (e.key.length === 1) {
-      sendInput({ type: "type", text: e.key });
-    }
-  }, [sendInput]);
+      if (specialKeys[e.key]) {
+        sendInput({ type: "key", key: specialKeys[e.key] });
+      } else if (e.key.length === 1) {
+        sendInput({ type: "type", text: e.key });
+      }
+    },
+    [sendInput],
+  );
 
   // Compute canvas display size
   const [canvasStyle, setCanvasStyle] = useState<React.CSSProperties>({});
@@ -261,8 +273,7 @@ export function SimulatorPanel({ open, onClose }: Props) {
               <Smartphone size={32} />
               <div>No simulator running</div>
               <div style={{ fontSize: 12 }}>
-                Start a simulator with Xcode or{" "}
-                <code>xcrun simctl boot</code>
+                Start a simulator with Xcode or <code>xcrun simctl boot</code>
               </div>
             </div>
           ) : (
@@ -279,11 +290,7 @@ export function SimulatorPanel({ open, onClose }: Props) {
                 onKeyDown={handleKeyDown}
               />
               {ripples.map((r) => (
-                <div
-                  key={r.id}
-                  className={styles.ripple}
-                  style={{ left: r.x, top: r.y }}
-                />
+                <div key={r.id} className={styles.ripple} style={{ left: r.x, top: r.y }} />
               ))}
             </div>
           )}

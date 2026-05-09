@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { copyFileSync, existsSync } from "fs";
+import { copyFileSync, existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 
 const vadFiles = [
@@ -32,9 +32,14 @@ export default defineConfig({
               const srcPath = resolve(__dirname, "../../", match[0]);
               if (existsSync(srcPath)) {
                 const ext = name.split(".").pop();
-                const types: Record<string, string> = { wasm: "application/wasm", onnx: "application/octet-stream", js: "application/javascript", mjs: "application/javascript" };
+                const types: Record<string, string> = {
+                  wasm: "application/wasm",
+                  onnx: "application/octet-stream",
+                  js: "application/javascript",
+                  mjs: "application/javascript",
+                };
                 res.setHeader("Content-Type", types[ext || ""] || "application/octet-stream");
-                res.end(require("fs").readFileSync(srcPath));
+                res.end(readFileSync(srcPath));
                 return;
               }
             }

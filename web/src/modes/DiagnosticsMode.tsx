@@ -89,34 +89,38 @@ export function DiagnosticsMode({ workspace, bot, remote }: Props) {
   return (
     <ModeScaffold
       scrollBody
-      header={(
+      header={
         <PageHeader
           eyebrow="Debug surface"
           title={bot ? `${bot} diagnostics` : "Bot diagnostics"}
           summary="Inspect provider capability mismatches, recent coordinator failures, and the exact recent bot transcript."
-          meta={debugData?.status ? (
-            <div className={styles.meta}>
-              <StatusBadge tone={debugData.status.status === "idle" ? "neutral" : "accent"}>
-                status: {debugData.status.status}
-              </StatusBadge>
-              {debugData.provider ? (
-                <StatusBadge tone="neutral">
-                  provider: {debugData.provider}
+          meta={
+            debugData?.status ? (
+              <div className={styles.meta}>
+                <StatusBadge tone={debugData.status.status === "idle" ? "neutral" : "accent"}>
+                  status: {debugData.status.status}
                 </StatusBadge>
-              ) : null}
-            </div>
-          ) : undefined}
-          actions={bot ? [
-            {
-              label: refreshing ? "Refreshing..." : "Refresh",
-              onClick: () => {
-                void refresh();
-              },
-              kind: "secondary",
-            },
-          ] : []}
+                {debugData.provider ? (
+                  <StatusBadge tone="neutral">provider: {debugData.provider}</StatusBadge>
+                ) : null}
+              </div>
+            ) : undefined
+          }
+          actions={
+            bot
+              ? [
+                  {
+                    label: refreshing ? "Refreshing..." : "Refresh",
+                    onClick: () => {
+                      void refresh();
+                    },
+                    kind: "secondary",
+                  },
+                ]
+              : []
+          }
         />
-      )}
+      }
     >
       <div className={styles.page}>
         {!bot ? (
@@ -156,14 +160,18 @@ export function DiagnosticsMode({ workspace, bot, remote }: Props) {
                   <div className={styles.cardBody}>
                     <div className={styles.inlineMeta}>
                       <span>resolved bee: {debugData.effective_config.resolved_bee_name}</span>
-                      <span>workspace authority: {debugData.effective_config.workspace_authority}</span>
+                      <span>
+                        workspace authority: {debugData.effective_config.workspace_authority}
+                      </span>
                     </div>
                     <div className={styles.inlineMeta}>
                       <span>provider: {debugData.effective_config.provider}</span>
                       <span>model: {debugData.effective_config.model}</span>
                     </div>
                     <div className={styles.inlineMeta}>
-                      <span>configured policy: {debugData.effective_config.configured_execution_policy}</span>
+                      <span>
+                        configured policy: {debugData.effective_config.configured_execution_policy}
+                      </span>
                       <span>max turns: {debugData.effective_config.max_turns}</span>
                       <span>max session turns: {debugData.effective_config.max_session_turns}</span>
                     </div>
@@ -174,13 +182,18 @@ export function DiagnosticsMode({ workspace, bot, remote }: Props) {
                     ) : null}
                     {debugData.effective_config.role || debugData.effective_config.color ? (
                       <div className={styles.inlineMeta}>
-                        {debugData.effective_config.role ? <span>role: {debugData.effective_config.role}</span> : null}
-                        {debugData.effective_config.color ? <span>color: {debugData.effective_config.color}</span> : null}
+                        {debugData.effective_config.role ? (
+                          <span>role: {debugData.effective_config.role}</span>
+                        ) : null}
+                        {debugData.effective_config.color ? (
+                          <span>color: {debugData.effective_config.color}</span>
+                        ) : null}
                       </div>
                     ) : null}
                     <div className={styles.inlineMeta}>
                       <span>
-                        signal hooks: {debugData.effective_config.signal_sources.length > 0
+                        signal hooks:{" "}
+                        {debugData.effective_config.signal_sources.length > 0
                           ? debugData.effective_config.signal_sources.join(", ")
                           : "none"}
                       </span>
@@ -216,7 +229,9 @@ export function DiagnosticsMode({ workspace, bot, remote }: Props) {
                         {capability.sandbox_flag_supported != null ? (
                           <div className={styles.inlineMeta}>
                             <span>sandbox: {capability.sandbox_flag_supported ? "yes" : "no"}</span>
-                            <span>approval policy: {capability.approval_flag_supported ? "yes" : "no"}</span>
+                            <span>
+                              approval policy: {capability.approval_flag_supported ? "yes" : "no"}
+                            </span>
                           </div>
                         ) : null}
                         {capability.notes.length > 0 ? (

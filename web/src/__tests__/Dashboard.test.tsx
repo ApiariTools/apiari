@@ -123,7 +123,9 @@ describe("Dashboard", () => {
   });
 
   it("shows attention list for waiting workers", () => {
-    const workers = [makeWorker({ id: "w-1", state: "waiting", goal: "worker prompt", display_title: "Fix bug" })];
+    const workers = [
+      makeWorker({ id: "w-1", state: "waiting", goal: "worker prompt", display_title: "Fix bug" }),
+    ];
     render(<Dashboard {...defaultProps} workers={workers} />);
     expect(screen.getByText("Needs attention")).toBeInTheDocument();
     expect(screen.getByText("Fix bug")).toBeInTheDocument();
@@ -139,8 +141,18 @@ describe("Dashboard", () => {
 
   it("shows recent completed workers in a history list", () => {
     const workers = [
-      makeWorker({ id: "w-1", state: "done", goal: "First done", updated_at: "2026-05-04T09:00:00Z" }),
-      makeWorker({ id: "w-2", state: "done", goal: "Latest done", updated_at: "2026-05-04T10:00:00Z" }),
+      makeWorker({
+        id: "w-1",
+        state: "done",
+        goal: "First done",
+        updated_at: "2026-05-04T09:00:00Z",
+      }),
+      makeWorker({
+        id: "w-2",
+        state: "done",
+        goal: "Latest done",
+        updated_at: "2026-05-04T10:00:00Z",
+      }),
     ];
     render(<Dashboard {...defaultProps} workers={workers} />);
     expect(screen.getByText("Recent workers")).toBeInTheDocument();
@@ -160,13 +172,7 @@ describe("Dashboard", () => {
   it("calls onSelectWorker when attention row is clicked", () => {
     const onSelectWorker = vi.fn();
     const workers = [makeWorker({ id: "w-42", state: "waiting", goal: "Fix bug" })];
-    render(
-      <Dashboard
-        {...defaultProps}
-        workers={workers}
-        onSelectWorker={onSelectWorker}
-      />,
-    );
+    render(<Dashboard {...defaultProps} workers={workers} onSelectWorker={onSelectWorker} />);
     fireEvent.click(screen.getByText("Fix bug").closest("button")!);
     expect(onSelectWorker).toHaveBeenCalledWith("w-42");
   });
@@ -174,13 +180,7 @@ describe("Dashboard", () => {
   it("calls onSelectWorker when recent worker row is clicked", () => {
     const onSelectWorker = vi.fn();
     const workers = [makeWorker({ id: "w-84", state: "done", goal: "Shipped task" })];
-    render(
-      <Dashboard
-        {...defaultProps}
-        workers={workers}
-        onSelectWorker={onSelectWorker}
-      />,
-    );
+    render(<Dashboard {...defaultProps} workers={workers} onSelectWorker={onSelectWorker} />);
     fireEvent.click(screen.getByText("Shipped task").closest("button")!);
     expect(onSelectWorker).toHaveBeenCalledWith("w-84");
   });

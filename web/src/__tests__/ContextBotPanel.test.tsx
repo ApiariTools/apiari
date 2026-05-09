@@ -39,7 +39,11 @@ describe("ContextBotPanel", () => {
     const session = makeSession({
       messages: [
         { role: "user", content: "What is wrong?", timestamp: "2026-05-04T10:00:00Z" },
-        { role: "assistant", content: "The tests fail because...", timestamp: "2026-05-04T10:01:00Z" },
+        {
+          role: "assistant",
+          content: "The tests fail because...",
+          timestamp: "2026-05-04T10:01:00Z",
+        },
       ],
     });
     render(<ContextBotPanel session={session} {...defaultProps} />);
@@ -108,7 +112,9 @@ describe("ContextBotPanel", () => {
   });
 
   it("shows empty hint when no messages and not loading", () => {
-    render(<ContextBotPanel session={makeSession({ messages: [], loading: false })} {...defaultProps} />);
+    render(
+      <ContextBotPanel session={makeSession({ messages: [], loading: false })} {...defaultProps} />,
+    );
     expect(screen.getByText("Ask anything about what you're viewing.")).toBeInTheDocument();
   });
 

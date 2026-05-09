@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { ChatPanel } from "../src/ChatPanel";
-import { getConversations, sendMessage, getBotStatus, connectWebSocket } from "@apiari/api";
+import { getConversations, sendMessage, connectWebSocket } from "@apiari/api";
 import type { Message, Bot } from "@apiari/types";
 
 const params = new URLSearchParams(window.location.search);
@@ -14,7 +14,9 @@ export default function App() {
   const [loadingStatus, setLoadingStatus] = useState<string | undefined>();
 
   useEffect(() => {
-    getConversations(WORKSPACE, BOT).then(setMessages).catch(() => {});
+    getConversations(WORKSPACE, BOT)
+      .then(setMessages)
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -59,7 +61,15 @@ export default function App() {
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-      <div style={{ padding: "8px 16px", background: "var(--bg-card)", borderBottom: "1px solid var(--border)", fontSize: 13, color: "var(--text-faint)" }}>
+      <div
+        style={{
+          padding: "8px 16px",
+          background: "var(--bg-card)",
+          borderBottom: "1px solid var(--border)",
+          fontSize: 13,
+          color: "var(--text-faint)",
+        }}
+      >
         <strong style={{ color: "var(--text)" }}>@apiari/chat demo</strong>
         {" · "}workspace: <code>{WORKSPACE}</code>
         {" · "}bot: <code>{BOT}</code>

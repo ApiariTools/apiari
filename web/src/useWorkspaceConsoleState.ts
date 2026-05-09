@@ -38,7 +38,8 @@ export function parseHash(): Route {
     return {
       workspace,
       mode,
-      bot: mode === "chat" || mode === "diagnostics" ? decodeURIComponent(parts[2] || "") || "" : "",
+      bot:
+        mode === "chat" || mode === "diagnostics" ? decodeURIComponent(parts[2] || "") || "" : "",
       workerId: mode === "workers" && parts[2] === "worker" ? parts[3] || null : null,
       docName: mode === "docs" ? decodeURIComponent(parts[2] || "") || null : null,
     };
@@ -57,7 +58,9 @@ function buildHash(route: Route): string {
   if (!route.workspace) return "";
   switch (route.mode) {
     case "chat":
-      return route.bot ? `#/${route.workspace}/chat/${encodeURIComponent(route.bot)}` : `#/${route.workspace}/chat`;
+      return route.bot
+        ? `#/${route.workspace}/chat/${encodeURIComponent(route.bot)}`
+        : `#/${route.workspace}/chat`;
     case "tasks":
       return `#/${route.workspace}/tasks`;
     case "workers":
@@ -107,7 +110,9 @@ export function useWorkspaceConsoleState() {
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [isTablet, setIsTablet] = useState(window.innerWidth <= 1366);
   const [consoleProfileVersion, setConsoleProfileVersion] = useState(0);
-  const modeStateByWorkspaceRef = useRef<Record<string, Partial<Record<WorkspaceMode, ModeStateSnapshot>>>>({});
+  const modeStateByWorkspaceRef = useRef<
+    Record<string, Partial<Record<WorkspaceMode, ModeStateSnapshot>>>
+  >({});
   const lastModeTapRef = useRef<{ mode: WorkspaceMode; at: number } | null>(null);
 
   const workspaceStateKey = `${remote || "local"}/${workspace || ""}`;
@@ -189,12 +194,8 @@ export function useWorkspaceConsoleState() {
     onFollowupsRefresh: () => api.getFollowups(workspace, remote).then(setFollowups),
   });
 
-  const {
-    workerDetail,
-    setWorkerDetail,
-    selectedWorker,
-    refreshWorkerDetail,
-  } = useWorkerInspectorState({ workspace, remote, workerId, workers });
+  const { workerDetail, setWorkerDetail, selectedWorker, refreshWorkerDetail } =
+    useWorkerInspectorState({ workspace, remote, workerId, workers });
 
   useEffect(() => {
     pushHash({ workspace, mode, bot, workerId, docName });
@@ -238,31 +239,37 @@ export function useWorkspaceConsoleState() {
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, []);
 
-  const handleSelectWorkspace = useCallback((name: string, wsRemote?: string) => {
-    const nextProfile = resolveWorkspaceConsoleProfile(name, wsRemote);
-    const defaults = getDefaultWorkspaceSelection(nextProfile, isMobile);
-    setWorkspace(name);
-    setRemote(wsRemote);
-    setMode(defaults.mode);
-    setBot(defaults.bot);
-    setWorkerId(null);
-    setDocName(null);
-    setMenuOpen(false);
-    setLoading(false);
-    setLoadingStatus(undefined);
-  }, [isMobile]);
+  const handleSelectWorkspace = useCallback(
+    (name: string, wsRemote?: string) => {
+      const nextProfile = resolveWorkspaceConsoleProfile(name, wsRemote);
+      const defaults = getDefaultWorkspaceSelection(nextProfile, isMobile);
+      setWorkspace(name);
+      setRemote(wsRemote);
+      setMode(defaults.mode);
+      setBot(defaults.bot);
+      setWorkerId(null);
+      setDocName(null);
+      setMenuOpen(false);
+      setLoading(false);
+      setLoadingStatus(undefined);
+    },
+    [isMobile],
+  );
 
-  const handleSelectWorkspaceBot = useCallback((name: string, botName: string, wsRemote?: string) => {
-    setWorkspace(name);
-    setRemote(wsRemote);
-    setMode("chat");
-    setBot(botName);
-    setWorkerId(null);
-    setDocName(null);
-    setMenuOpen(false);
-    setLoading(false);
-    setLoadingStatus(undefined);
-  }, []);
+  const handleSelectWorkspaceBot = useCallback(
+    (name: string, botName: string, wsRemote?: string) => {
+      setWorkspace(name);
+      setRemote(wsRemote);
+      setMode("chat");
+      setBot(botName);
+      setWorkerId(null);
+      setDocName(null);
+      setMenuOpen(false);
+      setLoading(false);
+      setLoadingStatus(undefined);
+    },
+    [],
+  );
 
   const handleSelectBot = useCallback((name: string) => {
     setMode("chat");
@@ -274,76 +281,83 @@ export function useWorkspaceConsoleState() {
     setLoadingStatus(undefined);
   }, []);
 
-  const handleSelectWorker = useCallback((id: string) => {
-    setMode("workers");
-    setWorkerId(id);
-    setDocName(null);
-    setMenuOpen(false);
-    if (workspace) {
-      refreshWorkerDetail(id);
-    }
-  }, [refreshWorkerDetail, workspace]);
-
-  const handleSelectMode = useCallback((nextMode: WorkspaceMode) => {
-    const now = Date.now();
-    const previousTap = lastModeTapRef.current;
-    const repeatedActiveTap =
-      previousTap?.mode === nextMode
-      && previousTap.at + 500 >= now
-      && mode === nextMode;
-
-    lastModeTapRef.current = { mode: nextMode, at: now };
-
-    const workspaceState = modeStateByWorkspaceRef.current[workspaceStateKey] || {};
-    const remembered = workspaceState[nextMode];
-
-    setMode(nextMode);
-    setMenuOpen(false);
-
-    if (repeatedActiveTap) {
-      if (nextMode === "workers") {
-        setWorkerId(null);
-      } else if (nextMode === "chat") {
-        setWorkerId(null);
-        setBot("");
-      } else if (nextMode === "docs") {
-        setDocName(null);
-      } else {
-        setWorkerId(null);
+  const handleSelectWorker = useCallback(
+    (id: string) => {
+      setMode("workers");
+      setWorkerId(id);
+      setDocName(null);
+      setMenuOpen(false);
+      if (workspace) {
+        refreshWorkerDetail(id);
       }
-      return;
-    }
+    },
+    [refreshWorkerDetail, workspace],
+  );
 
-    if (nextMode === "workers") {
-      setWorkerId(remembered?.workerId ?? null);
-      return;
-    }
+  const handleSelectMode = useCallback(
+    (nextMode: WorkspaceMode) => {
+      const now = Date.now();
+      const previousTap = lastModeTapRef.current;
+      const repeatedActiveTap =
+        previousTap?.mode === nextMode && previousTap.at + 500 >= now && mode === nextMode;
 
-    setWorkerId(null);
+      lastModeTapRef.current = { mode: nextMode, at: now };
 
-    if (nextMode === "chat") {
-      setBot(remembered?.bot || bot || "");
-      return;
-    }
+      const workspaceState = modeStateByWorkspaceRef.current[workspaceStateKey] || {};
+      const remembered = workspaceState[nextMode];
 
-    if (nextMode === "docs") {
-      if (isMobile) {
-        setDocName(null);
+      setMode(nextMode);
+      setMenuOpen(false);
+
+      if (repeatedActiveTap) {
+        if (nextMode === "workers") {
+          setWorkerId(null);
+        } else if (nextMode === "chat") {
+          setWorkerId(null);
+          setBot("");
+        } else if (nextMode === "docs") {
+          setDocName(null);
+        } else {
+          setWorkerId(null);
+        }
         return;
       }
-      setDocName(remembered?.docName ?? null);
-      return;
-    }
 
-    if (nextMode === "diagnostics") {
-      setBot(remembered?.bot || bot || consoleProfile.overviewPrimaryBot || "");
-    }
-  }, [bot, consoleProfile.overviewPrimaryBot, isMobile, mode, workspaceStateKey]);
+      if (nextMode === "workers") {
+        setWorkerId(remembered?.workerId ?? null);
+        return;
+      }
+
+      setWorkerId(null);
+
+      if (nextMode === "chat") {
+        setBot(remembered?.bot || bot || "");
+        return;
+      }
+
+      if (nextMode === "docs") {
+        if (isMobile) {
+          setDocName(null);
+          return;
+        }
+        setDocName(remembered?.docName ?? null);
+        return;
+      }
+
+      if (nextMode === "diagnostics") {
+        setBot(remembered?.bot || bot || consoleProfile.overviewPrimaryBot || "");
+      }
+    },
+    [bot, consoleProfile.overviewPrimaryBot, isMobile, mode, workspaceStateKey],
+  );
 
   useEffect(() => {
     if (!workspace || !workerId) return;
     const interval = setInterval(() => {
-      api.getWorkerDetail(workspace, workerId, remote).then(setWorkerDetail).catch(() => {});
+      api
+        .getWorkerDetail(workspace, workerId, remote)
+        .then(setWorkerDetail)
+        .catch(() => {});
     }, 3000);
     return () => clearInterval(interval);
   }, [workspace, workerId, remote]);
@@ -353,120 +367,131 @@ export function useWorkspaceConsoleState() {
     setMode("workers");
   }, []);
 
-  const handlePromoteWorker = useCallback(async (id: string) => {
-    const result = await api.promoteWorker(workspace, id, remote);
-    await Promise.all([
-      refreshWorkers(),
-      refreshRepos(),
-      refreshWorkerDetail(id),
-    ]);
-    return result;
-  }, [workspace, remote, refreshRepos, refreshWorkerDetail, refreshWorkers]);
+  const handlePromoteWorker = useCallback(
+    async (id: string) => {
+      const result = await api.promoteWorker(workspace, id, remote);
+      await Promise.all([refreshWorkers(), refreshRepos(), refreshWorkerDetail(id)]);
+      return result;
+    },
+    [workspace, remote, refreshRepos, refreshWorkerDetail, refreshWorkers],
+  );
 
-  const handleRedispatchWorker = useCallback(async (id: string) => {
-    const result = await api.redispatchWorker(workspace, id, remote);
-    await Promise.all([
-      refreshWorkers(),
-      refreshRepos(),
-    ]);
-    if (result.worker_id) {
-      setMode("workers");
-      setWorkerId(result.worker_id);
-      await refreshWorkerDetail(result.worker_id);
-    } else {
-      await refreshWorkerDetail(id);
-    }
-    return result;
-  }, [workspace, remote, refreshRepos, refreshWorkerDetail, refreshWorkers]);
+  const handleRedispatchWorker = useCallback(
+    async (id: string) => {
+      const result = await api.redispatchWorker(workspace, id, remote);
+      await Promise.all([refreshWorkers(), refreshRepos()]);
+      if (result.worker_id) {
+        setMode("workers");
+        setWorkerId(result.worker_id);
+        await refreshWorkerDetail(result.worker_id);
+      } else {
+        await refreshWorkerDetail(id);
+      }
+      return result;
+    },
+    [workspace, remote, refreshRepos, refreshWorkerDetail, refreshWorkers],
+  );
 
-  const handleCloseWorker = useCallback(async (id: string) => {
-    const result = await api.closeWorker(workspace, id, true, remote);
-    await Promise.all([
-      refreshWorkers(),
-      refreshRepos(),
-    ]);
-    if (workerId === id) {
-      setWorkerId(null);
-      setWorkerDetail(null);
-      setMode("workers");
-    }
-    return result;
-  }, [workspace, remote, refreshRepos, refreshWorkers, workerId]);
+  const handleCloseWorker = useCallback(
+    async (id: string) => {
+      const result = await api.closeWorker(workspace, id, true, remote);
+      await Promise.all([refreshWorkers(), refreshRepos()]);
+      if (workerId === id) {
+        setWorkerId(null);
+        setWorkerDetail(null);
+        setMode("workers");
+      }
+      return result;
+    },
+    [workspace, remote, refreshRepos, refreshWorkers, workerId],
+  );
 
-  const handleStartResearch = useCallback((topic?: string) => {
-    const nextTopic = topic?.trim() || prompt("Research topic:")?.trim();
-    if (!nextTopic) return;
+  const handleStartResearch = useCallback(
+    (topic?: string) => {
+      const nextTopic = topic?.trim() || prompt("Research topic:")?.trim();
+      if (!nextTopic) return;
 
-    api.startResearch(workspace, nextTopic, remote).then(() => {
-      api.getResearchTasks(workspace, remote).then(setResearchTasks);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now(),
-          workspace,
-          bot,
-          role: "system",
-          content: `Research started: ${nextTopic}`,
-          attachments: null,
-          created_at: new Date().toISOString(),
-        },
-      ]);
-    }).catch(() => {});
-  }, [workspace, remote, bot]);
+      api
+        .startResearch(workspace, nextTopic, remote)
+        .then(() => {
+          api.getResearchTasks(workspace, remote).then(setResearchTasks);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: Date.now(),
+              workspace,
+              bot,
+              role: "system",
+              content: `Research started: ${nextTopic}`,
+              attachments: null,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+        })
+        .catch(() => {});
+    },
+    [workspace, remote, bot],
+  );
 
-  const handleSend = useCallback(async (
-    text: string,
-    attachments?: Array<{ name: string; type: string; dataUrl: string }>,
-  ) => {
-    if (text.startsWith("/research ")) {
-      handleStartResearch(text.slice("/research ".length));
-      return;
-    }
+  const handleSend = useCallback(
+    async (text: string, attachments?: Array<{ name: string; type: string; dataUrl: string }>) => {
+      if (text.startsWith("/research ")) {
+        handleStartResearch(text.slice("/research ".length));
+        return;
+      }
 
-    const apiAttachments = attachments?.map((attachment) => ({
-      name: attachment.name,
-      type: attachment.type,
-      dataUrl: attachment.dataUrl,
-    }));
-    const attachmentsJson = apiAttachments && apiAttachments.length > 0
-      ? JSON.stringify(apiAttachments)
-      : null;
+      const apiAttachments = attachments?.map((attachment) => ({
+        name: attachment.name,
+        type: attachment.type,
+        dataUrl: attachment.dataUrl,
+      }));
+      const attachmentsJson =
+        apiAttachments && apiAttachments.length > 0 ? JSON.stringify(apiAttachments) : null;
 
-    appendLocalMessage("user", text, attachmentsJson);
-    beginUserSend();
-    try {
-      await api.sendMessage(workspace, bot, text, apiAttachments, remote);
-    } catch (error) {
-      appendSystemMessage(
-        error instanceof Error ? `Send failed: ${error.message}` : "Send failed.",
-      );
-      setLoading(false);
-      setLoadingStatus(undefined);
-    }
-  }, [
-    appendLocalMessage,
-    workspace,
-    bot,
-    remote,
-    handleStartResearch,
-    beginUserSend,
-    appendSystemMessage,
-    setLoading,
-    setLoadingStatus,
-  ]);
+      appendLocalMessage("user", text, attachmentsJson);
+      beginUserSend();
+      try {
+        await api.sendMessage(workspace, bot, text, apiAttachments, remote);
+      } catch (error) {
+        appendSystemMessage(
+          error instanceof Error ? `Send failed: ${error.message}` : "Send failed.",
+        );
+        setLoading(false);
+        setLoadingStatus(undefined);
+      }
+    },
+    [
+      appendLocalMessage,
+      workspace,
+      bot,
+      remote,
+      handleStartResearch,
+      beginUserSend,
+      appendSystemMessage,
+      setLoading,
+      setLoadingStatus,
+    ],
+  );
 
   const selectedBot = bots.find((entry) => entry.name === bot);
   const pendingFollowupCount = followups.filter((followup) => followup.status === "pending").length;
   const workspaceVoice = workspaces.find((ws) => ws.name === workspace && ws.remote === remote);
   const visibleModes = getOrderedWorkspaceModes(
-    (isMobile ? consoleProfile.navModeOrder.filter((mode) => mode !== "repos") : consoleProfile.navModeOrder)
-      .filter((mode) => mode !== "signals" && mode !== "diagnostics"),
+    (isMobile
+      ? consoleProfile.navModeOrder.filter((mode) => mode !== "repos")
+      : consoleProfile.navModeOrder
+    ).filter((mode) => mode !== "signals" && mode !== "diagnostics"),
   );
-  const applyConsoleProfile = useCallback((nextProfile: WorkspaceConsoleProfile) => {
-    setConsoleProfileVersion((value) => value + 1);
-    const nextMode = nextProfile.navModeOrder.includes(mode) ? mode : nextProfile.defaultDesktopMode;
-    setMode(nextMode);
-  }, [mode]);
+  const applyConsoleProfile = useCallback(
+    (nextProfile: WorkspaceConsoleProfile) => {
+      setConsoleProfileVersion((value) => value + 1);
+      const nextMode = nextProfile.navModeOrder.includes(mode)
+        ? mode
+        : nextProfile.defaultDesktopMode;
+      setMode(nextMode);
+    },
+    [mode],
+  );
 
   return {
     workspaces,

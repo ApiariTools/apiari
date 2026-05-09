@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as api from "@apiari/api";
-import type { Bot, CrossWorkspaceBot, Followup, Repo, ResearchTask, Task, Worker, WorkerEnvironmentStatus, Workspace } from "@apiari/types";
+import type {
+  Bot,
+  CrossWorkspaceBot,
+  Followup,
+  Repo,
+  ResearchTask,
+  Task,
+  Worker,
+  WorkerEnvironmentStatus,
+  Workspace,
+} from "@apiari/types";
 
 interface Props {
   workspace: string;
@@ -18,9 +28,15 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [researchTasks, setResearchTasks] = useState<ResearchTask[]>([]);
   const [followups, setFollowups] = useState<Followup[]>([]);
-  const [usage, setUsage] = useState<api.UsageData>({ installed: false, providers: [], updated_at: null });
+  const [usage, setUsage] = useState<api.UsageData>({
+    installed: false,
+    providers: [],
+    updated_at: null,
+  });
   const [otherWorkspaceBots, setOtherWorkspaceBots] = useState<CrossWorkspaceBot[]>([]);
-  const [otherWorkspaceUnreads, setOtherWorkspaceUnreads] = useState<Record<string, Record<string, number>>>({});
+  const [otherWorkspaceUnreads, setOtherWorkspaceUnreads] = useState<
+    Record<string, Record<string, number>>
+  >({});
 
   const refreshWorkers = useCallback(
     () => api.getWorkers(workspace, remote).then(setWorkers),
@@ -83,9 +99,15 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
   }, [workspace, remote, refreshRepos, refreshTasks, refreshWorkerEnvironment, refreshWorkers]);
 
   useEffect(() => {
-    api.getUsage().then(setUsage).catch(() => {});
+    api
+      .getUsage()
+      .then(setUsage)
+      .catch(() => {});
     const interval = setInterval(() => {
-      api.getUsage().then(setUsage).catch(() => {});
+      api
+        .getUsage()
+        .then(setUsage)
+        .catch(() => {});
     }, 120000);
     return () => clearInterval(interval);
   }, []);
@@ -111,7 +133,13 @@ export function useWorkspaceResourcesState({ workspace, remote, workspaces, pale
     ).then((results) => {
       if (cancelled) return;
       const fulfilled = results
-        .filter((result): result is PromiseFulfilledResult<Array<{ workspace: string; bot: Bot; remote: string | undefined }>> => result.status === "fulfilled")
+        .filter(
+          (
+            result,
+          ): result is PromiseFulfilledResult<
+            Array<{ workspace: string; bot: Bot; remote: string | undefined }>
+          > => result.status === "fulfilled",
+        )
         .flatMap((result) => result.value);
       setOtherWorkspaceBots(fulfilled);
     });

@@ -17,17 +17,23 @@ interface Props {
   openListByDefaultOnMobile?: boolean;
 }
 
-export function DocsMode({ workspace, remote, docName, onSelectedDocNameChange, openListByDefaultOnMobile = false }: Props) {
+export function DocsMode({
+  workspace,
+  remote,
+  docName,
+  onSelectedDocNameChange,
+  openListByDefaultOnMobile = false,
+}: Props) {
   return (
     <ModeScaffold
       hideHeaderOnMobile
-      header={(
+      header={
         <PageHeader
           eyebrow="Workspace reference"
           title="Docs"
           summary="Browse and edit durable workspace documentation without losing your place when you move between tools."
         />
-      )}
+      }
     >
       <Suspense fallback={<PanelFallback />}>
         <DocsPanel

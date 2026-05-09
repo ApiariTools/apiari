@@ -114,9 +114,7 @@ export function CommandPalette({
               {(unread[b.name] || 0) > 0 && (
                 <span className={styles.unreadBadge}>{unread[b.name]}</span>
               )}
-              {b.name === currentBot && (
-                <span className={styles.current}>current</span>
-              )}
+              {b.name === currentBot && <span className={styles.current}>current</span>}
             </Command.Item>
           ))}
         </Command.Group>
@@ -135,9 +133,7 @@ export function CommandPalette({
                   }}
                 >
                   {entry.workspace} / {entry.bot.name}
-                  {count > 0 && (
-                    <span className={styles.unreadBadge}>{count}</span>
-                  )}
+                  {count > 0 && <span className={styles.unreadBadge}>{count}</span>}
                   {entry.remote && <span className={styles.remoteBadge}>{entry.remote}</span>}
                 </Command.Item>
               );

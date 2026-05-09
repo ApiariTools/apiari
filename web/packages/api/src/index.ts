@@ -94,14 +94,11 @@ export async function sendWorkerMessage(
   message: string,
   remote?: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(
-    `${BASE}${wsPath(workspace, remote)}/workers/${workerId}/send`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
-    },
-  );
+  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
   return res.json();
 }
 
@@ -110,10 +107,9 @@ export async function promoteWorker(
   workerId: string,
   remote?: string,
 ): Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }> {
-  const res = await fetch(
-    `${BASE}${wsPath(workspace, remote)}/workers/${workerId}/promote`,
-    { method: "POST" },
-  );
+  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/promote`, {
+    method: "POST",
+  });
   return res.json();
 }
 
@@ -122,10 +118,9 @@ export async function redispatchWorker(
   workerId: string,
   remote?: string,
 ): Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }> {
-  const res = await fetch(
-    `${BASE}${wsPath(workspace, remote)}/workers/${workerId}/redispatch`,
-    { method: "POST" },
-  );
+  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/redispatch`, {
+    method: "POST",
+  });
   return res.json();
 }
 
@@ -135,14 +130,11 @@ export async function closeWorker(
   dismissTask = true,
   remote?: string,
 ): Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }> {
-  const res = await fetch(
-    `${BASE}${wsPath(workspace, remote)}/workers/${workerId}/close`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dismiss_task: dismissTask }),
-    },
-  );
+  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/close`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dismiss_task: dismissTask }),
+  });
   return res.json();
 }
 
@@ -152,11 +144,7 @@ export interface BotStatus {
   tool_name: string | null;
 }
 
-export function getBotStatus(
-  workspace: string,
-  bot: string,
-  remote?: string,
-): Promise<BotStatus> {
+export function getBotStatus(workspace: string, bot: string, remote?: string): Promise<BotStatus> {
   return get(`${wsPath(workspace, remote)}/bots/${encodePathSegment(bot)}/status`);
 }
 
@@ -165,9 +153,12 @@ export async function cancelBot(
   bot: string,
   remote?: string,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/bots/${encodePathSegment(bot)}/cancel`, {
-    method: "POST",
-  });
+  const res = await fetch(
+    `${BASE}${wsPath(workspace, remote)}/bots/${encodePathSegment(bot)}/cancel`,
+    {
+      method: "POST",
+    },
+  );
   return res.json();
 }
 
@@ -176,7 +167,9 @@ export function getUnread(workspace: string, remote?: string): Promise<Record<st
 }
 
 export async function markSeen(workspace: string, bot: string, remote?: string): Promise<void> {
-  await fetch(`${BASE}${wsPath(workspace, remote)}/seen/${encodePathSegment(bot)}`, { method: "POST" });
+  await fetch(`${BASE}${wsPath(workspace, remote)}/seen/${encodePathSegment(bot)}`, {
+    method: "POST",
+  });
 }
 
 export interface ManagedWebSocket {
@@ -184,7 +177,12 @@ export interface ManagedWebSocket {
 }
 
 export function connectWebSocket(
-  onEvent: (event: { type: string; workspace: string; bot: string; [key: string]: unknown }) => void,
+  onEvent: (event: {
+    type: string;
+    workspace: string;
+    bot: string;
+    [key: string]: unknown;
+  }) => void,
 ): ManagedWebSocket {
   let intentionalClose = false;
   let reconnectTimer: number | null = null;
@@ -275,11 +273,14 @@ export async function saveDoc(
   content: string,
   remote?: string,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/docs/${encodeURIComponent(filename)}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
-  });
+  const res = await fetch(
+    `${BASE}${wsPath(workspace, remote)}/docs/${encodeURIComponent(filename)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
   if (!res.ok) throw new Error(`PUT docs/${filename}: ${res.status}`);
   return res.json();
 }
@@ -289,9 +290,12 @@ export async function deleteDoc(
   filename: string,
   remote?: string,
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/docs/${encodeURIComponent(filename)}`, {
-    method: "DELETE",
-  });
+  const res = await fetch(
+    `${BASE}${wsPath(workspace, remote)}/docs/${encodeURIComponent(filename)}`,
+    {
+      method: "DELETE",
+    },
+  );
   if (!res.ok) throw new Error(`DELETE docs/${filename}: ${res.status}`);
   return res.json();
 }
@@ -352,8 +356,14 @@ export async function startResearch(
   return res.json();
 }
 
-export async function getWorkerDiff(workspace: string, workerId: string, remote?: string): Promise<string | null> {
-  const data = await get<{ diff: string | null }>(`${wsPath(workspace, remote)}/workers/${workerId}/diff`);
+export async function getWorkerDiff(
+  workspace: string,
+  workerId: string,
+  remote?: string,
+): Promise<string | null> {
+  const data = await get<{ diff: string | null }>(
+    `${wsPath(workspace, remote)}/workers/${workerId}/diff`,
+  );
   return data.diff;
 }
 
@@ -368,7 +378,11 @@ export async function getWorkerV2(workspace: string, id: string): Promise<Worker
   return get<WorkerDetailV2>(`/workspaces/${workspace}/v2/workers/${id}`);
 }
 
-export async function sendWorkerMessageV2(workspace: string, id: string, message: string): Promise<void> {
+export async function sendWorkerMessageV2(
+  workspace: string,
+  id: string,
+  message: string,
+): Promise<void> {
   const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers/${id}/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -384,7 +398,10 @@ export async function cancelWorkerV2(workspace: string, id: string): Promise<voi
   if (!res.ok) throw new Error(`cancel worker: ${res.status}`);
 }
 
-export async function requeueWorkerV2(workspace: string, id: string): Promise<{ new_worker_id?: string; with_review_feedback?: boolean }> {
+export async function requeueWorkerV2(
+  workspace: string,
+  id: string,
+): Promise<{ new_worker_id?: string; with_review_feedback?: boolean }> {
   const res = await fetch(`${BASE}/workspaces/${workspace}/v2/workers/${id}/requeue`, {
     method: "POST",
   });
@@ -417,8 +434,13 @@ export async function requestWorkerReview(workspace: string, workerId: string): 
   if (!res.ok) throw new Error(`request review: ${res.status}`);
 }
 
-export async function listWorkerReviews(workspace: string, workerId: string): Promise<WorkerReview[]> {
-  const data = await get<{ reviews: WorkerReview[] }>(`/workspaces/${workspace}/v2/workers/${workerId}/reviews`);
+export async function listWorkerReviews(
+  workspace: string,
+  workerId: string,
+): Promise<WorkerReview[]> {
+  const data = await get<{ reviews: WorkerReview[] }>(
+    `/workspaces/${workspace}/v2/workers/${workerId}/reviews`,
+  );
   return data.reviews;
 }
 
@@ -443,7 +465,11 @@ export async function createAutoBot(workspace: string, data: Partial<AutoBot>): 
   return res.json();
 }
 
-export async function updateAutoBot(workspace: string, id: string, data: Partial<AutoBot>): Promise<AutoBot> {
+export async function updateAutoBot(
+  workspace: string,
+  id: string,
+  data: Partial<AutoBot>,
+): Promise<AutoBot> {
   const res = await fetch(`${BASE}/workspaces/${workspace}/v2/auto-bots/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -467,8 +493,14 @@ export async function triggerAutoBot(workspace: string, id: string): Promise<voi
   if (!res.ok) throw new Error(`trigger auto bot: ${res.status}`);
 }
 
-export async function getAutoBotRuns(workspace: string, id: string, limit = 20): Promise<AutoBotRun[]> {
-  const data = await get<{ runs: AutoBotRun[] }>(`/workspaces/${workspace}/v2/auto-bots/${id}/runs?limit=${limit}`);
+export async function getAutoBotRuns(
+  workspace: string,
+  id: string,
+  limit = 20,
+): Promise<AutoBotRun[]> {
+  const data = await get<{ runs: AutoBotRun[] }>(
+    `/workspaces/${workspace}/v2/auto-bots/${id}/runs?limit=${limit}`,
+  );
   return data.runs;
 }
 
@@ -487,8 +519,12 @@ export async function chatWithContextBot(
     body: JSON.stringify({ message, session_id: sessionId ?? null, context, model: model ?? null }),
   });
   if (!res.ok) {
-    let detail = '';
-    try { detail = (await res.json()).error ?? ''; } catch { /* ignore */ }
+    let detail = "";
+    try {
+      detail = (await res.json()).error ?? "";
+    } catch {
+      /* ignore */
+    }
     throw new Error(detail || `context bot chat failed (${res.status})`);
   }
   return res.json();
@@ -499,27 +535,39 @@ export async function listContextBotSessions(workspace: string): Promise<Context
   if (!res.ok) return [];
   const rows = await res.json();
   // Map server row shape back to ContextBotSession
-  return rows.map((r: {
-    id: string; title: string; model: string;
-    context_view: string; context_entity_id: string | null;
-    context_snapshot: Record<string, unknown> | null;
-    messages: Array<{ role: string; content: string; timestamp: string }>;
-  }) => ({
-    id: r.id,
-    server_session_id: r.id,
-    title: r.title,
-    model: r.model,
-    context: { view: r.context_view, entity_id: r.context_entity_id ?? null, entity_snapshot: r.context_snapshot ?? {} },
-    messages: r.messages,
-    minimized: true,   // load as minimized so they don't flood the screen
-    loading: false,
-  }))
+  return rows.map(
+    (r: {
+      id: string;
+      title: string;
+      model: string;
+      context_view: string;
+      context_entity_id: string | null;
+      context_snapshot: Record<string, unknown> | null;
+      messages: Array<{ role: string; content: string; timestamp: string }>;
+    }) => ({
+      id: r.id,
+      server_session_id: r.id,
+      title: r.title,
+      model: r.model,
+      context: {
+        view: r.context_view,
+        entity_id: r.context_entity_id ?? null,
+        entity_snapshot: r.context_snapshot ?? {},
+      },
+      messages: r.messages,
+      minimized: true, // load as minimized so they don't flood the screen
+      loading: false,
+    }),
+  );
 }
 
-export async function upsertContextBotSession(workspace: string, session: ContextBotSession): Promise<void> {
+export async function upsertContextBotSession(
+  workspace: string,
+  session: ContextBotSession,
+): Promise<void> {
   await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/sessions/${session.id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       title: session.title,
       model: session.model,
@@ -534,7 +582,9 @@ export async function upsertContextBotSession(workspace: string, session: Contex
 }
 
 export async function deleteContextBotSession(workspace: string, sessionId: string): Promise<void> {
-  await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/sessions/${sessionId}`, { method: 'DELETE' });
+  await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/sessions/${sessionId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function sendMessage(
@@ -560,24 +610,27 @@ export async function sendMessage(
 // ── Dashboard widgets ──────────────────────────────────────────────────
 
 export async function listWidgets(workspace: string): Promise<DashboardWidget[]> {
-  return get<DashboardWidget[]>(`/workspaces/${workspace}/v2/widgets`)
+  return get<DashboardWidget[]>(`/workspaces/${workspace}/v2/widgets`);
 }
 
 export async function upsertWidget(
   workspace: string,
   slot: string,
-  widget: Omit<DashboardWidget, 'slot' | 'updated_at'> & { ttl_minutes?: number },
+  widget: Omit<DashboardWidget, "slot" | "updated_at"> & { ttl_minutes?: number },
 ): Promise<void> {
-  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/widgets/${encodeURIComponent(slot)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(widget),
-  })
-  if (!res.ok) throw new Error(`upsertWidget failed: ${res.status}`)
+  const res = await fetch(
+    `${BASE}/workspaces/${workspace}/v2/widgets/${encodeURIComponent(slot)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(widget),
+    },
+  );
+  if (!res.ok) throw new Error(`upsertWidget failed: ${res.status}`);
 }
 
 export async function deleteWidget(workspace: string, slot: string): Promise<void> {
   await fetch(`${BASE}/workspaces/${workspace}/v2/widgets/${encodeURIComponent(slot)}`, {
-    method: 'DELETE',
-  })
+    method: "DELETE",
+  });
 }

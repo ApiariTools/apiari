@@ -1,7 +1,23 @@
 import type { ComponentType } from "react";
-import { ClipboardList, FileText, LayoutGrid, MessageSquare, Package, Radar, Wrench } from "lucide-react";
+import {
+  ClipboardList,
+  FileText,
+  LayoutGrid,
+  MessageSquare,
+  Package,
+  Radar,
+  Wrench,
+} from "lucide-react";
 
-export type WorkspaceMode = "overview" | "chat" | "tasks" | "workers" | "repos" | "docs" | "signals" | "diagnostics";
+export type WorkspaceMode =
+  | "overview"
+  | "chat"
+  | "tasks"
+  | "workers"
+  | "repos"
+  | "docs"
+  | "signals"
+  | "diagnostics";
 
 export interface WorkspaceModeDefinition {
   id: WorkspaceMode;
@@ -52,7 +68,9 @@ export function isWorkspaceMode(value: string | undefined): value is WorkspaceMo
   return value != null && value in WORKSPACE_MODE_DEFINITIONS;
 }
 
-export function getOrderedWorkspaceModes(order: WorkspaceMode[] = DEFAULT_WORKSPACE_CONSOLE_PROFILE.navModeOrder) {
+export function getOrderedWorkspaceModes(
+  order: WorkspaceMode[] = DEFAULT_WORKSPACE_CONSOLE_PROFILE.navModeOrder,
+) {
   return order.map((mode) => WORKSPACE_MODE_DEFINITIONS[mode]);
 }
 
@@ -61,7 +79,10 @@ function storageKeyForWorkspace(workspace?: string, remote?: string) {
   return `${remote || "local"}/${workspace}`;
 }
 
-function readStoredWorkspaceConsoleProfile(workspace?: string, remote?: string): Partial<WorkspaceConsoleProfile> | null {
+function readStoredWorkspaceConsoleProfile(
+  workspace?: string,
+  remote?: string,
+): Partial<WorkspaceConsoleProfile> | null {
   const storageKey = storageKeyForWorkspace(workspace, remote);
   if (!storageKey || typeof window === "undefined") return null;
 
@@ -93,7 +114,10 @@ function writeStoredWorkspaceConsoleProfiles(
   window.localStorage.setItem(CONSOLE_PROFILE_STORAGE_KEY, JSON.stringify(profiles));
 }
 
-export function resolveWorkspaceConsoleProfile(workspace?: string, remote?: string): WorkspaceConsoleProfile {
+export function resolveWorkspaceConsoleProfile(
+  workspace?: string,
+  remote?: string,
+): WorkspaceConsoleProfile {
   const profile: WorkspaceConsoleProfile = {
     ...DEFAULT_WORKSPACE_CONSOLE_PROFILE,
   };

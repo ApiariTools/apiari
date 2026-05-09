@@ -54,8 +54,20 @@ function makeAutoBot(overrides: Partial<AutoBot> = {}): AutoBot {
 }
 
 const workers = [
-  makeWorker({ id: "w-1", goal: "worker prompt text", display_title: "Fix auth rate limiting", branch: "swarm/fix-auth" }),
-  makeWorker({ id: "w-2", goal: "generic prompt", display_title: "Dependency refresh", branch: "swarm/update-deps", state: "waiting", label: "Waiting" }),
+  makeWorker({
+    id: "w-1",
+    goal: "worker prompt text",
+    display_title: "Fix auth rate limiting",
+    branch: "swarm/fix-auth",
+  }),
+  makeWorker({
+    id: "w-2",
+    goal: "generic prompt",
+    display_title: "Dependency refresh",
+    branch: "swarm/update-deps",
+    state: "waiting",
+    label: "Waiting",
+  }),
 ];
 
 const autoBots = [

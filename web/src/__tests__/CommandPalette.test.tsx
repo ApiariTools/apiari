@@ -3,10 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { CommandPalette } from "../components/CommandPalette";
 
-const workspaces = [
-  { name: "apiari" },
-  { name: "mgm" },
-];
+const workspaces = [{ name: "apiari" }, { name: "mgm" }];
 
 const bots = [
   { name: "Main", color: "#f5c542", role: "Assistant", watch: [] as string[] },
@@ -14,8 +11,14 @@ const bots = [
 ];
 
 const otherBots = [
-  { workspace: "mgm", bot: { name: "Main", color: "#f5c542", role: "Assistant", watch: [] as string[] } },
-  { workspace: "mgm", bot: { name: "Analytics", color: "#5cb85c", role: "Analytics bot", watch: [] as string[] } },
+  {
+    workspace: "mgm",
+    bot: { name: "Main", color: "#f5c542", role: "Assistant", watch: [] as string[] },
+  },
+  {
+    workspace: "mgm",
+    bot: { name: "Analytics", color: "#5cb85c", role: "Analytics bot", watch: [] as string[] },
+  },
 ];
 
 const defaultProps = {
@@ -65,7 +68,7 @@ describe("CommandPalette", () => {
         {...defaultProps}
         onSelectWorkspaceBot={onSelectWorkspaceBot}
         onOpenChange={onOpenChange}
-      />
+      />,
     );
     await user.click(screen.getByText("mgm / Analytics"));
     expect(onSelectWorkspaceBot).toHaveBeenCalledWith("mgm", "Analytics", undefined);
@@ -92,9 +95,7 @@ describe("CommandPalette", () => {
   });
 
   it("sorts bots with unreads before bots without", () => {
-    render(
-      <CommandPalette {...defaultProps} unread={{ Social: 5 }} />
-    );
+    render(<CommandPalette {...defaultProps} unread={{ Social: 5 }} />);
     // Social (with unreads) should appear before Main in DOM order
     const social = screen.getByText("Social");
     const main = screen.getByText("Main");
@@ -107,7 +108,7 @@ describe("CommandPalette", () => {
       <CommandPalette
         {...defaultProps}
         otherWorkspaceUnreads={{ "local/mgm": { Analytics: 7 } }}
-      />
+      />,
     );
     expect(screen.getByText("7")).toBeInTheDocument();
   });
@@ -115,12 +116,7 @@ describe("CommandPalette", () => {
   it("renders diagnostics action when provided", async () => {
     const user = userEvent.setup();
     const onOpenDiagnostics = vi.fn();
-    render(
-      <CommandPalette
-        {...defaultProps}
-        onOpenDiagnostics={onOpenDiagnostics}
-      />
-    );
+    render(<CommandPalette {...defaultProps} onOpenDiagnostics={onOpenDiagnostics} />);
     await user.click(screen.getByText("Open Bot Diagnostics"));
     expect(onOpenDiagnostics).toHaveBeenCalled();
   });

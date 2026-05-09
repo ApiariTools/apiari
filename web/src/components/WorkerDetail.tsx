@@ -17,9 +17,15 @@ interface Props {
   remote?: string;
   onBack: () => void;
   showBack?: boolean;
-  onPromoteWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
-  onRedispatchWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
-  onCloseWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onPromoteWorker: (
+    id: string,
+  ) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onRedispatchWorker: (
+    id: string,
+  ) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onCloseWorker: (
+    id: string,
+  ) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
 }
 
 function branchName(branch: string): string {
@@ -32,7 +38,9 @@ function formatTime(iso: string): string {
   const trimmed = iso.trim();
   if (!trimmed) return "";
   const normalized = trimmed.includes("T")
-    ? (trimmed.includes("Z") || trimmed.includes("+") || trimmed.includes("-", 10) ? trimmed : `${trimmed}Z`)
+    ? trimmed.includes("Z") || trimmed.includes("+") || trimmed.includes("-", 10)
+      ? trimmed
+      : `${trimmed}Z`
     : trimmed;
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) {
@@ -76,7 +84,10 @@ export function WorkerDetail({
 
   useEffect(() => {
     if (infoTab === "diff" && diffContent === undefined) {
-      api.getWorkerDiff(workspace, worker.id, remote).then(setDiffContent).catch(() => setDiffContent(null));
+      api
+        .getWorkerDiff(workspace, worker.id, remote)
+        .then(setDiffContent)
+        .catch(() => setDiffContent(null));
     }
   }, [infoTab, workspace, worker.id, remote, diffContent]);
 
@@ -126,7 +137,8 @@ export function WorkerDetail({
 
   const taskTitle = detail?.task_title ?? worker.task_title;
   const taskStage = detail?.task_stage ?? worker.task_stage;
-  const taskLifecycleState = detail?.task_lifecycle_state ?? worker.task_lifecycle_state ?? taskStage;
+  const taskLifecycleState =
+    detail?.task_lifecycle_state ?? worker.task_lifecycle_state ?? taskStage;
   const taskRepo = detail?.task_repo ?? worker.task_repo;
   const latestAttempt = detail?.latest_attempt ?? worker.latest_attempt ?? null;
   const executionNote = detail?.execution_note ?? worker.execution_note;
@@ -144,7 +156,10 @@ export function WorkerDetail({
             <div className={styles.empty}>No conversation data available</div>
           )}
           {detail?.conversation.map((msg, i) => (
-            <div key={i} className={`${styles.msg} ${msg.role === "user" ? styles.userMsg : ""} ${msg.role === "tool" ? styles.toolMsg : ""}`}>
+            <div
+              key={i}
+              className={`${styles.msg} ${msg.role === "user" ? styles.userMsg : ""} ${msg.role === "tool" ? styles.toolMsg : ""}`}
+            >
               {msg.role === "tool" ? (
                 <div className={styles.toolLabel}>{msg.content}</div>
               ) : (
@@ -166,7 +181,11 @@ export function WorkerDetail({
                 <strong>{worker.id}</strong>
               </div>
               <div className={styles.thinking}>
-                <span className={styles.thinkingDots}><span /><span /><span /></span>
+                <span className={styles.thinkingDots}>
+                  <span />
+                  <span />
+                  <span />
+                </span>
               </div>
             </div>
           )}
@@ -188,11 +207,18 @@ export function WorkerDetail({
       <div className={styles.info}>
         {/* Header with back, title, status, actions */}
         <div className={styles.infoHeader}>
-          {showBack ? <button className={styles.back} onClick={onBack}>&larr;</button> : null}
+          {showBack ? (
+            <button className={styles.back} onClick={onBack}>
+              &larr;
+            </button>
+          ) : null}
           <div className={styles.headerMid}>
             <div className={styles.titleRow}>
               <span className={styles.title}>{worker.id}</span>
-              <span className={styles.agentBadge} data-agent={worker.agent.split(/[- ]/)[0].toLowerCase()}>
+              <span
+                className={styles.agentBadge}
+                data-agent={worker.agent.split(/[- ]/)[0].toLowerCase()}
+              >
                 {worker.agent}
               </span>
             </div>
@@ -242,18 +268,22 @@ export function WorkerDetail({
           </div>
         </div>
 
-        {actionMessage && (
-          <div className={styles.actionNotice}>{actionMessage}</div>
-        )}
+        {actionMessage && <div className={styles.actionNotice}>{actionMessage}</div>}
         {confirmClose && (
           <div className={styles.actionNotice}>
-            Close this worker and dismiss its task?
-            {" "}
-            <button className={styles.inlineAction} onClick={handleCloseConfirmed} disabled={acting}>
+            Close this worker and dismiss its task?{" "}
+            <button
+              className={styles.inlineAction}
+              onClick={handleCloseConfirmed}
+              disabled={acting}
+            >
               Confirm
-            </button>
-            {" "}
-            <button className={styles.inlineAction} onClick={() => setConfirmClose(false)} disabled={acting}>
+            </button>{" "}
+            <button
+              className={styles.inlineAction}
+              onClick={() => setConfirmClose(false)}
+              disabled={acting}
+            >
               Cancel
             </button>
           </div>
@@ -271,56 +301,46 @@ export function WorkerDetail({
           <div className={styles.reviewSummary}>
             {worker.review_state && (
               <span className={styles.reviewBadge} data-state={worker.review_state.toLowerCase()}>
-                {worker.review_state === "APPROVED" ? "Approved" :
-                 worker.review_state === "CHANGES_REQUESTED" ? "Changes requested" :
-                 "Review pending"}
+                {worker.review_state === "APPROVED"
+                  ? "Approved"
+                  : worker.review_state === "CHANGES_REQUESTED"
+                    ? "Changes requested"
+                    : "Review pending"}
               </span>
             )}
             {worker.ci_status && (
               <span className={styles.ciBadge} data-status={worker.ci_status.toLowerCase()}>
-                {worker.ci_status === "SUCCESS" ? "CI passing" :
-                 worker.ci_status === "FAILURE" ? "CI failing" :
-                 "CI pending"}
+                {worker.ci_status === "SUCCESS"
+                  ? "CI passing"
+                  : worker.ci_status === "FAILURE"
+                    ? "CI failing"
+                    : "CI pending"}
               </span>
-          )}
-          {taskStage && (
-            <span className={styles.reviewBadge} data-state="pending">
-              {taskLifecycleState}
-            </span>
-          )}
-          {worker.status === "stalled" && (
-            <span className={styles.reviewBadge} data-state="changes_requested">
-              Stalled
-            </span>
-          )}
-          {hasUncommittedChanges && (
-            <span className={styles.reviewBadge} data-state="pending">
-              Uncommitted diff
-            </span>
-          )}
-          {!readyBranch && hasUncommittedChanges && (
-            <span className={styles.commentCount}>
-              no ready branch
-            </span>
-          )}
-          {readyBranch && (
-            <span className={styles.commentCount}>
-              ready branch {readyBranch}
-            </span>
-          )}
-          {taskRepo && (
-            <span className={styles.commentCount}>
-              repo {taskRepo}
-            </span>
-          )}
-          {executionNote && (
-            <span className={styles.commentCount}>
-              {executionNote}
-            </span>
-          )}
-          {worker.open_comments != null && worker.open_comments > 0 && (
-            <span className={styles.commentCount}>
-              {worker.open_comments} open / {worker.resolved_comments ?? 0} resolved comments
+            )}
+            {taskStage && (
+              <span className={styles.reviewBadge} data-state="pending">
+                {taskLifecycleState}
+              </span>
+            )}
+            {worker.status === "stalled" && (
+              <span className={styles.reviewBadge} data-state="changes_requested">
+                Stalled
+              </span>
+            )}
+            {hasUncommittedChanges && (
+              <span className={styles.reviewBadge} data-state="pending">
+                Uncommitted diff
+              </span>
+            )}
+            {!readyBranch && hasUncommittedChanges && (
+              <span className={styles.commentCount}>no ready branch</span>
+            )}
+            {readyBranch && <span className={styles.commentCount}>ready branch {readyBranch}</span>}
+            {taskRepo && <span className={styles.commentCount}>repo {taskRepo}</span>}
+            {executionNote && <span className={styles.commentCount}>{executionNote}</span>}
+            {worker.open_comments != null && worker.open_comments > 0 && (
+              <span className={styles.commentCount}>
+                {worker.open_comments} open / {worker.resolved_comments ?? 0} resolved comments
               </span>
             )}
           </div>
@@ -356,40 +376,77 @@ export function WorkerDetail({
 
         {/* Tab content */}
         <div className={styles.tabContent}>
-          {infoTab === "output" && (
-            detail?.output ? (
+          {infoTab === "output" &&
+            (detail?.output ? (
               <div className={styles.prose}>
                 <Markdown remarkPlugins={[remarkGfm]}>{detail.output}</Markdown>
               </div>
             ) : (
               <div className={styles.empty}>No output yet</div>
-            )
-          )}
+            ))}
           {infoTab === "task" && (
             <div className={styles.prose}>
-              {taskTitle && <p><strong>Task:</strong> {taskTitle}</p>}
-              {taskLifecycleState && <p><strong>Lifecycle:</strong> {taskLifecycleState}</p>}
+              {taskTitle && (
+                <p>
+                  <strong>Task:</strong> {taskTitle}
+                </p>
+              )}
+              {taskLifecycleState && (
+                <p>
+                  <strong>Lifecycle:</strong> {taskLifecycleState}
+                </p>
+              )}
               {taskStage && taskLifecycleState !== taskStage ? (
-                <p><strong>Internal stage:</strong> {taskStage}</p>
+                <p>
+                  <strong>Internal stage:</strong> {taskStage}
+                </p>
               ) : null}
-              {taskRepo && <p><strong>Repo:</strong> {taskRepo}</p>}
+              {taskRepo && (
+                <p>
+                  <strong>Repo:</strong> {taskRepo}
+                </p>
+              )}
               {latestAttempt?.role ? (
-                <p><strong>Latest attempt:</strong> {latestAttempt.role} {latestAttempt.state}</p>
+                <p>
+                  <strong>Latest attempt:</strong> {latestAttempt.role} {latestAttempt.state}
+                </p>
               ) : null}
               {latestAttempt?.detail ? (
-                <p><strong>Attempt detail:</strong> {latestAttempt.detail}</p>
+                <p>
+                  <strong>Attempt detail:</strong> {latestAttempt.detail}
+                </p>
               ) : null}
-              {hasUncommittedChanges && <p><strong>Execution:</strong> Uncommitted diff present</p>}
+              {hasUncommittedChanges && (
+                <p>
+                  <strong>Execution:</strong> Uncommitted diff present
+                </p>
+              )}
               {readyBranch ? (
-                <p><strong>Ready branch:</strong> {readyBranch}</p>
+                <p>
+                  <strong>Ready branch:</strong> {readyBranch}
+                </p>
               ) : hasUncommittedChanges ? (
-                <p><strong>Ready branch:</strong> not signalled</p>
+                <p>
+                  <strong>Ready branch:</strong> not signalled
+                </p>
               ) : null}
-              {executionNote && <p><strong>Note:</strong> {executionNote}</p>}
-              {taskPacket?.worker_mode && <p><strong>Worker kind:</strong> {taskPacket.worker_mode}</p>}
+              {executionNote && (
+                <p>
+                  <strong>Note:</strong> {executionNote}
+                </p>
+              )}
+              {taskPacket?.worker_mode && (
+                <p>
+                  <strong>Worker kind:</strong> {taskPacket.worker_mode}
+                </p>
+              )}
               {detail?.prompt ? (
                 <>
-                  {(taskTitle || taskStage || taskRepo) && <p><strong>Worker prompt</strong></p>}
+                  {(taskTitle || taskStage || taskRepo) && (
+                    <p>
+                      <strong>Worker prompt</strong>
+                    </p>
+                  )}
                   <Markdown remarkPlugins={[remarkGfm]}>{detail.prompt}</Markdown>
                 </>
               ) : !(taskTitle || taskStage || taskRepo) ? (
@@ -397,38 +454,48 @@ export function WorkerDetail({
               ) : null}
               {taskPacket?.task_md ? (
                 <>
-                  <p><strong>Inherited task</strong></p>
+                  <p>
+                    <strong>Inherited task</strong>
+                  </p>
                   <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.task_md}</Markdown>
                 </>
               ) : null}
               {taskPacket?.context_md ? (
                 <>
-                  <p><strong>Inherited context</strong></p>
+                  <p>
+                    <strong>Inherited context</strong>
+                  </p>
                   <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.context_md}</Markdown>
                 </>
               ) : null}
               {taskPacket?.shaping_md ? (
                 <>
-                  <p><strong>Coordinator shaping</strong></p>
+                  <p>
+                    <strong>Coordinator shaping</strong>
+                  </p>
                   <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.shaping_md}</Markdown>
                 </>
               ) : null}
               {taskPacket?.plan_md ? (
                 <>
-                  <p><strong>Execution plan</strong></p>
+                  <p>
+                    <strong>Execution plan</strong>
+                  </p>
                   <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.plan_md}</Markdown>
                 </>
               ) : null}
               {taskPacket?.progress_md ? (
                 <>
-                  <p><strong>Worker notes</strong></p>
+                  <p>
+                    <strong>Worker notes</strong>
+                  </p>
                   <Markdown remarkPlugins={[remarkGfm]}>{taskPacket.progress_md}</Markdown>
                 </>
               ) : null}
             </div>
           )}
-          {infoTab === "diff" && (
-            diffContent === undefined ? (
+          {infoTab === "diff" &&
+            (diffContent === undefined ? (
               <div className={styles.empty}>Loading diff...</div>
             ) : diffContent ? (
               <Suspense fallback={<div className={styles.empty}>Loading diff...</div>}>
@@ -436,13 +503,8 @@ export function WorkerDetail({
               </Suspense>
             ) : (
               <div className={styles.empty}>No diff available</div>
-            )
-          )}
-          {infoTab === "chat" && (
-            <div className={styles.chatInTab}>
-              {renderChat()}
-            </div>
-          )}
+            ))}
+          {infoTab === "chat" && <div className={styles.chatInTab}>{renderChat()}</div>}
         </div>
       </div>
     </div>

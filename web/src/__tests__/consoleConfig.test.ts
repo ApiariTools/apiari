@@ -31,13 +31,16 @@ describe("consoleConfig", () => {
   });
 
   it("applies stored workspace-specific overrides", () => {
-    window.localStorage.setItem("apiari.consoleProfileOverrides", JSON.stringify({
-      "local/apiari": {
-        defaultDesktopMode: "repos",
-        navModeOrder: ["repos", "workers", "chat", "overview", "docs"],
-        showChatRepoRail: false,
-      },
-    }));
+    window.localStorage.setItem(
+      "apiari.consoleProfileOverrides",
+      JSON.stringify({
+        "local/apiari": {
+          defaultDesktopMode: "repos",
+          navModeOrder: ["repos", "workers", "chat", "overview", "docs"],
+          showChatRepoRail: false,
+        },
+      }),
+    );
 
     expect(resolveWorkspaceConsoleProfile("apiari")).toMatchObject({
       defaultDesktopMode: "repos",

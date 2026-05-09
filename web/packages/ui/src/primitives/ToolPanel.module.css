@@ -6,8 +6,7 @@
   flex-shrink: 0;
   overflow-y: auto;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 28%),
-    var(--shell-surface);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 28%), var(--shell-surface);
 }
 
 .header {
@@ -15,8 +14,7 @@
   top: 0;
   z-index: 1;
   padding: 20px 18px 14px;
-  background:
-    linear-gradient(180deg, rgba(17, 17, 17, 0.96), rgba(17, 17, 17, 0.88));
+  background: linear-gradient(180deg, rgba(17, 17, 17, 0.96), rgba(17, 17, 17, 0.88));
   backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
 }
@@ -65,8 +63,7 @@
     width: 100%;
     border-left: none;
     background:
-      radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
-      var(--bg);
+      radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%), var(--bg);
   }
 
   .header {

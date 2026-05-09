@@ -22,8 +22,8 @@ interface Props {
 }
 
 export function FollowupCard({ followup, workspace, onCancelled, inline }: Props) {
-  const [remaining, setRemaining] = useState(() =>
-    new Date(followup.fires_at).getTime() - Date.now()
+  const [remaining, setRemaining] = useState(
+    () => new Date(followup.fires_at).getTime() - Date.now(),
   );
   const [status, setStatus] = useState(followup.status);
 
@@ -97,8 +97,8 @@ export function FollowupCard({ followup, workspace, onCancelled, inline }: Props
 
 /** Sticky indicator shown at bottom of chat when follow-up is scrolled out of view */
 export function FollowupIndicator({ followup }: { followup: Followup }) {
-  const [remaining, setRemaining] = useState(() =>
-    new Date(followup.fires_at).getTime() - Date.now()
+  const [remaining, setRemaining] = useState(
+    () => new Date(followup.fires_at).getTime() - Date.now(),
   );
 
   useEffect(() => {

@@ -60,7 +60,7 @@ function playTone(
     filterFreq?: number;
     filterQ?: number;
     reverbMix?: number;
-  } = {}
+  } = {},
 ): void {
   const {
     type = "sine",
@@ -154,7 +154,7 @@ export function playSentCue() {
   playTone(ctx, 1047, t, 0.3, {
     type: "sine",
     harmonics: [
-      { ratio: 2, gain: 0.3, type: "sine" },     // octave up
+      { ratio: 2, gain: 0.3, type: "sine" }, // octave up
       { ratio: 1.5, gain: 0.15, type: "triangle" }, // fifth
     ],
     attack: 0.008,
@@ -170,9 +170,7 @@ export function playSentCue() {
   // Second tone — E6 (1319 Hz), slight delay for shimmer
   playTone(ctx, 1319, t + 0.04, 0.25, {
     type: "sine",
-    harmonics: [
-      { ratio: 2, gain: 0.2, type: "sine" },
-    ],
+    harmonics: [{ ratio: 2, gain: 0.2, type: "sine" }],
     attack: 0.01,
     decay: 0.06,
     sustain: 0.1,
@@ -206,9 +204,7 @@ export function startThinkingCue(): () => void {
 
     playTone(ctx, freq, t, 0.8, {
       type: "sine",
-      harmonics: [
-        { ratio: 2, gain: 0.15, type: "sine" },
-      ],
+      harmonics: [{ ratio: 2, gain: 0.15, type: "sine" }],
       attack: 0.15,
       decay: 0.2,
       sustain: 0.2,

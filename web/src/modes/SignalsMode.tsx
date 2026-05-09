@@ -44,7 +44,9 @@ export function SignalsMode({ workspace, remote }: Props) {
     async function load() {
       setLoading(true);
       try {
-        const nextSignals = remote ? [] : await api.getSignals(workspace, { history: true, limit: 100 });
+        const nextSignals = remote
+          ? []
+          : await api.getSignals(workspace, { history: true, limit: 100 });
         if (!cancelled) {
           setSignals(nextSignals);
         }
@@ -72,7 +74,9 @@ export function SignalsMode({ workspace, remote }: Props) {
   }
 
   const counts = useMemo(() => {
-    const critical = signals.filter((signal) => ["critical", "error"].includes(signal.severity.toLowerCase())).length;
+    const critical = signals.filter((signal) =>
+      ["critical", "error"].includes(signal.severity.toLowerCase()),
+    ).length;
     const warnings = signals.filter((signal) => signal.severity.toLowerCase() === "warning").length;
     return { critical, warnings };
   }, [signals]);
@@ -80,29 +84,37 @@ export function SignalsMode({ workspace, remote }: Props) {
   return (
     <ModeScaffold
       scrollBody
-      header={(
+      header={
         <PageHeader
           eyebrow="Debug surface"
           title="Signals"
           summary="Inspect the watcher-fed signal queue directly. Useful for validating whether bots are actually getting signal input."
-          meta={(
+          meta={
             <div className={styles.meta}>
-              <StatusBadge tone={counts.critical > 0 ? "danger" : "neutral"}>{counts.critical} critical/error</StatusBadge>
-              <StatusBadge tone={counts.warnings > 0 ? "accent" : "neutral"}>{counts.warnings} warnings</StatusBadge>
+              <StatusBadge tone={counts.critical > 0 ? "danger" : "neutral"}>
+                {counts.critical} critical/error
+              </StatusBadge>
+              <StatusBadge tone={counts.warnings > 0 ? "accent" : "neutral"}>
+                {counts.warnings} warnings
+              </StatusBadge>
               <StatusBadge tone="neutral">{signals.length} open signals</StatusBadge>
             </div>
-          )}
-          actions={remote ? [] : [
-            {
-              label: refreshing ? "Refreshing..." : "Refresh",
-              onClick: () => {
-                void refreshSignals();
-              },
-              kind: "secondary",
-            },
-          ]}
+          }
+          actions={
+            remote
+              ? []
+              : [
+                  {
+                    label: refreshing ? "Refreshing..." : "Refresh",
+                    onClick: () => {
+                      void refreshSignals();
+                    },
+                    kind: "secondary",
+                  },
+                ]
+          }
         />
-      )}
+      }
     >
       <div className={styles.page}>
         {remote ? (
@@ -133,8 +145,12 @@ export function SignalsMode({ workspace, remote }: Props) {
                     <h3 className={styles.title}>{signal.title}</h3>
                   </div>
                   <div className={styles.rightMeta}>
-                    <StatusBadge tone={toneForSeverity(signal.severity)}>{signal.severity}</StatusBadge>
-                    <span className={styles.time}>{formatSignalTime(secondaryTimestamp(signal))}</span>
+                    <StatusBadge tone={toneForSeverity(signal.severity)}>
+                      {signal.severity}
+                    </StatusBadge>
+                    <span className={styles.time}>
+                      {formatSignalTime(secondaryTimestamp(signal))}
+                    </span>
                   </div>
                 </div>
                 <div className={styles.footer}>

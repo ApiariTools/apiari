@@ -167,7 +167,7 @@
   color: var(--text);
   border: none;
   padding: 16px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: "SF Mono", "Fira Code", monospace;
   font-size: 14px;
   line-height: 1.6;
   resize: none;
@@ -190,9 +190,15 @@
   margin: 1em 0 0.5em;
 }
 
-.preview h1 { font-size: 1.5em; }
-.preview h2 { font-size: 1.25em; }
-.preview h3 { font-size: 1.1em; }
+.preview h1 {
+  font-size: 1.5em;
+}
+.preview h2 {
+  font-size: 1.25em;
+}
+.preview h3 {
+  font-size: 1.1em;
+}
 
 .preview p {
   margin: 0.5em 0;
@@ -202,7 +208,7 @@
   background: var(--bg-card);
   padding: 2px 6px;
   border-radius: 3px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: "SF Mono", "Fira Code", monospace;
   font-size: 0.9em;
 }
 
@@ -268,7 +274,7 @@
 }
 
 .preview input[type="checkbox"]:checked::after {
-  content: '';
+  content: "";
   position: absolute;
   left: 4px;
   top: 1px;

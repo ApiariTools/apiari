@@ -6,8 +6,7 @@
   overflow: hidden;
   background:
     radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 22%),
-    var(--bg);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 22%), var(--bg);
 }
 
 .modeMeta {

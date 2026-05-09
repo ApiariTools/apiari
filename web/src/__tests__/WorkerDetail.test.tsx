@@ -9,7 +9,9 @@ vi.mock("@git-diff-view/react", () => ({
 }));
 
 vi.mock("@git-diff-view/core", () => ({
-  DiffFile: { createInstance: () => ({ initTheme: vi.fn(), init: vi.fn(), buildUnifiedDiffLines: vi.fn() }) },
+  DiffFile: {
+    createInstance: () => ({ initTheme: vi.fn(), init: vi.fn(), buildUnifiedDiffLines: vi.fn() }),
+  },
   getLang: () => "text",
 }));
 
@@ -63,9 +65,19 @@ const detail: WorkerDetailData = {
   ],
 };
 
-const promoteWorker = vi.fn(async () => ({ ok: true, detail: "Created PR for branch `swarm/test`." }));
-const redispatchWorker = vi.fn(async () => ({ ok: true, worker_id: "worker-2", detail: "Spawned replacement worker `worker-2`." }));
-const closeWorker = vi.fn(async () => ({ ok: true, detail: "Closed worker and dismissed its task." }));
+const promoteWorker = vi.fn(async () => ({
+  ok: true,
+  detail: "Created PR for branch `swarm/test`.",
+}));
+const redispatchWorker = vi.fn(async () => ({
+  ok: true,
+  worker_id: "worker-2",
+  detail: "Spawned replacement worker `worker-2`.",
+}));
+const closeWorker = vi.fn(async () => ({
+  ok: true,
+  detail: "Closed worker and dismissed its task.",
+}));
 
 describe("WorkerDetail", () => {
   it("renders timestamps on messages that have them", () => {
@@ -78,7 +90,7 @@ describe("WorkerDetail", () => {
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
         onCloseWorker={closeWorker}
-      />
+      />,
     );
     // Switch to chat tab
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
@@ -94,7 +106,9 @@ describe("WorkerDetail", () => {
     expect(youMeta).toContain("·");
 
     // First worker-1 label (assistant message with timestamp)
-    const workerEls = screen.getAllByText((_, el) => el?.tagName === "STRONG" && el.textContent === "worker-1");
+    const workerEls = screen.getAllByText(
+      (_, el) => el?.tagName === "STRONG" && el.textContent === "worker-1",
+    );
     const workerMeta = workerEls[0].parentElement!.textContent!;
     expect(workerMeta).toMatch(timePattern);
     expect(workerMeta).toContain("·");
@@ -105,9 +119,7 @@ describe("WorkerDetail", () => {
       ...worker,
       prompt: null,
       output: null,
-      conversation: [
-        { role: "assistant", content: "no timestamp here" },
-      ],
+      conversation: [{ role: "assistant", content: "no timestamp here" }],
     };
     render(
       <WorkerDetail
@@ -118,11 +130,13 @@ describe("WorkerDetail", () => {
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
         onCloseWorker={closeWorker}
-      />
+      />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
 
-    const workerLabel = screen.getByText((_, el) => el?.tagName === "STRONG" && el.textContent === "worker-1");
+    const workerLabel = screen.getByText(
+      (_, el) => el?.tagName === "STRONG" && el.textContent === "worker-1",
+    );
     expect(workerLabel.parentElement!.textContent).not.toMatch(/\d{1,2}:\d{2}/);
   });
 
@@ -131,9 +145,7 @@ describe("WorkerDetail", () => {
       ...worker,
       prompt: null,
       output: null,
-      conversation: [
-        { role: "assistant", content: "thinking...", timestamp: "10:54 AM" },
-      ],
+      conversation: [{ role: "assistant", content: "thinking...", timestamp: "10:54 AM" }],
     };
     render(
       <WorkerDetail
@@ -144,12 +156,15 @@ describe("WorkerDetail", () => {
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
         onCloseWorker={closeWorker}
-      />
+      />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Chat" }));
 
     expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
-    expect(screen.getByText((_, el) => el?.className?.toString().includes("msgMeta") ?? false).textContent).toContain("10:54 AM");
+    expect(
+      screen.getByText((_, el) => el?.className?.toString().includes("msgMeta") ?? false)
+        .textContent,
+    ).toContain("10:54 AM");
   });
 
   it("shows task-owned lifecycle context in the task tab", () => {
@@ -162,7 +177,7 @@ describe("WorkerDetail", () => {
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
         onCloseWorker={closeWorker}
-      />
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Task" }));
@@ -173,13 +188,13 @@ describe("WorkerDetail", () => {
     expect(screen.getAllByText(/Blocked/).length).toBeGreaterThan(0);
     expect(screen.getByText(/Internal stage:/)).toBeInTheDocument();
     expect(screen.getByText(/Human Review/)).toBeInTheDocument();
-    expect(
-      screen.getByText((_, el) => el?.textContent === "Repo: apiari"),
-    ).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.textContent === "Repo: apiari")).toBeInTheDocument();
     expect(screen.getByText(/Latest attempt:/)).toBeInTheDocument();
     expect(screen.getByText(/implementation failed/)).toBeInTheDocument();
     expect(screen.getByText(/Attempt detail:/)).toBeInTheDocument();
-    expect(screen.getByText(/Worker finished without a ready branch or PR handoff/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Worker finished without a ready branch or PR handoff/),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Execution:/)).toBeInTheDocument();
     expect(screen.getByText(/Uncommitted diff present/)).toBeInTheDocument();
     expect(screen.getByText(/Ready branch:/)).toBeInTheDocument();
@@ -205,7 +220,7 @@ describe("WorkerDetail", () => {
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
         onCloseWorker={closeWorker}
-      />
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Promote to PR" }));
@@ -223,7 +238,7 @@ describe("WorkerDetail", () => {
         onPromoteWorker={promoteWorker}
         onRedispatchWorker={redispatchWorker}
         onCloseWorker={closeWorker}
-      />
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));

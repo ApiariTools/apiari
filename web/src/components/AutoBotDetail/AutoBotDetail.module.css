@@ -163,7 +163,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  transition: border-color 0.15s, color 0.15s;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
 }
 
 .askBtn:hover {
@@ -184,7 +186,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  transition: border-color 0.15s, color 0.15s;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
 }
 
 .triggerBtn:hover:not(:disabled) {
@@ -320,7 +324,9 @@
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────── */

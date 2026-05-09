@@ -1,55 +1,62 @@
-import { useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import { Minus } from 'lucide-react'
-import type { ContextBotSession } from '@apiari/types'
-import styles from './ContextBot.module.css'
+import { useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import { Minus } from "lucide-react";
+import type { ContextBotSession } from "@apiari/types";
+import styles from "./ContextBot.module.css";
 
 export interface ContextBotPanelProps {
-  session: ContextBotSession
-  isActive?: boolean
-  onSend: (sessionId: string, message: string) => void
-  onChangeModel: (sessionId: string, model: string) => void
-  onMinimize: (sessionId: string) => void
-  onClose: (sessionId: string) => void
+  session: ContextBotSession;
+  isActive?: boolean;
+  onSend: (sessionId: string, message: string) => void;
+  onChangeModel: (sessionId: string, model: string) => void;
+  onMinimize: (sessionId: string) => void;
+  onClose: (sessionId: string) => void;
 }
 
 const MODELS = [
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
-  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-  { id: 'claude-opus-4-7', label: 'Opus 4.7' },
-]
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+  { id: "claude-opus-4-7", label: "Opus 4.7" },
+];
 
 function modelLabel(id: string): string {
-  return MODELS.find((m) => m.id === id)?.label ?? id
+  return MODELS.find((m) => m.id === id)?.label ?? id;
 }
 
-export default function ContextBotPanel({ session, isActive = true, onSend, onChangeModel, onMinimize, onClose }: ContextBotPanelProps) {
-  const inputRef = useRef<HTMLInputElement>(null)
-  const [confirmingEnd, setConfirmingEnd] = useState(false)
-  const locked = session.messages.length > 0
+export default function ContextBotPanel({
+  session,
+  isActive = true,
+  onSend,
+  onChangeModel,
+  onMinimize,
+  onClose,
+}: ContextBotPanelProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [confirmingEnd, setConfirmingEnd] = useState(false);
+  const locked = session.messages.length > 0;
 
   const handleSend = () => {
-    const input = inputRef.current
-    if (!input) return
-    const message = input.value.trim()
-    if (!message || session.loading) return
-    onSend(session.id, message)
-    input.value = ''
-  }
+    const input = inputRef.current;
+    if (!input) return;
+    const message = input.value.trim();
+    if (!message || session.loading) return;
+    onSend(session.id, message);
+    input.value = "";
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-      const isMobile = window.matchMedia('(hover: none)').matches
+    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+      const isMobile = window.matchMedia("(hover: none)").matches;
       if (!isMobile) {
-        e.preventDefault()
-        handleSend()
+        e.preventDefault();
+        handleSend();
       }
     }
-  }
+  };
 
   return (
     <div
-      className={`${styles.panel} ${session.minimized ? styles.panelMinimized : ''} ${!isActive ? styles.panelHidden : ''}`}
+      className={`${styles.panel} ${session.minimized ? styles.panelMinimized : ""} ${!isActive ? styles.panelHidden : ""}`}
       data-testid="context-bot-panel"
     >
       {/* Header — tappable when minimized to re-expand */}
@@ -59,19 +66,36 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
       >
         <div className={styles.headerInfo}>
           <span className={styles.headerDot} aria-hidden="true" />
-          <span className={styles.headerTitle} data-testid="panel-title">{session.title}</span>
+          <span className={styles.headerTitle} data-testid="panel-title">
+            {session.title}
+          </span>
         </div>
         <div className={styles.headerActions}>
           {confirmingEnd ? (
             <>
               <span className={styles.confirmLabel}>End chat?</span>
-              <button className={styles.confirmNo} onClick={() => setConfirmingEnd(false)} type="button">Cancel</button>
-              <button className={styles.confirmYes} onClick={() => onClose(session.id)} type="button" data-testid="confirm-end-btn">End</button>
+              <button
+                className={styles.confirmNo}
+                onClick={() => setConfirmingEnd(false)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className={styles.confirmYes}
+                onClick={() => onClose(session.id)}
+                type="button"
+                data-testid="confirm-end-btn"
+              >
+                End
+              </button>
             </>
           ) : (
             <>
               {locked ? (
-                <span className={styles.modelBadge} title={session.model}>{modelLabel(session.model)}</span>
+                <span className={styles.modelBadge} title={session.model}>
+                  {modelLabel(session.model)}
+                </span>
               ) : (
                 <select
                   className={styles.modelSelect}
@@ -80,7 +104,9 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
                   data-testid="model-select"
                 >
                   {MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>{m.label}</option>
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
                   ))}
                 </select>
               )}
@@ -117,7 +143,7 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
             )}
 
             {session.messages.map((msg, i) =>
-              msg.role === 'user' ? (
+              msg.role === "user" ? (
                 <div key={i} className={styles.msgUser}>
                   <span className={styles.msgUserLabel}>You</span>
                   <div className={styles.msgUserContent}>{msg.content}</div>
@@ -128,13 +154,15 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
                     <ReactMarkdown>{msg.content}</ReactMarkdown>
                   </div>
                 </div>
-              )
+              ),
             )}
 
             {session.loading && (
               <div className={styles.loadingActivity} data-testid="loading-dots">
                 <div className={styles.loadingDots}>
-                  <span /><span /><span />
+                  <span />
+                  <span />
+                  <span />
                 </div>
                 {session.activity && (
                   <span className={styles.loadingActivityLabel}>{session.activity}</span>
@@ -168,5 +196,5 @@ export default function ContextBotPanel({ session, isActive = true, onSend, onCh
         </>
       )}
     </div>
-  )
+  );
 }

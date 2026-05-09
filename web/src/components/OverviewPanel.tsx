@@ -61,26 +61,43 @@ export function OverviewPanel({
   onOpenMode,
   showHero = true,
 }: Props) {
-  const [latestUnreadByBot, setLatestUnreadByBot] = useState<Record<string, { content: string; created_at: string } | null>>({});
+  const [latestUnreadByBot, setLatestUnreadByBot] = useState<
+    Record<string, { content: string; created_at: string } | null>
+  >({});
   const pendingFollowups = followups.filter((f) => f.status === "pending");
-  const runningWorkers = workers.filter((w) => w.status === "running" || w.status === "active" || w.status === "waiting");
+  const runningWorkers = workers.filter(
+    (w) => w.status === "running" || w.status === "active" || w.status === "waiting",
+  );
   const dirtyRepos = repos.filter((r) => !r.is_clean);
   const activeResearch = researchTasks.filter((task) => task.status === "running");
-  const unreadBots = useMemo(() => bots
-    .filter((bot) => (unread[bot.name] ?? 0) > 0)
-    .sort((a, b) => (unread[b.name] ?? 0) - (unread[a.name] ?? 0)), [bots, unread]);
+  const unreadBots = useMemo(
+    () =>
+      bots
+        .filter((bot) => (unread[bot.name] ?? 0) > 0)
+        .sort((a, b) => (unread[b.name] ?? 0) - (unread[a.name] ?? 0)),
+    [bots, unread],
+  );
   const nextWorker = runningWorkers[0];
-  const nextFollowup = pendingFollowups.slice().sort((a, b) => a.fires_at.localeCompare(b.fires_at))[0];
-  const continueBot = [...unreadBots]
-    .filter((bot) => latestUnreadByBot[bot.name]?.created_at)
-    .sort((a, b) => (latestUnreadByBot[b.name]?.created_at ?? "").localeCompare(latestUnreadByBot[a.name]?.created_at ?? ""))[0]
-    ?? unreadBots[0]
-    ?? bots.find((bot) => bot.name === primaryBot)
-    ?? bots[0];
+  const nextFollowup = pendingFollowups
+    .slice()
+    .sort((a, b) => a.fires_at.localeCompare(b.fires_at))[0];
+  const continueBot =
+    [...unreadBots]
+      .filter((bot) => latestUnreadByBot[bot.name]?.created_at)
+      .sort((a, b) =>
+        (latestUnreadByBot[b.name]?.created_at ?? "").localeCompare(
+          latestUnreadByBot[a.name]?.created_at ?? "",
+        ),
+      )[0] ??
+    unreadBots[0] ??
+    bots.find((bot) => bot.name === primaryBot) ??
+    bots[0];
 
   useEffect(() => {
     let cancelled = false;
-    const targets = Array.from(new Set([continueBot?.name, ...unreadBots.map((bot) => bot.name)].filter(Boolean))) as string[];
+    const targets = Array.from(
+      new Set([continueBot?.name, ...unreadBots.map((bot) => bot.name)].filter(Boolean)),
+    ) as string[];
     if (targets.length === 0) {
       setLatestUnreadByBot({});
       return () => {
@@ -93,7 +110,10 @@ export function OverviewPanel({
         try {
           const messages = await api.getConversations(workspace, botName, 1, remote);
           const latest = messages[messages.length - 1];
-          return [botName, latest ? { content: latest.content, created_at: latest.created_at } : null] as const;
+          return [
+            botName,
+            latest ? { content: latest.content, created_at: latest.created_at } : null,
+          ] as const;
         } catch {
           return [botName, null] as const;
         }
@@ -115,7 +135,9 @@ export function OverviewPanel({
     continueBot
       ? {
           key: `bot-${continueBot.name}`,
-          title: continueMessage ? previewLabel(continueMessage.content) : `Continue ${continueBot.name}`,
+          title: continueMessage
+            ? previewLabel(continueMessage.content)
+            : `Continue ${continueBot.name}`,
           meta: continueMessage
             ? `${continueBot.name} · ${relativeTimeLabel(continueMessage.created_at)}`
             : `${continueBot.name}${unread[continueBot.name] ? ` · ${unread[continueBot.name]} unread` : ""}${continueBot.role ? ` · ${continueBot.role}` : ""}`,
@@ -148,11 +170,15 @@ export function OverviewPanel({
             <div className={styles.eyebrow}>Workspace control room</div>
             <h1 className={styles.title}>{workspace}</h1>
             <p className={styles.summary}>
-              Make the next action obvious: continue a conversation, review worker output, or start a fresh task.
+              Make the next action obvious: continue a conversation, review worker output, or start
+              a fresh task.
             </p>
           </div>
           <div className={styles.heroActions}>
-            <button className={styles.primaryAction} onClick={() => continueBot && onSelectBot(continueBot.name)}>
+            <button
+              className={styles.primaryAction}
+              onClick={() => continueBot && onSelectBot(continueBot.name)}
+            >
               {continueBot ? `Continue ${continueBot.name}` : "Open chat"}
             </button>
             <button className={styles.secondaryAction} onClick={() => onOpenMode("workers")}>
@@ -167,7 +193,9 @@ export function OverviewPanel({
           <Bot size={18} />
           <span className={styles.metricLabel}>Bots</span>
           <strong className={styles.metricValue}>{bots.length}</strong>
-          <span className={styles.metricMeta}>{Object.values(unread).reduce((sum, value) => sum + value, 0)} unread messages</span>
+          <span className={styles.metricMeta}>
+            {Object.values(unread).reduce((sum, value) => sum + value, 0)} unread messages
+          </span>
         </button>
         <button className={styles.metricCard} onClick={() => onOpenMode("workers")}>
           <Wrench size={18} />
@@ -194,11 +222,15 @@ export function OverviewPanel({
           <div className={styles.cardHeader}>
             <div>
               <div className={styles.cardTitle}>Needs attention</div>
-              <div className={styles.cardSubtitle}>Unread chats, due follow-ups, and active work</div>
+              <div className={styles.cardSubtitle}>
+                Unread chats, due follow-ups, and active work
+              </div>
             </div>
             <BellRing size={16} className={styles.cardIcon} />
           </div>
-          {unreadBots.length === 0 && pendingFollowups.length === 0 && runningWorkers.length === 0 ? (
+          {unreadBots.length === 0 &&
+          pendingFollowups.length === 0 &&
+          runningWorkers.length === 0 ? (
             <div className={styles.empty}>Nothing urgent right now.</div>
           ) : (
             <div className={styles.list}>
@@ -301,12 +333,14 @@ export function OverviewPanel({
                   onClick={() => onSelectWorker(worker.id)}
                   title={worker.id}
                   meta={`${worker.status} · ${worker.branch.replace(/^swarm\//, "")}`}
-                  right={(
+                  right={
                     <>
-                      {worker.review_state ? <StatusBadge tone="accent">{worker.review_state}</StatusBadge> : null}
+                      {worker.review_state ? (
+                        <StatusBadge tone="accent">{worker.review_state}</StatusBadge>
+                      ) : null}
                       <ArrowRight size={14} />
                     </>
-                  )}
+                  }
                 />
               ))}
             </div>
@@ -319,7 +353,9 @@ export function OverviewPanel({
           <div className={styles.cardHeader}>
             <div>
               <div className={styles.cardTitle}>Repo state</div>
-              <div className={styles.cardSubtitle}>Secondary context, not the main call to action</div>
+              <div className={styles.cardSubtitle}>
+                Secondary context, not the main call to action
+              </div>
             </div>
             <FolderGit2 size={16} className={styles.cardIcon} />
           </div>
@@ -332,11 +368,11 @@ export function OverviewPanel({
                   key={repo.path}
                   title={repo.name}
                   meta={`${repo.branch} · ${repo.is_clean ? "clean" : "modified"} · ${repoSyncLabel(repo)} · ${repo.workers.length} workers`}
-                  right={(
+                  right={
                     <StatusBadge tone={repo.is_clean ? "success" : "accent"}>
                       {repo.is_clean ? "clean" : "modified"}
                     </StatusBadge>
-                  )}
+                  }
                 />
               ))}
             </div>

@@ -10,12 +10,18 @@
   gap: var(--space-3);
   border-left-style: solid;
   border-left-color: transparent;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.15);
-  transition: box-shadow 0.15s, transform 0.15s;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.25),
+    0 1px 2px rgba(0, 0, 0, 0.15);
+  transition:
+    box-shadow 0.15s,
+    transform 0.15s;
 }
 
 .card:hover {
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.2);
+  box-shadow:
+    0 4px 16px rgba(0, 0, 0, 0.35),
+    0 2px 4px rgba(0, 0, 0, 0.2);
   transform: translateY(-1px);
 }
 
@@ -82,7 +88,9 @@
   cursor: pointer;
   padding: 0;
   border-radius: 3px;
-  transition: opacity 0.15s, color 0.15s;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
 }
 
 .infoBtn:hover {
@@ -579,10 +587,19 @@ a.feedEvent:hover {
   overflow-y: auto;
 }
 
-.markdown p { margin-bottom: var(--space-2); }
-.markdown p:last-child { margin-bottom: 0; }
-.markdown strong { color: var(--text-strong); }
-.markdown code { font-family: var(--font-mono); font-size: 12px; }
+.markdown p {
+  margin-bottom: var(--space-2);
+}
+.markdown p:last-child {
+  margin-bottom: 0;
+}
+.markdown strong {
+  color: var(--text-strong);
+}
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
 .markdown blockquote {
   border-left: 2px solid var(--accent);
   padding-left: var(--space-3);

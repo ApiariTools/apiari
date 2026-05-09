@@ -45,7 +45,9 @@ function recentTimestamp(message: Message | null) {
 }
 
 export function ChatLanding({ workspace, remote, bots, unread, onSelectBot }: Props) {
-  const [recentByBot, setRecentByBot] = useState<Record<string, { latest: Message | null; preview: Message | null }>>({});
+  const [recentByBot, setRecentByBot] = useState<
+    Record<string, { latest: Message | null; preview: Message | null }>
+  >({});
 
   useEffect(() => {
     let cancelled = false;
@@ -82,7 +84,9 @@ export function ChatLanding({ workspace, remote, bots, unread, onSelectBot }: Pr
 
   const rankedBots = useMemo(() => {
     return [...bots].sort((a, b) => {
-      const recentDelta = recentTimestamp(recentByBot[b.name]?.latest ?? null).localeCompare(recentTimestamp(recentByBot[a.name]?.latest ?? null));
+      const recentDelta = recentTimestamp(recentByBot[b.name]?.latest ?? null).localeCompare(
+        recentTimestamp(recentByBot[a.name]?.latest ?? null),
+      );
       if (recentDelta !== 0) return recentDelta;
       const unreadDelta = (unread[b.name] ?? 0) - (unread[a.name] ?? 0);
       if (unreadDelta !== 0) return unreadDelta;
@@ -96,9 +100,13 @@ export function ChatLanding({ workspace, remote, bots, unread, onSelectBot }: Pr
     .sort((a, b) => {
       const unreadDelta = (unread[b.name] ?? 0) - (unread[a.name] ?? 0);
       if (unreadDelta !== 0) return unreadDelta;
-      return recentTimestamp(recentByBot[b.name]?.latest ?? null).localeCompare(recentTimestamp(recentByBot[a.name]?.latest ?? null));
+      return recentTimestamp(recentByBot[b.name]?.latest ?? null).localeCompare(
+        recentTimestamp(recentByBot[a.name]?.latest ?? null),
+      );
     });
-  const remainingBots = rankedBots.filter((bot) => bot !== featuredBot && !attentionBots.includes(bot));
+  const remainingBots = rankedBots.filter(
+    (bot) => bot !== featuredBot && !attentionBots.includes(bot),
+  );
 
   const renderMetaChips = (bot: Bot) => {
     const meta = [bot.provider, bot.model].filter(Boolean).join(" / ");
@@ -156,7 +164,8 @@ export function ChatLanding({ workspace, remote, bots, unread, onSelectBot }: Pr
         <span className={styles.kicker}>Chat workspace</span>
         <h2 className={styles.title}>Choose a bot</h2>
         <p className={styles.copy}>
-          Continue where work is already active, or start a new conversation with the bot best suited for the job.
+          Continue where work is already active, or start a new conversation with the bot best
+          suited for the job.
         </p>
       </div>
 
@@ -176,7 +185,9 @@ export function ChatLanding({ workspace, remote, bots, unread, onSelectBot }: Pr
               <span className={styles.badge}>{unread[featuredBot.name]} unread</span>
             ) : null}
           </div>
-          {featuredBot.description ? <p className={styles.description}>{featuredBot.description}</p> : null}
+          {featuredBot.description ? (
+            <p className={styles.description}>{featuredBot.description}</p>
+          ) : null}
           {renderMetaChips(featuredBot)}
           {(() => {
             const recentEntry = recentByBot[featuredBot.name] ?? { latest: null, preview: null };
@@ -188,7 +199,9 @@ export function ChatLanding({ workspace, remote, bots, unread, onSelectBot }: Pr
                   <span className={styles.previewLabel}>{recentPreview.label}</span>
                   {recentTime ? <span className={styles.time}>{recentTime}</span> : null}
                 </div>
-                {recentPreview.content ? <p className={styles.preview}>{recentPreview.content}</p> : null}
+                {recentPreview.content ? (
+                  <p className={styles.preview}>{recentPreview.content}</p>
+                ) : null}
               </div>
             );
           })()}

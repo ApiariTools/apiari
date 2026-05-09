@@ -21,8 +21,7 @@
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 85%),
-    rgba(255, 255, 255, 0.01);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 85%), rgba(255, 255, 255, 0.01);
 }
 
 .back {
@@ -259,9 +258,16 @@
   color: var(--text);
 }
 
-.prose p { margin: 0 0 8px; }
-.prose p:last-child { margin-bottom: 0; }
-.prose ul, .prose ol { margin: 4px 0 8px 20px; }
+.prose p {
+  margin: 0 0 8px;
+}
+.prose p:last-child {
+  margin-bottom: 0;
+}
+.prose ul,
+.prose ol {
+  margin: 4px 0 8px 20px;
+}
 .prose pre {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -277,13 +283,20 @@
   border-radius: 3px;
   font-size: 13px;
 }
-.prose pre code { background: none; padding: 0; }
-.prose h1, .prose h2, .prose h3 {
+.prose pre code {
+  background: none;
+  padding: 0;
+}
+.prose h1,
+.prose h2,
+.prose h3 {
   color: var(--text-strong);
   margin: 12px 0 4px;
   font-size: 14px;
 }
-.prose strong { color: var(--text-strong); }
+.prose strong {
+  color: var(--text-strong);
+}
 
 .empty {
   color: var(--text-faint);
@@ -303,7 +316,8 @@
   overscroll-behavior: contain;
 }
 
-.msg {}
+.msg {
+}
 
 .userMsg {
   background: var(--bg-card);
@@ -338,8 +352,12 @@
   color: var(--text-strong);
 }
 
-.msgText p { margin: 0 0 6px; }
-.msgText p:last-child { margin-bottom: 0; }
+.msgText p {
+  margin: 0 0 6px;
+}
+.msgText p:last-child {
+  margin-bottom: 0;
+}
 .msgText pre {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -349,9 +367,16 @@
   margin: 6px 0;
   font-size: 12px;
 }
-.msgText code { background: var(--bg-card); padding: 1px 4px; border-radius: 3px; font-size: 12px; }
-.msgText pre code { background: none; padding: 0; }
-
+.msgText code {
+  background: var(--bg-card);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.msgText pre code {
+  background: none;
+  padding: 0;
+}
 
 /* ── Diff view ── */
 .diffFileSection {
@@ -405,10 +430,14 @@
   transform: rotate(-90deg);
 }
 
-
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 /* ── Typing indicator ── */
@@ -441,7 +470,9 @@
 }
 
 @keyframes bounce {
-  0%, 80%, 100% {
+  0%,
+  80%,
+  100% {
     opacity: 0.3;
     transform: scale(0.8);
   }

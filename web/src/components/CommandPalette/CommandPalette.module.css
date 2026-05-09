@@ -113,11 +113,21 @@
   flex-shrink: 0;
 }
 
-.dotRunning { background: var(--status-running); }
-.dotWaiting { background: var(--status-waiting); }
-.dotStalled { background: var(--status-stalled); }
-.dotDone    { background: var(--status-merged); }
-.dotIdle    { background: var(--text-faint); }
+.dotRunning {
+  background: var(--status-running);
+}
+.dotWaiting {
+  background: var(--status-waiting);
+}
+.dotStalled {
+  background: var(--status-stalled);
+}
+.dotDone {
+  background: var(--status-merged);
+}
+.dotIdle {
+  background: var(--text-faint);
+}
 
 .resultName {
   flex: 1;

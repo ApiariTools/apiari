@@ -51,10 +51,7 @@ describe("splitSentences", () => {
   });
 
   it("strips markdown before splitting", () => {
-    expect(splitSentences("**Hello.** How are you?")).toEqual([
-      "Hello.",
-      "How are you?",
-    ]);
+    expect(splitSentences("**Hello.** How are you?")).toEqual(["Hello.", "How are you?"]);
   });
 
   it("handles code blocks", () => {

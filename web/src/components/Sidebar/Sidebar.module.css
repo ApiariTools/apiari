@@ -157,7 +157,9 @@
   background: transparent;
   width: 100%;
   text-align: left;
-  transition: background 120ms, border-color 120ms;
+  transition:
+    background 120ms,
+    border-color 120ms;
   gap: 8px;
   font-family: var(--font);
   text-decoration: none;

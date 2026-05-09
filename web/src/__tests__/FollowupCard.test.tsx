@@ -48,13 +48,7 @@ describe("FollowupCard", () => {
   it("calls cancelFollowup API on cancel click", async () => {
     const user = userEvent.setup();
     const onCancelled = vi.fn();
-    render(
-      <FollowupCard
-        followup={makeFollowup()}
-        workspace="ws"
-        onCancelled={onCancelled}
-      />
-    );
+    render(<FollowupCard followup={makeFollowup()} workspace="ws" onCancelled={onCancelled} />);
 
     await user.click(screen.getByText("Cancel"));
     expect(api.cancelFollowup).toHaveBeenCalledWith("ws", "fu_test123");
@@ -62,7 +56,7 @@ describe("FollowupCard", () => {
 
   it("renders inline variant without cancel button", () => {
     const { container } = render(
-      <FollowupCard followup={makeFollowup({ status: "fired" })} workspace="ws" inline />
+      <FollowupCard followup={makeFollowup({ status: "fired" })} workspace="ws" inline />,
     );
     expect(screen.getByText("Follow-up triggered")).toBeInTheDocument();
     expect(screen.queryByText("Cancel")).not.toBeInTheDocument();
@@ -99,7 +93,7 @@ describe("FollowupIndicator", () => {
 
   it("does not render for fired followup", () => {
     const { container } = render(
-      <FollowupIndicator followup={makeFollowup({ status: "fired" })} />
+      <FollowupIndicator followup={makeFollowup({ status: "fired" })} />,
     );
     expect(container.firstChild).toBeNull();
   });

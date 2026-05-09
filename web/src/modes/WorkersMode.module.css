@@ -6,8 +6,7 @@
   overflow: hidden;
   background:
     radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 20%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 24%),
-    var(--bg);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 24%), var(--bg);
 }
 
 .metaRow {
@@ -50,11 +49,13 @@
 }
 
 .environmentReady {
-  background: linear-gradient(180deg, rgba(54, 179, 126, 0.08), transparent 100%), var(--surface-muted);
+  background:
+    linear-gradient(180deg, rgba(54, 179, 126, 0.08), transparent 100%), var(--surface-muted);
 }
 
 .environmentBlocked {
-  background: linear-gradient(180deg, rgba(217, 119, 6, 0.1), transparent 100%), var(--surface-muted);
+  background:
+    linear-gradient(180deg, rgba(217, 119, 6, 0.1), transparent 100%), var(--surface-muted);
 }
 
 .environmentHeader {
@@ -101,9 +102,7 @@
   min-height: 0;
   border: 1px solid var(--border-strong);
   border-radius: 24px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%),
-    var(--bg-card);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 22%), var(--bg-card);
   overflow: hidden;
   box-shadow: var(--shell-shadow);
 }
@@ -156,7 +155,6 @@
 
   .mobileFrame {
     background:
-      radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
-      var(--bg);
+      radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%), var(--bg);
   }
 }

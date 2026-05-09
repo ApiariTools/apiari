@@ -32,31 +32,42 @@ interface Props {
 }
 
 export function ChatMode(props: Props) {
-  const pendingFollowups = props.followups.filter((followup) => followup.status === "pending").length;
+  const pendingFollowups = props.followups.filter(
+    (followup) => followup.status === "pending",
+  ).length;
   const providerLabel = [props.botProvider, props.botModel].filter(Boolean).join(" / ");
   return (
     <ModeScaffold
       hideHeaderOnMobile
-      header={(
+      header={
         <PageHeader
           eyebrow="Conversation"
           title={props.bot}
-          summary={props.botDescription || "Continue the active bot conversation and keep follow-through local to this tool."}
-          meta={(
+          summary={
+            props.botDescription ||
+            "Continue the active bot conversation and keep follow-through local to this tool."
+          }
+          meta={
             <div className={styles.modeMeta}>
               {providerLabel ? <span className={styles.providerChip}>{providerLabel}</span> : null}
-              {pendingFollowups > 0 ? <StatusBadge tone="accent">{pendingFollowups} pending followups</StatusBadge> : null}
+              {pendingFollowups > 0 ? (
+                <StatusBadge tone="accent">{pendingFollowups} pending followups</StatusBadge>
+              ) : null}
             </div>
-          )}
-          actions={props.onWorkersToggle ? [
-            {
-              label: props.workerCount ? `Workers (${props.workerCount})` : "Workers",
-              onClick: props.onWorkersToggle,
-              kind: "secondary",
-            },
-          ] : []}
+          }
+          actions={
+            props.onWorkersToggle
+              ? [
+                  {
+                    label: props.workerCount ? `Workers (${props.workerCount})` : "Workers",
+                    onClick: props.onWorkersToggle,
+                    kind: "secondary",
+                  },
+                ]
+              : []
+          }
         />
-      )}
+      }
     >
       <div className={styles.page}>
         <ChatPanel

@@ -46,7 +46,9 @@ declare global {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-function makeWorker(overrides: Partial<WorkerV2Fixture> & { id: string; workspace: string }): WorkerV2Fixture {
+function makeWorker(
+  overrides: Partial<WorkerV2Fixture> & { id: string; workspace: string },
+): WorkerV2Fixture {
   return {
     state: "running",
     label: "",
@@ -75,13 +77,13 @@ function defaultFixture(): AppFixture {
   return {
     workspaces: [{ name: "apiari" }, { name: "mgm" }],
     v2WorkersByWorkspace: {
-      "apiari": [],
-      "mgm": [],
+      apiari: [],
+      mgm: [],
     },
     v2WorkerDetails: {},
     reposByWorkspace: {
-      "apiari": [{ name: "apiari", path: "/dev/apiari" }],
-      "mgm": [{ name: "mgm", path: "/dev/mgm" }],
+      apiari: [{ name: "apiari", path: "/dev/apiari" }],
+      mgm: [{ name: "mgm", path: "/dev/mgm" }],
     },
   };
 }
@@ -111,9 +113,7 @@ async function installMockWebSocket(page: Page) {
     }
 
     window.__pushWsEvent = (event: unknown) => {
-      window.__mockWs?.onmessage?.(
-        new MessageEvent("message", { data: JSON.stringify(event) }),
-      );
+      window.__mockWs?.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
     };
 
     Object.defineProperty(window, "WebSocket", {
@@ -171,7 +171,10 @@ async function wireMockApi(page: Page, fixture: AppFixture) {
           body: JSON.stringify({ error: fixture.createWorkerError }),
         });
       }
-      const body = req.postDataJSON() as { brief?: { goal?: string; repo?: string }; repo?: string };
+      const body = req.postDataJSON() as {
+        brief?: { goal?: string; repo?: string };
+        repo?: string;
+      };
       const workerId = `new-worker-${Date.now()}`;
       const newWorker = makeWorker({
         id: workerId,
@@ -189,7 +192,12 @@ async function wireMockApi(page: Page, fixture: AppFixture) {
     if (method === "GET" && suffix.startsWith("v2/workers/")) {
       const workerId = suffix.slice("v2/workers/".length).split("/")[0];
       const detail = fixture.v2WorkerDetails[workerId];
-      if (!detail) return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
+      if (!detail)
+        return route.fulfill({
+          status: 404,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "not found" }),
+        });
       return fulfillJson(route, detail);
     }
     if (method === "POST" && suffix.startsWith("v2/workers/")) {
@@ -224,7 +232,8 @@ async function wireMockApi(page: Page, fixture: AppFixture) {
     if (method === "GET" && suffix === "bots") return fulfillJson(route, []);
     if (method === "GET" && suffix === "unread") return fulfillJson(route, {});
     if (method === "POST" && suffix.startsWith("seen/")) return fulfillJson(route, { ok: true });
-    if (method === "GET" && suffix.startsWith("bots/")) return fulfillJson(route, { status: "idle", streaming_content: "", tool_name: null });
+    if (method === "GET" && suffix.startsWith("bots/"))
+      return fulfillJson(route, { status: "idle", streaming_content: "", tool_name: null });
 
     // Fallback: return empty 200 rather than throwing — keeps the app running
     // even when new endpoints are added without updating this mock.
@@ -250,7 +259,12 @@ test.describe("apiari web", () => {
 
   test("worker in sidebar navigates to worker detail on click", async ({ page }) => {
     const fixture = defaultFixture();
-    const worker = makeWorker({ id: "api-ab12", workspace: "apiari", goal: "fix auth bug", state: "waiting" });
+    const worker = makeWorker({
+      id: "api-ab12",
+      workspace: "apiari",
+      goal: "fix auth bug",
+      state: "waiting",
+    });
     fixture.v2WorkersByWorkspace["apiari"] = [worker];
     fixture.v2WorkerDetails["api-ab12"] = worker;
     await bootApp(page, fixture);
@@ -328,7 +342,9 @@ test.describe("apiari web", () => {
     await page.getByTestId("dispatch-btn").click();
 
     // Dialog closes after dispatch
-    await expect(page.getByRole("dialog", { name: "Quick dispatch" })).not.toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole("dialog", { name: "Quick dispatch" })).not.toBeVisible({
+      timeout: 5_000,
+    });
 
     // App navigates to the new worker detail view
     await expect(page.getByTestId("tab-timeline")).toBeVisible({ timeout: 10_000 });

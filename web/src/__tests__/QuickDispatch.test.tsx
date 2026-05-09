@@ -6,8 +6,22 @@ import * as api from "@apiari/api";
 vi.mock("@apiari/api");
 
 const mockRepos = [
-  { name: "apiari", path: "/repos/apiari", has_swarm: true, is_clean: true, branch: "main", workers: [] },
-  { name: "mgm", path: "/repos/mgm", has_swarm: false, is_clean: true, branch: "main", workers: [] },
+  {
+    name: "apiari",
+    path: "/repos/apiari",
+    has_swarm: true,
+    is_clean: true,
+    branch: "main",
+    workers: [],
+  },
+  {
+    name: "mgm",
+    path: "/repos/mgm",
+    has_swarm: false,
+    is_clean: true,
+    branch: "main",
+    workers: [],
+  },
 ];
 
 const defaultProps = {

@@ -12,23 +12,26 @@ interface Props {
 export function useWorkerInspectorState({ workspace, remote, workerId, workers }: Props) {
   const [workerDetail, setWorkerDetail] = useState<WorkerDetailData | null>(null);
 
-  const refreshWorkerDetail = useCallback((targetWorkerId?: string) => {
-    const nextWorkerId = targetWorkerId ?? workerId;
-    if (!workspace || !nextWorkerId) {
-      setWorkerDetail(null);
-      return Promise.resolve(null);
-    }
-    return api
-      .getWorkerDetail(workspace, nextWorkerId, remote)
-      .then((detail) => {
-        setWorkerDetail(detail);
-        return detail;
-      })
-      .catch(() => {
+  const refreshWorkerDetail = useCallback(
+    (targetWorkerId?: string) => {
+      const nextWorkerId = targetWorkerId ?? workerId;
+      if (!workspace || !nextWorkerId) {
         setWorkerDetail(null);
-        return null;
-      });
-  }, [workspace, workerId, remote]);
+        return Promise.resolve(null);
+      }
+      return api
+        .getWorkerDetail(workspace, nextWorkerId, remote)
+        .then((detail) => {
+          setWorkerDetail(detail);
+          return detail;
+        })
+        .catch(() => {
+          setWorkerDetail(null);
+          return null;
+        });
+    },
+    [workspace, workerId, remote],
+  );
 
   useEffect(() => {
     if (!workspace || !workerId) return;
@@ -38,9 +41,7 @@ export function useWorkerInspectorState({ workspace, remote, workerId, workers }
     return () => clearInterval(interval);
   }, [refreshWorkerDetail, workspace, workerId]);
 
-  const selectedWorker = workerId
-    ? workers.find((entry) => entry.id === workerId) || null
-    : null;
+  const selectedWorker = workerId ? workers.find((entry) => entry.id === workerId) || null : null;
 
   return {
     workerDetail,

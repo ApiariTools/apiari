@@ -53,7 +53,9 @@
   cursor: pointer;
   align-items: center;
   justify-content: center;
-  transition: color 0.15s, border-color 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .hamburger:hover {

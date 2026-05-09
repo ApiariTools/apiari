@@ -138,14 +138,22 @@ describe("WorkerDetailV2", () => {
   });
 
   it("shows revision pill when revision_count > 0", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, revision_count: 2, label: "Revising (pass 2)" });
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      revision_count: 2,
+      label: "Revising (pass 2)",
+    });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     expect(await screen.findByText("Pass 2")).toBeInTheDocument();
   });
 
   it("calls sendWorkerMessageV2 when send is clicked", async () => {
     // Use waiting state so the input is enabled
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "waiting", label: "Waiting" });
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "waiting",
+      label: "Waiting",
+    });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const input = await screen.findByPlaceholderText("Send an instruction…");
     fireEvent.change(input, { target: { value: "hello worker" } });
@@ -208,7 +216,11 @@ describe("WorkerDetailV2", () => {
   });
 
   it("shows 'Local tests ✓' when ci_passing is null even if tests_passing is true", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, tests_passing: true, ci_passing: null });
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      tests_passing: true,
+      ci_passing: null,
+    });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     const pills = await screen.findByTestId("property-pills");
     expect(pills).toHaveTextContent("Local tests ✓");
@@ -297,7 +309,11 @@ describe("WorkerDetailV2", () => {
   // ── Input state tests ─────────────────────────────────────────────────────
 
   it("input is enabled with async placeholder when state is running", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "running", label: "Working" });
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "running",
+      label: "Working",
+    });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("action-bar");
     const textarea = screen.getByPlaceholderText("Send async instruction…");
@@ -305,7 +321,11 @@ describe("WorkerDetailV2", () => {
   });
 
   it("input is enabled when state is stalled (agent is alive, just silent)", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "stalled", label: "Stalled" });
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "stalled",
+      label: "Stalled",
+    });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("action-bar");
     const textarea = screen.getByPlaceholderText("Send async instruction…");
@@ -320,7 +340,11 @@ describe("WorkerDetailV2", () => {
   });
 
   it("input is hidden when state is abandoned", async () => {
-    vi.mocked(api.getWorkerV2).mockResolvedValue({ ...mockWorker, state: "abandoned", label: "Abandoned" });
+    vi.mocked(api.getWorkerV2).mockResolvedValue({
+      ...mockWorker,
+      state: "abandoned",
+      label: "Abandoned",
+    });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
     expect(screen.queryByTestId("action-bar")).not.toBeInTheDocument();
@@ -371,7 +395,9 @@ describe("WorkerDetailV2", () => {
     vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    expect(screen.queryByText("Waiting for review", { selector: '[class*="stateDividerText"]' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Waiting for review", { selector: '[class*="stateDividerText"]' }),
+    ).not.toBeInTheDocument();
     expect(screen.getByText("Reviewed")).toBeInTheDocument();
   });
 
@@ -487,9 +513,21 @@ describe("WorkerDetailV2", () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({
       ...mockWorker,
       events: [
-        { event_type: "assistant_text", content: "I'll add the `", created_at: "2026-05-04T10:01:00Z" },
-        { event_type: "assistant_text", content: "<!-- apiari-test -->", created_at: "2026-05-04T10:01:00Z" },
-        { event_type: "assistant_text", content: " HTML comment", created_at: "2026-05-04T10:01:00Z" },
+        {
+          event_type: "assistant_text",
+          content: "I'll add the `",
+          created_at: "2026-05-04T10:01:00Z",
+        },
+        {
+          event_type: "assistant_text",
+          content: "<!-- apiari-test -->",
+          created_at: "2026-05-04T10:01:00Z",
+        },
+        {
+          event_type: "assistant_text",
+          content: " HTML comment",
+          created_at: "2026-05-04T10:01:00Z",
+        },
         { event_type: "assistant_text", content: ".", created_at: "2026-05-04T10:01:00Z" },
       ],
     });
@@ -547,7 +585,11 @@ describe("WorkerDetailV2", () => {
     vi.mocked(api.getWorkerV2).mockResolvedValue({
       ...mockWorker,
       events: [
-        { event_type: "assistant_text", content: "Starting work.", created_at: "2026-05-04T10:00:00Z" },
+        {
+          event_type: "assistant_text",
+          content: "Starting work.",
+          created_at: "2026-05-04T10:00:00Z",
+        },
         {
           event_type: "tool_use",
           tool: "Read",

@@ -1,6 +1,10 @@
 import { WorkersPanel } from "../components/WorkersPanel";
 import { EmptyState, InspectorPane, PageHeader, ModeScaffold } from "@apiari/ui";
-import type { Worker, WorkerDetail as WorkerDetailData, WorkerEnvironmentStatus } from "@apiari/types";
+import type {
+  Worker,
+  WorkerDetail as WorkerDetailData,
+  WorkerEnvironmentStatus,
+} from "@apiari/types";
 import { Suspense, lazy } from "react";
 import styles from "./WorkersMode.module.css";
 
@@ -23,9 +27,15 @@ interface Props {
   isMobile: boolean;
   onSelectWorker: (id: string) => void;
   onBackFromWorker: () => void;
-  onPromoteWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
-  onRedispatchWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
-  onCloseWorker: (id: string) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onPromoteWorker: (
+    id: string,
+  ) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onRedispatchWorker: (
+    id: string,
+  ) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
+  onCloseWorker: (
+    id: string,
+  ) => Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }>;
 }
 
 export function WorkersMode({
@@ -43,10 +53,14 @@ export function WorkersMode({
   onRedispatchWorker,
   onCloseWorker,
 }: Props) {
-  const activeCount = workers.filter((worker) => worker.status === "running" || worker.status === "active").length;
+  const activeCount = workers.filter(
+    (worker) => worker.status === "running" || worker.status === "active",
+  ).length;
   const reviewCount = workers.filter((worker) => worker.status === "waiting").length;
   const openPrCount = workers.filter((worker) => worker.pr_url).length;
-  const codexCount = workers.filter((worker) => worker.agent.toLowerCase().includes("codex")).length;
+  const codexCount = workers.filter((worker) =>
+    worker.agent.toLowerCase().includes("codex"),
+  ).length;
 
   let content;
   if (workerId && selectedWorker) {
@@ -91,7 +105,11 @@ export function WorkersMode({
       </div>
     );
   } else if (isMobile) {
-    content = <div className={styles.mobileFrame}><WorkersPanel workers={workers} onSelectWorker={onSelectWorker} /></div>;
+    content = (
+      <div className={styles.mobileFrame}>
+        <WorkersPanel workers={workers} onSelectWorker={onSelectWorker} />
+      </div>
+    );
   } else {
     content = (
       <div className={styles.desktopFrame}>
@@ -100,12 +118,12 @@ export function WorkersMode({
         </div>
         <div className={styles.rightPane}>
           <InspectorPane
-            placeholder={(
+            placeholder={
               <EmptyState
                 title="Select a worker"
                 body="Inspect live execution state, task context, diff output, and worker chat without leaving the Workers tool."
               />
-            )}
+            }
           />
         </div>
       </div>
@@ -115,12 +133,12 @@ export function WorkersMode({
   return (
     <ModeScaffold
       hideHeaderOnMobile
-      header={(
+      header={
         <PageHeader
           eyebrow="Execution"
           title="Workers"
           summary={`Track autonomous work across the workspace. ${activeCount} active${reviewCount ? ` · ${reviewCount} in review` : ""}.`}
-          meta={(
+          meta={
             <>
               <div className={styles.metaRow}>
                 <div className={styles.metaCard}>
@@ -174,9 +192,9 @@ export function WorkersMode({
                 </div>
               )}
             </>
-          )}
+          }
         />
-      )}
+      }
     >
       <div className={styles.page}>{content}</div>
     </ModeScaffold>

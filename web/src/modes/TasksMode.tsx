@@ -60,13 +60,10 @@ function labelForAttemptRole(role?: string | null): string | null {
 export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
   const taskState = (task: Task) => task.lifecycle_state || task.stage;
   const activeTasks = tasks.filter(
-    (task) =>
-      !TERMINAL_STAGES.includes(taskState(task) as (typeof TERMINAL_STAGES)[number]),
+    (task) => !TERMINAL_STAGES.includes(taskState(task) as (typeof TERMINAL_STAGES)[number]),
   );
   const terminalTasks = tasks
-    .filter((task) =>
-      TERMINAL_STAGES.includes(taskState(task) as (typeof TERMINAL_STAGES)[number]),
-    )
+    .filter((task) => TERMINAL_STAGES.includes(taskState(task) as (typeof TERMINAL_STAGES)[number]))
     .sort((a, b) => (b.resolved_at || b.updated_at).localeCompare(a.resolved_at || a.updated_at))
     .slice(0, 8);
   const humanReviewCount = tasks.filter((task) => taskState(task) === "Human Review").length;
@@ -76,12 +73,12 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
     <ModeScaffold
       scrollBody
       hideHeaderOnMobile
-      header={(
+      header={
         <PageHeader
           eyebrow="Lifecycle"
           title="Review"
           summary="Track task progression, review handoffs, and PR state without mixing it into worker execution details."
-          meta={(
+          meta={
             <div className={styles.meta}>
               <StatusBadge tone={humanReviewCount > 0 ? "accent" : "neutral"}>
                 {humanReviewCount} in human review
@@ -89,9 +86,9 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
               <StatusBadge tone="neutral">{activeTasks.length} active tasks</StatusBadge>
               <StatusBadge tone="success">{openPrCount} tasks with PRs</StatusBadge>
             </div>
-          )}
+          }
         />
-      )}
+      }
     >
       <div className={styles.page}>
         {tasks.length === 0 ? (
@@ -126,7 +123,9 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                                 <StatusBadge tone={toneForStage(lifecycleState)}>
                                   {lifecycleState}
                                 </StatusBadge>
-                                {task.repo ? <span className={styles.repo}>{task.repo}</span> : null}
+                                {task.repo ? (
+                                  <span className={styles.repo}>{task.repo}</span>
+                                ) : null}
                               </div>
                               <h3 className={styles.title}>{task.title}</h3>
                               <div className={styles.metaRow}>
@@ -136,9 +135,12 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                               {latestAttempt ? (
                                 <div className={styles.metaRow}>
                                   <StatusBadge tone={toneForAttemptState(latestAttempt.state)}>
-                                    {labelForAttemptRole(latestAttempt.role) ?? "Attempt"} {latestAttempt.state}
+                                    {labelForAttemptRole(latestAttempt.role) ?? "Attempt"}{" "}
+                                    {latestAttempt.state}
                                   </StatusBadge>
-                                  {latestAttempt.detail ? <span>{latestAttempt.detail}</span> : null}
+                                  {latestAttempt.detail ? (
+                                    <span>{latestAttempt.detail}</span>
+                                  ) : null}
                                 </div>
                               ) : null}
                               <div className={styles.actions}>
@@ -182,23 +184,23 @@ export function TasksMode({ tasks, workers, onSelectWorker }: Props) {
                   {terminalTasks.map((task) => {
                     const lifecycleState = taskState(task);
                     return (
-                    <article key={task.id} className={styles.historyCard}>
-                      <div className={styles.historyTop}>
-                        <strong>{task.title}</strong>
-                        <StatusBadge tone={toneForStage(lifecycleState)}>
-                          {lifecycleState}
-                        </StatusBadge>
-                      </div>
-                      <div className={styles.metaRow}>
-                        {task.repo ? <span>repo: {task.repo}</span> : null}
-                        <span>{formatTaskTime(task.resolved_at || task.updated_at)}</span>
-                      </div>
-                      {task.latest_attempt?.detail ? (
-                        <div className={styles.metaRow}>
-                          <span>{task.latest_attempt.detail}</span>
+                      <article key={task.id} className={styles.historyCard}>
+                        <div className={styles.historyTop}>
+                          <strong>{task.title}</strong>
+                          <StatusBadge tone={toneForStage(lifecycleState)}>
+                            {lifecycleState}
+                          </StatusBadge>
                         </div>
-                      ) : null}
-                    </article>
+                        <div className={styles.metaRow}>
+                          {task.repo ? <span>repo: {task.repo}</span> : null}
+                          <span>{formatTaskTime(task.resolved_at || task.updated_at)}</span>
+                        </div>
+                        {task.latest_attempt?.detail ? (
+                          <div className={styles.metaRow}>
+                            <span>{task.latest_attempt.detail}</span>
+                          </div>
+                        ) : null}
+                      </article>
                     );
                   })}
                 </div>

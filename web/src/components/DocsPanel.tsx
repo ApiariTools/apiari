@@ -65,7 +65,13 @@ export function DocsPanel({
     const id = setInterval(() => {
       if (inflight) return;
       inflight = true;
-      api.getDocs(workspace, remote).then(setDocs).catch(() => {}).finally(() => { inflight = false; });
+      api
+        .getDocs(workspace, remote)
+        .then(setDocs)
+        .catch(() => {})
+        .finally(() => {
+          inflight = false;
+        });
     }, 10_000);
     return () => clearInterval(id);
   }, [workspace, remote]);
@@ -104,12 +110,14 @@ export function DocsPanel({
       setShowDocList(true);
       return;
     }
-    if (selected && docs.some((doc) => doc.name === selected) && loadedDocRef.current === selected) return;
-    const preferred = initialSelectedDocName && docs.some((doc) => doc.name === initialSelectedDocName)
-      ? initialSelectedDocName
-      : selected && docs.some((doc) => doc.name === selected)
-        ? selected
-        : docs[0].name;
+    if (selected && docs.some((doc) => doc.name === selected) && loadedDocRef.current === selected)
+      return;
+    const preferred =
+      initialSelectedDocName && docs.some((doc) => doc.name === initialSelectedDocName)
+        ? initialSelectedDocName
+        : selected && docs.some((doc) => doc.name === selected)
+          ? selected
+          : docs[0].name;
     selectDoc(preferred);
   }, [docs, initialSelectedDocName, selected, selectDoc]);
 
@@ -173,78 +181,82 @@ export function DocsPanel({
 
   return (
     <DocumentSurface
-      sidebar={(!isMobile || showDocList) ? (
-        <>
-          <div className={styles.sidebarHeader}>
-            <span className={styles.sidebarTitle}>Docs</span>
-            <button className={styles.newBtn} onClick={handleNew}>
-              <Plus size={14} />
-              New
-            </button>
-          </div>
-          {docs.map((doc) => (
-            <button
-              key={doc.name}
-              className={`${styles.docItem} ${selected === doc.name ? styles.docItemActive : ""}`}
-              onClick={() => selectDoc(doc.name)}
-            >
-              <FileText size={14} className={styles.docIcon} />
-              <span className={styles.docName}>{doc.title}</span>
-            </button>
-          ))}
-        </>
-      ) : null}
-      editor={selected && (!isMobile || !showDocList) ? (
-        <div className={styles.editor}>
-          <div className={styles.toolbar}>
-            {isMobile && !showDocList && (
-              <button
-                className={styles.toolBtn}
-                onClick={openDocList}
-                aria-label="Back to document list"
-              >
-                <ArrowLeft size={16} />
+      sidebar={
+        !isMobile || showDocList ? (
+          <>
+            <div className={styles.sidebarHeader}>
+              <span className={styles.sidebarTitle}>Docs</span>
+              <button className={styles.newBtn} onClick={handleNew}>
+                <Plus size={14} />
+                New
               </button>
-            )}
-            <span className={styles.toolbarTitle}>{selected}</span>
-            {edited && <span className={styles.editedBadge}>Edited</span>}
-            <button
-              className={`${styles.toolBtn} ${preview ? styles.toolBtnActive : ""}`}
-              onClick={() => setPreview((v) => !v)}
-              aria-label={preview ? "Switch to editor" : "Switch to preview"}
-              aria-pressed={preview}
-            >
-              {preview ? <Edit3 size={16} /> : <Eye size={16} />}
-            </button>
-            <button className={styles.saveBtn} onClick={handleSave} disabled={saving || !edited}>
-              <Save size={14} />
-              Save
-            </button>
-            <button
-              className={styles.deleteBtn}
-              onClick={handleDelete}
-              aria-label={`Delete ${selected}`}
-              title="Delete"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
-          {preview ? (
-            <div className={styles.preview}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
             </div>
-          ) : (
-            <textarea
-              className={styles.textarea}
-              value={content}
-              onChange={(e) => handleContentChange(e.target.value)}
-              spellCheck={false}
-            />
-          )}
-        </div>
-      ) : !isMobile ? (
-        <div className={styles.empty}>Select a doc or create a new one</div>
-      ) : null}
+            {docs.map((doc) => (
+              <button
+                key={doc.name}
+                className={`${styles.docItem} ${selected === doc.name ? styles.docItemActive : ""}`}
+                onClick={() => selectDoc(doc.name)}
+              >
+                <FileText size={14} className={styles.docIcon} />
+                <span className={styles.docName}>{doc.title}</span>
+              </button>
+            ))}
+          </>
+        ) : null
+      }
+      editor={
+        selected && (!isMobile || !showDocList) ? (
+          <div className={styles.editor}>
+            <div className={styles.toolbar}>
+              {isMobile && !showDocList && (
+                <button
+                  className={styles.toolBtn}
+                  onClick={openDocList}
+                  aria-label="Back to document list"
+                >
+                  <ArrowLeft size={16} />
+                </button>
+              )}
+              <span className={styles.toolbarTitle}>{selected}</span>
+              {edited && <span className={styles.editedBadge}>Edited</span>}
+              <button
+                className={`${styles.toolBtn} ${preview ? styles.toolBtnActive : ""}`}
+                onClick={() => setPreview((v) => !v)}
+                aria-label={preview ? "Switch to editor" : "Switch to preview"}
+                aria-pressed={preview}
+              >
+                {preview ? <Edit3 size={16} /> : <Eye size={16} />}
+              </button>
+              <button className={styles.saveBtn} onClick={handleSave} disabled={saving || !edited}>
+                <Save size={14} />
+                Save
+              </button>
+              <button
+                className={styles.deleteBtn}
+                onClick={handleDelete}
+                aria-label={`Delete ${selected}`}
+                title="Delete"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
+            {preview ? (
+              <div className={styles.preview}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+              </div>
+            ) : (
+              <textarea
+                className={styles.textarea}
+                value={content}
+                onChange={(e) => handleContentChange(e.target.value)}
+                spellCheck={false}
+              />
+            )}
+          </div>
+        ) : !isMobile ? (
+          <div className={styles.empty}>Select a doc or create a new one</div>
+        ) : null
+      }
     />
   );
 }

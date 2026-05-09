@@ -15,13 +15,13 @@ export function ReposMode({ repos, researchTasks, onSelectWorker }: Props) {
   return (
     <ModeScaffold
       hideHeaderOnMobile
-      header={(
+      header={
         <PageHeader
           eyebrow="Workspace state"
           title="Repos"
           summary={`${repos.length} repos tracked · ${dirtyRepos} modified · ${runningResearch} research tasks running.`}
         />
-      )}
+      }
     >
       <ReposPanel repos={repos} researchTasks={researchTasks} onSelectWorker={onSelectWorker} />
     </ModeScaffold>

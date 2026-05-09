@@ -20,13 +20,19 @@ export function __resetChatCacheForTests() {
 }
 
 function mergeMessages(prev: Message[], incoming: Message): Message[] {
-  const withoutMatchingTemps = incoming.id >= 0
-    ? prev.filter((msg) => !(msg.id < 0
-      && msg.workspace === incoming.workspace
-      && msg.bot === incoming.bot
-      && msg.role === incoming.role
-      && msg.content === incoming.content))
-    : prev;
+  const withoutMatchingTemps =
+    incoming.id >= 0
+      ? prev.filter(
+          (msg) =>
+            !(
+              msg.id < 0 &&
+              msg.workspace === incoming.workspace &&
+              msg.bot === incoming.bot &&
+              msg.role === incoming.role &&
+              msg.content === incoming.content
+            ),
+        )
+      : prev;
 
   const existingIndex = withoutMatchingTemps.findIndex((msg) => msg.id === incoming.id);
   if (existingIndex >= 0) {
@@ -81,21 +87,41 @@ export function useChatModeState({
   const activeChatKeyRef = useRef("");
   const cacheKeyRef = useRef(chatCacheKey(workspace, remote, bot));
 
-  useEffect(() => { remoteRef.current = remote; }, [remote]);
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
-  useEffect(() => { streamingContentRef.current = streamingContent; }, [streamingContent]);
-  useEffect(() => { loadingRef.current = loading; }, [loading]);
-  useEffect(() => { historyLimitRef.current = historyLimit; }, [historyLimit]);
-  useEffect(() => { activeChatKeyRef.current = `${workspace}|${remote || ""}|${bot}|${mode}`; }, [workspace, remote, bot, mode]);
-  useEffect(() => { cacheKeyRef.current = chatCacheKey(workspace, remote, bot); }, [workspace, remote, bot]);
+  useEffect(() => {
+    remoteRef.current = remote;
+  }, [remote]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  useEffect(() => {
+    streamingContentRef.current = streamingContent;
+  }, [streamingContent]);
+  useEffect(() => {
+    loadingRef.current = loading;
+  }, [loading]);
+  useEffect(() => {
+    historyLimitRef.current = historyLimit;
+  }, [historyLimit]);
+  useEffect(() => {
+    activeChatKeyRef.current = `${workspace}|${remote || ""}|${bot}|${mode}`;
+  }, [workspace, remote, bot, mode]);
+  useEffect(() => {
+    cacheKeyRef.current = chatCacheKey(workspace, remote, bot);
+  }, [workspace, remote, bot]);
   useEffect(() => {
     if (!workspace || !bot) return;
-    const messagesMatchCurrentChat = messages.every((message) =>
-      message.workspace === workspace && message.bot === bot);
+    const messagesMatchCurrentChat = messages.every(
+      (message) => message.workspace === workspace && message.bot === bot,
+    );
     if (!messagesMatchCurrentChat) {
       return;
     }
-    if (messagesLoading && messages.length === 0 && !hasOlderHistory && !chatCache.has(cacheKeyRef.current)) {
+    if (
+      messagesLoading &&
+      messages.length === 0 &&
+      !hasOlderHistory &&
+      !chatCache.has(cacheKeyRef.current)
+    ) {
       return;
     }
     chatCache.set(cacheKeyRef.current, {
@@ -106,35 +132,41 @@ export function useChatModeState({
     });
   }, [workspace, bot, messages, hasOlderHistory, historyLimit, messagesLoading]);
 
-  const appendLocalMessage = useCallback((role: string, content: string, attachments?: string | null) => {
-    const tempId = nextTempId.current--;
-    const message: Message = {
-      id: tempId,
-      workspace,
-      bot,
-      role,
-      content,
-      attachments: attachments ?? null,
-      created_at: new Date().toISOString(),
-    };
-    setMessages((prev) => mergeMessages(prev, message));
-    return message;
-  }, [workspace, bot]);
-
-  const appendSystemMessage = useCallback((content: string) => {
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: Date.now(),
+  const appendLocalMessage = useCallback(
+    (role: string, content: string, attachments?: string | null) => {
+      const tempId = nextTempId.current--;
+      const message: Message = {
+        id: tempId,
         workspace,
         bot,
-        role: "system",
+        role,
         content,
-        attachments: null,
+        attachments: attachments ?? null,
         created_at: new Date().toISOString(),
-      },
-    ]);
-  }, [workspace, bot]);
+      };
+      setMessages((prev) => mergeMessages(prev, message));
+      return message;
+    },
+    [workspace, bot],
+  );
+
+  const appendSystemMessage = useCallback(
+    (content: string) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now(),
+          workspace,
+          bot,
+          role: "system",
+          content,
+          attachments: null,
+          created_at: new Date().toISOString(),
+        },
+      ]);
+    },
+    [workspace, bot],
+  );
 
   const finalizeStreamingAssistant = useCallback(() => {
     const content = streamingContentRef.current.trim();
@@ -142,11 +174,11 @@ export function useChatModeState({
 
     const lastMessage = messagesRef.current[messagesRef.current.length - 1];
     if (
-      lastMessage
-      && lastMessage.workspace === workspace
-      && lastMessage.bot === bot
-      && lastMessage.role === "assistant"
-      && lastMessage.content === content
+      lastMessage &&
+      lastMessage.workspace === workspace &&
+      lastMessage.bot === bot &&
+      lastMessage.role === "assistant" &&
+      lastMessage.content === content
     ) {
       return;
     }
@@ -162,40 +194,43 @@ export function useChatModeState({
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
   }, []);
 
-  const fetchConversationHistory = useCallback(async (
-    limit: number,
-    currentWorkspace: string,
-    currentBot: string,
-    currentRemote?: string,
-    options?: { force?: boolean },
-  ) => {
-    const key = chatCacheKey(currentWorkspace, currentRemote, currentBot);
-    const cached = chatCache.get(key);
-    if (
-      !options?.force
-      && cached
-      && cached.historyLimit >= limit
-      && Date.now() - cached.lastFetchedAt <= CHAT_CACHE_TTL_MS
-    ) {
-      return {
-        msgs: cached.messages.slice(-limit),
-        hasMore: cached.hasOlderHistory,
-      };
-    }
+  const fetchConversationHistory = useCallback(
+    async (
+      limit: number,
+      currentWorkspace: string,
+      currentBot: string,
+      currentRemote?: string,
+      options?: { force?: boolean },
+    ) => {
+      const key = chatCacheKey(currentWorkspace, currentRemote, currentBot);
+      const cached = chatCache.get(key);
+      if (
+        !options?.force &&
+        cached &&
+        cached.historyLimit >= limit &&
+        Date.now() - cached.lastFetchedAt <= CHAT_CACHE_TTL_MS
+      ) {
+        return {
+          msgs: cached.messages.slice(-limit),
+          hasMore: cached.hasOlderHistory,
+        };
+      }
 
-    const msgs = await api.getConversations(currentWorkspace, currentBot, limit, currentRemote);
-    const result = {
-      msgs,
-      hasMore: msgs.length >= limit,
-    };
-    chatCache.set(key, {
-      messages: msgs,
-      hasOlderHistory: result.hasMore,
-      historyLimit: limit,
-      lastFetchedAt: Date.now(),
-    });
-    return result;
-  }, []);
+      const msgs = await api.getConversations(currentWorkspace, currentBot, limit, currentRemote);
+      const result = {
+        msgs,
+        hasMore: msgs.length >= limit,
+      };
+      chatCache.set(key, {
+        messages: msgs,
+        hasOlderHistory: result.hasMore,
+        historyLimit: limit,
+        lastFetchedAt: Date.now(),
+      });
+      return result;
+    },
+    [],
+  );
 
   useEffect(() => {
     const wsConn = api.connectWebSocket((event) => {
@@ -212,7 +247,9 @@ export function useChatModeState({
           } else {
             setLoading(true);
             setLoadingStatus(event.tool_name ? `Using ${event.tool_name}...` : "Thinking...");
-            setStreamingContent(typeof event.streaming_content === "string" ? event.streaming_content : "");
+            setStreamingContent(
+              typeof event.streaming_content === "string" ? event.streaming_content : "",
+            );
           }
         }
       }
@@ -225,8 +262,10 @@ export function useChatModeState({
       }
 
       if (
-        (event.type === "followup_created" || event.type === "followup_fired" || event.type === "followup_cancelled")
-        && isCurrentWorkspace
+        (event.type === "followup_created" ||
+          event.type === "followup_fired" ||
+          event.type === "followup_cancelled") &&
+        isCurrentWorkspace
       ) {
         onFollowupsRefresh();
       }
@@ -240,29 +279,41 @@ export function useChatModeState({
           const eventMessage = event as unknown as Message;
           if (typeof eventMessage.id === "number") {
             if (
-              eventMessage.role === "assistant"
-              && eventMessage.content === streamingContentRef.current.trim()
+              eventMessage.role === "assistant" &&
+              eventMessage.content === streamingContentRef.current.trim()
             ) {
               setStreamingContent("");
             }
 
             lastMsgId.current = Math.max(lastMsgId.current, eventMessage.id);
-            setMessages((prev) => mergeMessages(prev, {
-              id: eventMessage.id,
-              workspace: eventMessage.workspace,
-              bot: eventMessage.bot,
-              role: eventMessage.role,
-              content: eventMessage.content,
-              attachments: eventMessage.attachments ?? null,
-              created_at: eventMessage.created_at,
-            }));
+            setMessages((prev) =>
+              mergeMessages(prev, {
+                id: eventMessage.id,
+                workspace: eventMessage.workspace,
+                bot: eventMessage.bot,
+                role: eventMessage.role,
+                content: eventMessage.content,
+                attachments: eventMessage.attachments ?? null,
+                created_at: eventMessage.created_at,
+              }),
+            );
           }
         }
       }
     });
 
     return () => wsConn.close();
-  }, [workspace, remote, bot, fetchConversationHistory, finalizeStreamingAssistant, onFollowupsRefresh, onResearchRefresh, onUnreadRefresh, appendSystemMessage]);
+  }, [
+    workspace,
+    remote,
+    bot,
+    fetchConversationHistory,
+    finalizeStreamingAssistant,
+    onFollowupsRefresh,
+    onResearchRefresh,
+    onUnreadRefresh,
+    appendSystemMessage,
+  ]);
 
   useEffect(() => {
     if (!workspace || !bot || mode !== "chat") return;
@@ -292,7 +343,9 @@ export function useChatModeState({
       }
     }
 
-    fetchConversationHistory(INITIAL_HISTORY_LIMIT, workspace, bot, remote, { force: !cached }).then(({ msgs, hasMore }) => {
+    fetchConversationHistory(INITIAL_HISTORY_LIMIT, workspace, bot, remote, {
+      force: !cached,
+    }).then(({ msgs, hasMore }) => {
       if (cancelled) return;
       setMessages(msgs);
       setMessagesLoading(false);
@@ -348,21 +401,17 @@ export function useChatModeState({
       });
 
       const conversationsPromise = !loadingRef.current
-        ? fetchConversationHistory(
-          historyLimitRef.current,
-          workspace,
-          bot,
-          currentRemote,
-          { force: true },
-        ).then(({ msgs, hasMore }) => {
-          if (cancelled) return;
-          const latestId = msgs.length > 0 ? msgs[msgs.length - 1].id : 0;
-          if (latestId > lastMsgId.current) {
-            lastMsgId.current = latestId;
-            setMessages(msgs);
-          }
-          setHasOlderHistory(hasMore);
-        })
+        ? fetchConversationHistory(historyLimitRef.current, workspace, bot, currentRemote, {
+            force: true,
+          }).then(({ msgs, hasMore }) => {
+            if (cancelled) return;
+            const latestId = msgs.length > 0 ? msgs[msgs.length - 1].id : 0;
+            if (latestId > lastMsgId.current) {
+              lastMsgId.current = latestId;
+              setMessages(msgs);
+            }
+            setHasOlderHistory(hasMore);
+          })
         : Promise.resolve();
 
       Promise.all([conversationsPromise, statusPromise]).then(() => {
@@ -380,7 +429,14 @@ export function useChatModeState({
   }, [workspace, bot, mode, fetchConversationHistory, finalizeStreamingAssistant]);
 
   const loadOlderHistory = useCallback(async () => {
-    if (!workspace || !bot || mode !== "chat" || messagesLoading || loadingOlderHistory || !hasOlderHistory) {
+    if (
+      !workspace ||
+      !bot ||
+      mode !== "chat" ||
+      messagesLoading ||
+      loadingOlderHistory ||
+      !hasOlderHistory
+    ) {
       return;
     }
 
@@ -389,7 +445,9 @@ export function useChatModeState({
     setLoadingOlderHistory(true);
 
     try {
-      const { msgs, hasMore } = await fetchConversationHistory(nextLimit, workspace, bot, remote, { force: true });
+      const { msgs, hasMore } = await fetchConversationHistory(nextLimit, workspace, bot, remote, {
+        force: true,
+      });
       if (activeChatKeyRef.current !== chatKey) return;
       historyLimitRef.current = nextLimit;
       setHistoryLimit(nextLimit);
@@ -403,7 +461,16 @@ export function useChatModeState({
         setLoadingOlderHistory(false);
       }
     }
-  }, [workspace, bot, mode, messagesLoading, loadingOlderHistory, hasOlderHistory, fetchConversationHistory, remote]);
+  }, [
+    workspace,
+    bot,
+    mode,
+    messagesLoading,
+    loadingOlderHistory,
+    hasOlderHistory,
+    fetchConversationHistory,
+    remote,
+  ]);
 
   const beginUserSend = useCallback(() => {
     setMessagesLoading(false);

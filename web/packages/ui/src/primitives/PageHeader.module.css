@@ -42,7 +42,10 @@
   padding: 12px 16px;
   font-size: 14px;
   border: 1px solid var(--border-strong);
-  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+  transition:
+    transform 120ms ease,
+    border-color 120ms ease,
+    background 120ms ease;
 }
 
 .primary {

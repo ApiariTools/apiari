@@ -46,6 +46,8 @@ describe("WorkersMode", () => {
     expect(screen.getByText("Blocked")).toBeInTheDocument();
     expect(screen.getByText("repo apiari")).toBeInTheDocument();
     expect(screen.getByText(/Git worktree metadata is not writable/)).toBeInTheDocument();
-    expect(screen.getByText(/Add `web\/node_modules` to `.swarm\/worktree-links`/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Add `web\/node_modules` to `.swarm\/worktree-links`/),
+    ).toBeInTheDocument();
   });
 });

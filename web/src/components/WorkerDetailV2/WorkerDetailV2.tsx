@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { ExternalLink, MessageSquare, ArrowUp, ChevronLeft } from 'lucide-react'
+import { useEffect, useRef, useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { ExternalLink, MessageSquare, ArrowUp, ChevronLeft } from "lucide-react";
 import type {
   WorkerDetailV2 as WorkerDetailV2Data,
   WorkerV2,
@@ -10,53 +10,70 @@ import type {
   WorkerTaskPacket,
   ContextBotContext,
   WorkerEvent,
-} from '@apiari/types'
-import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '@apiari/api'
-import styles from './WorkerDetailV2.module.css'
+} from "@apiari/types";
+import {
+  getWorkerV2,
+  sendWorkerMessageV2,
+  cancelWorkerV2,
+  requeueWorkerV2,
+  requestWorkerReview,
+  listWorkerReviews,
+} from "@apiari/api";
+import styles from "./WorkerDetailV2.module.css";
 
 export interface WorkerDetailV2Props {
-  workspace: string
-  workerId: string
-  onClose?: () => void
-  onBack?: () => void
-  onOpenContextBot?: (context: ContextBotContext, title: string) => void
-  onNavigateToWorker?: (id: string) => void
+  workspace: string;
+  workerId: string;
+  onClose?: () => void;
+  onBack?: () => void;
+  onOpenContextBot?: (context: ContextBotContext, title: string) => void;
+  onNavigateToWorker?: (id: string) => void;
 }
 
-type Tab = 'timeline' | 'reviews' | 'brief'
+type Tab = "timeline" | "reviews" | "brief";
 
 // ── Linkify plain text ────────────────────────────────────────────────────
 
 function linkify(text: string): React.ReactNode[] {
-  const parts = text.split(/(https?:\/\/[^\s]+)/g)
+  const parts = text.split(/(https?:\/\/[^\s]+)/g);
   return parts.map((part, i) =>
-    /^https?:\/\//.test(part)
-      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" className={styles.eventLink}>{part}</a>
-      : part
-  )
+    /^https?:\/\//.test(part) ? (
+      <a key={i} href={part} target="_blank" rel="noopener noreferrer" className={styles.eventLink}>
+        {part}
+      </a>
+    ) : (
+      part
+    ),
+  );
 }
 
 // ── Status badge ─────────────────────────────────────────────────────────
 
 function statusClass(worker: WorkerV2): string {
   switch (worker.state) {
-    case 'running': return styles.statusRunning
-    case 'waiting': return styles.statusWaiting
-    case 'stalled': return styles.statusStalled
-    case 'done': return styles.statusDone
-    case 'abandoned': return styles.statusAbandoned
-    default: return styles.statusDefault
+    case "running":
+      return styles.statusRunning;
+    case "waiting":
+      return styles.statusWaiting;
+    case "stalled":
+      return styles.statusStalled;
+    case "done":
+      return styles.statusDone;
+    case "abandoned":
+      return styles.statusAbandoned;
+    default:
+      return styles.statusDefault;
   }
 }
 
 function StatusBadge({ worker }: { worker: WorkerV2 }) {
-  const isRunning = worker.state === 'running'
+  const isRunning = worker.state === "running";
   return (
     <span className={`${styles.statusBadge} ${statusClass(worker)}`} data-testid="status-badge">
-      <span className={`${styles.statusDot} ${isRunning ? styles.statusDotRunning : ''}`} />
+      <span className={`${styles.statusDot} ${isRunning ? styles.statusDotRunning : ""}`} />
       {worker.label}
     </span>
-  )
+  );
 }
 
 // ── Property pills ───────────────────────────────────────────────────────
@@ -64,20 +81,12 @@ function StatusBadge({ worker }: { worker: WorkerV2 }) {
 function Pills({ worker }: { worker: WorkerV2 }) {
   const agentLabel = worker.agent_kind
     ? worker.agent_kind.charAt(0).toUpperCase() + worker.agent_kind.slice(1)
-    : null
+    : null;
 
   return (
     <div className={styles.pills} data-testid="property-pills">
-      {agentLabel && (
-        <span className={styles.pill}>
-          {agentLabel}
-        </span>
-      )}
-      {worker.model && (
-        <span className={styles.pill}>
-          {worker.model}
-        </span>
-      )}
+      {agentLabel && <span className={styles.pill}>{agentLabel}</span>}
+      {worker.model && <span className={styles.pill}>{worker.model}</span>}
       {worker.ci_passing === true && (
         <span className={`${styles.pill} ${styles.pillGreen}`}>CI ✓</span>
       )}
@@ -85,54 +94,48 @@ function Pills({ worker }: { worker: WorkerV2 }) {
         <span className={`${styles.pill} ${styles.pillRed}`}>CI ✗</span>
       )}
       {worker.tests_passing && worker.ci_passing === null && (
-        <span className={`${styles.pill} ${styles.pillGreen}`}>
-          Local tests ✓
-        </span>
+        <span className={`${styles.pill} ${styles.pillGreen}`}>Local tests ✓</span>
       )}
       {worker.branch_ready && (
-        <span className={`${styles.pill} ${styles.pillAmber}`}>
-          Branch ready
-        </span>
+        <span className={`${styles.pill} ${styles.pillAmber}`}>Branch ready</span>
       )}
-      {worker.state === 'stalled' && (
-        <span className={`${styles.pill} ${styles.pillOrange}`}>
-          Stalled
-        </span>
+      {worker.state === "stalled" && (
+        <span className={`${styles.pill} ${styles.pillOrange}`}>Stalled</span>
       )}
       <span className={styles.pill}>
-        {worker.review_mode === 'pr_first' ? 'pr first' : 'local first'}
+        {worker.review_mode === "pr_first" ? "pr first" : "local first"}
       </span>
     </div>
-  )
+  );
 }
 
 // ── Time formatting ──────────────────────────────────────────────────────
 
 function formatTime(iso: string): string {
   try {
-    const d = new Date(iso)
-    if (isNaN(d.getTime())) return ''
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   } catch {
-    return ''
+    return "";
   }
 }
 
 function formatRelative(iso: string): string {
   try {
     // Append Z if no timezone info so it's parsed as UTC, not local time
-    const normalized = /[Z+\-]\d*$/.test(iso.trim()) ? iso : iso.trim() + 'Z'
-    const d = new Date(normalized)
-    if (isNaN(d.getTime())) return ''
-    const diffMs = Date.now() - d.getTime()
-    const diffMins = Math.floor(diffMs / 60000)
-    if (diffMins < 1) return 'just now'
-    if (diffMins < 60) return `${diffMins} min ago`
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}h ago`
-    return `${Math.floor(diffHours / 24)}d ago`
+    const normalized = /[-Z+]\d*$/.test(iso.trim()) ? iso : iso.trim() + "Z";
+    const d = new Date(normalized);
+    if (isNaN(d.getTime())) return "";
+    const diffMs = Date.now() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return "just now";
+    if (diffMins < 60) return `${diffMins} min ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return `${Math.floor(diffHours / 24)}d ago`;
   } catch {
-    return ''
+    return "";
   }
 }
 
@@ -140,89 +143,101 @@ function formatRelative(iso: string): string {
 
 function stateDividerLabel(state: string, hasReviews = false): string {
   switch (state) {
-    case 'running': return 'Worker running'
-    case 'waiting': return hasReviews ? 'Reviewed' : 'Waiting for review'
-    case 'stalled': return 'Worker stalled'
-    case 'done': return 'Done'
-    case 'abandoned': return 'Abandoned'
-    default: return state
+    case "running":
+      return "Worker running";
+    case "waiting":
+      return hasReviews ? "Reviewed" : "Waiting for review";
+    case "stalled":
+      return "Worker stalled";
+    case "done":
+      return "Done";
+    case "abandoned":
+      return "Abandoned";
+    default:
+      return state;
   }
 }
 
 // ── Event helpers ─────────────────────────────────────────────────────────
 
 function mergeConsecutiveText(events: WorkerEvent[]): WorkerEvent[] {
-  const merged: WorkerEvent[] = []
+  const merged: WorkerEvent[] = [];
   for (const evt of events) {
-    const last = merged[merged.length - 1]
-    if (evt.event_type === 'assistant_text' && last?.event_type === 'assistant_text') {
-      last.content += evt.content
+    const last = merged[merged.length - 1];
+    if (evt.event_type === "assistant_text" && last?.event_type === "assistant_text") {
+      last.content += evt.content;
     } else {
-      merged.push({ ...evt })
+      merged.push({ ...evt });
     }
   }
-  return merged
+  return merged;
 }
 
-function formatToolCall(evt: { content: string; tool?: string; input?: Record<string, unknown> }): string {
-  const toolName = evt.tool ?? evt.content.split(':')[0].trim()
-  const args = evt.input ?? {}
+function formatToolCall(evt: {
+  content: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+}): string {
+  const toolName = evt.tool ?? evt.content.split(":")[0].trim();
+  const args = evt.input ?? {};
 
   const arg =
-    (typeof args.command === 'string' ? args.command.slice(0, 80) : null) ??
-    (typeof args.file_path === 'string' ? args.file_path.split('/').pop() : null) ??
-    (typeof args.pattern === 'string' ? args.pattern : null) ??
-    (typeof args.query === 'string' ? args.query.slice(0, 60) : null) ??
-    (typeof args.url === 'string' ? args.url.slice(0, 60) : null) ??
-    (typeof args.prompt === 'string' ? args.prompt.slice(0, 40) : null) ??
-    (typeof args.description === 'string' && !args.command ? args.description.slice(0, 60) : null) ??
-    null
+    (typeof args.command === "string" ? args.command.slice(0, 80) : null) ??
+    (typeof args.file_path === "string" ? args.file_path.split("/").pop() : null) ??
+    (typeof args.pattern === "string" ? args.pattern : null) ??
+    (typeof args.query === "string" ? args.query.slice(0, 60) : null) ??
+    (typeof args.url === "string" ? args.url.slice(0, 60) : null) ??
+    (typeof args.prompt === "string" ? args.prompt.slice(0, 40) : null) ??
+    (typeof args.description === "string" && !args.command
+      ? args.description.slice(0, 60)
+      : null) ??
+    null;
 
-  return arg ? `${toolName} · ${arg}` : toolName
+  return arg ? `${toolName} · ${arg}` : toolName;
 }
 
 interface ToolGroup {
-  event_type: 'tool_group'
-  tools: WorkerEvent[]
-  created_at: string
+  event_type: "tool_group";
+  tools: WorkerEvent[];
+  created_at: string;
 }
 
-type DisplayEvent = WorkerEvent | ToolGroup
+type DisplayEvent = WorkerEvent | ToolGroup;
 
 function groupConsecutiveTools(events: WorkerEvent[]): DisplayEvent[] {
-  const result: DisplayEvent[] = []
+  const result: DisplayEvent[] = [];
   for (const evt of events) {
-    if (evt.event_type === 'tool_use') {
-      const last = result[result.length - 1]
-      if (last && last.event_type === 'tool_group') {
-        last.tools.push(evt)
+    if (evt.event_type === "tool_use") {
+      const last = result[result.length - 1];
+      if (last && last.event_type === "tool_group") {
+        last.tools.push(evt);
       } else {
-        result.push({ event_type: 'tool_group', tools: [evt], created_at: evt.created_at })
+        result.push({ event_type: "tool_group", tools: [evt], created_at: evt.created_at });
       }
     } else {
-      result.push(evt)
+      result.push(evt);
     }
   }
-  return result
+  return result;
 }
 
 // ── Event row ────────────────────────────────────────────────────────────
 
 interface EventRowProps {
-  event_type: string
-  content: string
-  created_at: string
-  tool?: string
-  input?: Record<string, unknown>
-  session_id?: string | null
+  event_type: string;
+  content: string;
+  created_at: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+  session_id?: string | null;
 }
 
 function EventRow({ event_type, content, created_at, tool, input, session_id }: EventRowProps) {
-  const time = formatTime(created_at)
+  const time = formatTime(created_at);
 
-  if (event_type === 'assistant_text') {
-    const trimmed = content.trim()
-    if (!trimmed) return null
+  if (event_type === "assistant_text") {
+    const trimmed = content.trim();
+    if (!trimmed) return null;
     return (
       <div className={styles.eventRow}>
         <span className={styles.eventTime}>{time}</span>
@@ -230,10 +245,10 @@ function EventRow({ event_type, content, created_at, tool, input, session_id }: 
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{trimmed}</ReactMarkdown>
         </div>
       </div>
-    )
+    );
   }
 
-  if (event_type === 'user_message') {
+  if (event_type === "user_message") {
     return (
       <div className={styles.eventRow}>
         <span className={styles.eventTime}>{time}</span>
@@ -242,19 +257,19 @@ function EventRow({ event_type, content, created_at, tool, input, session_id }: 
           <div className={styles.eventUserContent}>{linkify(content)}</div>
         </div>
       </div>
-    )
+    );
   }
 
-  if (event_type === 'tool_use') {
+  if (event_type === "tool_use") {
     return (
       <div className={`${styles.eventRow} ${styles.eventRowTool}`}>
         <span className={styles.eventTime}>{time}</span>
         <span className={styles.eventTool}>{formatToolCall({ content, tool, input })}</span>
       </div>
-    )
+    );
   }
 
-  if (event_type === 'system') {
+  if (event_type === "system") {
     return (
       <div className={styles.eventRow}>
         <span className={styles.eventTime}>{time}</span>
@@ -262,17 +277,21 @@ function EventRow({ event_type, content, created_at, tool, input, session_id }: 
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </div>
       </div>
-    )
+    );
   }
 
-  if (event_type === 'session_start') {
-    return <div className={styles.sessionBoundary}>{time} · session start</div>
+  if (event_type === "session_start") {
+    return <div className={styles.sessionBoundary}>{time} · session start</div>;
   }
 
-  if (event_type === 'session_result') {
-    const sid = session_id ?? content
-    const label = sid ? `session ${sid.slice(0, 12)}` : 'session end'
-    return <div className={styles.sessionBoundary}>{time} · {label}</div>
+  if (event_type === "session_result") {
+    const sid = session_id ?? content;
+    const label = sid ? `session ${sid.slice(0, 12)}` : "session end";
+    return (
+      <div className={styles.sessionBoundary}>
+        {time} · {label}
+      </div>
+    );
   }
 
   // fallback for unknown event types
@@ -283,34 +302,33 @@ function EventRow({ event_type, content, created_at, tool, input, session_id }: 
         <ReactMarkdown>{content}</ReactMarkdown>
       </div>
     </div>
-  )
+  );
 }
 
 // ── Tool group row ────────────────────────────────────────────────────────
 
 interface ToolGroupRowProps {
-  group: ToolGroup
-  expanded: boolean
-  onToggle: () => void
+  group: ToolGroup;
+  expanded: boolean;
+  onToggle: () => void;
 }
 
-
 function toolDetail(t: WorkerEvent): string {
-  const args = t.input ?? {}
-  if (typeof args.command === 'string') return args.command
-  if (typeof args.file_path === 'string') return args.file_path
-  if (typeof args.pattern === 'string') return args.pattern
-  if (typeof args.query === 'string') return args.query
-  if (typeof args.url === 'string') return args.url
-  if (typeof args.prompt === 'string') return args.prompt
-  return t.content
+  const args = t.input ?? {};
+  if (typeof args.command === "string") return args.command;
+  if (typeof args.file_path === "string") return args.file_path;
+  if (typeof args.pattern === "string") return args.pattern;
+  if (typeof args.query === "string") return args.query;
+  if (typeof args.url === "string") return args.url;
+  if (typeof args.prompt === "string") return args.prompt;
+  return t.content;
 }
 
 function ToolGroupRow({ group, expanded, onToggle }: ToolGroupRowProps) {
-  const time = formatTime(group.created_at)
-  const { tools } = group
-  const names = [...new Set(tools.map((t) => t.tool ?? t.content.split(':')[0].trim()))]
-  const label = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '')
+  const time = formatTime(group.created_at);
+  const { tools } = group;
+  const names = [...new Set(tools.map((t) => t.tool ?? t.content.split(":")[0].trim()))];
+  const label = names.slice(0, 3).join(", ") + (names.length > 3 ? ` +${names.length - 3}` : "");
 
   return (
     <div className={styles.toolGroup} data-testid="tool-group" onClick={onToggle}>
@@ -318,10 +336,12 @@ function ToolGroupRow({ group, expanded, onToggle }: ToolGroupRowProps) {
       <div className={styles.toolGroupContent}>
         {expanded ? (
           <div className={styles.toolGroupExpanded}>
-            <span className={styles.toolGroupCount}>{tools.length} tool call{tools.length !== 1 ? 's' : ''} ▼</span>
+            <span className={styles.toolGroupCount}>
+              {tools.length} tool call{tools.length !== 1 ? "s" : ""} ▼
+            </span>
             {tools.map((t, i) => {
-              const name = t.tool ?? t.content.split(':')[0].trim()
-              const detail = toolDetail(t)
+              const name = t.tool ?? t.content.split(":")[0].trim();
+              const detail = toolDetail(t);
               return (
                 <div key={i} className={styles.toolGroupItem}>
                   <span className={styles.toolGroupItemName}>{name}</span>
@@ -329,57 +349,77 @@ function ToolGroupRow({ group, expanded, onToggle }: ToolGroupRowProps) {
                     <pre className={styles.toolGroupItemDetail}>{detail}</pre>
                   )}
                 </div>
-              )
+              );
             })}
           </div>
         ) : (
-          <span className={styles.toolGroupPill}>▶ {label} · {tools.length}</span>
+          <span className={styles.toolGroupPill}>
+            ▶ {label} · {tools.length}
+          </span>
         )}
       </div>
     </div>
-  )
+  );
 }
 
 // ── Review card ──────────────────────────────────────────────────────────
 
 function verdictClass(verdict: string): string {
   switch (verdict) {
-    case 'approve': return styles.verdictApprove
-    case 'request_changes': return styles.verdictRequestChanges
-    case 'comment': return styles.verdictComment
-    default: return styles.verdictComment
+    case "approve":
+      return styles.verdictApprove;
+    case "request_changes":
+      return styles.verdictRequestChanges;
+    case "comment":
+      return styles.verdictComment;
+    default:
+      return styles.verdictComment;
   }
 }
 
 function verdictLabel(verdict: string): string {
   switch (verdict) {
-    case 'approve': return 'Approved'
-    case 'request_changes': return 'Changes requested'
-    case 'comment': return 'Comment'
-    default: return verdict
+    case "approve":
+      return "Approved";
+    case "request_changes":
+      return "Changes requested";
+    case "comment":
+      return "Comment";
+    default:
+      return verdict;
   }
 }
 
 function severityClass(severity: string): string {
   switch (severity) {
-    case 'blocking': return styles.severityBlocking
-    case 'suggestion': return styles.severitySuggestion
-    case 'nitpick': return styles.severityNitpick
-    default: return styles.severityNitpick
+    case "blocking":
+      return styles.severityBlocking;
+    case "suggestion":
+      return styles.severitySuggestion;
+    case "nitpick":
+      return styles.severityNitpick;
+    default:
+      return styles.severityNitpick;
   }
 }
 
 function reviewCardClass(verdict: string): string {
   switch (verdict) {
-    case 'approve': return styles.reviewCardApprove
-    case 'request_changes': return styles.reviewCardRequestChanges
-    default: return styles.reviewCardComment
+    case "approve":
+      return styles.reviewCardApprove;
+    case "request_changes":
+      return styles.reviewCardRequestChanges;
+    default:
+      return styles.reviewCardComment;
   }
 }
 
 function ReviewCard({ review }: { review: WorkerReview }) {
   return (
-    <div className={`${styles.reviewCard} ${reviewCardClass(review.verdict)}`} data-testid="review-card">
+    <div
+      className={`${styles.reviewCard} ${reviewCardClass(review.verdict)}`}
+      data-testid="review-card"
+    >
       <div className={styles.reviewCardHeader}>
         <span className={styles.reviewerName}>{review.reviewer}</span>
         <span className={`${styles.verdictBadge} ${verdictClass(review.verdict)}`}>
@@ -410,7 +450,7 @@ function ReviewCard({ review }: { review: WorkerReview }) {
         </div>
       )}
     </div>
-  )
+  );
 }
 
 // ── Brief tab ────────────────────────────────────────────────────────────
@@ -422,15 +462,15 @@ function BriefSection({ label, children }: { label: string; children: React.Reac
       <div className={styles.briefRule} />
       <div className={styles.briefContent}>{children}</div>
     </div>
-  )
+  );
 }
 
 function BriefMarkdown({ content }: { content: string }) {
   return (
     <div
       style={{
-        display: 'grid',
-        gap: '0.75rem',
+        display: "grid",
+        gap: "0.75rem",
         minWidth: 0,
       }}
     >
@@ -450,9 +490,9 @@ function BriefMarkdown({ content }: { content: string }) {
             <ul
               style={{
                 margin: 0,
-                paddingLeft: '1.5rem',
-                display: 'grid',
-                gap: '0.375rem',
+                paddingLeft: "1.5rem",
+                display: "grid",
+                gap: "0.375rem",
               }}
               {...props}
             />
@@ -461,9 +501,9 @@ function BriefMarkdown({ content }: { content: string }) {
             <ol
               style={{
                 margin: 0,
-                paddingLeft: '1.5rem',
-                display: 'grid',
-                gap: '0.375rem',
+                paddingLeft: "1.5rem",
+                display: "grid",
+                gap: "0.375rem",
               }}
               {...props}
             />
@@ -480,7 +520,7 @@ function BriefMarkdown({ content }: { content: string }) {
             <h1
               style={{
                 margin: 0,
-                fontSize: '1.25rem',
+                fontSize: "1.25rem",
                 lineHeight: 1.3,
               }}
               {...props}
@@ -490,7 +530,7 @@ function BriefMarkdown({ content }: { content: string }) {
             <h2
               style={{
                 margin: 0,
-                fontSize: '1.125rem',
+                fontSize: "1.125rem",
                 lineHeight: 1.35,
               }}
               {...props}
@@ -500,7 +540,7 @@ function BriefMarkdown({ content }: { content: string }) {
             <h3
               style={{
                 margin: 0,
-                fontSize: '1rem',
+                fontSize: "1rem",
                 lineHeight: 1.4,
               }}
               {...props}
@@ -510,7 +550,7 @@ function BriefMarkdown({ content }: { content: string }) {
             <h4
               style={{
                 margin: 0,
-                fontSize: '0.95rem',
+                fontSize: "0.95rem",
                 lineHeight: 1.4,
               }}
               {...props}
@@ -520,9 +560,9 @@ function BriefMarkdown({ content }: { content: string }) {
             <blockquote
               style={{
                 margin: 0,
-                paddingLeft: '1rem',
-                borderLeft: '3px solid rgba(148, 163, 184, 0.5)',
-                color: 'inherit',
+                paddingLeft: "1rem",
+                borderLeft: "3px solid rgba(148, 163, 184, 0.5)",
+                color: "inherit",
                 opacity: 0.9,
               }}
               {...props}
@@ -532,11 +572,11 @@ function BriefMarkdown({ content }: { content: string }) {
             <pre
               style={{
                 margin: 0,
-                padding: '0.75rem',
-                overflowX: 'auto',
-                whiteSpace: 'pre',
-                borderRadius: '0.5rem',
-                background: 'rgba(15, 23, 42, 0.06)',
+                padding: "0.75rem",
+                overflowX: "auto",
+                whiteSpace: "pre",
+                borderRadius: "0.5rem",
+                background: "rgba(15, 23, 42, 0.06)",
               }}
               {...props}
             />
@@ -546,10 +586,10 @@ function BriefMarkdown({ content }: { content: string }) {
               <code
                 className={className}
                 style={{
-                  padding: '0.125rem 0.375rem',
-                  borderRadius: '0.375rem',
-                  background: 'rgba(15, 23, 42, 0.06)',
-                  wordBreak: 'break-word',
+                  padding: "0.125rem 0.375rem",
+                  borderRadius: "0.375rem",
+                  background: "rgba(15, 23, 42, 0.06)",
+                  wordBreak: "break-word",
                 }}
                 {...props}
               >
@@ -563,10 +603,10 @@ function BriefMarkdown({ content }: { content: string }) {
           hr: ({ node: _node, ...props }) => (
             <hr
               style={{
-                width: '100%',
+                width: "100%",
                 margin: 0,
                 border: 0,
-                borderTop: '1px solid rgba(148, 163, 184, 0.35)',
+                borderTop: "1px solid rgba(148, 163, 184, 0.35)",
               }}
               {...props}
             />
@@ -576,7 +616,7 @@ function BriefMarkdown({ content }: { content: string }) {
         {content}
       </ReactMarkdown>
     </div>
-  )
+  );
 }
 
 function BriefTab({
@@ -584,9 +624,9 @@ function BriefTab({
   goal,
   taskPacket,
 }: {
-  brief: WorkerBrief | null
-  goal: string | null
-  taskPacket?: WorkerTaskPacket | null
+  brief: WorkerBrief | null;
+  goal: string | null;
+  taskPacket?: WorkerTaskPacket | null;
 }) {
   const hasTaskPacket = Boolean(
     taskPacket?.task_md ||
@@ -595,14 +635,10 @@ function BriefTab({
     taskPacket?.plan_md ||
     taskPacket?.progress_md ||
     taskPacket?.worker_mode,
-  )
+  );
 
   if (!brief && !hasTaskPacket) {
-    return (
-      <div className={styles.briefEmpty}>
-        No brief recorded for this worker.
-      </div>
-    )
+    return <div className={styles.briefEmpty}>No brief recorded for this worker.</div>;
   }
 
   return (
@@ -617,9 +653,9 @@ function BriefTab({
             <BriefSection label="Context">
               {Object.entries(brief.context).map(([k, v]) => (
                 <div key={k} className={styles.briefContextRow}>
-                  <span className={styles.briefContextKey}>{k.replace(/_/g, ' ')}</span>
+                  <span className={styles.briefContextKey}>{k.replace(/_/g, " ")}</span>
                   <span className={styles.briefContextVal}>
-                    {typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v ?? '')}
+                    {typeof v === "object" ? JSON.stringify(v, null, 2) : String(v ?? "")}
                   </span>
                 </div>
               ))}
@@ -684,169 +720,171 @@ function BriefTab({
         </BriefSection>
       )}
     </div>
-  )
+  );
 }
 
 // ── Main component ───────────────────────────────────────────────────────
 
-export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose, onBack, onOpenContextBot, onNavigateToWorker }: WorkerDetailV2Props) {
-  const [data, setData] = useState<WorkerDetailV2Data | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [sending, setSending] = useState(false)
-  const [sendError, setSendError] = useState<string | null>(null)
-  const [reviews, setReviews] = useState<WorkerReview[]>([])
-  const [reviewing, setReviewing] = useState(false)
-  const [activeTab, setActiveTab] = useState<Tab>('timeline')
-  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set())
-  const eventsEndRef = useRef<HTMLDivElement>(null)
-  const textareaRef = useRef<HTMLInputElement>(null)
-  const pollRef = useRef<number | null>(null)
-  const reviewingTimeoutRef = useRef<number | null>(null)
-  const prevReviewCountRef = useRef<number>(0)
-  const reviewingRef = useRef(false)
+export default function WorkerDetailV2({
+  workspace,
+  workerId,
+  onClose: _onClose,
+  onBack,
+  onOpenContextBot,
+  onNavigateToWorker,
+}: WorkerDetailV2Props) {
+  const [data, setData] = useState<WorkerDetailV2Data | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [reviews, setReviews] = useState<WorkerReview[]>([]);
+  const [reviewing, setReviewing] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>("timeline");
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
+  const eventsEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLInputElement>(null);
+  const pollRef = useRef<number | null>(null);
+  const reviewingTimeoutRef = useRef<number | null>(null);
+  const prevReviewCountRef = useRef<number>(0);
+  const reviewingRef = useRef(false);
 
-  useEffect(() => { reviewingRef.current = reviewing }, [reviewing])
+  useEffect(() => {
+    reviewingRef.current = reviewing;
+  }, [reviewing]);
 
   const loadReviews = useCallback(async () => {
     try {
-      const prevCount = prevReviewCountRef.current
-      const r = await listWorkerReviews(workspace, workerId)
-      setReviews(r)
-      prevReviewCountRef.current = r.length
+      const prevCount = prevReviewCountRef.current;
+      const r = await listWorkerReviews(workspace, workerId);
+      setReviews(r);
+      prevReviewCountRef.current = r.length;
       // If a new review arrived while reviewing, clear reviewing state
       if (reviewingRef.current && r.length > prevCount) {
-        setReviewing(false)
+        setReviewing(false);
         if (reviewingTimeoutRef.current !== null) {
-          window.clearTimeout(reviewingTimeoutRef.current)
-          reviewingTimeoutRef.current = null
+          window.clearTimeout(reviewingTimeoutRef.current);
+          reviewingTimeoutRef.current = null;
         }
-        setActiveTab('reviews')
+        setActiveTab("reviews");
       }
     } catch {
       // silently ignore
     }
-  }, [workspace, workerId])
+  }, [workspace, workerId]);
 
-  const load = useCallback(async (initial = false) => {
-    try {
-      const d = await getWorkerV2(workspace, workerId)
-      setData(d)
-      if (initial) setLoading(false)
-    } catch (e) {
-      if (initial) {
-        setError(e instanceof Error ? e.message : 'Failed to load worker')
-        setLoading(false)
+  const load = useCallback(
+    async (initial = false) => {
+      try {
+        const d = await getWorkerV2(workspace, workerId);
+        setData(d);
+        if (initial) setLoading(false);
+      } catch (e) {
+        if (initial) {
+          setError(e instanceof Error ? e.message : "Failed to load worker");
+          setLoading(false);
+        }
       }
-    }
-  }, [workspace, workerId])
+    },
+    [workspace, workerId],
+  );
 
   // Initial load + polling
   useEffect(() => {
-    setLoading(true)
-    setError(null)
-    load(true)
-    loadReviews()
+    setLoading(true);
+    setError(null);
+    load(true);
+    loadReviews();
 
     pollRef.current = window.setInterval(() => {
-      load(false)
-      loadReviews()
-    }, 3000)
+      load(false);
+      loadReviews();
+    }, 3000);
 
     return () => {
       if (pollRef.current !== null) {
-        window.clearInterval(pollRef.current)
-        pollRef.current = null
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
       }
       if (reviewingTimeoutRef.current !== null) {
-        window.clearTimeout(reviewingTimeoutRef.current)
-        reviewingTimeoutRef.current = null
+        window.clearTimeout(reviewingTimeoutRef.current);
+        reviewingTimeoutRef.current = null;
       }
-    }
-  }, [load, loadReviews])
+    };
+  }, [load, loadReviews]);
 
   // Auto-scroll to bottom when events arrive (only on timeline tab)
   useEffect(() => {
-    if (activeTab === 'timeline' && data?.events?.length) {
-      eventsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (activeTab === "timeline" && data?.events?.length) {
+      eventsEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [data?.events?.length, activeTab])
+  }, [data?.events?.length, activeTab]);
 
   const handleSend = async () => {
-    const input = textareaRef.current
-    if (!input) return
-    const message = input.value.trim()
-    if (!message || sending) return
+    const input = textareaRef.current;
+    if (!input) return;
+    const message = input.value.trim();
+    if (!message || sending) return;
 
-    setSending(true)
-    setSendError(null)
+    setSending(true);
+    setSendError(null);
     try {
-      await sendWorkerMessageV2(workspace, workerId, message)
-      input.value = ''
-      await load(false)
+      await sendWorkerMessageV2(workspace, workerId, message);
+      input.value = "";
+      await load(false);
     } catch (e) {
-      console.error('send failed', e)
-      setSendError(e instanceof Error ? e.message : 'Failed to send message')
+      console.error("send failed", e);
+      setSendError(e instanceof Error ? e.message : "Failed to send message");
     } finally {
-      setSending(false)
+      setSending(false);
     }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-      const isMobile = window.matchMedia('(hover: none)').matches
-      if (!isMobile) {
-        e.preventDefault()
-        handleSend()
-      }
-    }
-  }
+  };
 
   const handleCancel = async () => {
     try {
-      await cancelWorkerV2(workspace, workerId)
-      await load(false)
+      await cancelWorkerV2(workspace, workerId);
+      await load(false);
     } catch (e) {
-      console.error('cancel failed', e)
+      console.error("cancel failed", e);
     }
-  }
+  };
 
   const handleRequeue = async () => {
     try {
-      const result = await requeueWorkerV2(workspace, workerId)
+      const result = await requeueWorkerV2(workspace, workerId);
       if (result.new_worker_id && onNavigateToWorker) {
-        onNavigateToWorker(result.new_worker_id)
+        onNavigateToWorker(result.new_worker_id);
       } else {
-        await load(false)
+        await load(false);
       }
     } catch (e) {
-      console.error('requeue failed', e)
+      console.error("requeue failed", e);
     }
-  }
+  };
 
   const handleRequestReview = async () => {
-    if (reviewing) return
-    setReviewing(true)
+    if (reviewing) return;
+    setReviewing(true);
     // Safety timeout: clear reviewing after 90s
     reviewingTimeoutRef.current = window.setTimeout(() => {
-      setReviewing(false)
-      reviewingTimeoutRef.current = null
-    }, 90000)
+      setReviewing(false);
+      reviewingTimeoutRef.current = null;
+    }, 90000);
     try {
-      await requestWorkerReview(workspace, workerId)
+      await requestWorkerReview(workspace, workerId);
       // Poll reviews after short delay to catch fast completions
       window.setTimeout(() => {
-        loadReviews()
-      }, 2000)
+        loadReviews();
+      }, 2000);
     } catch (e) {
-      console.error('review request failed', e)
-      setReviewing(false)
+      console.error("review request failed", e);
+      setReviewing(false);
       if (reviewingTimeoutRef.current !== null) {
-        window.clearTimeout(reviewingTimeoutRef.current)
-        reviewingTimeoutRef.current = null
+        window.clearTimeout(reviewingTimeoutRef.current);
+        reviewingTimeoutRef.current = null;
       }
     }
-  }
+  };
 
   if (loading) {
     return (
@@ -857,36 +895,40 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
           <div className={`${styles.skeletonLine} ${styles.skeletonBody}`} />
         </div>
       </div>
-    )
+    );
   }
 
   if (error || !data) {
     return (
       <div className={styles.container}>
         <div className={styles.errorCenter} data-testid="error-state">
-          <span className={styles.errorText}>{error ?? 'Worker not found'}</span>
+          <span className={styles.errorText}>{error ?? "Worker not found"}</span>
           <button
             className={styles.retryBtn}
             type="button"
-            onClick={() => { setError(null); setLoading(true); load(true) }}
+            onClick={() => {
+              setError(null);
+              setLoading(true);
+              load(true);
+            }}
             data-testid="retry-btn"
           >
             Retry
           </button>
         </div>
       </div>
-    )
+    );
   }
 
-  const canCancel = ['running', 'waiting', 'queued'].includes(data.state)
-  const hasRequestChangesReview = reviews.some(r => r.verdict === 'request_changes')
-  const canRequeue = data.state === 'abandoned' ||
-    (data.state === 'waiting' && hasRequestChangesReview)
-  const canReview = data.state === 'waiting' && data.branch_ready
-  const isTerminal = data.state === 'done' || data.state === 'abandoned'
+  const canCancel = ["running", "waiting", "queued"].includes(data.state);
+  const hasRequestChangesReview = reviews.some((r) => r.verdict === "request_changes");
+  const canRequeue =
+    data.state === "abandoned" || (data.state === "waiting" && hasRequestChangesReview);
+  const canReview = data.state === "waiting" && data.branch_ready;
+  const isTerminal = data.state === "done" || data.state === "abandoned";
   // Allow sending to any non-terminal worker — swarm handles re-queuing/restart.
-  const canSend = !isTerminal
-  const inputDisabled = !canSend
+  const canSend = !isTerminal;
+  const inputDisabled = !canSend;
 
   return (
     <div className={styles.container}>
@@ -909,7 +951,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                 onClick={() => {
                   onOpenContextBot(
                     {
-                      view: 'worker_detail',
+                      view: "worker_detail",
                       entity_id: data.id,
                       entity_snapshot: {
                         state: data.state,
@@ -923,7 +965,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                       },
                     },
                     data.goal ?? data.branch ?? data.id,
-                  )
+                  );
                 }}
                 title="Ask about this worker"
                 data-testid="ask-btn"
@@ -939,24 +981,16 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                 type="button"
                 data-testid="review-btn"
               >
-                {reviewing ? 'Reviewing…' : 'Review'}
+                {reviewing ? "Reviewing…" : "Review"}
               </button>
             )}
             {canCancel && (
-              <button
-                className={styles.textBtnDanger}
-                onClick={handleCancel}
-                type="button"
-              >
+              <button className={styles.textBtnDanger} onClick={handleCancel} type="button">
                 Cancel
               </button>
             )}
             {canRequeue && (
-              <button
-                className={styles.textBtn}
-                onClick={handleRequeue}
-                type="button"
-              >
+              <button className={styles.textBtn} onClick={handleRequeue} type="button">
                 Retry
               </button>
             )}
@@ -966,14 +1000,10 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
         {/* Second row: status + branch + pills inline */}
         <div className={styles.headerMeta}>
           <StatusBadge worker={data} />
-          {data.branch && (
-            <span className={styles.branch}>{data.branch}</span>
-          )}
+          {data.branch && <span className={styles.branch}>{data.branch}</span>}
           <Pills worker={data} />
           {data.revision_count > 0 && (
-            <span className={styles.revisionPill}>
-              Pass {data.revision_count}
-            </span>
+            <span className={styles.revisionPill}>Pass {data.revision_count}</span>
           )}
         </div>
 
@@ -986,50 +1016,47 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
               rel="noopener noreferrer"
               className={styles.prLink}
             >
-              {(() => { const n = data.pr_url.match(/\/pull\/(\d+)/)?.[1]; return n ? `#${n}` : 'PR' })()}
-              {' '}<ExternalLink size={12} />
+              {(() => {
+                const n = data.pr_url.match(/\/pull\/(\d+)/)?.[1];
+                return n ? `#${n}` : "PR";
+              })()}{" "}
+              <ExternalLink size={12} />
             </a>
           </div>
         )}
 
-        {reviewing && (
-          <div className={styles.reviewingBanner}>
-            Review in progress…
-          </div>
-        )}
+        {reviewing && <div className={styles.reviewingBanner}>Review in progress…</div>}
       </div>
 
       {/* ── Tab bar ── */}
       <div className={styles.tabBar} role="tablist">
         <button
-          className={`${styles.tab} ${activeTab === 'timeline' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('timeline')}
+          className={`${styles.tab} ${activeTab === "timeline" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("timeline")}
           type="button"
           role="tab"
-          aria-selected={activeTab === 'timeline'}
+          aria-selected={activeTab === "timeline"}
           data-testid="tab-timeline"
         >
           Timeline
         </button>
         <button
-          className={`${styles.tab} ${activeTab === 'reviews' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('reviews')}
+          className={`${styles.tab} ${activeTab === "reviews" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("reviews")}
           type="button"
           role="tab"
-          aria-selected={activeTab === 'reviews'}
+          aria-selected={activeTab === "reviews"}
           data-testid="tab-reviews"
         >
           Reviews
-          {reviews.length > 0 && (
-            <span className={styles.tabBadge}>{reviews.length}</span>
-          )}
+          {reviews.length > 0 && <span className={styles.tabBadge}>{reviews.length}</span>}
         </button>
         <button
-          className={`${styles.tab} ${activeTab === 'brief' ? styles.tabActive : ''}`}
-          onClick={() => setActiveTab('brief')}
+          className={`${styles.tab} ${activeTab === "brief" ? styles.tabActive : ""}`}
+          onClick={() => setActiveTab("brief")}
           type="button"
           role="tab"
-          aria-selected={activeTab === 'brief'}
+          aria-selected={activeTab === "brief"}
           data-testid="tab-brief"
         >
           Brief
@@ -1038,7 +1065,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
 
       {/* ── Tab content (scrollable) ── */}
       <div key={activeTab} className={styles.tabContent}>
-        {activeTab === 'timeline' && (
+        {activeTab === "timeline" && (
           <div className={styles.timelinePanel}>
             {/* Top divider: Worker started */}
             <div className={styles.stateDivider}>
@@ -1050,28 +1077,28 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             {data.events && data.events.length > 0 ? (
               <div className={styles.events} data-testid="events-thread">
                 {groupConsecutiveTools(mergeConsecutiveText(data.events)).map((ev, i) => {
-                  if (ev.event_type === 'tool_group') {
-                    const group = ev as ToolGroup
+                  if (ev.event_type === "tool_group") {
+                    const group = ev as ToolGroup;
                     return (
                       <ToolGroupRow
                         key={i}
                         group={group}
                         expanded={expandedGroups.has(i)}
                         onToggle={() => {
-                          setExpandedGroups(prev => {
-                            const next = new Set(prev)
+                          setExpandedGroups((prev) => {
+                            const next = new Set(prev);
                             if (next.has(i)) {
-                              next.delete(i)
+                              next.delete(i);
                             } else {
-                              next.add(i)
+                              next.add(i);
                             }
-                            return next
-                          })
+                            return next;
+                          });
                         }}
                       />
-                    )
+                    );
                   }
-                  const e = ev as WorkerEvent
+                  const e = ev as WorkerEvent;
                   return (
                     <EventRow
                       key={i}
@@ -1082,7 +1109,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                       input={e.input}
                       session_id={e.session_id}
                     />
-                  )
+                  );
                 })}
                 <div ref={eventsEndRef} />
               </div>
@@ -1091,24 +1118,25 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
             )}
 
             {/* Bottom divider: current state */}
-            {data.state === 'running' && (
+            {data.state === "running" && (
               <div className={styles.liveIndicator}>
-                <span className={styles.liveDot} style={{ animationDelay: '0ms' }} />
-                <span className={styles.liveDot} style={{ animationDelay: '150ms' }} />
-                <span className={styles.liveDot} style={{ animationDelay: '300ms' }} />
+                <span className={styles.liveDot} style={{ animationDelay: "0ms" }} />
+                <span className={styles.liveDot} style={{ animationDelay: "150ms" }} />
+                <span className={styles.liveDot} style={{ animationDelay: "300ms" }} />
               </div>
             )}
-            {data.state !== 'running' && (['waiting', 'stalled'].includes(data.state) || isTerminal) && (
-              <div className={styles.stateDivider}>
-                <span className={styles.stateDividerText}>
-                  {stateDividerLabel(data.state, reviews.length > 0)}
-                </span>
-              </div>
-            )}
+            {data.state !== "running" &&
+              (["waiting", "stalled"].includes(data.state) || isTerminal) && (
+                <div className={styles.stateDivider}>
+                  <span className={styles.stateDividerText}>
+                    {stateDividerLabel(data.state, reviews.length > 0)}
+                  </span>
+                </div>
+              )}
           </div>
         )}
 
-        {activeTab === 'reviews' && (
+        {activeTab === "reviews" && (
           <div className={styles.reviewsPanel} data-testid="reviews-section">
             {reviewing && (
               <div className={styles.reviewInProgress}>
@@ -1117,8 +1145,8 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                   <span className={styles.reviewInProgressLabel}>General · reviewing now</span>
                   <span className={styles.reviewInProgressTime}>started just now</span>
                 </div>
-                <div className={styles.reviewSkeletonLine} style={{ width: '80%' }} />
-                <div className={styles.reviewSkeletonLine} style={{ width: '55%' }} />
+                <div className={styles.reviewSkeletonLine} style={{ width: "80%" }} />
+                <div className={styles.reviewSkeletonLine} style={{ width: "55%" }} />
               </div>
             )}
             {reviews.length === 0 ? (
@@ -1131,7 +1159,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
                     disabled={reviewing}
                     type="button"
                   >
-                    {reviewing ? 'Reviewing…' : 'Request Review'}
+                    {reviewing ? "Reviewing…" : "Request Review"}
                   </button>
                 )}
               </div>
@@ -1145,7 +1173,7 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
           </div>
         )}
 
-        {activeTab === 'brief' && (
+        {activeTab === "brief" && (
           <div className={styles.briefPanel}>
             <BriefTab brief={data.brief} goal={data.goal} taskPacket={data.task_packet} />
           </div>
@@ -1153,15 +1181,26 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
       </div>
 
       {/* ── Instruction bar (Timeline tab only, hidden when terminal) ── */}
-      {activeTab === 'timeline' && !isTerminal && (
+      {activeTab === "timeline" && !isTerminal && (
         <div className={styles.actionBar} data-testid="action-bar">
           <div className={styles.inputRow}>
             <input
               ref={textareaRef}
               className={styles.instructionInput}
-              placeholder={canSend ? (data.state === 'running' || data.state === 'stalled' ? 'Send async instruction…' : 'Send an instruction…') : 'Worker is not running'}
+              placeholder={
+                canSend
+                  ? data.state === "running" || data.state === "stalled"
+                    ? "Send async instruction…"
+                    : "Send an instruction…"
+                  : "Worker is not running"
+              }
               disabled={inputDisabled}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
             />
             <button
               className={styles.sendIconBtn}
@@ -1178,5 +1217,5 @@ export default function WorkerDetailV2({ workspace, workerId, onClose: _onClose,
         </div>
       )}
     </div>
-  )
+  );
 }

@@ -10,8 +10,7 @@
   padding: 18px 24px 14px;
   border-bottom: 1px solid var(--border);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 65%),
-    rgba(17, 17, 17, 0.88);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 65%), rgba(17, 17, 17, 0.88);
   backdrop-filter: blur(14px);
   flex-shrink: 0;
 }

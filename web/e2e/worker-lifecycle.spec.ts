@@ -102,17 +102,19 @@ async function installMockWebSocket(page: Page) {
         window.setTimeout(() => this.onopen?.(new Event("open")), 0);
       }
       send() {}
-      close() { this.readyState = 3; }
+      close() {
+        this.readyState = 3;
+      }
     }
 
     window.__pushWsEvent = (event: unknown) => {
-      window.__mockWs?.onmessage?.(
-        new MessageEvent("message", { data: JSON.stringify(event) }),
-      );
+      window.__mockWs?.onmessage?.(new MessageEvent("message", { data: JSON.stringify(event) }));
     };
 
     Object.defineProperty(window, "WebSocket", {
-      configurable: true, writable: true, value: MockWebSocket,
+      configurable: true,
+      writable: true,
+      value: MockWebSocket,
     });
   });
 }
@@ -172,7 +174,8 @@ async function wireMockApi(page: Page, worker: WorkerState) {
     if (method === "GET" && suffix === "bots") return fulfillJson(route, []);
     if (method === "GET" && suffix === "unread") return fulfillJson(route, {});
     if (method === "POST" && suffix.startsWith("seen/")) return fulfillJson(route, { ok: true });
-    if (method === "GET" && suffix.startsWith("bots/")) return fulfillJson(route, { status: "idle", streaming_content: "", tool_name: null });
+    if (method === "GET" && suffix.startsWith("bots/"))
+      return fulfillJson(route, { status: "idle", streaming_content: "", tool_name: null });
     if (suffix.startsWith("v2/context-bot/")) return fulfillJson(route, { ok: true, sessions: [] });
 
     return fulfillJson(route, null);
@@ -186,18 +189,24 @@ test.describe("worker lifecycle (mocked)", () => {
     await installMockWebSocket(page);
     await wireMockApi(page, worker);
     await page.goto("/");
-    await expect(page.getByRole("navigation", { name: "Sidebar" })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("navigation", { name: "Sidebar" })).toBeVisible({
+      timeout: 10_000,
+    });
 
     // ── 1. Open Quick Dispatch ─────────────────────────────────────────
     await page.getByTestId("quick-dispatch-trigger").click();
-    await expect(page.getByRole("dialog", { name: "Quick dispatch" })).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole("dialog", { name: "Quick dispatch" })).toBeVisible({
+      timeout: 5_000,
+    });
 
     await page.getByTestId("intent-textarea").fill(PROMPT);
     await page.getByTestId("repo-pills").locator("button").first().click();
     await page.getByTestId("dispatch-btn").click();
 
     // Dialog closes after dispatch
-    await expect(page.getByRole("dialog", { name: "Quick dispatch" })).not.toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("dialog", { name: "Quick dispatch" })).not.toBeVisible({
+      timeout: 10_000,
+    });
 
     // ── 2. App navigates to worker detail ─────────────────────────────
     await expect(page.getByTestId("tab-timeline")).toBeVisible({ timeout: 15_000 });

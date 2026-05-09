@@ -189,18 +189,27 @@ export function ChatPanel({
   // Play a single TTS URL via Howler's unlocked AudioContext
   async function playViaCx(url: string, onEnd?: () => void) {
     const ctx = Howler.ctx;
-    if (!ctx) { onEnd?.(); return; }
+    if (!ctx) {
+      onEnd?.();
+      return;
+    }
     if (ctx.state === "suspended") await ctx.resume();
     try {
       const res = await fetch(url);
-      if (!res.ok) { onEnd?.(); return; }
+      if (!res.ok) {
+        onEnd?.();
+        return;
+      }
       const arrayBuf = await res.arrayBuffer();
       const audioBuf = await ctx.decodeAudioData(arrayBuf);
       const source = ctx.createBufferSource();
       source.buffer = audioBuf;
       source.connect(ctx.destination);
       voiceSourceRef.current = source;
-      source.onended = () => { voiceSourceRef.current = null; onEnd?.(); };
+      source.onended = () => {
+        voiceSourceRef.current = null;
+        onEnd?.();
+      };
       source.start();
     } catch {
       onEnd?.();
@@ -239,7 +248,10 @@ export function ChatPanel({
   // ── Cleanup ──
   useEffect(() => {
     return () => {
-      if (howlRef.current) { howlRef.current.unload(); howlRef.current = null; }
+      if (howlRef.current) {
+        howlRef.current.unload();
+        howlRef.current = null;
+      }
     };
   }, []);
 
@@ -249,7 +261,11 @@ export function ChatPanel({
     // Stop Howler playback
     sentenceQueueRef.current = [];
     playingMsgRef.current = null;
-    if (howlRef.current) { howlRef.current.stop(); howlRef.current.unload(); howlRef.current = null; }
+    if (howlRef.current) {
+      howlRef.current.stop();
+      howlRef.current.unload();
+      howlRef.current = null;
+    }
     for (const h of readyQueueRef.current) h.unload();
     readyQueueRef.current = [];
     // Stop voice chain playback
@@ -290,11 +306,16 @@ export function ChatPanel({
       html5: true,
       preload: true,
       onload: () => {
-        if (playingMsgRef.current === null) { howl.unload(); return; }
+        if (playingMsgRef.current === null) {
+          howl.unload();
+          return;
+        }
         readyQueueRef.current.push(howl);
         if (!howlRef.current) playFromReady();
       },
-      onloaderror: () => { if (!howlRef.current) stopPlaying(); },
+      onloaderror: () => {
+        if (!howlRef.current) stopPlaying();
+      },
     });
   }
 
@@ -307,15 +328,24 @@ export function ChatPanel({
     const howl = readyQueueRef.current.shift()!;
     howlRef.current = howl;
 
-    howl.on("play", () => { setLoadingTtsId(null); enqueueGeneration(); });
-    howl.on("end", () => { howlRef.current = null; playFromReady(); });
+    howl.on("play", () => {
+      setLoadingTtsId(null);
+      enqueueGeneration();
+    });
+    howl.on("end", () => {
+      howlRef.current = null;
+      playFromReady();
+    });
     howl.on("playerror", () => stopPlaying());
 
     howl.play();
   }
 
   function playMessage(msg: Message) {
-    if (playingId === msg.id || loadingTtsId === msg.id) { stopPlaying(); return; }
+    if (playingId === msg.id || loadingTtsId === msg.id) {
+      stopPlaying();
+      return;
+    }
     stopPlaying();
 
     const sentences = splitSentences(msg.content);
@@ -339,13 +369,20 @@ export function ChatPanel({
       setVoiceMode(false);
       stopPlaying();
       // Stop keep-alive
-      if (keepAliveRef.current) { clearInterval(keepAliveRef.current); keepAliveRef.current = null; }
+      if (keepAliveRef.current) {
+        clearInterval(keepAliveRef.current);
+        keepAliveRef.current = null;
+      }
     } else {
       // Play greeting via Howler (user gesture context — unlocks AudioContext on iPad)
       const params = new URLSearchParams({ text: "Voice mode on." });
       if (ttsVoice) params.set("voice", ttsVoice);
       if (ttsSpeed) params.set("speed", String(ttsSpeed));
-      new Howl({ src: [`/api/tts/speak?${params.toString()}`], format: ["wav"], html5: true }).play();
+      new Howl({
+        src: [`/api/tts/speak?${params.toString()}`],
+        format: ["wav"],
+        html5: true,
+      }).play();
 
       // Share Howler's gesture-unlocked AudioContext with sound cues
       if (Howler.ctx) setSharedAudioContext(Howler.ctx);
@@ -386,13 +423,13 @@ export function ChatPanel({
     setShowScrollBtn(distanceFromBottom > 40);
 
     if (
-      el.scrollTop <= 80
-      && hasOlderHistory
-      && !!onLoadOlderHistory
-      && !loadingOlderRequestRef.current
-      && !loadingOlderHistory
-      && !loading
-      && !messagesLoading
+      el.scrollTop <= 80 &&
+      hasOlderHistory &&
+      !!onLoadOlderHistory &&
+      !loadingOlderRequestRef.current &&
+      !loadingOlderHistory &&
+      !loading &&
+      !messagesLoading
     ) {
       loadingOlderRequestRef.current = true;
       restoringOlderHistoryRef.current = true;
@@ -427,7 +464,9 @@ export function ChatPanel({
     const trimmed = iso.trim();
     if (!trimmed) return "";
     const normalized = trimmed.includes("T")
-      ? (trimmed.includes("Z") || trimmed.includes("+") ? trimmed : `${trimmed}Z`)
+      ? trimmed.includes("Z") || trimmed.includes("+")
+        ? trimmed
+        : `${trimmed}Z`
       : trimmed;
     const date = new Date(normalized);
     if (Number.isNaN(date.getTime())) {
@@ -446,19 +485,21 @@ export function ChatPanel({
             a.type.startsWith("image/") ? (
               <img key={i} src={a.dataUrl} alt={a.name} className={styles.msgImage} />
             ) : (
-              <div key={i} className={styles.msgFile}>{a.name}</div>
+              <div key={i} className={styles.msgFile}>
+                {a.name}
+              </div>
             ),
           )}
         </div>
       );
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
   // ── Timeline: merge fired followups into message feed ──
 
-  type TimelineItem =
-    | { kind: "message"; msg: Message }
-    | { kind: "followup"; followup: Followup };
+  type TimelineItem = { kind: "message"; msg: Message } | { kind: "followup"; followup: Followup };
 
   const { timeline, pendingFollowups } = useMemo(() => {
     const now = new Date();
@@ -474,8 +515,12 @@ export function ChatPanel({
       ...messages.map((msg): TimelineItem => ({ kind: "message", msg })),
       ...inlineFollowups.map((f): TimelineItem => ({ kind: "followup", followup: f })),
     ].sort((a, b) => {
-      const timeA = new Date(a.kind === "message" ? a.msg.created_at : a.followup.fires_at).getTime();
-      const timeB = new Date(b.kind === "message" ? b.msg.created_at : b.followup.fires_at).getTime();
+      const timeA = new Date(
+        a.kind === "message" ? a.msg.created_at : a.followup.fires_at,
+      ).getTime();
+      const timeB = new Date(
+        b.kind === "message" ? b.msg.created_at : b.followup.fires_at,
+      ).getTime();
       return timeA - timeB;
     });
 
@@ -502,13 +547,10 @@ export function ChatPanel({
     const pendingGrew = pendingFollowups.length > prev.pendingFollowups;
     const startedLoading = loading && !prev.loading;
     const onlyStreamingChanged =
-      !timelineGrew
-      && !pendingGrew
-      && loading === prev.loading
-      && (
-        (streamingContent ?? "") !== prev.streamingContent
-        || loadingStatus !== prev.loadingStatus
-      );
+      !timelineGrew &&
+      !pendingGrew &&
+      loading === prev.loading &&
+      ((streamingContent ?? "") !== prev.streamingContent || loadingStatus !== prev.loadingStatus);
 
     const behavior: ScrollBehavior =
       !hasExistingTimeline || onlyStreamingChanged
@@ -529,7 +571,14 @@ export function ChatPanel({
       loadingStatus,
     };
     return () => cancelAnimationFrame(frame);
-  }, [timeline.length, pendingFollowups.length, loading, loadingStatus, scrollToBottom, streamingContent]);
+  }, [
+    timeline.length,
+    pendingFollowups.length,
+    loading,
+    loadingStatus,
+    scrollToBottom,
+    streamingContent,
+  ]);
 
   // ── Render ──
 
@@ -544,7 +593,11 @@ export function ChatPanel({
                 <span
                   className={styles.providerBadge}
                   title={botModel || undefined}
-                  aria-label={botModel ? `Provider: ${botProvider}, model: ${botModel}` : `Provider: ${botProvider}`}
+                  aria-label={
+                    botModel
+                      ? `Provider: ${botProvider}, model: ${botModel}`
+                      : `Provider: ${botProvider}`
+                  }
                 >
                   {botProvider.charAt(0).toUpperCase() + botProvider.slice(1)}
                 </span>
@@ -553,7 +606,7 @@ export function ChatPanel({
             {botDescription && <div className={styles.headerDescription}>{botDescription}</div>}
           </div>
         ) : null}
-        {(bots && bots.length > 0 && onSelectBot) ? (
+        {bots && bots.length > 0 && onSelectBot ? (
           <div className={styles.botSwitcher} aria-label="Chat bots">
             {bots.map((entry) => {
               const isActive = entry.name === bot;
@@ -566,7 +619,9 @@ export function ChatPanel({
                   aria-label={`Open bot ${entry.name}`}
                 >
                   <span className={styles.botChipName}>{entry.name}</span>
-                  {count > 0 && !isActive ? <span className={styles.botChipBadge}>{count}</span> : null}
+                  {count > 0 && !isActive ? (
+                    <span className={styles.botChipBadge}>{count}</span>
+                  ) : null}
                 </button>
               );
             })}
@@ -589,104 +644,128 @@ export function ChatPanel({
       </div>
 
       <div className={styles.messagesWrap}>
-      <div className={styles.messages} onScroll={handleMessagesScroll} ref={messagesRef}>
-        {loadingOlderHistory && messages.length > 0 && (
-          <div className={styles.empty}>Loading older messages...</div>
-        )}
-        {messagesLoading && messages.length === 0 && (
-          <div className={styles.empty}>Loading...</div>
-        )}
-        {!messagesLoading && messages.length === 0 && !loading && (
-          <div className={styles.empty}>Start a conversation with {bot}</div>
-        )}
-        {timeline.map((item) =>
-          item.kind === "followup" ? (
-            <FollowupCard
-              key={`followup-${item.followup.id}`}
-              followup={item.followup}
-              workspace={workspace ?? ""}
-              inline
-            />
-          ) : (
-            <div key={item.msg.id} className={`${styles.msg} ${item.msg.role === "user" ? styles.user : ""}`}>
+        <div className={styles.messages} onScroll={handleMessagesScroll} ref={messagesRef}>
+          {loadingOlderHistory && messages.length > 0 && (
+            <div className={styles.empty}>Loading older messages...</div>
+          )}
+          {messagesLoading && messages.length === 0 && (
+            <div className={styles.empty}>Loading...</div>
+          )}
+          {!messagesLoading && messages.length === 0 && !loading && (
+            <div className={styles.empty}>Start a conversation with {bot}</div>
+          )}
+          {timeline.map((item) =>
+            item.kind === "followup" ? (
+              <FollowupCard
+                key={`followup-${item.followup.id}`}
+                followup={item.followup}
+                workspace={workspace ?? ""}
+                inline
+              />
+            ) : (
+              <div
+                key={item.msg.id}
+                className={`${styles.msg} ${item.msg.role === "user" ? styles.user : ""}`}
+              >
+                <div className={styles.meta}>
+                  <strong>{item.msg.role === "user" ? "You" : bot}</strong>
+                  {" · "}
+                  {formatTime(item.msg.created_at)}
+                  {item.msg.role === "assistant" && (
+                    <button
+                      className={`${styles.playBtn} ${playingId === item.msg.id ? styles.playBtnActive : ""}`}
+                      onClick={() => playMessage(item.msg)}
+                      aria-label={
+                        playingId === item.msg.id
+                          ? "Stop"
+                          : loadingTtsId === item.msg.id
+                            ? "Loading"
+                            : "Play"
+                      }
+                    >
+                      {loadingTtsId === item.msg.id ? (
+                        <Loader2 size={12} className={styles.ttsSpinner} />
+                      ) : playingId === item.msg.id ? (
+                        <Square size={12} />
+                      ) : (
+                        <Volume2 size={12} />
+                      )}
+                    </button>
+                  )}
+                </div>
+                {renderAttachments(item.msg.attachments)}
+                <div className={styles.text}>
+                  {item.msg.role === "assistant" ? (
+                    <Markdown remarkPlugins={[remarkGfm]}>{item.msg.content}</Markdown>
+                  ) : (
+                    item.msg.content
+                  )}
+                </div>
+              </div>
+            ),
+          )}
+          {loading && (
+            <div className={styles.msg}>
               <div className={styles.meta}>
-                <strong>{item.msg.role === "user" ? "You" : bot}</strong>
-                {" · "}
-                {formatTime(item.msg.created_at)}
-                {item.msg.role === "assistant" && (
-                  <button
-                    className={`${styles.playBtn} ${playingId === item.msg.id ? styles.playBtnActive : ""}`}
-                    onClick={() => playMessage(item.msg)}
-                    aria-label={playingId === item.msg.id ? "Stop" : loadingTtsId === item.msg.id ? "Loading" : "Play"}
-                  >
-                    {loadingTtsId === item.msg.id ? (
-                      <Loader2 size={12} className={styles.ttsSpinner} />
-                    ) : playingId === item.msg.id ? (
-                      <Square size={12} />
-                    ) : (
-                      <Volume2 size={12} />
-                    )}
+                <strong>{bot}</strong>
+                {onCancel && (
+                  <button className={styles.cancelBtn} onClick={onCancel}>
+                    Stop
                   </button>
                 )}
               </div>
-              {renderAttachments(item.msg.attachments)}
-              <div className={styles.text}>
-                {item.msg.role === "assistant" ? (
-                  <Markdown remarkPlugins={[remarkGfm]}>{item.msg.content}</Markdown>
-                ) : (
-                  item.msg.content
-                )}
-              </div>
-            </div>
-          ),
-        )}
-        {loading && (
-          <div className={styles.msg}>
-            <div className={styles.meta}>
-              <strong>{bot}</strong>
-              {onCancel && <button className={styles.cancelBtn} onClick={onCancel}>Stop</button>}
-            </div>
-            {streamingContent ? (
-              <>
-                <div className={styles.text}>
-                  <Markdown remarkPlugins={[remarkGfm]}>{streamingContent}</Markdown>
-                </div>
-                <div className={styles.streamingIndicator}>
-                  <span className={styles.thinkingDots}><span /><span /><span /></span>
+              {streamingContent ? (
+                <>
+                  <div className={styles.text}>
+                    <Markdown remarkPlugins={[remarkGfm]}>{streamingContent}</Markdown>
+                  </div>
+                  <div className={styles.streamingIndicator}>
+                    <span className={styles.thinkingDots}>
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                    {loadingStatus && (
+                      <span className={styles.thinkingStatus}>{loadingStatus}</span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className={styles.thinking}>
+                  <span className={styles.thinkingDots}>
+                    <span />
+                    <span />
+                    <span />
+                  </span>
                   {loadingStatus && <span className={styles.thinkingStatus}>{loadingStatus}</span>}
                 </div>
-              </>
-            ) : (
-              <div className={styles.thinking}>
-                <span className={styles.thinkingDots}><span /><span /><span /></span>
-                {loadingStatus && <span className={styles.thinkingStatus}>{loadingStatus}</span>}
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
+          {workspace &&
+            pendingFollowups.map((f) => (
+              <FollowupCard
+                key={f.id}
+                followup={f}
+                workspace={workspace}
+                onCancelled={() => onFollowupCancelled?.()}
+              />
+            ))}
+          <div style={{ paddingBottom: voiceMode ? 100 : 0 }} />
+        </div>
+        {followups && followups.some((f) => f.status === "pending") && showScrollBtn && (
+          <FollowupIndicator followup={followups.find((f) => f.status === "pending")!} />
         )}
-        {workspace && pendingFollowups.map((f) => (
-          <FollowupCard
-            key={f.id}
-            followup={f}
-            workspace={workspace}
-            onCancelled={() => onFollowupCancelled?.()}
-          />
-        ))}
-        <div style={{ paddingBottom: voiceMode ? 100 : 0 }} />
-      </div>
-      {followups && followups.some((f) => f.status === "pending") && showScrollBtn && (
-        <FollowupIndicator followup={followups.find((f) => f.status === "pending")!} />
-      )}
-      <button
-        className={`${styles.scrollToBottom} ${showScrollBtn ? styles.scrollToBottomVisible : ""}`}
-        onClick={handleScrollToBottom}
-        aria-label="Scroll to bottom"
-        tabIndex={showScrollBtn ? 0 : -1}
-        aria-hidden={!showScrollBtn}
-        disabled={!showScrollBtn}
-      >
-        <ChevronDown size={20} />
-      </button>
+        <button
+          className={`${styles.scrollToBottom} ${showScrollBtn ? styles.scrollToBottomVisible : ""}`}
+          onClick={handleScrollToBottom}
+          aria-label="Scroll to bottom"
+          tabIndex={showScrollBtn ? 0 : -1}
+          aria-hidden={!showScrollBtn}
+          disabled={!showScrollBtn}
+        >
+          <ChevronDown size={20} />
+        </button>
       </div>
 
       <ChatInput

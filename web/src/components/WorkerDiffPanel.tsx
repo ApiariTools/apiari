@@ -38,7 +38,9 @@ function FileDiffView({ fileName, content }: { fileName: string; content: string
         onClick={() => setCollapsed((current) => !current)}
         aria-expanded={!collapsed}
       >
-        <span className={`${styles.chevron} ${collapsed ? styles.chevronCollapsed : ""}`}>&#9660;</span>
+        <span className={`${styles.chevron} ${collapsed ? styles.chevronCollapsed : ""}`}>
+          &#9660;
+        </span>
         {fileName}
       </button>
       {!collapsed && (

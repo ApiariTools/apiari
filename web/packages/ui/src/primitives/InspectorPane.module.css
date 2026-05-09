@@ -6,8 +6,7 @@
   overflow: hidden;
   border-left: 1px solid var(--border);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 18%),
-    rgba(17, 17, 17, 0.82);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 18%), rgba(17, 17, 17, 0.82);
 }
 
 .placeholder {

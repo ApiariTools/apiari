@@ -59,7 +59,9 @@
   text-align: left;
   cursor: pointer;
   font-family: var(--font);
-  transition: background 120ms, border-color 120ms;
+  transition:
+    background 120ms,
+    border-color 120ms;
 }
 
 .row:hover {

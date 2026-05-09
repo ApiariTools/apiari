@@ -16,10 +16,40 @@ const repos: Repo[] = [
     behind_count: 0,
     workers: [],
   },
-  { name: "swarm", path: "/dev/swarm", has_swarm: true, is_clean: false, branch: "feat/test", upstream: "origin/feat/test", ahead_count: 1, behind_count: 2, workers: [
-    { id: "cli-3", branch: "swarm/fix-bug", status: "running", agent: "claude", pr_url: "https://github.com/test/pull/1", pr_title: "Fix bug", description: null, elapsed_secs: 120, dispatched_by: "Main" },
-  ]},
-  { name: "common", path: "/dev/common", has_swarm: false, is_clean: true, branch: "main", upstream: null, ahead_count: 0, behind_count: 0, workers: [] },
+  {
+    name: "swarm",
+    path: "/dev/swarm",
+    has_swarm: true,
+    is_clean: false,
+    branch: "feat/test",
+    upstream: "origin/feat/test",
+    ahead_count: 1,
+    behind_count: 2,
+    workers: [
+      {
+        id: "cli-3",
+        branch: "swarm/fix-bug",
+        status: "running",
+        agent: "claude",
+        pr_url: "https://github.com/test/pull/1",
+        pr_title: "Fix bug",
+        description: null,
+        elapsed_secs: 120,
+        dispatched_by: "Main",
+      },
+    ],
+  },
+  {
+    name: "common",
+    path: "/dev/common",
+    has_swarm: false,
+    is_clean: true,
+    branch: "main",
+    upstream: null,
+    ahead_count: 0,
+    behind_count: 0,
+    workers: [],
+  },
 ];
 
 const defaultProps = {

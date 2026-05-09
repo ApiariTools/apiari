@@ -19,9 +19,7 @@ const workerItems: SidebarItem[] = [
   { id: "w-2", name: "Update deps", status: "waiting" },
 ];
 
-const botItems: SidebarItem[] = [
-  { id: "bot-1", name: "Triage", status: "idle" },
-];
+const botItems: SidebarItem[] = [{ id: "bot-1", name: "Triage", status: "idle" }];
 
 describe("Sidebar empty states", () => {
   it("shows 'No workers yet' when workers array is empty", () => {
@@ -71,13 +69,7 @@ describe("Sidebar done workers filtering", () => {
 
   it("calls onShowDoneWorkers when the footer is clicked", () => {
     const onShowDoneWorkers = vi.fn();
-    render(
-      <Sidebar
-        {...defaultProps}
-        doneWorkerCount={2}
-        onShowDoneWorkers={onShowDoneWorkers}
-      />,
-    );
+    render(<Sidebar {...defaultProps} doneWorkerCount={2} onShowDoneWorkers={onShowDoneWorkers} />);
     screen.getByTestId("done-workers-footer").click();
     expect(onShowDoneWorkers).toHaveBeenCalled();
   });
@@ -97,9 +89,7 @@ describe("Sidebar done workers filtering", () => {
   it("shows active workers but not done workers in the main list", () => {
     // App.tsx filters done workers before passing to Sidebar — Sidebar just
     // renders what it receives. Verify active workers appear.
-    const activeItems: SidebarItem[] = [
-      { id: "w-active", name: "Active task", status: "running" },
-    ];
+    const activeItems: SidebarItem[] = [{ id: "w-active", name: "Active task", status: "running" }];
     render(<Sidebar {...defaultProps} workers={activeItems} doneWorkerCount={2} />);
     expect(screen.getByText("Active task")).toBeInTheDocument();
     expect(screen.getByTestId("done-workers-footer")).toHaveTextContent("2 completed");

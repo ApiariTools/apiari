@@ -3,7 +3,12 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import App from "../App";
 import * as api from "@apiari/api";
-import type { WorkerV2, WorkerDetailV2 as WorkerDetailV2Data, AutoBot, AutoBotDetail } from "@apiari/types";
+import type {
+  WorkerV2,
+  WorkerDetailV2 as WorkerDetailV2Data,
+  AutoBot,
+  AutoBotDetail,
+} from "@apiari/types";
 
 vi.mock("@apiari/api");
 vi.mock("react-markdown", () => ({
@@ -178,7 +183,9 @@ describe("App shell", () => {
     const workerBtns = screen.getAllByRole("button", { name: /Fix auth rate limiting/ });
     await user.click(workerBtns[0]);
     // WorkerDetailV2 renders the display title as heading
-    expect(await screen.findByText("Fix auth rate limiting", { selector: "h1" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("Fix auth rate limiting", { selector: "h1" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Select something")).not.toBeInTheDocument();
     // Keep sidebarNav reference to suppress unused warning
     expect(sidebarNav).toBeInTheDocument();
@@ -212,11 +219,15 @@ describe("App shell", () => {
     await screen.findAllByText("Fix auth rate limiting");
     const workerBtns = screen.getAllByRole("button", { name: /Fix auth rate limiting/ });
     await user.click(workerBtns[0]);
-    expect(await screen.findByText("Fix auth rate limiting", { selector: "h1" })).toBeInTheDocument();
+    expect(
+      await screen.findByText("Fix auth rate limiting", { selector: "h1" }),
+    ).toBeInTheDocument();
     const updateDepsBtns = screen.getAllByRole("button", { name: /Update dependencies/ });
     await user.click(updateDepsBtns[0]);
     await waitFor(() => {
-      expect(screen.queryByText("Fix auth rate limiting", { selector: "h1" })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("Fix auth rate limiting", { selector: "h1" }),
+      ).not.toBeInTheDocument();
     });
     expect(await screen.findByText("Update dependencies", { selector: "h1" })).toBeInTheDocument();
   });

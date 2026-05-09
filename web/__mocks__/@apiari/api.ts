@@ -1,9 +1,6 @@
 import { vi } from "vitest";
 
-export const getWorkspaces = vi.fn().mockResolvedValue([
-  { name: "apiari" },
-  { name: "mgm" },
-]);
+export const getWorkspaces = vi.fn().mockResolvedValue([{ name: "apiari" }, { name: "mgm" }]);
 
 export const getBots = vi.fn().mockResolvedValue([
   {
@@ -69,8 +66,24 @@ export const getTasks = vi.fn().mockResolvedValue([
 export const getRepos = vi.fn().mockResolvedValue([]);
 
 export const getConversations = vi.fn().mockResolvedValue([
-  { id: 1, workspace: "apiari", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },
-  { id: 2, workspace: "apiari", bot: "Main", role: "assistant", content: "Hi! How can I help?", attachments: null, created_at: new Date().toISOString() },
+  {
+    id: 1,
+    workspace: "apiari",
+    bot: "Main",
+    role: "user",
+    content: "hello",
+    attachments: null,
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 2,
+    workspace: "apiari",
+    bot: "Main",
+    role: "assistant",
+    content: "Hi! How can I help?",
+    attachments: null,
+    created_at: new Date().toISOString(),
+  },
 ]);
 
 export const getBotStatus = vi.fn().mockResolvedValue({
@@ -85,7 +98,9 @@ export const sendMessage = vi.fn().mockResolvedValue({ ok: true });
 export const cancelBot = vi.fn().mockResolvedValue({ ok: true });
 export const getWorkerDetail = vi.fn().mockResolvedValue(null);
 export const sendWorkerMessage = vi.fn().mockResolvedValue({ ok: true });
-export const getUsage = vi.fn().mockResolvedValue({ installed: false, providers: [], updated_at: null });
+export const getUsage = vi
+  .fn()
+  .mockResolvedValue({ installed: false, providers: [], updated_at: null });
 export const getDocs = vi.fn().mockResolvedValue([
   { name: "architecture.md", title: "Architecture", updated_at: "2026-01-01T00:00:00Z" },
   { name: "setup.md", title: "Setup Guide", updated_at: "2026-01-01T00:00:00Z" },
@@ -101,7 +116,9 @@ export const deleteDoc = vi.fn().mockResolvedValue({ ok: true });
 export const getFollowups = vi.fn().mockResolvedValue([]);
 export const cancelFollowup = vi.fn().mockResolvedValue({ ok: true });
 export const getResearchTasks = vi.fn().mockResolvedValue([]);
-export const startResearch = vi.fn().mockResolvedValue({ id: "research-1", topic: "test", status: "running" });
+export const startResearch = vi
+  .fn()
+  .mockResolvedValue({ id: "research-1", topic: "test", status: "running" });
 export const getSignals = vi.fn().mockResolvedValue([]);
 export const getProviderCapabilities = vi.fn().mockResolvedValue([
   {
@@ -155,9 +172,9 @@ export const cancelWorkerV2 = vi.fn().mockResolvedValue(undefined);
 export const requeueWorkerV2 = vi.fn().mockResolvedValue(undefined);
 export const requestWorkerReview = vi.fn().mockResolvedValue(undefined);
 export const listWorkerReviews = vi.fn().mockResolvedValue([]);
-export const promoteWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
-export const redispatchWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
-export const closeWorker = vi.fn().mockResolvedValue({ ok: true, detail: '' });
+export const promoteWorker = vi.fn().mockResolvedValue({ ok: true, detail: "" });
+export const redispatchWorker = vi.fn().mockResolvedValue({ ok: true, detail: "" });
+export const closeWorker = vi.fn().mockResolvedValue({ ok: true, detail: "" });
 export const getWorkerDiff = vi.fn().mockResolvedValue(null);
 
 // Auto Bot API mocks
@@ -172,14 +189,14 @@ export const getAutoBotRuns = vi.fn().mockResolvedValue([]);
 // v2 Worker create mock
 export const createWorkerV2 = vi.fn().mockResolvedValue({
   ok: true,
-  worker_id: 'worker-new',
+  worker_id: "worker-new",
 });
 
 // Context Bot API mock
 export const chatWithContextBot = vi.fn().mockResolvedValue({
-  response: 'Here is your brief.',
-  session_id: 'session-1',
-  model: 'claude-sonnet-4-6',
+  response: "Here is your brief.",
+  session_id: "session-1",
+  model: "claude-sonnet-4-6",
 });
 export const listContextBotSessions = vi.fn().mockResolvedValue([]);
 export const upsertContextBotSession = vi.fn().mockResolvedValue(undefined);

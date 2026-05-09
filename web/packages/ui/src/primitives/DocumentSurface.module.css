@@ -34,8 +34,7 @@
   .layout {
     flex-direction: column;
     background:
-      radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%),
-      var(--bg);
+      radial-gradient(circle at top right, rgba(245, 197, 66, 0.08), transparent 28%), var(--bg);
   }
 
   .sidebar {

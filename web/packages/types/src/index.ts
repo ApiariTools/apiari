@@ -241,13 +241,21 @@ export interface WorkerBrief {
   repo: string;
   scope: string[];
   acceptance_criteria: string[];
-  review_mode: 'local_first' | 'pr_first';
+  review_mode: "local_first" | "pr_first";
 }
 
 export interface WorkerV2 {
   id: string;
   workspace: string;
-  state: 'created' | 'briefed' | 'queued' | 'running' | 'waiting' | 'stalled' | 'done' | 'abandoned';
+  state:
+    | "created"
+    | "briefed"
+    | "queued"
+    | "running"
+    | "waiting"
+    | "stalled"
+    | "done"
+    | "abandoned";
   label: string;
   agent_kind?: string | null;
   model?: string | null;
@@ -263,7 +271,7 @@ export interface WorkerV2 {
   ci_passing: boolean | null;
   is_stalled: boolean;
   revision_count: number;
-  review_mode: 'local_first' | 'pr_first';
+  review_mode: "local_first" | "pr_first";
   blocked_reason: string | null;
   last_output_at: string | null;
   state_entered_at: string;
@@ -297,19 +305,19 @@ export interface WorkerDetailV2 extends WorkerV2 {
 // ── Worker Review types ────────────────────────────────────────────────
 
 export interface ReviewIssue {
-  severity: 'blocking' | 'suggestion' | 'nitpick'
-  file: string
-  description: string
+  severity: "blocking" | "suggestion" | "nitpick";
+  file: string;
+  description: string;
 }
 
 export interface WorkerReview {
-  id: number
-  reviewer: string
-  verdict: 'approve' | 'request_changes' | 'comment'
-  summary: string
-  issues: ReviewIssue[]
-  worker_message: string | null
-  created_at: string
+  id: number;
+  reviewer: string;
+  verdict: "approve" | "request_changes" | "comment";
+  summary: string;
+  issues: ReviewIssue[];
+  worker_message: string | null;
+  created_at: string;
 }
 
 // ── Auto Bot types ─────────────────────────────────────────────────────
@@ -319,7 +327,7 @@ export interface AutoBot {
   workspace: string;
   name: string;
   color: string;
-  trigger_type: 'cron' | 'signal';
+  trigger_type: "cron" | "signal";
   cron_schedule: string | null;
   signal_source: string | null;
   signal_filter: string | null;
@@ -327,7 +335,7 @@ export interface AutoBot {
   provider: string;
   model: string | null;
   enabled: boolean;
-  status: 'idle' | 'running' | 'error';
+  status: "idle" | "running" | "error";
   created_at: string;
   updated_at: string;
 }
@@ -339,7 +347,7 @@ export interface AutoBotRun {
   triggered_by: string;
   started_at: string;
   finished_at: string | null;
-  outcome: 'dispatched_worker' | 'notified' | 'noise' | 'error' | null;
+  outcome: "dispatched_worker" | "notified" | "noise" | "error" | null;
   summary: string | null;
   worker_id: string | null;
 }
@@ -351,176 +359,176 @@ export interface AutoBotDetail extends AutoBot {
 // ── Context Bot types ──────────────────────────────────────────────────
 
 export interface ContextBotContext {
-  view: string
-  entity_id: string | null
-  entity_snapshot: Record<string, unknown>
+  view: string;
+  entity_id: string | null;
+  entity_snapshot: Record<string, unknown>;
 }
 
 export interface ContextBotChatResponse {
-  response: string
-  session_id: string
-  model: string
-  dispatched_worker_id?: string
+  response: string;
+  session_id: string;
+  model: string;
+  dispatched_worker_id?: string;
 }
 
 export interface ContextBotMessage {
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: string
+  role: "user" | "assistant";
+  content: string;
+  timestamp: string;
 }
 
 export interface ContextBotSession {
-  id: string                    // local counter key (not sent to server)
-  server_session_id?: string    // echoed from first server response; sent on follow-up turns
-  context: ContextBotContext
-  title: string                 // e.g. "Viewing: fix-auth" or "Dashboard"
-  model: string                 // claude model for this session
-  messages: ContextBotMessage[]
-  minimized: boolean
-  loading: boolean
-  activity?: string             // current tool being used (e.g. "Bash: git log")
+  id: string; // local counter key (not sent to server)
+  server_session_id?: string; // echoed from first server response; sent on follow-up turns
+  context: ContextBotContext;
+  title: string; // e.g. "Viewing: fix-auth" or "Dashboard"
+  model: string; // claude model for this session
+  messages: ContextBotMessage[];
+  minimized: boolean;
+  loading: boolean;
+  activity?: string; // current tool being used (e.g. "Bash: git log")
 }
 
 // ── Dashboard Widgets ──────────────────────────────────────────────────
 
-export type WidgetStatus = 'ok' | 'warning' | 'error' | 'neutral' | 'running' | 'pending'
-export type WidgetTrendDirection = 'up' | 'down' | 'neutral'
-export type WidgetSeverity = 'error' | 'warning' | 'info'
+export type WidgetStatus = "ok" | "warning" | "error" | "neutral" | "running" | "pending";
+export type WidgetTrendDirection = "up" | "down" | "neutral";
+export type WidgetSeverity = "error" | "warning" | "info";
 
 interface WidgetBase {
-  slot: string
-  title: string
-  updated_at?: string
-  href?: string
-  source?: string    // who wrote this (e.g. "GitHub bot", "Coordinator")
-  editable?: boolean // hint that user can change this via config
+  slot: string;
+  title: string;
+  updated_at?: string;
+  href?: string;
+  source?: string; // who wrote this (e.g. "GitHub bot", "Coordinator")
+  editable?: boolean; // hint that user can change this via config
 }
 
 export interface StatWidget extends WidgetBase {
-  type: 'stat'
-  value: string
-  unit?: string
-  trend?: string
-  trend_direction?: WidgetTrendDirection
-  status?: WidgetStatus
+  type: "stat";
+  value: string;
+  unit?: string;
+  trend?: string;
+  trend_direction?: WidgetTrendDirection;
+  status?: WidgetStatus;
 }
 
 export interface StatItem {
-  label: string
-  value: string
-  status?: WidgetStatus
+  label: string;
+  value: string;
+  status?: WidgetStatus;
 }
 
 export interface StatRowWidget extends WidgetBase {
-  type: 'stat_row'
-  stats: StatItem[]
+  type: "stat_row";
+  stats: StatItem[];
 }
 
 export interface ListItem {
-  id: string
-  label: string
-  meta?: string
-  status?: WidgetStatus
-  right?: string
-  href?: string
+  id: string;
+  label: string;
+  meta?: string;
+  status?: WidgetStatus;
+  right?: string;
+  href?: string;
 }
 
 export interface ListWidget extends WidgetBase {
-  type: 'list'
-  items: ListItem[]
-  empty_message?: string
+  type: "list";
+  items: ListItem[];
+  empty_message?: string;
 }
 
 export interface StatusGridItem {
-  label: string
-  status: WidgetStatus
-  href?: string
+  label: string;
+  status: WidgetStatus;
+  href?: string;
 }
 
 export interface StatusGridWidget extends WidgetBase {
-  type: 'status_grid'
-  items: StatusGridItem[]
+  type: "status_grid";
+  items: StatusGridItem[];
 }
 
 export interface ActivityFeedItem {
-  id: string
-  timestamp: string
-  actor?: string
-  actor_color?: string
-  event: string
-  kind?: WidgetStatus
-  href?: string
+  id: string;
+  timestamp: string;
+  actor?: string;
+  actor_color?: string;
+  event: string;
+  kind?: WidgetStatus;
+  href?: string;
 }
 
 export interface ActivityFeedWidget extends WidgetBase {
-  type: 'activity_feed'
-  items: ActivityFeedItem[]
+  type: "activity_feed";
+  items: ActivityFeedItem[];
 }
 
 export interface ProgressWidget extends WidgetBase {
-  type: 'progress'
-  label: string
-  percent: number
-  status?: WidgetStatus
-  sublabel?: string
+  type: "progress";
+  label: string;
+  percent: number;
+  status?: WidgetStatus;
+  sublabel?: string;
 }
 
 export interface SparklineWidget extends WidgetBase {
-  type: 'sparkline'
-  value: string
-  unit?: string
-  trend?: string
-  trend_direction?: WidgetTrendDirection
-  status?: WidgetStatus
-  points: number[]
-  x_labels?: string[]
+  type: "sparkline";
+  value: string;
+  unit?: string;
+  trend?: string;
+  trend_direction?: WidgetTrendDirection;
+  status?: WidgetStatus;
+  points: number[];
+  x_labels?: string[];
 }
 
 export interface BarChartBar {
-  label: string
-  value: number
-  status?: WidgetStatus
+  label: string;
+  value: number;
+  status?: WidgetStatus;
 }
 
 export interface BarChartWidget extends WidgetBase {
-  type: 'bar_chart'
-  bars: BarChartBar[]
+  type: "bar_chart";
+  bars: BarChartBar[];
 }
 
 export interface AlertBannerWidget extends WidgetBase {
-  type: 'alert_banner'
-  body: string
-  severity: WidgetSeverity
-  action_label?: string
-  action_href?: string
-  dismissible?: boolean
+  type: "alert_banner";
+  body: string;
+  severity: WidgetSeverity;
+  action_label?: string;
+  action_href?: string;
+  dismissible?: boolean;
 }
 
 export interface LinkGroup {
-  label: string
-  links: { label: string; href: string; meta?: string }[]
+  label: string;
+  links: { label: string; href: string; meta?: string }[];
 }
 
 export interface LinkCollectionWidget extends WidgetBase {
-  type: 'link_collection'
-  groups: LinkGroup[]
+  type: "link_collection";
+  groups: LinkGroup[];
 }
 
 export interface MarkdownBlockWidget extends WidgetBase {
-  type: 'markdown_block'
-  content: string
+  type: "markdown_block";
+  content: string;
 }
 
 export interface DonutSegment {
-  label: string
-  value: number
-  color: string
+  label: string;
+  value: number;
+  color: string;
 }
 
 export interface DonutWidget extends WidgetBase {
-  type: 'donut'
-  total_label?: string
-  segments: DonutSegment[]
+  type: "donut";
+  total_label?: string;
+  segments: DonutSegment[];
 }
 
 export type DashboardWidget =
@@ -535,4 +543,4 @@ export type DashboardWidget =
   | AlertBannerWidget
   | LinkCollectionWidget
   | MarkdownBlockWidget
-  | DonutWidget
+  | DonutWidget;

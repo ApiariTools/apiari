@@ -13,7 +13,9 @@ export function repoSyncLabel(repo: Repo, options: RepoSyncLabelOptions = {}): s
   if (!upstream) return "no upstream";
   if (ahead === 0 && behind === 0) return includeUpstream ? `in sync with ${upstream}` : "in sync";
   if (ahead > 0 && behind > 0) {
-    return includeUpstream ? `${ahead} ahead · ${behind} behind ${upstream}` : `${ahead} ahead · ${behind} behind`;
+    return includeUpstream
+      ? `${ahead} ahead · ${behind} behind ${upstream}`
+      : `${ahead} ahead · ${behind} behind`;
   }
   if (ahead > 0) return includeUpstream ? `${ahead} ahead of ${upstream}` : `${ahead} ahead`;
   return includeUpstream ? `${behind} behind ${upstream}` : `${behind} behind`;

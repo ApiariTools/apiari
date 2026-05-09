@@ -19,31 +19,45 @@ interface Props {
 }
 
 export function OverviewMode(props: Props) {
-  const pendingFollowups = props.followups.filter((followup) => followup.status === "pending").length;
-  const activeWorkers = props.workers.filter((worker) => worker.status === "running" || worker.status === "active").length;
+  const pendingFollowups = props.followups.filter(
+    (followup) => followup.status === "pending",
+  ).length;
+  const activeWorkers = props.workers.filter(
+    (worker) => worker.status === "running" || worker.status === "active",
+  ).length;
   const modifiedRepos = props.repos.filter((repo) => !repo.is_clean).length;
   return (
     <ModeScaffold
       scrollBody
       hideHeaderOnMobile
-      header={(
+      header={
         <PageHeader
           eyebrow="Workspace control room"
           title={props.workspace}
           summary="Make bots, workers, repos, docs, and follow-ups the primary objects. Chat stays available, but the workspace leads."
-          meta={(
+          meta={
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
               <StatusBadge tone="accent">{pendingFollowups} pending followups</StatusBadge>
               <StatusBadge tone="success">{activeWorkers} workers active</StatusBadge>
-              <StatusBadge tone={modifiedRepos > 0 ? "accent" : "neutral"}>{modifiedRepos} repos modified</StatusBadge>
+              <StatusBadge tone={modifiedRepos > 0 ? "accent" : "neutral"}>
+                {modifiedRepos} repos modified
+              </StatusBadge>
             </div>
-          )}
+          }
           actions={[
-            { label: `Open ${props.primaryBot} chat`, onClick: () => props.onSelectBot(props.primaryBot), kind: "primary" },
-            { label: "Review workers", onClick: () => props.onOpenMode("workers"), kind: "secondary" },
+            {
+              label: `Open ${props.primaryBot} chat`,
+              onClick: () => props.onSelectBot(props.primaryBot),
+              kind: "primary",
+            },
+            {
+              label: "Review workers",
+              onClick: () => props.onOpenMode("workers"),
+              kind: "secondary",
+            },
           ]}
         />
-      )}
+      }
     >
       <OverviewPanel {...props} showHero={false} />
     </ModeScaffold>

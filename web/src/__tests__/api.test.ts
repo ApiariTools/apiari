@@ -4,10 +4,13 @@ import { getBotStatus, getConversations, markSeen, sendMessage } from "@apiari/a
 describe("chat API path encoding", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ ok: true, status: "idle", streaming_content: "", tool_name: null }),
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, status: "idle", streaming_content: "", tool_name: null }),
+      }),
+    );
   });
 
   it("encodes bot names with spaces for chat endpoints", async () => {

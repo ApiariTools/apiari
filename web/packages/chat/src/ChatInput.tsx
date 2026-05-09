@@ -26,7 +26,17 @@ interface Props {
 
 const VOICE_CONFIRM_DELAY_MS = 5000;
 
-export function ChatInput({ placeholder, disabled, onSend, showAttachments = true, voiceMode, voiceState, triggerRecord, playTts, queueCount = 0 }: Props) {
+export function ChatInput({
+  placeholder,
+  disabled,
+  onSend,
+  showAttachments = true,
+  voiceMode,
+  voiceState,
+  triggerRecord,
+  playTts,
+  queueCount = 0,
+}: Props) {
   // ── Text input state ──
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -34,7 +44,9 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
   const [hasText, setHasText] = useState(false);
 
   // ── Mic/voice state ──
-  const [micState, setMicState] = useState<"idle" | "loading" | "listening" | "transcribing">("idle");
+  const [micState, setMicState] = useState<"idle" | "loading" | "listening" | "transcribing">(
+    "idle",
+  );
   const [transcribeError, setTranscribeError] = useState<string | null>(null);
   const [partialText, setPartialText] = useState("");
   const [confirming, setConfirming] = useState(false);
@@ -76,7 +88,9 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
   // Ignore speech when page is not visible (tab switched, app backgrounded)
   const pageVisibleRef = useRef(true);
   useEffect(() => {
-    function onVisibility() { pageVisibleRef.current = document.visibilityState === "visible"; }
+    function onVisibility() {
+      pageVisibleRef.current = document.visibilityState === "visible";
+    }
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
@@ -97,7 +111,7 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
 
   // Parent triggers recording (voice mode loop)
   useEffect(() => {
-    if (triggerRecord && triggerRecord > 0 && (micState === "idle")) {
+    if (triggerRecord && triggerRecord > 0 && micState === "idle") {
       startListening();
     }
   }, [triggerRecord]);
@@ -118,7 +132,10 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
   // ── Timer helpers ──
 
   function clearTimer(ref: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) {
-    if (ref.current) { clearTimeout(ref.current); ref.current = null; }
+    if (ref.current) {
+      clearTimeout(ref.current);
+      ref.current = null;
+    }
   }
 
   // ── Voice mode confirmation ──
@@ -197,9 +214,9 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
           resetVoiceSendTimer();
           break;
       }
-      } catch {
-        return;
-      }
+    } catch {
+      return;
+    }
     confirmingRef.current = false;
     setConfirming(false);
   }
@@ -248,8 +265,7 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
       }
     } catch {
       return;
-    }
-    finally {
+    } finally {
       pendingTranscriptions.current--;
       if (!isListeningRef.current && pendingTranscriptions.current === 0) {
         finalize();
@@ -348,7 +364,7 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
       setTranscribeError(
         msg.includes("Permission") || msg.includes("NotAllowed")
           ? "Microphone access denied"
-          : `Voice init failed: ${msg}`
+          : `Voice init failed: ${msg}`,
       );
       setMicState("idle");
       micInitRef.current = false;
@@ -365,7 +381,10 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
       vizCtxRef.current = null;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-      if (vadRef.current) { await vadRef.current.destroy(); vadRef.current = null; }
+      if (vadRef.current) {
+        await vadRef.current.destroy();
+        vadRef.current = null;
+      }
     }
 
     if (pendingTranscriptions.current > 0) {
@@ -419,9 +438,8 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
       const scaled = Math.pow(gated / 0.8, 0.9) * 1.4;
       const target = Math.min(scaled, 1.0);
       const prev = smoothedBars.current[i];
-      smoothedBars.current[i] = target > prev
-        ? prev + (target - prev) * 0.7
-        : prev + (target - prev) * 0.25;
+      smoothedBars.current[i] =
+        target > prev ? prev + (target - prev) * 0.7 : prev + (target - prev) * 0.25;
     }
 
     for (let i = 0; i < halfCount; i++) {
@@ -438,7 +456,6 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
       ctx.roundRect(xLeft, centerY - barH / 2, barWidth, barH, 2);
       ctx.fill();
     }
-
   }
 
   // ── Text input helpers ──
@@ -464,7 +481,10 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      send();
+    }
   }
 
   function handleFiles(files: FileList | null) {
@@ -473,7 +493,8 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
       const reader = new FileReader();
       reader.onload = () => {
         setAttachments((prev) => [
-          ...prev, { name: file.name, type: file.type, dataUrl: reader.result as string },
+          ...prev,
+          { name: file.name, type: file.type, dataUrl: reader.result as string },
         ]);
       };
       reader.readAsDataURL(file);
@@ -488,9 +509,14 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
 
   return (
     <div className={styles.inputArea}>
-      {(voiceMode || micState === "loading" || micState === "listening" || micState === "transcribing") && (
+      {(voiceMode ||
+        micState === "loading" ||
+        micState === "listening" ||
+        micState === "transcribing") && (
         <>
-          <div className={`${styles.voiceBar} ${voiceState === "processing" ? styles.voiceBarProcessing : ""} ${voiceState === "speaking" ? styles.voiceBarSpeaking : ""}`}>
+          <div
+            className={`${styles.voiceBar} ${voiceState === "processing" ? styles.voiceBarProcessing : ""} ${voiceState === "speaking" ? styles.voiceBarSpeaking : ""}`}
+          >
             <canvas ref={canvasRef} className={styles.waveform} />
             {voiceMode && voiceState === "processing" && (
               <div className={styles.voiceBarLabel}>Thinking...</div>
@@ -523,7 +549,12 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
               ) : (
                 <span className={styles.attachmentName}>{a.name}</span>
               )}
-              <button type="button" className={styles.attachmentRemove} aria-label={`Remove ${a.name}`} onClick={() => removeAttachment(i)}>
+              <button
+                type="button"
+                className={styles.attachmentRemove}
+                aria-label={`Remove ${a.name}`}
+                onClick={() => removeAttachment(i)}
+              >
                 &times;
               </button>
             </div>
@@ -533,51 +564,104 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
       <div className={styles.inputRow}>
         {showAttachments && (
           <>
-            <input ref={fileInputRef} type="file" multiple
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
               accept="image/*,.pdf,.txt,.md,.json,.csv,.ts,.tsx,.js,.jsx,.py,.rs,.go,.rb,.swift"
-              style={{ display: "none" }} onChange={(e) => handleFiles(e.target.files)} />
-            <button type="button" className={styles.attachBtn} aria-label="Attach file" onClick={() => fileInputRef.current?.click()}>
+              style={{ display: "none" }}
+              onChange={(e) => handleFiles(e.target.files)}
+            />
+            <button
+              type="button"
+              className={styles.attachBtn}
+              aria-label="Attach file"
+              onClick={() => fileInputRef.current?.click()}
+            >
               <Paperclip size={16} />
             </button>
           </>
         )}
-        <textarea ref={textareaRef} className={styles.inputField} placeholder={placeholder}
-          rows={1} enterKeyHint="enter" onInput={autoGrow} onKeyDown={handleKeyDown} />
+        <textarea
+          ref={textareaRef}
+          className={styles.inputField}
+          placeholder={placeholder}
+          rows={1}
+          enterKeyHint="enter"
+          onInput={autoGrow}
+          onKeyDown={handleKeyDown}
+        />
         {micState === "loading" ? (
-          <button type="button" className={`${styles.actionBtn} ${styles.micLoading}`} aria-label="Initializing microphone" disabled>
+          <button
+            type="button"
+            className={`${styles.actionBtn} ${styles.micLoading}`}
+            aria-label="Initializing microphone"
+            disabled
+          >
             <Loader2 size={16} className={styles.micSpinner} />
           </button>
         ) : micState === "listening" ? (
-          <button type="button" className={`${styles.actionBtn} ${styles.micRecording}`} aria-label="Stop listening"
-            onClick={stopListening} onTouchEnd={(e) => { e.preventDefault(); stopListening(); }}>
+          <button
+            type="button"
+            className={`${styles.actionBtn} ${styles.micRecording}`}
+            aria-label="Stop listening"
+            onClick={stopListening}
+            onTouchEnd={(e) => {
+              e.preventDefault();
+              stopListening();
+            }}
+          >
             <Square size={16} />
           </button>
         ) : micState === "transcribing" ? (
-          <button type="button" className={styles.actionBtn} aria-label="Transcribing" disabled>...</button>
+          <button type="button" className={styles.actionBtn} aria-label="Transcribing" disabled>
+            ...
+          </button>
         ) : (
-          <button type="button"
+          <button
+            type="button"
             className={`${styles.actionBtn} ${hasText || attachments.length > 0 ? styles.actionBtnSend : ""}`}
             aria-label={hasText || attachments.length > 0 ? "Send message" : "Record voice"}
             onMouseDown={(e) => {
               e.preventDefault();
               didLongPress.current = false;
-              longPressTimer.current = setTimeout(() => { didLongPress.current = true; startListening(); }, 500);
+              longPressTimer.current = setTimeout(() => {
+                didLongPress.current = true;
+                startListening();
+              }, 500);
             }}
             onMouseUp={() => {
               clearTimer(longPressTimer);
-              if (didLongPress.current) { stopListening(); return; }
-              if (hasText || attachments.length > 0) { send(); } else { startListening(); }
+              if (didLongPress.current) {
+                stopListening();
+                return;
+              }
+              if (hasText || attachments.length > 0) {
+                send();
+              } else {
+                startListening();
+              }
             }}
             onMouseLeave={() => clearTimer(longPressTimer)}
             onTouchStart={() => {
               didLongPress.current = false;
-              longPressTimer.current = setTimeout(() => { didLongPress.current = true; startListening(); }, 500);
+              longPressTimer.current = setTimeout(() => {
+                didLongPress.current = true;
+                startListening();
+              }, 500);
             }}
             onTouchEnd={(e) => {
               e.preventDefault();
               clearTimer(longPressTimer);
-              if (didLongPress.current) { stopListening(); return; }
-              if (hasText || attachments.length > 0) { send(); } else { startListening(); }
+              if (didLongPress.current) {
+                stopListening();
+                return;
+              }
+              if (hasText || attachments.length > 0) {
+                send();
+              } else {
+                startListening();
+              }
             }}
           >
             {hasText || attachments.length > 0 ? <ArrowUp size={18} /> : <Mic size={16} />}
@@ -589,7 +673,9 @@ export function ChatInput({ placeholder, disabled, onSend, showAttachments = tru
           {queueCount} message{queueCount !== 1 ? "s" : ""} queued
         </div>
       )}
-      {micState === "transcribing" && !partialText && <div className={styles.transcribeStatus}>Transcribing...</div>}
+      {micState === "transcribing" && !partialText && (
+        <div className={styles.transcribeStatus}>Transcribing...</div>
+      )}
       {transcribeError && <div className={styles.transcribeError}>{transcribeError}</div>}
     </div>
   );
