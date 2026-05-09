@@ -10,8 +10,8 @@ import type {
   WorkerTaskPacket,
   ContextBotContext,
   WorkerEvent,
-} from '../../types'
-import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '../../api'
+} from '@apiari/types'
+import { getWorkerV2, sendWorkerMessageV2, cancelWorkerV2, requeueWorkerV2, requestWorkerReview, listWorkerReviews } from '@apiari/api'
 import styles from './WorkerDetailV2.module.css'
 
 export interface WorkerDetailV2Props {

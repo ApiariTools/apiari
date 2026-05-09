@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WorkersMode } from "../modes/WorkersMode";
-import type { Worker, WorkerEnvironmentStatus } from "../types";
+import type { Worker, WorkerEnvironmentStatus } from "@apiari/types";
 
 const workers: Worker[] = [];
 

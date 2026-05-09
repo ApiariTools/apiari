@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { MessageSquare, Plus } from 'lucide-react'
-import type { ContextBotContext, ContextBotSession } from '../../types'
+import type { ContextBotContext, ContextBotSession } from '@apiari/types'
 import ContextBotPanel from './ContextBotPanel'
 import styles from './ContextBot.module.css'
 

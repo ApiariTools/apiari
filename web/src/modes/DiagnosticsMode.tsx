@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
-import * as api from "../api";
-import type { BotDebugData, BotTurnDecision, ProviderCapability } from "../types";
-import { EmptyState } from "../primitives/EmptyState";
-import { ModeScaffold } from "../primitives/ModeScaffold";
-import { PageHeader } from "../primitives/PageHeader";
-import { StatusBadge } from "../primitives/StatusBadge";
+import * as api from "@apiari/api";
+import type { BotDebugData, BotTurnDecision, ProviderCapability } from "@apiari/types";
+import { EmptyState, ModeScaffold, PageHeader, StatusBadge } from "@apiari/ui";
 import styles from "./DiagnosticsMode.module.css";
 
 interface Props {

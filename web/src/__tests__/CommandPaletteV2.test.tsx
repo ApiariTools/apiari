@@ -2,7 +2,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import CommandPalette from "../components/CommandPalette/CommandPalette";
-import type { WorkerV2, AutoBot } from "../types";
+import type { WorkerV2, AutoBot } from "@apiari/types";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────
 

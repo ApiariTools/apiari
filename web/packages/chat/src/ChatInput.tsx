@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState } from "react";
 import { Mic, Square, Paperclip, ArrowUp, Loader2 } from "lucide-react";
 import type { MicVAD } from "@ricky0123/vad-web";
-import { cleanTranscription, matchConfirmation, float32ToWav } from "../voice";
+import { cleanTranscription, matchConfirmation, float32ToWav } from "./voice";
 import styles from "./ChatInput.module.css";
 
 export interface Attachment {

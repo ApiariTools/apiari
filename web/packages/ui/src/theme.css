@@ -1,0 +1,170 @@
+:root {
+  /* Layout */
+  --sidebar-width: 240px;
+  --sidebar-rail-width: 60px;
+  --bottom-bar-height: 56px;
+
+  /* Backgrounds — sidebar darker, main content lighter */
+  --bg: #1c1c1c;
+  --bg-card: #141414;
+  --bg-hover: #222;
+  --bg-elevated: #262626;
+
+  /* Borders */
+  --border: #2a2a2a;
+  --border-strong: #383838;
+
+  /* Text */
+  --text: #b8b8b8;
+  --text-strong: #f0f0f0;
+  --text-faint: #666;
+
+  /* Accent */
+  --accent: #f5c542;
+
+  /* Status colors */
+  --status-running: #5cb85c;
+  --status-waiting: #f5c542;
+  --status-stalled: #e8a020;
+  --status-failed: #e85555;
+  --status-merged: #7c5cbf;
+  --status-abandoned: #555;
+
+  /* Typography */
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Menlo', 'Monaco', monospace;
+  --font-size-base: 15px;
+  --font-size-small: 13px;
+  --font-size-meta: 12px;
+  --font-size-input: 16px;
+
+  /* Spacing — 4px grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+}
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: var(--font-size-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px;
+  font-family: var(--font);
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+button {
+  font-family: var(--font);
+  cursor: pointer;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+code {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 99;
+}
+
+/* ── Scrollbars (WebKit) ─────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+@media (max-width: 768px) {
+  :root {
+    --mobile-gutter: 12px;
+    --mobile-bar-height: 96px;
+  }
+}

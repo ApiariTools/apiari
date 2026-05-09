@@ -1,9 +1,9 @@
 import { Suspense, lazy, useState, useRef, useEffect } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Worker, WorkerDetail as WorkerDetailData } from "../types";
-import * as api from "../api";
-import { ChatInput } from "./ChatInput";
+import type { Worker, WorkerDetail as WorkerDetailData } from "@apiari/types";
+import * as api from "@apiari/api";
+import { ChatInput } from "@apiari/chat";
 import styles from "./WorkerDetail.module.css";
 
 const WorkerDiffPanel = lazy(() =>

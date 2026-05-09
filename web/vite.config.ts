@@ -55,6 +55,14 @@ function copyVadAssets(): Plugin {
 
 export default defineConfig({
   plugins: [react(), copyVadAssets()],
+  resolve: {
+    alias: {
+      "@apiari/types": new URL("./packages/types/src/index.ts", import.meta.url).pathname,
+      "@apiari/api": new URL("./packages/api/src/index.ts", import.meta.url).pathname,
+      "@apiari/ui": new URL("./packages/ui/src/index.ts", import.meta.url).pathname,
+      "@apiari/chat": new URL("./packages/chat/src/index.ts", import.meta.url).pathname,
+    },
+  },
   build: {
     chunkSizeWarningLimit: 1100,
     rollupOptions: {

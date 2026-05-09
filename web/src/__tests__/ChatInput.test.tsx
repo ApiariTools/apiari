@@ -1,6 +1,6 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
-import { ChatInput } from "../components/ChatInput";
+import { ChatInput } from "@apiari/chat";
 
 describe("ChatInput", () => {
   it("renders textarea with placeholder", () => {

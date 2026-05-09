@@ -1,9 +1,7 @@
 import { OverviewPanel } from "../components/OverviewPanel";
-import { PageHeader } from "../primitives/PageHeader";
-import { ModeScaffold } from "../primitives/ModeScaffold";
+import { PageHeader, ModeScaffold, StatusBadge } from "@apiari/ui";
 import type { WorkspaceMode } from "../consoleConfig";
-import type { Bot, Followup, Repo, ResearchTask, Worker } from "../types";
-import { StatusBadge } from "../primitives/StatusBadge";
+import type { Bot, Followup, Repo, ResearchTask, Worker } from "@apiari/types";
 
 interface Props {
   workspace: string;

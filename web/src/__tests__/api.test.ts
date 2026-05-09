@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getBotStatus, getConversations, markSeen, sendMessage } from "../api";
+import { getBotStatus, getConversations, markSeen, sendMessage } from "@apiari/api";
 
 describe("chat API path encoding", () => {
   beforeEach(() => {

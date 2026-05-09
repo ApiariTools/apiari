@@ -1,9 +1,6 @@
 import { ExternalLink } from "lucide-react";
-import { ModeScaffold } from "../primitives/ModeScaffold";
-import { PageHeader } from "../primitives/PageHeader";
-import { EmptyState } from "../primitives/EmptyState";
-import { StatusBadge } from "../primitives/StatusBadge";
-import type { Task, Worker } from "../types";
+import { ModeScaffold, PageHeader, EmptyState, StatusBadge } from "@apiari/ui";
+import type { Task, Worker } from "@apiari/types";
 import styles from "./TasksMode.module.css";
 
 interface Props {

@@ -1,9 +1,7 @@
-import { ChatPanel } from "../components/ChatPanel";
-import { PageHeader } from "../primitives/PageHeader";
-import { ModeScaffold } from "../primitives/ModeScaffold";
-import { StatusBadge } from "../primitives/StatusBadge";
-import type { Bot, Followup, Message } from "../types";
-import type { Attachment } from "../components/ChatPanel";
+import { ChatPanel } from "@apiari/chat";
+import { PageHeader, ModeScaffold, StatusBadge } from "@apiari/ui";
+import type { Bot, Followup, Message } from "@apiari/types";
+import type { Attachment } from "@apiari/chat";
 import styles from "./ChatMode.module.css";
 
 interface Props {

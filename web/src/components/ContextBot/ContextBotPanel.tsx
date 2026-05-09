@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Minus } from 'lucide-react'
-import type { ContextBotSession } from '../../types'
+import type { ContextBotSession } from '@apiari/types'
 import styles from './ContextBot.module.css'
 
 export interface ContextBotPanelProps {

@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, BellRing, BookOpen, Bot, FolderGit2, Sparkles, Wrench } from "lucide-react";
 import { repoSyncLabel } from "../repoSync";
-import type { Bot as BotType, Followup, Repo, ResearchTask, Worker } from "../types";
+import type { Bot as BotType, Followup, Repo, ResearchTask, Worker } from "@apiari/types";
 import type { WorkspaceMode } from "../consoleConfig";
-import * as api from "../api";
-import { ObjectRow } from "../primitives/ObjectRow";
-import { StatusBadge } from "../primitives/StatusBadge";
+import * as api from "@apiari/api";
+import { ObjectRow, StatusBadge } from "@apiari/ui";
 import styles from "./OverviewPanel.module.css";
 
 interface Props {

@@ -2,10 +2,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../api");
+vi.mock("@apiari/api");
 
 import { DocsPanel } from "../components/DocsPanel";
-import * as api from "../api";
+import * as api from "@apiari/api";
 
 beforeEach(() => {
   vi.clearAllMocks();

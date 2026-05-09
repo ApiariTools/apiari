@@ -1,6 +1,5 @@
 import { Suspense, lazy } from "react";
-import { PageHeader } from "../primitives/PageHeader";
-import { ModeScaffold } from "../primitives/ModeScaffold";
+import { PageHeader, ModeScaffold } from "@apiari/ui";
 
 const DocsPanel = lazy(() =>
   import("../components/DocsPanel").then((module) => ({ default: module.DocsPanel })),

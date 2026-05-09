@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import * as api from "../api";
-import type { Worker, WorkerDetail as WorkerDetailData } from "../types";
+import * as api from "@apiari/api";
+import type { Worker, WorkerDetail as WorkerDetailData } from "@apiari/types";
 
 interface Props {
   workspace: string;

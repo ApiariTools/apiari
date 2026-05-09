@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Activity, Clock, MessageSquare, Zap, AlertCircle, CheckCircle, XCircle } from 'lucide-react'
-import type { AutoBotDetail as AutoBotDetailData, AutoBotRun, ContextBotContext } from '../../types'
-import { getAutoBot, triggerAutoBot, updateAutoBot } from '../../api'
+import type { AutoBotDetail as AutoBotDetailData, AutoBotRun, ContextBotContext } from '@apiari/types'
+import { getAutoBot, triggerAutoBot, updateAutoBot } from '@apiari/api'
 import { formatRelative } from '../../utils/time'
 import styles from './AutoBotDetail.module.css'
 

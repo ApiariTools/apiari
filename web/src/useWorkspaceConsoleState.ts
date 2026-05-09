@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as api from "./api";
+import * as api from "@apiari/api";
 import {
   getDefaultWorkspaceSelection,
   getOrderedWorkspaceModes,
@@ -11,7 +11,7 @@ import {
 import { useChatModeState } from "./hooks/useChatModeState";
 import { useWorkerInspectorState } from "./hooks/useWorkerInspectorState";
 import { useWorkspaceResourcesState } from "./hooks/useWorkspaceResourcesState";
-import type { Workspace } from "./types";
+import type { Workspace } from "@apiari/types";
 import { initWakeLock } from "./wakeLock";
 
 export interface Route {

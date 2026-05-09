@@ -1,10 +1,10 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import AutoBotDetail from "../components/AutoBotDetail/AutoBotDetail";
-import * as api from "../api";
-import type { AutoBotDetail as AutoBotDetailData } from "../types";
+import * as api from "@apiari/api";
+import type { AutoBotDetail as AutoBotDetailData } from "@apiari/types";
 
-vi.mock("../api");
+vi.mock("@apiari/api");
 
 const baseBot: AutoBotDetailData = {
   id: "bot-1",

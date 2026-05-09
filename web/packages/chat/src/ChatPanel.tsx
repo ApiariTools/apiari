@@ -3,12 +3,12 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, Loader2, Square, Volume2, AudioLines } from "lucide-react";
 import { Howl, Howler } from "howler";
-import type { Bot, Message, Followup } from "../types";
-import { splitSentences } from "../voice";
+import type { Bot, Message, Followup } from "@apiari/types";
+import { splitSentences } from "./voice";
 import { ChatInput } from "./ChatInput";
 import { FollowupCard, FollowupIndicator } from "./FollowupCard";
 import type { Attachment, VoiceState } from "./ChatInput";
-import { playSentCue, startThinkingCue, playSpeakingCue, setSharedAudioContext } from "../soundCues";
+import { playSentCue, startThinkingCue, playSpeakingCue, setSharedAudioContext } from "./soundCues";
 import styles from "./ChatPanel.module.css";
 
 export type { Attachment };

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import * as api from "../api";
-import type { Bot, CrossWorkspaceBot, Followup, Repo, ResearchTask, Task, Worker, WorkerEnvironmentStatus, Workspace } from "../types";
+import * as api from "@apiari/api";
+import type { Bot, CrossWorkspaceBot, Followup, Repo, ResearchTask, Task, Worker, WorkerEnvironmentStatus, Workspace } from "@apiari/types";
 
 interface Props {
   workspace: string;

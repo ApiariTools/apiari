@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Timer, Check, X } from "lucide-react";
-import type { Followup } from "../types";
-import { cancelFollowup } from "../api";
+import type { Followup } from "@apiari/types";
+import { cancelFollowup } from "@apiari/api";
 import styles from "./FollowupCard.module.css";
 
 function formatCountdown(ms: number): string {

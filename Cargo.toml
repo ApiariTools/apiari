@@ -1,14 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/apiari",
-    "crates/hive",
-    "crates/swarm",
-    "crates/common",
-    "crates/tui",
-    "crates/claude-sdk",
-    "crates/codex-sdk",
-    "crates/gemini-sdk",
+    # Applications
+    "crates/apps/apiari",
+    "crates/apps/hive",
+    "crates/apps/swarm",
+    # Core libraries
+    "crates/core/common",
+    "crates/core/tui",
+    # Provider SDKs
+    "crates/providers/claude-sdk",
+    "crates/providers/codex-sdk",
+    "crates/providers/gemini-sdk",
 ]
 
 [workspace.package]
@@ -16,14 +19,16 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
-# Internal crates
-apiari-hive = { path = "crates/hive" }
-apiari-common = { path = "crates/common" }
-apiari-claude-sdk = { path = "crates/claude-sdk" }
-apiari-codex-sdk = { path = "crates/codex-sdk" }
-apiari-swarm = { path = "crates/swarm", default-features = false }
-apiari-tui = { path = "crates/tui" }
-apiari-gemini-sdk = { path = "crates/gemini-sdk" }
+# Internal crates — apps
+apiari-hive = { path = "crates/apps/hive" }
+apiari-swarm = { path = "crates/apps/swarm", default-features = false }
+# Internal crates — core
+apiari-common = { path = "crates/core/common" }
+apiari-tui = { path = "crates/core/tui" }
+# Internal crates — providers
+apiari-claude-sdk = { path = "crates/providers/claude-sdk" }
+apiari-codex-sdk = { path = "crates/providers/codex-sdk" }
+apiari-gemini-sdk = { path = "crates/providers/gemini-sdk" }
 
 # Shared external dependencies
 chrono = { version = "0.4", features = ["serde"] }

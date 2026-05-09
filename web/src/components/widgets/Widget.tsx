@@ -6,7 +6,7 @@ import type {
   StatWidget, StatRowWidget, ListWidget, StatusGridWidget,
   ActivityFeedWidget, ProgressWidget, SparklineWidget, BarChartWidget,
   AlertBannerWidget, LinkCollectionWidget, MarkdownBlockWidget, DonutWidget,
-} from '../../types'
+} from '@apiari/types'
 
 interface WidgetBase {
   slot: string

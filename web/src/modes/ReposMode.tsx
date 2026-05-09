@@ -1,7 +1,6 @@
 import { ReposPanel } from "../components/ReposPanel";
-import { PageHeader } from "../primitives/PageHeader";
-import { ModeScaffold } from "../primitives/ModeScaffold";
-import type { Repo, ResearchTask } from "../types";
+import { PageHeader, ModeScaffold } from "@apiari/ui";
+import type { Repo, ResearchTask } from "@apiari/types";
 
 interface Props {
   repos: Repo[];

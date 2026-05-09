@@ -17,7 +17,7 @@ import {
   type WorkspaceConsoleProfile,
   type WorkspaceMode,
 } from "../consoleConfig";
-import type { Bot } from "../types";
+import type { Bot } from "@apiari/types";
 import styles from "./WorkspaceLayoutDialog.module.css";
 
 interface Props {

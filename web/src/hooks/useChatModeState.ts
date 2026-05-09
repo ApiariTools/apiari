@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as api from "../api";
-import type { Message } from "../types";
+import * as api from "@apiari/api";
+import type { Message } from "@apiari/types";
 
 const INITIAL_HISTORY_LIMIT = 100;
 const HISTORY_PAGE_SIZE = 100;

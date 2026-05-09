@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import { WorkerDetail } from "../components/WorkerDetail";
-import type { Worker, WorkerDetail as WorkerDetailData } from "../types";
+import type { Worker, WorkerDetail as WorkerDetailData } from "@apiari/types";
 
 vi.mock("@git-diff-view/react", () => ({
   DiffView: () => null,

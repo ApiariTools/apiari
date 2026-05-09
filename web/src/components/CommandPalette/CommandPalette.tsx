@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
-import type { WorkerV2, AutoBot } from '../../types'
+import type { WorkerV2, AutoBot } from '@apiari/types'
 import { getWorkerTitle } from '../../utils/workerTitle'
 import styles from './CommandPalette.module.css'
 

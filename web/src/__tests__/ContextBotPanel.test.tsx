@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import ContextBotPanel from "../components/ContextBot/ContextBotPanel";
-import type { ContextBotSession } from "../types";
+import type { ContextBotSession } from "@apiari/types";
 
 vi.mock("react-markdown", () => ({
   default: ({ children }: { children: string }) => <span>{children}</span>,

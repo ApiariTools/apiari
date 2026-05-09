@@ -1,5 +1,5 @@
-import type { Worker } from "../types";
-import { ToolPanel } from "../primitives/ToolPanel";
+import type { Worker } from "@apiari/types";
+import { ToolPanel } from "@apiari/ui";
 import styles from "./WorkersPanel.module.css";
 
 interface Props {

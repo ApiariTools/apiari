@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WorkersPanel } from "../components/WorkersPanel";
-import type { Worker } from "../types";
+import type { Worker } from "@apiari/types";
 
 const workers: Worker[] = [
   {

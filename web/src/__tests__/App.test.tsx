@@ -2,10 +2,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import App from "../App";
-import * as api from "../api";
-import type { WorkerV2, WorkerDetailV2 as WorkerDetailV2Data, AutoBot, AutoBotDetail } from "../types";
+import * as api from "@apiari/api";
+import type { WorkerV2, WorkerDetailV2 as WorkerDetailV2Data, AutoBot, AutoBotDetail } from "@apiari/types";
 
-vi.mock("../api");
+vi.mock("@apiari/api");
 vi.mock("react-markdown", () => ({
   default: ({ children }: { children: string }) => <span>{children}</span>,
 }));

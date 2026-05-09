@@ -1,9 +1,6 @@
 import { WorkersPanel } from "../components/WorkersPanel";
-import { EmptyState } from "../primitives/EmptyState";
-import { InspectorPane } from "../primitives/InspectorPane";
-import { PageHeader } from "../primitives/PageHeader";
-import { ModeScaffold } from "../primitives/ModeScaffold";
-import type { Worker, WorkerDetail as WorkerDetailData, WorkerEnvironmentStatus } from "../types";
+import { EmptyState, InspectorPane, PageHeader, ModeScaffold } from "@apiari/ui";
+import type { Worker, WorkerDetail as WorkerDetailData, WorkerEnvironmentStatus } from "@apiari/types";
 import { Suspense, lazy } from "react";
 import styles from "./WorkersMode.module.css";
 

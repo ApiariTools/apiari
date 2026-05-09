@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { getRepos, createWorkerV2 } from '../../api'
-import type { Repo } from '../../types'
+import { getRepos, createWorkerV2 } from '@apiari/api'
+import type { Repo } from '@apiari/types'
 import styles from './QuickDispatch.module.css'
 
 export interface QuickDispatchProps {

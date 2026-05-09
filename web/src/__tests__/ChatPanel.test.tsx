@@ -32,8 +32,8 @@ vi.mock("../soundCues", () => ({
   setSharedAudioContext: vi.fn(),
 }));
 
-import { ChatPanel } from "../components/ChatPanel";
-import type { Message, Followup } from "../types";
+import { ChatPanel } from "@apiari/chat";
+import type { Message, Followup } from "@apiari/types";
 
 const mockMessages: Message[] = [
   { id: 1, workspace: "test", bot: "Main", role: "user", content: "hello", attachments: null, created_at: new Date().toISOString() },

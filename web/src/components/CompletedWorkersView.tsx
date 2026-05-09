@@ -1,4 +1,4 @@
-import type { WorkerV2 } from "../types";
+import type { WorkerV2 } from "@apiari/types";
 import styles from "./CompletedWorkersView.module.css";
 
 interface Props {

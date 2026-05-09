@@ -1,9 +1,9 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import Dashboard from "../components/Dashboard/Dashboard";
-import type { WorkerV2, AutoBot } from "../types";
+import type { WorkerV2, AutoBot } from "@apiari/types";
 
-vi.mock("../api", () => ({
+vi.mock("@apiari/api", () => ({
   listWidgets: vi.fn().mockResolvedValue([]),
   getRepos: vi.fn().mockResolvedValue([]),
 }));

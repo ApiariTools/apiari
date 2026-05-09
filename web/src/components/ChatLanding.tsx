@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import * as api from "../api";
-import type { Bot, Message } from "../types";
+import * as api from "@apiari/api";
+import type { Bot, Message } from "@apiari/types";
 import styles from "./ChatLanding.module.css";
 
 interface Props {

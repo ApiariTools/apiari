@@ -1,11 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, Radar } from "lucide-react";
-import * as api from "../api";
-import type { Signal } from "../types";
-import { ModeScaffold } from "../primitives/ModeScaffold";
-import { PageHeader } from "../primitives/PageHeader";
-import { StatusBadge } from "../primitives/StatusBadge";
-import { EmptyState } from "../primitives/EmptyState";
+import * as api from "@apiari/api";
+import type { Signal } from "@apiari/types";
+import { ModeScaffold, PageHeader, StatusBadge, EmptyState } from "@apiari/ui";
 import styles from "./SignalsMode.module.css";
 
 interface Props {

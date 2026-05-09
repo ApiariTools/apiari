@@ -1,9 +1,9 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import QuickDispatch from "../components/QuickDispatch/QuickDispatch";
-import * as api from "../api";
+import * as api from "@apiari/api";
 
-vi.mock("../api");
+vi.mock("@apiari/api");
 
 const mockRepos = [
   { name: "apiari", path: "/repos/apiari", has_swarm: true, is_clean: true, branch: "main", workers: [] },

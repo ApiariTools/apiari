@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { FileText, Plus, Trash2, Eye, Edit3, Save, ArrowLeft } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Doc } from "../types";
-import * as api from "../api";
-import { DocumentSurface } from "../primitives/DocumentSurface";
+import type { Doc } from "@apiari/types";
+import * as api from "@apiari/api";
+import { DocumentSurface } from "@apiari/ui";
 import styles from "./DocsPanel.module.css";
 
 interface Props {

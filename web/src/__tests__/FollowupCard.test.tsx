@@ -2,11 +2,11 @@ import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../api");
+vi.mock("@apiari/api");
 
-import { FollowupCard, FollowupIndicator } from "../components/FollowupCard";
-import * as api from "../api";
-import type { Followup } from "../types";
+import { FollowupCard, FollowupIndicator } from "@apiari/chat";
+import * as api from "@apiari/api";
+import type { Followup } from "@apiari/types";
 
 function makeFollowup(overrides: Partial<Followup> = {}): Followup {
   return {

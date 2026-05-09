@@ -23,7 +23,7 @@ import type {
   AutoBotRun,
   ContextBotContext,
   ContextBotChatResponse,
-} from "./types";
+} from "@apiari/types";
 
 const BASE = "/api";
 

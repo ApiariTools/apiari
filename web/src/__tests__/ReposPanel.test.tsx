@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { ReposPanel } from "../components/ReposPanel";
-import type { Repo, ResearchTask } from "../types";
+import type { Repo, ResearchTask } from "@apiari/types";
 
 const repos: Repo[] = [
   {

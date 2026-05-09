@@ -1,9 +1,7 @@
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { repoSyncLabel } from "../repoSync";
-import type { Repo, ResearchTask } from "../types";
-import { EmptyState } from "../primitives/EmptyState";
-import { StatusBadge } from "../primitives/StatusBadge";
-import { ToolPanel } from "../primitives/ToolPanel";
+import type { Repo, ResearchTask } from "@apiari/types";
+import { EmptyState, StatusBadge, ToolPanel } from "@apiari/ui";
 import styles from "./ReposPanel.module.css";
 
 interface Props {

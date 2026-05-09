@@ -13,16 +13,27 @@ Workspace chat hub — Rust daemon + React SPA.
 ## Architecture
 
 ```
-src/
-  main.rs           — CLI + daemon startup, bot config loading, GH_TOKEN stripping
-  routes.rs         — All HTTP/WS endpoints (axum), system prompt builder, provider dispatch
-  db.rs             — SQLite (5 tables, WAL mode, reader/writer separation)
-  bot.rs            — BotRunner trait, BotEvent enum, run_bot_pipeline, MockBotRunner
-  events.rs         — WebSocket broadcast hub (tokio broadcast, 256-slot buffer)
-  watcher.rs        — Signal watchers (GitHub polling) + proactive/scheduled bot runner
-  publish.rs        — CLI subcommand for bots to post clean reports to DB
-  config_watcher.rs — Polls every 30s for config/prompt changes, logs session-reset message
-  lib.rs            — Re-exports (bot, db, events, publish, routes) for test visibility
+crates/
+  apps/
+    apiari/src/
+      main.rs           — CLI + daemon startup, bot config loading, GH_TOKEN stripping
+      routes.rs         — All HTTP/WS endpoints (axum), system prompt builder, provider dispatch
+      db.rs             — SQLite (5 tables, WAL mode, reader/writer separation)
+      bot.rs            — BotRunner trait, BotEvent enum, run_bot_pipeline, MockBotRunner
+      events.rs         — WebSocket broadcast hub (tokio broadcast, 256-slot buffer)
+      watcher.rs        — Signal watchers (GitHub polling) + proactive/scheduled bot runner
+      publish.rs        — CLI subcommand for bots to post clean reports to DB
+      config_watcher.rs — Polls every 30s for config/prompt changes, logs session-reset message
+      lib.rs            — Re-exports (bot, db, events, publish, routes) for test visibility
+    hive/               — Coordination brain: quests, coordinator, context
+    swarm/              — Parallel agent orchestration: git worktrees + daemon IPC
+  core/
+    common/             — Shared types, JSONL IPC, utilities
+    tui/                — Shared TUI design system: theme, scroll, widgets
+  providers/
+    claude-sdk/         — Rust SDK wrapping the Claude CLI (spawn, stream, session resume)
+    codex-sdk/          — Rust SDK wrapping the Codex CLI
+    gemini-sdk/         — Rust SDK wrapping the Gemini CLI
 
 web/
   src/App.tsx           — Main app, routing, state management
@@ -211,7 +222,7 @@ Dark theme. CSS variables in `web/src/theme.css`:
 - Rust: `cargo test` — DB, API endpoints, streaming pipeline, bot runner
 - Frontend: `cd web && npx vitest run` — components + integration
 - CI runs on every push/PR: fmt, clippy, tests, tsc, vitest, vite build
-- MockBotRunner in `src/bot.rs` for testing bot pipeline without live CLIs
+- MockBotRunner in `crates/apps/apiari/src/bot.rs` for testing bot pipeline without live CLIs
 - **Add tests for any new feature or bug fix**
 
 ## Key Patterns
