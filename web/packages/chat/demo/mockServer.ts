@@ -70,7 +70,7 @@ type StoredMessage = {
 };
 
 const INITIAL_UNREAD: Record<string, Record<string, number>> = {
-  demo: {},
+  demo: { Research: 2 },
 };
 
 function freshUnread(): Record<string, Record<string, number>> {
@@ -162,7 +162,9 @@ function pickResponse(bot: string): string {
 
 async function simulateResponse(workspace: string, bot: string) {
   const myGen = generation;
-  const emit = (data: object) => { if (generation === myGen) broadcast(data); };
+  const emit = (data: object) => {
+    if (generation === myGen) broadcast(data);
+  };
 
   // thinking
   emit({

@@ -131,7 +131,9 @@ export function ChatLauncher({
     <div
       className={`${styles.launcherWrap} ${isRight ? styles.launcherRight : styles.launcherLeft}`}
     >
-      {hasUnread && <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>}
+      {hasUnread && (
+        <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>
+      )}
       <button
         className={[
           styles.launcher,

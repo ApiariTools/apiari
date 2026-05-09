@@ -100,7 +100,9 @@ function DebugBar({ launcherKey }: { launcherKey: number }) {
     async function syncUnread() {
       try {
         setUnread(await getUnread(WORKSPACE));
-      } catch {}
+      } catch {
+        // ignore fetch errors in demo
+      }
     }
 
     // initial fetch

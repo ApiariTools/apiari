@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import type { Bot, Message } from "@apiari/types";
 import {
   getBots,
@@ -31,7 +31,9 @@ export function useChatState(workspace: string) {
   const [showBotList, setShowBotList] = useState(false);
   const loadedBots = useRef<Set<string>>(new Set());
   const openWindowsRef = useRef<OpenWindow[]>([]);
-  openWindowsRef.current = openWindows;
+  useLayoutEffect(() => {
+    openWindowsRef.current = openWindows;
+  });
 
   useEffect(() => {
     setActiveConversationBots([]);
