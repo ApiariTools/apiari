@@ -409,7 +409,8 @@
   align-items: center;
   gap: 10px;
   padding: 0 16px;
-  height: 52px;
+  padding-top: env(safe-area-inset-top);
+  height: calc(52px + env(safe-area-inset-top));
   border-bottom: 1px solid var(--cl-border);
   flex-shrink: 0;
   background: var(--cl-bg);
@@ -431,6 +432,27 @@
 .mobileBack:hover {
   background: rgba(255, 255, 255, 0.06);
 }
+.mobileClose {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: none;
+  color: var(--cl-text-faint);
+  cursor: pointer;
+  padding: 0;
+  transition:
+    background 0.1s,
+    color 0.1s;
+  margin-left: auto;
+}
+.mobileClose:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--cl-text);
+}
 .mobileDot {
   width: 8px;
   height: 8px;
@@ -442,6 +464,9 @@
   font-size: 15px;
   font-weight: 600;
   color: var(--cl-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mobileBody {
   flex: 1;
@@ -466,7 +491,8 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  height: 52px;
+  padding-top: env(safe-area-inset-top);
+  height: calc(52px + env(safe-area-inset-top));
   border-bottom: 1px solid var(--cl-border);
   background: var(--cl-bg);
   flex-shrink: 0;

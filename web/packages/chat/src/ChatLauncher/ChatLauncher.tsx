@@ -197,7 +197,7 @@ export function ChatLauncher({
       {activeWindow && activeBotState && activeBot ? (
         <div className={styles.mobileOverlay}>
           <div className={styles.mobileHeader}>
-            <button className={styles.mobileBack} onClick={() => closeBot(activeWindow.bot)}>
+            <button className={styles.mobileBack} onClick={() => minimizeBot(activeWindow.bot)}>
               <ChevronLeft size={20} />
             </button>
             <span
@@ -207,6 +207,9 @@ export function ChatLauncher({
               }}
             />
             <span className={styles.mobileTitle}>{activeBot.name}</span>
+            <button className={styles.mobileClose} onClick={() => closeBot(activeWindow.bot)}>
+              <X size={18} />
+            </button>
           </div>
           <div className={styles.mobileBody}>
             <ChatPanel
