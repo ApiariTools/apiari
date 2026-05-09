@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageSquare, X, Minus, ChevronLeft } from "lucide-react";
+import { MessagesSquare, MessageSquare, X, Minus, ChevronLeft } from "lucide-react";
 import type { Bot } from "@apiari/types";
 import { ChatPanel } from "../ChatPanel";
 import type { ChatTheme } from "./chatTheme";
@@ -19,6 +19,7 @@ export interface ChatLauncherProps {
   renderLauncherButton?: (props: {
     onClick: () => void;
     unreadCount: number;
+    openCount: number;
     isOpen: boolean;
   }) => React.ReactNode;
   /** Replace a bot list item in the popover */
@@ -115,22 +116,41 @@ export function ChatLauncher({
   }
 
   // ── Launcher button ─────────────────────────────────────────────────
+  const openCount = openWindows.length;
+  const hasUnread = totalUnread > 0;
+  const hasOpen = openCount > 0 && !hasUnread;
+
   const launcherEl = renderLauncherButton ? (
     renderLauncherButton({
       onClick: handleLauncherClick,
       unreadCount: totalUnread,
+      openCount,
       isOpen: showBotList,
     })
   ) : (
     <button
-      className={`${styles.launcher} ${isRight ? styles.launcherRight : styles.launcherLeft}`}
+      className={[
+        styles.launcher,
+        isRight ? styles.launcherRight : styles.launcherLeft,
+        hasUnread ? styles.launcherHasUnread : "",
+        hasOpen ? styles.launcherHasOpen : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       onClick={handleLauncherClick}
-      aria-label="Open chat"
+      aria-label={hasUnread ? `${totalUnread} unread` : hasOpen ? `${openCount} open` : "Open chat"}
     >
-      {showBotList ? <X size={22} /> : <MessageSquare size={22} />}
-      {totalUnread > 0 && (
+      {showBotList ? (
+        <X size={22} />
+      ) : openCount > 0 ? (
+        <MessagesSquare size={22} />
+      ) : (
+        <MessageSquare size={22} />
+      )}
+      {hasUnread && (
         <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>
       )}
+      {hasOpen && <span className={styles.launcherOpenDot} />}
     </button>
   );
 
