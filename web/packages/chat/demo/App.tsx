@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { getUnread, getBots } from "@apiari/api";
 import { ChatLauncher } from "../src/ChatLauncher/ChatLauncher";
 import type { ChatTheme } from "../src/ChatLauncher/chatTheme";
 import {
@@ -91,6 +92,62 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 // ── App ─────────────────────────────────────────────────────────────────────
 
+function DebugBar({ launcherKey }: { launcherKey: number }) {
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const [botCount, setBotCount] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    function poll() {
+      getUnread(WORKSPACE)
+        .then((u) => alive && setUnread(u))
+        .catch(() => {});
+      getBots(WORKSPACE)
+        .then((b) => alive && setBotCount(b.length))
+        .catch(() => {});
+    }
+    poll();
+    const t = setInterval(poll, 1000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [launcherKey]);
+
+  const total = Object.values(unread).reduce((a, b) => a + b, 0);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        background: "#000",
+        borderBottom: "1px solid #333",
+        padding: "6px 16px",
+        fontSize: 11,
+        fontFamily: "monospace",
+        color: "#666",
+        zIndex: 99999,
+        display: "flex",
+        gap: 20,
+      }}
+    >
+      <span style={{ color: "#444" }}>DEBUG</span>
+      <span>
+        bots: <strong style={{ color: "#aaa" }}>{botCount}</strong>
+      </span>
+      <span>
+        totalUnread: <strong style={{ color: total > 0 ? "#e85555" : "#aaa" }}>{total}</strong>
+      </span>
+      <span>
+        per-bot: <strong style={{ color: "#aaa" }}>{JSON.stringify(unread)}</strong>
+      </span>
+    </div>
+  );
+}
+
 export default function App() {
   const [position, setPosition] = useState<Position>("right");
   const [themeName, setThemeName] = useState("dark");
@@ -112,10 +169,13 @@ export default function App() {
         color: "#aaa",
       }}
     >
+      <DebugBar launcherKey={launcherKey} />
+
       {/* Header */}
       <div
         style={{
           padding: "14px 24px",
+          marginTop: 29,
           borderBottom: "1px solid #1a1a1a",
           display: "flex",
           alignItems: "center",
