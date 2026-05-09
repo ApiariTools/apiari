@@ -8,6 +8,7 @@ import {
   Spinner,
   Dots,
   Skeleton,
+  TabBar,
   StatusBadge,
   ObjectRow,
   PageHeader,
@@ -383,5 +384,58 @@ describe("Skeleton", () => {
   it("is aria-hidden", () => {
     const { container } = render(<Skeleton width={100} height={14} />);
     expect(container.firstChild).toHaveAttribute("aria-hidden", "true");
+  });
+});
+
+// ── TabBar ────────────────────────────────────────────────────────────────────
+
+describe("TabBar", () => {
+  const tabs = [
+    { value: "a", label: "Alpha" },
+    { value: "b", label: "Beta", badge: 3 },
+    { value: "c", label: "Gamma" },
+  ];
+
+  it("renders all tab labels", () => {
+    render(<TabBar tabs={tabs} value="a" onChange={() => {}} />);
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(screen.getByText("Beta")).toBeInTheDocument();
+    expect(screen.getByText("Gamma")).toBeInTheDocument();
+  });
+
+  it("marks the active tab with aria-selected", () => {
+    render(<TabBar tabs={tabs} value="b" onChange={() => {}} />);
+    expect(screen.getByRole("tab", { name: /Beta/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /Alpha/ })).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("calls onChange with the clicked value", () => {
+    const onChange = vi.fn();
+    render(<TabBar tabs={tabs} value="a" onChange={onChange} />);
+    fireEvent.click(screen.getByRole("tab", { name: /Gamma/ }));
+    expect(onChange).toHaveBeenCalledWith("c");
+  });
+
+  it("shows badge when badge > 0", () => {
+    render(<TabBar tabs={tabs} value="a" onChange={() => {}} />);
+    expect(screen.getByText("3")).toBeInTheDocument();
+  });
+
+  it("does not show badge when badge is 0", () => {
+    const tabsZeroBadge = [{ value: "a", label: "Alpha", badge: 0 }];
+    render(<TabBar tabs={tabsZeroBadge} value="a" onChange={() => {}} />);
+    expect(screen.queryByText("0")).toBeNull();
+  });
+
+  it("renders pill variant by default", () => {
+    const { container } = render(<TabBar tabs={tabs} value="a" onChange={() => {}} />);
+    expect(container.querySelector("[class*='pill']")).toBeInTheDocument();
+  });
+
+  it("renders underline variant when specified", () => {
+    const { container } = render(
+      <TabBar tabs={tabs} value="a" onChange={() => {}} variant="underline" />,
+    );
+    expect(container.querySelector("[class*='underline']")).toBeInTheDocument();
   });
 });

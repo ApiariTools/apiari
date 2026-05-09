@@ -9,6 +9,7 @@ import {
   Dots,
   Skeleton,
   StatusBadge,
+  TabBar,
   ObjectRow,
   PageHeader,
   EmptyState,
@@ -20,6 +21,8 @@ import {
 
 export function Gallery() {
   const [toolOpen, setToolOpen] = useState(false);
+  const [pillTab, setPillTab] = useState("timeline");
+  const [underlineTab, setUnderlineTab] = useState("output");
 
   return (
     <div className="gallery">
@@ -134,6 +137,40 @@ export function Gallery() {
           <Skeleton width="30%" height={14} />
           <Skeleton width="70%" height={14} />
           <Skeleton width="45%" height={14} />
+        </div>
+      </section>
+
+      {/* TabBar */}
+      <section className="section">
+        <h2>TabBar — pill</h2>
+        <TabBar
+          variant="pill"
+          value={pillTab}
+          onChange={setPillTab}
+          tabs={[
+            { value: "timeline", label: "Timeline" },
+            { value: "reviews", label: "Reviews", badge: 4 },
+            { value: "brief", label: "Brief" },
+          ]}
+        />
+        <div style={{ padding: "12px 0", color: "var(--text-faint)", fontSize: 13 }}>
+          Active: {pillTab}
+        </div>
+
+        <h2>TabBar — underline</h2>
+        <TabBar
+          variant="underline"
+          value={underlineTab}
+          onChange={setUnderlineTab}
+          tabs={[
+            { value: "output", label: "Output" },
+            { value: "task", label: "Task" },
+            { value: "diff", label: "Diff" },
+            { value: "chat", label: "Chat", badge: 2 },
+          ]}
+        />
+        <div style={{ padding: "12px 0", color: "var(--text-faint)", fontSize: 13 }}>
+          Active: {underlineTab}
         </div>
       </section>
 

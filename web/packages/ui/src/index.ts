@@ -11,4 +11,6 @@ export { ModeScaffold } from "./primitives/ModeScaffold";
 export { ObjectRow } from "./primitives/ObjectRow";
 export { PageHeader } from "./primitives/PageHeader";
 export { StatusBadge } from "./primitives/StatusBadge";
+export { TabBar } from "./primitives/TabBar";
+export type { TabBarProps, TabItem } from "./primitives/TabBar";
 export { ToolPanel } from "./primitives/ToolPanel";
