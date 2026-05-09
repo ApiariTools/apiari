@@ -137,7 +137,7 @@ function DebugBar({ launcherKey }: { launcherKey: number }) {
         fontSize: 11,
         fontFamily: "monospace",
         color: "#666",
-        zIndex: 99999,
+        zIndex: 1000,
         display: "flex",
         flexWrap: "wrap",
         gap: 20,

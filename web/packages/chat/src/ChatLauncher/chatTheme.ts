@@ -31,7 +31,7 @@ const defaults: Required<ChatTheme> = {
   windowWidth: "360px",
   windowHeight: "480px",
   fontFamily: "system-ui, -apple-system, sans-serif",
-  zIndex: 9000,
+  zIndex: 2000000,
 };
 
 export function buildThemeVars(theme?: ChatTheme): React.CSSProperties {
