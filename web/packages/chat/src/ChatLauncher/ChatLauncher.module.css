@@ -7,18 +7,30 @@
   font-family: var(--cl-font);
 }
 
-/* ── Launcher button ───────────────────────────────────────────── */
-.launcher {
+/* ── Launcher wrapper (positions in viewport, holds button + badge) */
+.launcherWrap {
   position: absolute;
   bottom: 24px;
   width: var(--cl-launcher-size);
   height: var(--cl-launcher-size);
+  pointer-events: all;
+  flex-shrink: 0;
+}
+.launcherRight {
+  right: 24px;
+}
+.launcherLeft {
+  left: 24px;
+}
+
+/* ── Launcher button (fills wrapper) ───────────────────────────── */
+.launcher {
+  width: 100%;
+  height: 100%;
   border-radius: 50%;
   background: var(--cl-accent);
   border: 2px solid transparent;
   cursor: pointer;
-  pointer-events: all;
-  overflow: visible;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -29,7 +41,6 @@
     border-color 0.2s ease,
     background 0.2s ease;
   color: #111;
-  flex-shrink: 0;
 }
 .launcher:hover {
   transform: scale(1.05);
@@ -37,12 +48,6 @@
 }
 .launcher:active {
   transform: scale(0.97);
-}
-.launcherRight {
-  right: 24px;
-}
-.launcherLeft {
-  left: 24px;
 }
 
 /* State: has open chats — live ring pulse (applies independently of unread) */
@@ -89,11 +94,11 @@
   }
 }
 
-/* Unread badge on launcher */
+/* Unread badge — positioned relative to .launcherWrap */
 .launcherBadge {
   position: absolute;
-  top: -5px;
-  right: -5px;
+  top: -4px;
+  right: -4px;
   min-width: 20px;
   height: 20px;
   background: #e85555;

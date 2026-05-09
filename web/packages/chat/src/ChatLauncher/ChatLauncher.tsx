@@ -128,33 +128,36 @@ export function ChatLauncher({
       isOpen: showBotList,
     })
   ) : (
-    <button
-      className={[
-        styles.launcher,
-        isRight ? styles.launcherRight : styles.launcherLeft,
-        hasUnread ? styles.launcherHasUnread : "",
-        hasOpen ? styles.launcherHasOpen : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      onClick={handleLauncherClick}
-      aria-label={
-        [hasOpen ? `${openCount} open` : "", hasUnread ? `${totalUnread} unread` : ""]
-          .filter(Boolean)
-          .join(", ") || "Open chat"
-      }
+    <div
+      className={`${styles.launcherWrap} ${isRight ? styles.launcherRight : styles.launcherLeft}`}
     >
-      {showBotList ? (
-        <X size={22} />
-      ) : hasOpen ? (
-        <span className={styles.launcherOpenCount}>{openCount > 99 ? "99+" : openCount}</span>
-      ) : (
-        <MessageSquare size={22} />
-      )}
+      <button
+        className={[
+          styles.launcher,
+          hasUnread ? styles.launcherHasUnread : "",
+          hasOpen ? styles.launcherHasOpen : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        onClick={handleLauncherClick}
+        aria-label={
+          [hasOpen ? `${openCount} open` : "", hasUnread ? `${totalUnread} unread` : ""]
+            .filter(Boolean)
+            .join(", ") || "Open chat"
+        }
+      >
+        {showBotList ? (
+          <X size={22} />
+        ) : hasOpen ? (
+          <span className={styles.launcherOpenCount}>{openCount > 99 ? "99+" : openCount}</span>
+        ) : (
+          <MessageSquare size={22} />
+        )}
+      </button>
       {hasUnread && (
         <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>
       )}
-    </button>
+    </div>
   );
 
   // ── Bot list popover ────────────────────────────────────────────────
