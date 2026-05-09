@@ -486,7 +486,11 @@ export async function chatWithContextBot(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, session_id: sessionId ?? null, context, model: model ?? null }),
   });
-  if (!res.ok) throw new Error(`context bot chat: ${res.status}`);
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).error ?? ''; } catch { /* ignore */ }
+    throw new Error(detail || `context bot chat failed (${res.status})`);
+  }
   return res.json();
 }
 

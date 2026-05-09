@@ -225,7 +225,8 @@ export default function App() {
         }
         navigateTo('worker', res.dispatched_worker_id)
       }
-    } catch {
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : 'unknown error';
       setContextSessions((prev) =>
         prev.map((s) =>
           s.id === sessionId
@@ -236,7 +237,7 @@ export default function App() {
                   ...s.messages,
                   {
                     role: 'assistant' as const,
-                    content: 'Sorry, something went wrong. Please try again.',
+                    content: `Error: ${detail}`,
                     timestamp: new Date().toISOString(),
                   },
                 ],
@@ -310,7 +311,20 @@ export default function App() {
 
   // WebSocket — update workers and auto bots on relevant events
   useEffect(() => {
+    let knownStartupId: string | null = null;
     const ws = connectWebSocket((event) => {
+      if (event.type === 'snapshot') {
+        const sid = event.startup_id as string | undefined;
+        if (sid) {
+          if (knownStartupId && knownStartupId !== sid) {
+            // Daemon restarted — reload so the app is in sync with the new process.
+            window.location.reload();
+            return;
+          }
+          knownStartupId = sid;
+        }
+      }
+
       if (event.type === 'worker_v2_state') {
         const workerId = event.worker_id as string
         const state = event.state as WorkerV2['state']

@@ -3,7 +3,10 @@
 //! Serves the workflow graph definition, task state, and live updates over WebSocket.
 //! In production, static assets are embedded via rust-embed; in dev mode, Vite proxies here.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use axum::{
     Json, Router,
@@ -31,6 +34,13 @@ use crate::buzz::{
 use crate::daemon::worker_manager::WorkerManager;
 
 // ── Shared state ───────────────────────────────────────────────────────
+
+/// UUID generated once per daemon process lifetime. Clients reload when it changes.
+static STARTUP_ID: OnceLock<String> = OnceLock::new();
+
+fn startup_id() -> &'static str {
+    STARTUP_ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
 
 /// Shared state for the HTTP server.
 #[derive(Clone)]
@@ -64,6 +74,7 @@ pub enum WsUpdate {
     Snapshot {
         tasks: Vec<TaskView>,
         graph: GraphView,
+        startup_id: String,
     },
     /// A task was updated.
     TaskUpdated { task: TaskView },
@@ -797,6 +808,7 @@ async fn handle_ws(mut socket: WebSocket, state: HttpState) {
     let snapshot = WsUpdate::Snapshot {
         tasks,
         graph: graph_to_view(&graph),
+        startup_id: startup_id().to_string(),
     };
     drop(graph);
 
