@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from "react";
+import React, { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronDown, Loader2, Square, Volume2, AudioLines } from "lucide-react";
@@ -12,6 +12,43 @@ import { playSentCue, startThinkingCue, playSpeakingCue, setSharedAudioContext }
 import styles from "./ChatPanel.module.css";
 
 export type { Attachment };
+
+// ── Render prop types — all optional, fall back to built-in defaults ──────────
+
+export interface RenderMessageProps {
+  message: Message;
+  bot: string;
+  /** true while this message's TTS audio is loading */
+  isLoadingTts: boolean;
+  /** true while this message's TTS audio is playing */
+  isPlaying: boolean;
+  /** Toggle TTS playback for this message */
+  onPlayTts: () => void;
+}
+
+export interface RenderInputProps {
+  placeholder: string;
+  loading: boolean;
+  onSend: (text: string, attachments?: Attachment[]) => void;
+  onCancel?: () => void;
+  voiceMode: boolean;
+  voiceState: VoiceState;
+  /** Increment signals the input to start recording immediately */
+  triggerRecord: number;
+  /** Play a TTS URL via the shared AudioContext (voice mode only) */
+  playTts?: (url: string, onEnd?: () => void) => Promise<void>;
+  /** Number of messages queued behind the current in-flight response */
+  queueCount: number;
+}
+
+export interface RenderMessageListProps {
+  messages: Message[];
+  bot: string;
+  loading: boolean;
+  streamingContent?: string;
+  loadingStatus?: string;
+  onCancel?: () => void;
+}
 
 interface Props {
   bot: string;
@@ -39,6 +76,16 @@ interface Props {
   unread?: Record<string, number>;
   onSelectBot?: (name: string) => void;
   compactHeader?: boolean;
+  /** Replace individual message bubbles. Receives the message + TTS controls. */
+  renderMessage?: React.ComponentType<RenderMessageProps>;
+  /** Replace the input area entirely. Receives send/cancel/voice props. */
+  renderInput?: React.ComponentType<RenderInputProps>;
+  /**
+   * Replace the entire message list. Receives messages + loading state.
+   * When provided: auto-scroll, scroll-to-bottom button, followup cards,
+   * and older-history loading are all the consumer's responsibility.
+   */
+  renderMessageList?: React.ComponentType<RenderMessageListProps>;
 }
 
 interface QueuedMessage {
@@ -72,6 +119,9 @@ export function ChatPanel({
   unread,
   onSelectBot,
   compactHeader = false,
+  renderMessage: RenderMessage,
+  renderInput: RenderInput,
+  renderMessageList: RenderMessageList,
 }: Props) {
   const messagesRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -643,83 +693,114 @@ export function ChatPanel({
         </div>
       </div>
 
-      <div className={styles.messagesWrap}>
-        <div className={styles.messages} onScroll={handleMessagesScroll} ref={messagesRef}>
-          {loadingOlderHistory && messages.length > 0 && (
-            <div className={styles.empty}>Loading older messages...</div>
-          )}
-          {messagesLoading && messages.length === 0 && (
-            <div className={styles.empty}>Loading...</div>
-          )}
-          {!messagesLoading && messages.length === 0 && !loading && (
-            <div className={styles.empty}>Start a conversation with {bot}</div>
-          )}
-          {timeline.map((item) =>
-            item.kind === "followup" ? (
-              <FollowupCard
-                key={`followup-${item.followup.id}`}
-                followup={item.followup}
-                workspace={workspace ?? ""}
-                inline
-              />
-            ) : (
-              <div
-                key={item.msg.id}
-                className={`${styles.msg} ${item.msg.role === "user" ? styles.user : ""}`}
-              >
+      {RenderMessageList ? (
+        <RenderMessageList
+          messages={messages}
+          bot={bot}
+          loading={loading}
+          streamingContent={streamingContent}
+          loadingStatus={loadingStatus}
+          onCancel={onCancel}
+        />
+      ) : (
+        <div className={styles.messagesWrap}>
+          <div className={styles.messages} onScroll={handleMessagesScroll} ref={messagesRef}>
+            {loadingOlderHistory && messages.length > 0 && (
+              <div className={styles.empty}>Loading older messages...</div>
+            )}
+            {messagesLoading && messages.length === 0 && (
+              <div className={styles.empty}>Loading...</div>
+            )}
+            {!messagesLoading && messages.length === 0 && !loading && (
+              <div className={styles.empty}>Start a conversation with {bot}</div>
+            )}
+            {timeline.map((item) =>
+              item.kind === "followup" ? (
+                <FollowupCard
+                  key={`followup-${item.followup.id}`}
+                  followup={item.followup}
+                  workspace={workspace ?? ""}
+                  inline
+                />
+              ) : RenderMessage ? (
+                <RenderMessage
+                  key={item.msg.id}
+                  message={item.msg}
+                  bot={bot}
+                  isPlaying={playingId === item.msg.id}
+                  isLoadingTts={loadingTtsId === item.msg.id}
+                  onPlayTts={() => playMessage(item.msg)}
+                />
+              ) : (
+                <div
+                  key={item.msg.id}
+                  className={`${styles.msg} ${item.msg.role === "user" ? styles.user : ""}`}
+                >
+                  <div className={styles.meta}>
+                    <strong>{item.msg.role === "user" ? "You" : bot}</strong>
+                    {" · "}
+                    {formatTime(item.msg.created_at)}
+                    {item.msg.role === "assistant" && (
+                      <button
+                        className={`${styles.playBtn} ${playingId === item.msg.id ? styles.playBtnActive : ""}`}
+                        onClick={() => playMessage(item.msg)}
+                        aria-label={
+                          playingId === item.msg.id
+                            ? "Stop"
+                            : loadingTtsId === item.msg.id
+                              ? "Loading"
+                              : "Play"
+                        }
+                      >
+                        {loadingTtsId === item.msg.id ? (
+                          <Loader2 size={12} className={styles.ttsSpinner} />
+                        ) : playingId === item.msg.id ? (
+                          <Square size={12} />
+                        ) : (
+                          <Volume2 size={12} />
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  {renderAttachments(item.msg.attachments)}
+                  <div className={styles.text}>
+                    {item.msg.role === "assistant" ? (
+                      <Markdown remarkPlugins={[remarkGfm]}>{item.msg.content}</Markdown>
+                    ) : (
+                      item.msg.content
+                    )}
+                  </div>
+                </div>
+              ),
+            )}
+            {loading && (
+              <div className={styles.msg}>
                 <div className={styles.meta}>
-                  <strong>{item.msg.role === "user" ? "You" : bot}</strong>
-                  {" · "}
-                  {formatTime(item.msg.created_at)}
-                  {item.msg.role === "assistant" && (
-                    <button
-                      className={`${styles.playBtn} ${playingId === item.msg.id ? styles.playBtnActive : ""}`}
-                      onClick={() => playMessage(item.msg)}
-                      aria-label={
-                        playingId === item.msg.id
-                          ? "Stop"
-                          : loadingTtsId === item.msg.id
-                            ? "Loading"
-                            : "Play"
-                      }
-                    >
-                      {loadingTtsId === item.msg.id ? (
-                        <Loader2 size={12} className={styles.ttsSpinner} />
-                      ) : playingId === item.msg.id ? (
-                        <Square size={12} />
-                      ) : (
-                        <Volume2 size={12} />
-                      )}
+                  <strong>{bot}</strong>
+                  {onCancel && (
+                    <button className={styles.cancelBtn} onClick={onCancel}>
+                      Stop
                     </button>
                   )}
                 </div>
-                {renderAttachments(item.msg.attachments)}
-                <div className={styles.text}>
-                  {item.msg.role === "assistant" ? (
-                    <Markdown remarkPlugins={[remarkGfm]}>{item.msg.content}</Markdown>
-                  ) : (
-                    item.msg.content
-                  )}
-                </div>
-              </div>
-            ),
-          )}
-          {loading && (
-            <div className={styles.msg}>
-              <div className={styles.meta}>
-                <strong>{bot}</strong>
-                {onCancel && (
-                  <button className={styles.cancelBtn} onClick={onCancel}>
-                    Stop
-                  </button>
-                )}
-              </div>
-              {streamingContent ? (
-                <>
-                  <div className={styles.text}>
-                    <Markdown remarkPlugins={[remarkGfm]}>{streamingContent}</Markdown>
-                  </div>
-                  <div className={styles.streamingIndicator}>
+                {streamingContent ? (
+                  <>
+                    <div className={styles.text}>
+                      <Markdown remarkPlugins={[remarkGfm]}>{streamingContent}</Markdown>
+                    </div>
+                    <div className={styles.streamingIndicator}>
+                      <span className={styles.thinkingDots}>
+                        <span />
+                        <span />
+                        <span />
+                      </span>
+                      {loadingStatus && (
+                        <span className={styles.thinkingStatus}>{loadingStatus}</span>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className={styles.thinking}>
                     <span className={styles.thinkingDots}>
                       <span />
                       <span />
@@ -729,55 +810,60 @@ export function ChatPanel({
                       <span className={styles.thinkingStatus}>{loadingStatus}</span>
                     )}
                   </div>
-                </>
-              ) : (
-                <div className={styles.thinking}>
-                  <span className={styles.thinkingDots}>
-                    <span />
-                    <span />
-                    <span />
-                  </span>
-                  {loadingStatus && <span className={styles.thinkingStatus}>{loadingStatus}</span>}
-                </div>
-              )}
-            </div>
+                )}
+              </div>
+            )}
+            {workspace &&
+              pendingFollowups.map((f) => (
+                <FollowupCard
+                  key={f.id}
+                  followup={f}
+                  workspace={workspace}
+                  onCancelled={() => onFollowupCancelled?.()}
+                />
+              ))}
+            <div style={{ paddingBottom: voiceMode ? 100 : 0 }} />
+          </div>
+          {followups && followups.some((f) => f.status === "pending") && showScrollBtn && (
+            <FollowupIndicator followup={followups.find((f) => f.status === "pending")!} />
           )}
-          {workspace &&
-            pendingFollowups.map((f) => (
-              <FollowupCard
-                key={f.id}
-                followup={f}
-                workspace={workspace}
-                onCancelled={() => onFollowupCancelled?.()}
-              />
-            ))}
-          <div style={{ paddingBottom: voiceMode ? 100 : 0 }} />
+          <button
+            className={`${styles.scrollToBottom} ${showScrollBtn ? styles.scrollToBottomVisible : ""}`}
+            onClick={handleScrollToBottom}
+            aria-label="Scroll to bottom"
+            tabIndex={showScrollBtn ? 0 : -1}
+            aria-hidden={!showScrollBtn}
+            disabled={!showScrollBtn}
+          >
+            <ChevronDown size={20} />
+          </button>
         </div>
-        {followups && followups.some((f) => f.status === "pending") && showScrollBtn && (
-          <FollowupIndicator followup={followups.find((f) => f.status === "pending")!} />
-        )}
-        <button
-          className={`${styles.scrollToBottom} ${showScrollBtn ? styles.scrollToBottomVisible : ""}`}
-          onClick={handleScrollToBottom}
-          aria-label="Scroll to bottom"
-          tabIndex={showScrollBtn ? 0 : -1}
-          aria-hidden={!showScrollBtn}
-          disabled={!showScrollBtn}
-        >
-          <ChevronDown size={20} />
-        </button>
-      </div>
+      )}
 
-      <ChatInput
-        placeholder={`Message ${bot}...`}
-        disabled={loading}
-        onSend={handleSendOrQueue}
-        voiceMode={voiceMode}
-        voiceState={voiceState}
-        triggerRecord={triggerRecord}
-        playTts={voiceMode ? playViaCx : undefined}
-        queueCount={messageQueue.length}
-      />
+      {RenderInput ? (
+        <RenderInput
+          placeholder={`Message ${bot}...`}
+          loading={loading}
+          onSend={handleSendOrQueue}
+          onCancel={onCancel}
+          voiceMode={voiceMode}
+          voiceState={voiceState}
+          triggerRecord={triggerRecord}
+          playTts={voiceMode ? playViaCx : undefined}
+          queueCount={messageQueue.length}
+        />
+      ) : (
+        <ChatInput
+          placeholder={`Message ${bot}...`}
+          disabled={loading}
+          onSend={handleSendOrQueue}
+          voiceMode={voiceMode}
+          voiceState={voiceState}
+          triggerRecord={triggerRecord}
+          playTts={voiceMode ? playViaCx : undefined}
+          queueCount={messageQueue.length}
+        />
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { X, Minus, ChevronLeft, MessageCircle } from "lucide-react";
 import type { Bot } from "@apiari/types";
 import { ChatPanel } from "../ChatPanel";
+import type { RenderMessageProps, RenderInputProps, RenderMessageListProps } from "../ChatPanel";
 import type { ChatTheme } from "./chatTheme";
 import { buildThemeVars } from "./chatTheme";
 import { useChatState } from "./useChatState";
@@ -34,6 +35,12 @@ export interface ChatLauncherProps {
     onMinimize: () => void;
     onClose: () => void;
   }) => React.ReactNode;
+  /** Replace individual message bubbles inside the chat window */
+  renderMessage?: React.ComponentType<RenderMessageProps>;
+  /** Replace the chat input area (inject custom input, image picker, audio, etc.) */
+  renderInput?: React.ComponentType<RenderInputProps>;
+  /** Replace the entire message list (for full-page / custom scroll layouts) */
+  renderMessageList?: React.ComponentType<RenderMessageListProps>;
 }
 
 function useIsMobile() {
@@ -57,6 +64,9 @@ export function ChatLauncher({
   renderLauncherButton,
   renderBotItem,
   renderWindowHeader,
+  renderMessage,
+  renderInput,
+  renderMessageList,
 }: ChatLauncherProps) {
   const isMobile = useIsMobile();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -223,6 +233,9 @@ export function ChatLauncher({
               onSend={(text, attachments) => send(activeWindow.bot, text, attachments)}
               onCancel={() => cancel(activeWindow.bot)}
               workspace={workspace}
+              renderMessage={renderMessage}
+              renderInput={renderInput}
+              renderMessageList={renderMessageList}
             />
           </div>
         </div>
@@ -318,6 +331,9 @@ export function ChatLauncher({
                     onSend={(text, attachments) => send(botName, text, attachments)}
                     onCancel={() => cancel(botName)}
                     workspace={workspace}
+                    renderMessage={renderMessage}
+                    renderInput={renderInput}
+                    renderMessageList={renderMessageList}
                   />
                 </div>
               </div>

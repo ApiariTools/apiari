@@ -1,4 +1,5 @@
 export { ChatPanel } from "./ChatPanel";
+export type { RenderMessageProps, RenderInputProps, RenderMessageListProps } from "./ChatPanel";
 export { ChatLauncher } from "./ChatLauncher/ChatLauncher";
 export type { ChatLauncherProps } from "./ChatLauncher/ChatLauncher";
 export type { ChatTheme } from "./ChatLauncher/chatTheme";
