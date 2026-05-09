@@ -6268,10 +6268,9 @@ async fn v2_context_bot_chat(
 
     let system_prompt = build_context_bot_system_prompt(&body.context);
 
-    // Run claude with a short turn limit — context bot should be fast.
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        tokio::process::Command::new("claude")
+    // Run claude — pass message via stdin to avoid CLI arg length/quoting issues.
+    let output = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        let mut child = tokio::process::Command::new("claude")
             .arg("--print")
             .arg("--max-turns")
             .arg("3")
@@ -6279,9 +6278,16 @@ async fn v2_context_bot_chat(
             .arg(&model)
             .arg("--system-prompt")
             .arg(&system_prompt)
-            .arg(&body.message)
-            .output(),
-    )
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let _ = stdin.write_all(body.message.as_bytes()).await;
+        }
+        child.wait_with_output().await
+    })
     .await;
 
     let raw = match output {
