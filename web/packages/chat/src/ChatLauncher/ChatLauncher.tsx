@@ -187,80 +187,78 @@ export function ChatLauncher({
     </div>
   );
 
-  // ── Mobile: full-screen overlay ─────────────────────────────────────
-  if (isMobile) {
-    const activeWindow = openWindows.find((w) => !w.minimized);
-    const botState = activeWindow ? botStates[activeWindow.bot] : undefined;
-    const bot = activeWindow ? getBotObj(activeWindow.bot) : undefined;
+  // ── Mobile overlays ─────────────────────────────────────────────────
+  const activeWindow = isMobile ? openWindows.find((w) => !w.minimized) : undefined;
+  const activeBotState = activeWindow ? botStates[activeWindow.bot] : undefined;
+  const activeBot = activeWindow ? getBotObj(activeWindow.bot) : undefined;
 
-    return (
-      <div ref={rootRef} style={themeVars}>
-        {activeWindow && botState && bot ? (
-          <div className={styles.mobileOverlay}>
-            <div className={styles.mobileHeader}>
-              <button className={styles.mobileBack} onClick={() => closeBot(activeWindow.bot)}>
-                <ChevronLeft size={20} />
-              </button>
-              <span
-                className={styles.mobileDot}
-                style={{ background: (bot as { color?: string }).color ?? "var(--cl-accent)" }}
-              />
-              <span className={styles.mobileTitle}>{bot.name}</span>
-            </div>
-            <div className={styles.mobileBody}>
-              <ChatPanel
-                bot={activeWindow.bot}
-                bots={bots}
-                messages={botState.messages}
-                messagesLoading={false}
-                loading={botState.loading}
-                loadingStatus={botState.loadingStatus}
-                streamingContent={botState.streamingContent}
-                onSend={(text, attachments) => send(activeWindow.bot, text, attachments)}
-                onCancel={() => cancel(activeWindow.bot)}
-                workspace={workspace}
-              />
-            </div>
+  const mobileContent = isMobile && (
+    <>
+      {activeWindow && activeBotState && activeBot ? (
+        <div className={styles.mobileOverlay}>
+          <div className={styles.mobileHeader}>
+            <button className={styles.mobileBack} onClick={() => closeBot(activeWindow.bot)}>
+              <ChevronLeft size={20} />
+            </button>
+            <span
+              className={styles.mobileDot}
+              style={{
+                background: (activeBot as { color?: string }).color ?? "var(--cl-accent)",
+              }}
+            />
+            <span className={styles.mobileTitle}>{activeBot.name}</span>
           </div>
-        ) : showBotList ? (
-          <div className={styles.mobileBotList}>
-            <div className={styles.mobileBotListHeader}>
-              <span className={styles.mobileBotListTitle}>Chats</span>
-              <button className={styles.mobileBotListClose} onClick={() => setShowBotList(false)}>
-                <X size={20} />
-              </button>
-            </div>
-            <div className={styles.mobileBotListItems}>
-              {bots.map((b) =>
-                renderBotItem ? (
-                  renderBotItem({
-                    bot: b,
-                    unreadCount: unread[b.name] ?? 0,
-                    onClick: () => openBot(b.name),
-                  })
-                ) : (
-                  <button key={b.name} className={styles.botItem} onClick={() => openBot(b.name)}>
-                    <span
-                      className={styles.botDot}
-                      style={{ background: (b as { color?: string }).color ?? "var(--cl-accent)" }}
-                    />
-                    {b.name}
-                    {(unread[b.name] ?? 0) > 0 && (
-                      <span className={styles.botItemBadge}>{unread[b.name]}</span>
-                    )}
-                  </button>
-                ),
-              )}
-            </div>
+          <div className={styles.mobileBody}>
+            <ChatPanel
+              bot={activeWindow.bot}
+              bots={bots}
+              messages={activeBotState.messages}
+              messagesLoading={false}
+              loading={activeBotState.loading}
+              loadingStatus={activeBotState.loadingStatus}
+              streamingContent={activeBotState.streamingContent}
+              onSend={(text, attachments) => send(activeWindow.bot, text, attachments)}
+              onCancel={() => cancel(activeWindow.bot)}
+              workspace={workspace}
+            />
           </div>
-        ) : null}
+        </div>
+      ) : showBotList ? (
+        <div className={styles.mobileBotList}>
+          <div className={styles.mobileBotListHeader}>
+            <span className={styles.mobileBotListTitle}>Chats</span>
+            <button className={styles.mobileBotListClose} onClick={() => setShowBotList(false)}>
+              <X size={20} />
+            </button>
+          </div>
+          <div className={styles.mobileBotListItems}>
+            {bots.map((b) =>
+              renderBotItem ? (
+                renderBotItem({
+                  bot: b,
+                  unreadCount: unread[b.name] ?? 0,
+                  onClick: () => openBot(b.name),
+                })
+              ) : (
+                <button key={b.name} className={styles.botItem} onClick={() => openBot(b.name)}>
+                  <span
+                    className={styles.botDot}
+                    style={{ background: (b as { color?: string }).color ?? "var(--cl-accent)" }}
+                  />
+                  {b.name}
+                  {(unread[b.name] ?? 0) > 0 && (
+                    <span className={styles.botItemBadge}>{unread[b.name]}</span>
+                  )}
+                </button>
+              ),
+            )}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
 
-        <div style={themeVars}>{launcherEl}</div>
-      </div>
-    );
-  }
-
-  // ── Desktop ─────────────────────────────────────────────────────────
+  // ── Root (shared by desktop + mobile) ───────────────────────────────
   return (
     <div ref={rootRef} style={themeVars} className={styles.root}>
       {/* Expanded windows */}
@@ -355,8 +353,11 @@ export function ChatLauncher({
         </div>
       )}
 
-      {/* Bot list popover */}
-      {popoverEl}
+      {/* Mobile overlays */}
+      {mobileContent}
+
+      {/* Desktop: bot list popover */}
+      {!isMobile && popoverEl}
 
       {/* Launcher FAB */}
       {launcherEl}
