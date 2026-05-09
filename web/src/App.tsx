@@ -96,6 +96,7 @@ export default function App() {
   const [contextSessions, setContextSessions] = useState<ContextBotSession[]>([])
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [quickDispatchOpen, setQuickDispatchOpen] = useState(false)
+  const [daemonRestarted, setDaemonRestarted] = useState(false)
   const workerPollRef = useRef<number | null>(null)
   const autoBotPollRef = useRef<number | null>(null)
   const workspaceRef = useRef<string>('')
@@ -167,7 +168,7 @@ export default function App() {
         minimized: false,
         loading: false,
       }
-      upsertContextBotSession(workspace, session).catch(() => {})
+      // Don't persist until first message — avoids empty sessions on reload
       return [...prev, session]
     })
   }
@@ -317,9 +318,7 @@ export default function App() {
         const sid = event.startup_id as string | undefined;
         if (sid) {
           if (knownStartupId && knownStartupId !== sid) {
-            // Daemon restarted — reload so the app is in sync with the new process.
-            window.location.reload();
-            return;
+            setDaemonRestarted(true);
           }
           knownStartupId = sid;
         }
@@ -532,6 +531,12 @@ export default function App() {
 
   return (
     <>
+      {daemonRestarted && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999, background: 'var(--accent)', color: '#111', padding: '8px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, fontWeight: 600 }}>
+          Daemon restarted — reload to sync
+          <button onClick={() => window.location.reload()} style={{ background: '#111', color: 'var(--accent)', border: 'none', borderRadius: 4, padding: '4px 12px', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>Reload</button>
+        </div>
+      )}
       <Layout
         sidebar={
           <Sidebar
