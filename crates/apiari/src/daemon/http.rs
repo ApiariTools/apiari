@@ -10176,9 +10176,10 @@ model = "sonnet"
         let bin_dir = dir.join("bin");
         fs::create_dir_all(&bin_dir).unwrap();
         let script = bin_dir.join("claude");
-        // Echo all args to stderr for inspection, print the canned response to stdout.
+        // Echo all args to stderr for inspection, drain stdin (message is sent there),
+        // then print the canned response to stdout.
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >&2\ncat > /dev/null\nprintf '%s' '{}'\n",
             stdout.replace('\'', "'\"'\"'")
         );
         fs::write(&script, body).unwrap();
@@ -10344,6 +10345,81 @@ model = "sonnet"
         assert!(
             logged.contains("--model"),
             "handler must pass --model, got: {logged}"
+        );
+        // Each arg is on its own line; "hi" as a standalone line = passed as arg
+        assert!(
+            !logged.lines().any(|l| l == "hi"),
+            "message must NOT be a standalone CLI arg, got: {logged}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn context_bot_chat_message_sent_via_stdin_not_args() {
+        // Verifies the message is delivered via stdin so special characters
+        // (quotes, newlines, $vars) can't break argument parsing.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let log = temp.path().join("args.log");
+        let stdin_log = temp.path().join("stdin.log");
+
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("claude");
+        let log_display = log.display().to_string();
+        let stdin_display = stdin_log.display().to_string();
+        // Write args to args.log, stdin content to stdin.log, then respond ok.
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\ncat >> '{}'\nprintf '%s' 'ok'\n",
+            log_display, stdin_display
+        );
+        fs::write(&script, &body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![bin_dir];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        let joined = std::env::join_paths(paths).unwrap();
+        unsafe { std::env::set_var("PATH", joined) };
+        let _path_guard = FakePathGuard { old_path };
+
+        let tricky_message = "What's the status? It's $HOME and \"quoted\" and has\nnewlines.";
+
+        let db = temp.path().join("test.db");
+        let state = make_context_bot_state(&db);
+        v2_context_bot_chat(
+            axum::extract::Path("apiari".to_string()),
+            axum::extract::State(state),
+            axum::extract::Json(ContextBotChatBody {
+                message: tricky_message.to_string(),
+                session_id: None,
+                model: None,
+                context: ContextBotContext {
+                    view: "dashboard".to_string(),
+                    entity_id: None,
+                    entity_snapshot: None,
+                },
+            }),
+        )
+        .await;
+
+        let args_logged = fs::read_to_string(&log).unwrap_or_default();
+        let stdin_logged = fs::read_to_string(&stdin_log).unwrap_or_default();
+
+        // Message must arrive via stdin, verbatim
+        assert!(
+            stdin_logged.contains(tricky_message),
+            "message must be sent via stdin, got stdin: {stdin_logged:?}"
+        );
+        // Message must NOT appear as a CLI arg
+        assert!(
+            !args_logged.contains("What's the status"),
+            "message must NOT be passed as a CLI arg, got args: {args_logged:?}"
         );
     }
 
