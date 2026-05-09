@@ -1,8 +1,17 @@
 import { useState } from "react";
 import { ChatLauncher } from "../src/ChatLauncher/ChatLauncher";
 import type { ChatTheme } from "../src/ChatLauncher/chatTheme";
+import {
+  triggerIncomingMessage,
+  triggerStreamingResponse,
+  triggerToolUse,
+  triggerIdle,
+  MOCK_BOTS,
+} from "./mockServer";
 
 type Position = "right" | "left";
+
+const WORKSPACE = "demo";
 
 const THEMES: Record<string, ChatTheme> = {
   dark: {},
@@ -24,6 +33,63 @@ const THEMES: Record<string, ChatTheme> = {
 const params = new URLSearchParams(window.location.search);
 const LIVE_MODE = params.get("mock") === "false";
 
+// ── Tiny shared style helpers ───────────────────────────────────────────────
+
+function Btn({
+  label,
+  color = "#222",
+  textColor = "#aaa",
+  onClick,
+}: {
+  label: string;
+  color?: string;
+  textColor?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: "6px 12px",
+        borderRadius: 6,
+        border: "1px solid #2a2a2a",
+        background: color,
+        color: textColor,
+        fontSize: 12,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        fontFamily: "inherit",
+        transition: "opacity 0.1s",
+      }}
+      onMouseEnter={(e) => ((e.target as HTMLElement).style.opacity = "0.8")}
+      onMouseLeave={(e) => ((e.target as HTMLElement).style.opacity = "1")}
+    >
+      {label}
+    </button>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "#444",
+        }}
+      >
+        {title}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{children}</div>
+    </div>
+  );
+}
+
+// ── App ─────────────────────────────────────────────────────────────────────
+
 export default function App() {
   const [position, setPosition] = useState<Position>("right");
   const [themeName, setThemeName] = useState("dark");
@@ -36,13 +102,14 @@ export default function App() {
         display: "flex",
         flexDirection: "column",
         fontFamily: "system-ui, -apple-system, sans-serif",
+        color: "#aaa",
       }}
     >
       {/* Header */}
       <div
         style={{
-          padding: "16px 24px",
-          borderBottom: "1px solid #1e1e1e",
+          padding: "14px 24px",
+          borderBottom: "1px solid #1a1a1a",
           display: "flex",
           alignItems: "center",
           gap: 16,
@@ -50,69 +117,61 @@ export default function App() {
         }}
       >
         <div>
-          <div style={{ color: "#eee", fontWeight: 600, fontSize: 15 }}>@apiari/chat</div>
-          <div style={{ color: "#555", fontSize: 12, marginTop: 2 }}>
-            {LIVE_MODE ? "live mode — connect to daemon on :4200" : "mock mode — no daemon needed"}
-          </div>
+          <span style={{ color: "#eee", fontWeight: 600, fontSize: 14 }}>@apiari/chat</span>
+          <span style={{ color: "#333", fontSize: 12, marginLeft: 10 }}>
+            {LIVE_MODE ? "live · daemon :4200" : "mock · no daemon needed"}
+          </span>
         </div>
-
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
-          {/* Theme picker */}
-          <div style={{ display: "flex", gap: 4 }}>
-            {Object.keys(THEMES).map((name) => (
-              <button
-                key={name}
-                onClick={() => setThemeName(name)}
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 6,
-                  border: `1px solid ${themeName === name ? "#555" : "#222"}`,
-                  background: themeName === name ? "#222" : "transparent",
-                  color: themeName === name ? "#eee" : "#555",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  transition: "all 0.1s",
-                }}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
-
-          {/* Position toggle */}
-          <div style={{ display: "flex", gap: 4 }}>
-            {(["right", "left"] as Position[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => setPosition(p)}
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 6,
-                  border: `1px solid ${position === p ? "#555" : "#222"}`,
-                  background: position === p ? "#222" : "transparent",
-                  color: position === p ? "#eee" : "#555",
-                  fontSize: 12,
-                  cursor: "pointer",
-                  transition: "all 0.1s",
-                }}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-
-          {/* Live/mock toggle */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {/* Theme */}
+          {Object.keys(THEMES).map((name) => (
+            <button
+              key={name}
+              onClick={() => setThemeName(name)}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 5,
+                border: `1px solid ${themeName === name ? "#444" : "#1e1e1e"}`,
+                background: themeName === name ? "#1e1e1e" : "transparent",
+                color: themeName === name ? "#ccc" : "#444",
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              {name}
+            </button>
+          ))}
+          <div style={{ width: 1, background: "#1e1e1e", margin: "0 2px" }} />
+          {/* Position */}
+          {(["right", "left"] as Position[]).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPosition(p)}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 5,
+                border: `1px solid ${position === p ? "#444" : "#1e1e1e"}`,
+                background: position === p ? "#1e1e1e" : "transparent",
+                color: position === p ? "#ccc" : "#444",
+                fontSize: 11,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              {p}
+            </button>
+          ))}
+          <div style={{ width: 1, background: "#1e1e1e", margin: "0 2px" }} />
           <a
             href={LIVE_MODE ? "?" : "?mock=false"}
             style={{
-              padding: "5px 10px",
-              borderRadius: 6,
-              border: "1px solid #222",
-              color: "#555",
-              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: 5,
+              border: "1px solid #1e1e1e",
+              color: "#444",
+              fontSize: 11,
               textDecoration: "none",
-              display: "flex",
-              alignItems: "center",
             }}
           >
             {LIVE_MODE ? "use mock" : "use live"}
@@ -120,66 +179,157 @@ export default function App() {
         </div>
       </div>
 
-      {/* Canvas */}
-      <div
-        style={{
-          flex: 1,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexDirection: "column",
-          gap: 16,
-          padding: 40,
-          position: "relative",
-        }}
-      >
-        <div style={{ color: "#222", fontSize: 13, textAlign: "center", maxWidth: 340 }}>
-          Click the button in the{" "}
-          <strong style={{ color: "#333" }}>
-            {position === "right" ? "bottom-right" : "bottom-left"}
-          </strong>{" "}
-          to open a chat.
-          <br />
-          <span style={{ color: "#1e1e1e" }}>
-            {LIVE_MODE
-              ? "Sends real messages to ws=demo on your local daemon."
-              : "Fully mocked — 3 bots, streaming responses, unread badges."}
-          </span>
-        </div>
-
-        {/* CSS var preview */}
+      {/* Main content */}
+      <div style={{ flex: 1, display: "flex", gap: 0 }}>
+        {/* Controls sidebar */}
         <div
           style={{
+            width: 260,
+            borderRight: "1px solid #1a1a1a",
+            padding: "20px 16px",
             display: "flex",
-            gap: 6,
-            flexWrap: "wrap",
-            justifyContent: "center",
-            maxWidth: 400,
+            flexDirection: "column",
+            gap: 24,
+            flexShrink: 0,
           }}
         >
-          {Object.entries(THEMES[themeName]).map(([k, v]) => (
+          <div style={{ fontSize: 11, color: "#333", lineHeight: 1.6 }}>
+            Use these controls to simulate server-side events and test all UI states. The launcher
+            button is in the {position === "right" ? "bottom-right" : "bottom-left"} corner.
+          </div>
+
+          {/* Launcher states */}
+          <Section title="Launcher button states">
+            <Btn
+              label="Default (no chats)"
+              onClick={() => {
+                // Can't directly reset the ChatLauncher from outside — hint text only
+                window.location.reload();
+              }}
+            />
+          </Section>
+
+          {/* Unread: trigger incoming messages */}
+          <Section title="Trigger unread">
+            {MOCK_BOTS.map((bot) => (
+              <Btn
+                key={bot.name}
+                label={`+ msg → ${bot.name}`}
+                color="#1a0a0a"
+                textColor="#e85555"
+                onClick={() => triggerIncomingMessage(WORKSPACE, bot.name)}
+              />
+            ))}
+          </Section>
+
+          {/* Streaming: per bot */}
+          <Section title="Trigger streaming response">
+            {MOCK_BOTS.map((bot) => (
+              <Btn
+                key={bot.name}
+                label={`Stream → ${bot.name}`}
+                color="#0a0f1a"
+                textColor="#4a9eff"
+                onClick={() => triggerStreamingResponse(WORKSPACE, bot.name)}
+              />
+            ))}
+          </Section>
+
+          {/* Tool use state */}
+          <Section title="Trigger tool use (thinking)">
+            {MOCK_BOTS.map((bot) => (
+              <Btn
+                key={bot.name}
+                label={`Tool → ${bot.name}`}
+                color="#110a1a"
+                textColor="#b56ef0"
+                onClick={() => triggerToolUse(WORKSPACE, bot.name)}
+              />
+            ))}
+          </Section>
+
+          {/* Reset idle */}
+          <Section title="Reset to idle">
+            {MOCK_BOTS.map((bot) => (
+              <Btn
+                key={bot.name}
+                label={`Idle → ${bot.name}`}
+                onClick={() => triggerIdle(WORKSPACE, bot.name)}
+              />
+            ))}
+          </Section>
+
+          {/* State legend */}
+          <div
+            style={{
+              marginTop: "auto",
+              padding: "12px",
+              background: "#111",
+              borderRadius: 8,
+              border: "1px solid #1a1a1a",
+              fontSize: 11,
+              lineHeight: 1.8,
+              color: "#444",
+            }}
+          >
+            <div style={{ color: "#333", fontWeight: 600, marginBottom: 6 }}>Button states</div>
+            <div>◯ Default — no open chats</div>
+            <div>🟢 Open — live chats, no unread</div>
+            <div>🔴 Unread — new messages waiting</div>
+            <div>✕ Popover open</div>
+          </div>
+        </div>
+
+        {/* Canvas */}
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexDirection: "column",
+            gap: 12,
+            padding: 40,
+            color: "#222",
+            fontSize: 13,
+            textAlign: "center",
+          }}
+        >
+          <div style={{ color: "#1e1e1e", maxWidth: 280, lineHeight: 1.7 }}>
+            Open a chat from the launcher, then use the controls on the left to trigger events while
+            windows are open or minimized.
+          </div>
+          {Object.keys(THEMES[themeName]).length > 0 && (
             <div
-              key={k}
               style={{
-                padding: "3px 8px",
-                borderRadius: 4,
-                background: "#111",
-                border: "1px solid #1a1a1a",
-                fontSize: 11,
-                color: "#444",
-                fontFamily: "monospace",
+                display: "flex",
+                gap: 5,
+                flexWrap: "wrap",
+                justifyContent: "center",
+                maxWidth: 360,
               }}
             >
-              {k}: <span style={{ color: "#666" }}>{v}</span>
+              {Object.entries(THEMES[themeName]).map(([k, v]) => (
+                <code
+                  key={k}
+                  style={{
+                    padding: "2px 7px",
+                    borderRadius: 4,
+                    background: "#111",
+                    border: "1px solid #1a1a1a",
+                    fontSize: 10,
+                    color: "#333",
+                  }}
+                >
+                  {k}: {v}
+                </code>
+              ))}
             </div>
-          ))}
-          {Object.keys(THEMES[themeName]).length === 0 && (
-            <div style={{ fontSize: 12, color: "#333" }}>default theme — no overrides</div>
           )}
         </div>
       </div>
 
-      <ChatLauncher workspace="demo" position={position} theme={THEMES[themeName]} />
+      <ChatLauncher workspace={WORKSPACE} position={position} theme={THEMES[themeName]} />
     </div>
   );
 }

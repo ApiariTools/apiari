@@ -267,6 +267,52 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
   return realFetch(input, init);
 }
 
+// ── Public trigger API (for demo controls) ─────────────────────────────────
+
+/** Push an instant incoming assistant message to a bot (no streaming). */
+export function triggerIncomingMessage(workspace: string, bot: string, content?: string) {
+  const ws = activeFakeWs;
+  if (!ws) return;
+  const text = content ?? pickResponse(bot);
+  const msg = addMessage(workspace, bot, "assistant", text);
+  ws.emit({ type: "message", ...msg });
+}
+
+/** Run a full thinking → streaming → idle sequence for a bot. */
+export function triggerStreamingResponse(workspace: string, bot: string) {
+  simulateResponse(workspace, bot);
+}
+
+/** Emit a tool-use thinking state for a bot (stays until reset or message arrives). */
+export function triggerToolUse(workspace: string, bot: string, toolName = "read_file") {
+  const ws = activeFakeWs;
+  if (!ws) return;
+  ws.emit({
+    type: "bot_status",
+    workspace,
+    bot,
+    status: "thinking",
+    tool_name: toolName,
+    streaming_content: "",
+  });
+}
+
+/** Reset a bot back to idle. */
+export function triggerIdle(workspace: string, bot: string) {
+  const ws = activeFakeWs;
+  if (!ws) return;
+  ws.emit({
+    type: "bot_status",
+    workspace,
+    bot,
+    status: "idle",
+    tool_name: null,
+    streaming_content: "",
+  });
+}
+
+export const MOCK_BOTS = BOTS;
+
 // ── Install ────────────────────────────────────────────────────────────────
 
 export function installMockServer() {
