@@ -141,6 +141,7 @@ async fn main() -> Result<()> {
         cli.command,
         None | Some(Command::Ui { .. }) | Some(Command::Init { .. })
     );
+    let is_daemon = matches!(cli.command, Some(Command::Daemon { .. }));
     let writer: BoxMakeWriter = if is_tui {
         let log_dir = config::config_dir();
         fs::create_dir_all(&log_dir)?;
@@ -149,6 +150,16 @@ async fn main() -> Result<()> {
             .append(true)
             .open(log_dir.join("tui.log"))?;
         BoxMakeWriter::new(file)
+    } else if is_daemon {
+        let log_dir = config::config_dir();
+        fs::create_dir_all(&log_dir)?;
+        // Truncate on each startup so the file reflects only the current run.
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(log_dir.join("daemon.log"))?;
+        BoxMakeWriter::new(std::sync::Arc::new(file))
     } else {
         BoxMakeWriter::new(std::io::stderr)
     };
