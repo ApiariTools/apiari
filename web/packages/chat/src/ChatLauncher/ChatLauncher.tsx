@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessagesSquare, MessageSquare, X, Minus, ChevronLeft } from "lucide-react";
+import { MessageSquare, X, Minus, ChevronLeft } from "lucide-react";
 import type { Bot } from "@apiari/types";
 import { ChatPanel } from "../ChatPanel";
 import type { ChatTheme } from "./chatTheme";
@@ -146,16 +146,13 @@ export function ChatLauncher({
     >
       {showBotList ? (
         <X size={22} />
-      ) : openCount > 0 ? (
-        <MessagesSquare size={22} />
+      ) : hasOpen ? (
+        <span className={styles.launcherOpenCount}>{openCount > 99 ? "99+" : openCount}</span>
       ) : (
         <MessageSquare size={22} />
       )}
       {hasUnread && (
         <span className={styles.launcherBadge}>{totalUnread > 99 ? "99+" : totalUnread}</span>
-      )}
-      {hasOpen && (
-        <span className={styles.launcherOpenBadge}>{openCount > 99 ? "99+" : openCount}</span>
       )}
     </button>
   );
