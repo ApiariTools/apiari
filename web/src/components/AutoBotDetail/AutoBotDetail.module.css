@@ -150,57 +150,6 @@
   color: var(--text-faint);
 }
 
-/* ── Ask button ──────────────────────────────────────────────────────── */
-
-.askBtn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  font-size: var(--font-size-small);
-  padding: 4px 10px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  transition:
-    border-color 0.15s,
-    color 0.15s;
-}
-
-.askBtn:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-/* ── Trigger Now button ──────────────────────────────────────────────── */
-
-.triggerBtn {
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  font-size: var(--font-size-small);
-  padding: 4px 12px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  transition:
-    border-color 0.15s,
-    color 0.15s;
-}
-
-.triggerBtn:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.triggerBtn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 /* ── Run feed ────────────────────────────────────────────────────────── */
 
 .feed {
@@ -309,24 +258,6 @@
 .badgeRunning {
   color: var(--status-running);
   background: rgba(92, 184, 92, 0.08);
-}
-
-/* ── Spinner ─────────────────────────────────────────────────────────── */
-
-.spinner {
-  width: 12px;
-  height: 12px;
-  border: 2px solid rgba(92, 184, 92, 0.2);
-  border-top-color: var(--status-running);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  flex-shrink: 0;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────── */

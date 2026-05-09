@@ -93,7 +93,7 @@ describe("WorkerDetail", () => {
       />,
     );
     // Switch to chat tab
-    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
 
     // Messages with timestamps should show formatted time
     // Pattern handles both 12h ("1:42 PM") and 24h ("13:42") locales
@@ -132,7 +132,7 @@ describe("WorkerDetail", () => {
         onCloseWorker={closeWorker}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
 
     const workerLabel = screen.getByText(
       (_, el) => el?.tagName === "STRONG" && el.textContent === "worker-1",
@@ -158,7 +158,7 @@ describe("WorkerDetail", () => {
         onCloseWorker={closeWorker}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Chat" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Chat" }));
 
     expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
     expect(
@@ -180,7 +180,7 @@ describe("WorkerDetail", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Task" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Task" }));
 
     expect(screen.getByText(/Task:/)).toBeInTheDocument();
     expect(screen.getByText(/Tighten worker lifecycle/)).toBeInTheDocument();

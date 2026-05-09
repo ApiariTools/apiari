@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { WorkerV2, AutoBot } from "@apiari/types";
+import { Input } from "@apiari/ui";
 import { getWorkerTitle } from "../../utils/workerTitle";
 import styles from "./CommandPalette.module.css";
 
@@ -153,9 +154,8 @@ export default function CommandPalette({
       <div className={styles.panel}>
         {/* Search input */}
         <div className={styles.inputRow}>
-          <input
+          <Input
             ref={inputRef}
-            className={styles.input}
             type="text"
             placeholder="Search workers, auto bots..."
             value={query}

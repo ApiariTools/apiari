@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Minus } from "lucide-react";
 import type { ContextBotSession } from "@apiari/types";
+import { Button, Select, Input, Dots } from "@apiari/ui";
 import styles from "./ContextBot.module.css";
 
 export interface ContextBotPanelProps {
@@ -97,8 +98,8 @@ export default function ContextBotPanel({
                   {modelLabel(session.model)}
                 </span>
               ) : (
-                <select
-                  className={styles.modelSelect}
+                <Select
+                  size="sm"
                   value={session.model}
                   onChange={(e) => onChangeModel(session.id, e.target.value)}
                   data-testid="model-select"
@@ -108,17 +109,17 @@ export default function ContextBotPanel({
                       {m.label}
                     </option>
                   ))}
-                </select>
+                </Select>
               )}
-              <button
-                className={`${styles.iconBtn} ${styles.iconBtnMinimize}`}
+              <Button
+                variant="icon"
+                size="md"
                 onClick={() => onMinimize(session.id)}
-                type="button"
                 aria-label="Minimize"
                 data-testid="minimize-btn"
               >
                 <Minus size={18} />
-              </button>
+              </Button>
               <button
                 className={styles.endBtn}
                 onClick={() => setConfirmingEnd(true)}
@@ -159,11 +160,7 @@ export default function ContextBotPanel({
 
             {session.loading && (
               <div className={styles.loadingActivity} data-testid="loading-dots">
-                <div className={styles.loadingDots}>
-                  <span />
-                  <span />
-                  <span />
-                </div>
+                <Dots />
                 {session.activity && (
                   <span className={styles.loadingActivityLabel}>{session.activity}</span>
                 )}
@@ -173,15 +170,16 @@ export default function ContextBotPanel({
 
           {/* Input bar */}
           <div className={styles.inputBar}>
-            <input
-              ref={inputRef}
-              className={styles.input}
-              type="text"
-              placeholder="Ask..."
-              onKeyDown={handleKeyDown}
-              disabled={session.loading}
-              data-testid="chat-input"
-            />
+            <div className={styles.inputWrap}>
+              <Input
+                ref={inputRef}
+                type="text"
+                placeholder="Ask..."
+                onKeyDown={handleKeyDown}
+                disabled={session.loading}
+                data-testid="chat-input"
+              />
+            </div>
             <button
               className={styles.sendBtn}
               onClick={handleSend}

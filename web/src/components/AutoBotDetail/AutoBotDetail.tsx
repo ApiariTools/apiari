@@ -14,6 +14,7 @@ import type {
   ContextBotContext,
 } from "@apiari/types";
 import { getAutoBot, triggerAutoBot, updateAutoBot } from "@apiari/api";
+import { Button, Spinner } from "@apiari/ui";
 import { formatRelative } from "../../utils/time";
 import styles from "./AutoBotDetail.module.css";
 
@@ -60,7 +61,7 @@ function OutcomeBadge({ outcome }: { outcome: AutoBotRun["outcome"] }) {
     // running
     return (
       <span className={`${styles.badge} ${styles.badgeRunning}`} data-testid="badge-running">
-        <span className={styles.spinner} />
+        <Spinner size="sm" />
         Running
       </span>
     );
@@ -256,7 +257,9 @@ export default function AutoBotDetail({
   if (loading) {
     return (
       <div className={styles.container}>
-        <div className={styles.stateCenter}>Loading...</div>
+        <div className={styles.stateCenter}>
+          <Spinner />
+        </div>
       </div>
     );
   }
@@ -298,8 +301,9 @@ export default function AutoBotDetail({
               disabled={togglingEnabled}
             />
             {onOpenContextBot && (
-              <button
-                className={styles.askBtn}
+              <Button
+                variant="secondary"
+                size="sm"
                 type="button"
                 onClick={() => {
                   onOpenContextBot(
@@ -322,10 +326,11 @@ export default function AutoBotDetail({
               >
                 <MessageSquare size={13} />
                 Ask
-              </button>
+              </Button>
             )}
-            <button
-              className={styles.triggerBtn}
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={handleTrigger}
               disabled={triggering}
               type="button"
@@ -333,7 +338,7 @@ export default function AutoBotDetail({
             >
               <Zap size={13} />
               {triggering ? "Triggering..." : "Trigger Now"}
-            </button>
+            </Button>
           </div>
         </div>
 

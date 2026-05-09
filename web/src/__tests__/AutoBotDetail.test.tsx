@@ -182,7 +182,7 @@ describe("AutoBotDetail", () => {
   it("shows loading state initially", () => {
     vi.mocked(api.getAutoBot).mockImplementation(() => new Promise(() => {}));
     render(<AutoBotDetail workspace="default" autoBotId="bot-1" />);
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
   it("shows error state on load failure", async () => {

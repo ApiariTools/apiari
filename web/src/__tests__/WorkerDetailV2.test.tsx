@@ -232,9 +232,9 @@ describe("WorkerDetailV2", () => {
   it("renders three tabs: Timeline, Reviews, Brief", async () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    expect(screen.getByTestId("tab-timeline")).toBeInTheDocument();
-    expect(screen.getByTestId("tab-reviews")).toBeInTheDocument();
-    expect(screen.getByTestId("tab-brief")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Reviews/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Brief" })).toBeInTheDocument();
   });
 
   it("switches to Reviews tab on click and shows reviews section", async () => {
@@ -250,7 +250,7 @@ describe("WorkerDetailV2", () => {
     vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    fireEvent.click(screen.getByTestId("tab-reviews"));
+    fireEvent.click(screen.getByRole("tab", { name: /Reviews/ }));
     expect(await screen.findByTestId("reviews-section")).toBeInTheDocument();
     expect(screen.getByText("Missing error handling.")).toBeInTheDocument();
   });
@@ -258,7 +258,7 @@ describe("WorkerDetailV2", () => {
   it("switches to Brief tab and shows 'No brief recorded' when brief is null", async () => {
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    fireEvent.click(screen.getByTestId("tab-brief"));
+    fireEvent.click(screen.getByRole("tab", { name: "Brief" }));
     expect(await screen.findByText("No brief recorded for this worker.")).toBeInTheDocument();
   });
 
@@ -277,7 +277,7 @@ describe("WorkerDetailV2", () => {
     });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    fireEvent.click(screen.getByTestId("tab-brief"));
+    fireEvent.click(screen.getByRole("tab", { name: "Brief" }));
     expect(await screen.findByText("My brief goal")).toBeInTheDocument();
     expect(screen.getByText("Must be fast")).toBeInTheDocument();
     expect(screen.getByText("Works end to end")).toBeInTheDocument();
@@ -297,7 +297,7 @@ describe("WorkerDetailV2", () => {
     });
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    fireEvent.click(screen.getByTestId("tab-brief"));
+    fireEvent.click(screen.getByRole("tab", { name: "Brief" }));
     expect(await screen.findByText("implementation")).toBeInTheDocument();
     expect(screen.getByText(/Ship the worker brief panel\./)).toBeInTheDocument();
     expect(screen.getByText(/Worker detail view/)).toBeInTheDocument();
@@ -460,7 +460,7 @@ describe("WorkerDetailV2", () => {
     vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    fireEvent.click(screen.getByTestId("tab-reviews"));
+    fireEvent.click(screen.getByRole("tab", { name: /Reviews/ }));
     const section = await screen.findByTestId("reviews-section");
     expect(section).toBeInTheDocument();
     expect(section).toHaveTextContent("General");
@@ -484,7 +484,7 @@ describe("WorkerDetailV2", () => {
     vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    fireEvent.click(screen.getByTestId("tab-reviews"));
+    fireEvent.click(screen.getByRole("tab", { name: /Reviews/ }));
     const section = await screen.findByTestId("reviews-section");
     expect(section).toHaveTextContent("Approved");
     expect(section).not.toHaveTextContent("Sent to worker");
@@ -503,7 +503,7 @@ describe("WorkerDetailV2", () => {
     vi.mocked(api.listWorkerReviews).mockResolvedValue([mockReview]);
     render(<WorkerDetailV2 workspace="default" workerId="w-abc" />);
     await screen.findByTestId("status-badge");
-    const reviewTab = screen.getByTestId("tab-reviews");
+    const reviewTab = screen.getByRole("tab", { name: /Reviews/ });
     expect(reviewTab).toHaveTextContent("1");
   });
 

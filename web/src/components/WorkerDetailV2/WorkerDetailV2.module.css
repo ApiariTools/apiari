@@ -52,11 +52,6 @@
     display: none;
   }
 
-  .tab {
-    font-size: 12px;
-    padding: 5px 10px;
-  }
-
   .backBtn {
     font-size: 12px;
     margin-bottom: 0;
@@ -271,29 +266,6 @@
 
 /* ── Action buttons ──────────────────────────────────────────────────────── */
 
-/* Icon-only button (Ask) */
-.iconBtn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  background: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    border-color 0.15s,
-    color 0.15s;
-}
-
-.iconBtn:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
 /* Review button — primary action */
 .reviewBtn {
   display: inline-flex;
@@ -321,36 +293,6 @@
   cursor: not-allowed;
 }
 
-/* Text-only buttons (Cancel, Retry) — no box */
-.textBtn {
-  background: none;
-  border: none;
-  color: var(--text-faint);
-  font-size: 13px;
-  padding: 4px 6px;
-  cursor: pointer;
-  transition: color 0.15s;
-}
-
-.textBtn:hover {
-  color: var(--text);
-}
-
-.textBtnDanger {
-  background: none;
-  border: none;
-  color: var(--status-failed);
-  font-size: 13px;
-  padding: 4px 6px;
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.15s;
-}
-
-.textBtnDanger:hover {
-  opacity: 1;
-}
-
 /* ── Tab bar ─────────────────────────────────────────────────────────────── */
 
 .tabBar {
@@ -360,46 +302,6 @@
   padding: var(--space-3) var(--space-5) 0;
   gap: var(--space-2);
   margin-bottom: var(--space-2);
-}
-
-.tab {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 6px 12px;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-faint);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    color 0.15s,
-    background 0.15s,
-    border-color 0.15s;
-}
-
-.tab:hover {
-  color: var(--text);
-  background: var(--bg-hover);
-}
-
-.tabActive {
-  color: var(--text-strong);
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-}
-
-.tabBadge {
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--bg-card);
-  color: var(--text-faint);
-  border: 1px solid var(--border);
-  border-radius: 100px;
-  padding: 0 5px;
-  line-height: 16px;
 }
 
 /* ── Tab content area (scrollable) ──────────────────────────────────────── */
@@ -1137,36 +1039,6 @@
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.skeletonWrapper {
-  flex: 1;
-  padding: var(--space-6);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.skeletonLine {
-  background: linear-gradient(90deg, var(--bg-hover) 25%, var(--bg-card) 50%, var(--bg-hover) 75%);
-  background-size: 800px 100%;
-  animation: shimmer 1.4s infinite linear;
-  border-radius: var(--radius-sm);
-}
-
-.skeletonTitle {
-  height: 22px;
-  width: 55%;
-}
-
-.skeletonMeta {
-  height: 14px;
-  width: 30%;
-}
-
-.skeletonBody {
-  height: 14px;
-  width: 70%;
 }
 
 .errorCenter {

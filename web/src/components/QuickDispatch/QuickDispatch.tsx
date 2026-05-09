@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getRepos, createWorkerV2 } from "@apiari/api";
 import type { Repo } from "@apiari/types";
+import { Button, Textarea } from "@apiari/ui";
 import styles from "./QuickDispatch.module.css";
 
 export interface QuickDispatchProps {
@@ -145,7 +146,7 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
         <label className={styles.label} htmlFor="quick-dispatch-intent">
           What do you want to do?
         </label>
-        <textarea
+        <Textarea
           id="quick-dispatch-intent"
           ref={textareaRef}
           className={styles.intentTextarea}
@@ -247,24 +248,21 @@ export default function QuickDispatch({ workspace, onClose, onDispatched }: Quic
 
         {/* Footer */}
         <div className={styles.footer}>
-          <button
-            type="button"
-            className={styles.cancelBtn}
-            onClick={onClose}
-            data-testid="cancel-btn"
-          >
+          <Button type="button" variant="ghost" onClick={onClose} data-testid="cancel-btn">
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
-            className={styles.dispatchBtn}
+            variant="primary"
+            size="lg"
+            style={{ width: "100%" }}
             disabled={!canDispatch}
+            loading={dispatching}
             onClick={handleDispatch}
             data-testid="dispatch-btn"
           >
-            {dispatching && <span className={styles.spinner} aria-hidden="true" />}
             Dispatch
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -24,19 +24,6 @@
     linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 85%), rgba(255, 255, 255, 0.01);
 }
 
-.back {
-  font-size: 16px;
-  color: var(--text-faint);
-  cursor: pointer;
-  background: none;
-  border: none;
-  padding: 4px 8px;
-}
-
-.back:hover {
-  color: var(--text);
-}
-
 .headerMid {
   flex: 1;
   min-width: 0;
@@ -116,32 +103,12 @@
   color: var(--text-strong);
 }
 
-.headerBtnDanger:hover {
-  border-color: var(--red);
-  color: var(--red);
-}
-
 .actionNotice {
   padding: 10px 18px;
   border-bottom: 1px solid var(--border);
   background: rgba(245, 197, 66, 0.08);
   color: var(--text);
   font-size: 13px;
-}
-
-.inlineAction {
-  margin-left: 8px;
-  border: 1px solid var(--border-strong);
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--text);
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.inlineAction:hover {
-  border-color: var(--text-faint);
 }
 
 /* ── PR Review ── */
@@ -209,28 +176,6 @@
   display: flex;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-}
-
-.tab {
-  padding: 12px 16px;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  font-weight: 500;
-}
-
-.tab:hover {
-  color: var(--text);
-}
-
-.tabActive {
-  color: var(--text-strong);
-  border-bottom-color: var(--accent);
 }
 
 .tabContent {
@@ -446,38 +391,4 @@
   display: flex;
   align-items: center;
   gap: 12px;
-}
-
-.thinkingDots {
-  display: flex;
-  gap: 4px;
-}
-
-.thinkingDots span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-faint);
-  animation: bounce 1.4s ease-in-out infinite;
-}
-
-.thinkingDots span:nth-child(2) {
-  animation-delay: 0.16s;
-}
-
-.thinkingDots span:nth-child(3) {
-  animation-delay: 0.32s;
-}
-
-@keyframes bounce {
-  0%,
-  80%,
-  100% {
-    opacity: 0.3;
-    transform: scale(0.8);
-  }
-  40% {
-    opacity: 1;
-    transform: scale(1);
-  }
 }

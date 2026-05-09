@@ -19,6 +19,7 @@ import {
   requestWorkerReview,
   listWorkerReviews,
 } from "@apiari/api";
+import { Button, TabBar, Skeleton } from "@apiari/ui";
 import styles from "./WorkerDetailV2.module.css";
 
 export interface WorkerDetailV2Props {
@@ -889,10 +890,18 @@ export default function WorkerDetailV2({
   if (loading) {
     return (
       <div className={styles.container}>
-        <div className={styles.skeletonWrapper} data-testid="loading-skeleton">
-          <div className={`${styles.skeletonLine} ${styles.skeletonTitle}`} />
-          <div className={`${styles.skeletonLine} ${styles.skeletonMeta}`} />
-          <div className={`${styles.skeletonLine} ${styles.skeletonBody}`} />
+        <div
+          style={{
+            padding: "var(--space-6)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-3)",
+          }}
+          data-testid="loading-skeleton"
+        >
+          <Skeleton width="55%" height={22} />
+          <Skeleton width="30%" height={14} />
+          <Skeleton width="70%" height={14} />
         </div>
       </div>
     );
@@ -945,8 +954,9 @@ export default function WorkerDetailV2({
           </h1>
           <div className={styles.headerActions}>
             {onOpenContextBot && (
-              <button
-                className={styles.iconBtn}
+              <Button
+                variant="icon"
+                size="sm"
                 type="button"
                 onClick={() => {
                   onOpenContextBot(
@@ -971,7 +981,7 @@ export default function WorkerDetailV2({
                 data-testid="ask-btn"
               >
                 <MessageSquare size={15} />
-              </button>
+              </Button>
             )}
             {canReview && (
               <button
@@ -985,14 +995,14 @@ export default function WorkerDetailV2({
               </button>
             )}
             {canCancel && (
-              <button className={styles.textBtnDanger} onClick={handleCancel} type="button">
+              <Button variant="danger" size="sm" onClick={handleCancel} type="button">
                 Cancel
-              </button>
+              </Button>
             )}
             {canRequeue && (
-              <button className={styles.textBtn} onClick={handleRequeue} type="button">
+              <Button variant="ghost" size="sm" onClick={handleRequeue} type="button">
                 Retry
-              </button>
+              </Button>
             )}
           </div>
         </div>
@@ -1029,38 +1039,21 @@ export default function WorkerDetailV2({
       </div>
 
       {/* ── Tab bar ── */}
-      <div className={styles.tabBar} role="tablist">
-        <button
-          className={`${styles.tab} ${activeTab === "timeline" ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab("timeline")}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "timeline"}
-          data-testid="tab-timeline"
-        >
-          Timeline
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === "reviews" ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab("reviews")}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "reviews"}
-          data-testid="tab-reviews"
-        >
-          Reviews
-          {reviews.length > 0 && <span className={styles.tabBadge}>{reviews.length}</span>}
-        </button>
-        <button
-          className={`${styles.tab} ${activeTab === "brief" ? styles.tabActive : ""}`}
-          onClick={() => setActiveTab("brief")}
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "brief"}
-          data-testid="tab-brief"
-        >
-          Brief
-        </button>
+      <div className={styles.tabBar}>
+        <TabBar
+          variant="pill"
+          value={activeTab}
+          onChange={(v) => setActiveTab(v as Tab)}
+          tabs={[
+            { value: "timeline", label: "Timeline" },
+            {
+              value: "reviews",
+              label: "Reviews",
+              badge: reviews.length > 0 ? reviews.length : undefined,
+            },
+            { value: "brief", label: "Brief" },
+          ]}
+        />
       </div>
 
       {/* ── Tab content (scrollable) ── */}

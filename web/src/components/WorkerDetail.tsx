@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import type { Worker, WorkerDetail as WorkerDetailData } from "@apiari/types";
 import * as api from "@apiari/api";
 import { ChatInput } from "@apiari/chat";
+import { TabBar, Button, Dots } from "@apiari/ui";
 import styles from "./WorkerDetail.module.css";
 
 const WorkerDiffPanel = lazy(() =>
@@ -181,11 +182,7 @@ export function WorkerDetail({
                 <strong>{worker.id}</strong>
               </div>
               <div className={styles.thinking}>
-                <span className={styles.thinkingDots}>
-                  <span />
-                  <span />
-                  <span />
-                </span>
+                <Dots />
               </div>
             </div>
           )}
@@ -208,9 +205,9 @@ export function WorkerDetail({
         {/* Header with back, title, status, actions */}
         <div className={styles.infoHeader}>
           {showBack ? (
-            <button className={styles.back} onClick={onBack}>
+            <Button variant="ghost" size="sm" onClick={onBack}>
               &larr;
-            </button>
+            </Button>
           ) : null}
           <div className={styles.headerMid}>
             <div className={styles.titleRow}>
@@ -249,22 +246,23 @@ export function WorkerDetail({
               </a>
             )}
             {!worker.pr_url && (hasUncommittedChanges || worker.status === "stalled") && (
-              <button className={styles.headerBtn} onClick={handlePromote} disabled={acting}>
+              <Button variant="secondary" size="sm" onClick={handlePromote} disabled={acting}>
                 Promote to PR
-              </button>
+              </Button>
             )}
             {(worker.status === "stalled" || hasUncommittedChanges) && (
-              <button className={styles.headerBtn} onClick={handleRedispatch} disabled={acting}>
+              <Button variant="secondary" size="sm" onClick={handleRedispatch} disabled={acting}>
                 Redispatch
-              </button>
+              </Button>
             )}
-            <button
-              className={`${styles.headerBtn} ${styles.headerBtnDanger}`}
+            <Button
+              variant="danger"
+              size="sm"
               onClick={() => setConfirmClose((value) => !value)}
               disabled={acting}
             >
               Close
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -272,20 +270,17 @@ export function WorkerDetail({
         {confirmClose && (
           <div className={styles.actionNotice}>
             Close this worker and dismiss its task?{" "}
-            <button
-              className={styles.inlineAction}
-              onClick={handleCloseConfirmed}
-              disabled={acting}
-            >
+            <Button variant="secondary" size="sm" onClick={handleCloseConfirmed} disabled={acting}>
               Confirm
-            </button>{" "}
-            <button
-              className={styles.inlineAction}
+            </Button>{" "}
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => setConfirmClose(false)}
               disabled={acting}
             >
               Cancel
-            </button>
+            </Button>
           </div>
         )}
 
@@ -347,32 +342,18 @@ export function WorkerDetail({
         )}
 
         {/* Tabs */}
-        <div className={styles.tabs}>
-          <button
-            className={`${styles.tab} ${infoTab === "output" ? styles.tabActive : ""}`}
-            onClick={() => setInfoTab("output")}
-          >
-            Output
-          </button>
-          <button
-            className={`${styles.tab} ${infoTab === "task" ? styles.tabActive : ""}`}
-            onClick={() => setInfoTab("task")}
-          >
-            Task
-          </button>
-          <button
-            className={`${styles.tab} ${infoTab === "diff" ? styles.tabActive : ""}`}
-            onClick={() => setInfoTab("diff")}
-          >
-            Diff
-          </button>
-          <button
-            className={`${styles.tab} ${infoTab === "chat" ? styles.tabActive : ""}`}
-            onClick={() => setInfoTab("chat")}
-          >
-            Chat
-          </button>
-        </div>
+        <TabBar
+          variant="underline"
+          value={infoTab}
+          onChange={(v) => setInfoTab(v as InfoTab)}
+          className={styles.tabs}
+          tabs={[
+            { value: "output", label: "Output" },
+            { value: "task", label: "Task" },
+            { value: "diff", label: "Diff" },
+            { value: "chat", label: "Chat" },
+          ]}
+        />
 
         {/* Tab content */}
         <div className={styles.tabContent}>
