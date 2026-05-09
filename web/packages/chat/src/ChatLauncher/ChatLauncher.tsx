@@ -41,6 +41,8 @@ export interface ChatLauncherProps {
   renderInput?: React.ComponentType<RenderInputProps>;
   /** Replace the entire message list (for full-page / custom scroll layouts) */
   renderMessageList?: React.ComponentType<RenderMessageListProps>;
+  /** Show the color dot avatar next to each bot in the mobile list. Default: true */
+  showBotAvatar?: boolean;
 }
 
 function useIsMobile() {
@@ -67,6 +69,7 @@ export function ChatLauncher({
   renderMessage,
   renderInput,
   renderMessageList,
+  showBotAvatar = true,
 }: ChatLauncherProps) {
   const isMobile = useIsMobile();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -292,10 +295,12 @@ export function ChatLauncher({
                   className={styles.mobileBotItem}
                   onClick={() => openBot(b.name)}
                 >
-                  <span
-                    className={styles.mobileBotItemDot}
-                    style={{ background: (b as { color?: string }).color ?? "var(--cl-accent)" }}
-                  />
+                  {showBotAvatar && (
+                    <span
+                      className={styles.mobileBotItemDot}
+                      style={{ background: (b as { color?: string }).color ?? "var(--cl-accent)" }}
+                    />
+                  )}
                   <div className={styles.mobileBotItemContent}>
                     <div className={styles.mobileBotItemRow1}>
                       <span className={styles.mobileBotItemName}>{b.name}</span>
