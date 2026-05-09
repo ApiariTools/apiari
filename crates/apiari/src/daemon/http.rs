@@ -6290,11 +6290,11 @@ async fn v2_context_bot_chat(
     let system_prompt = build_context_bot_system_prompt(&body.context);
 
     // Run claude — pass message via stdin to avoid CLI arg length/quoting issues.
-    let output = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+    let output = tokio::time::timeout(std::time::Duration::from_secs(300), async {
         let mut child = tokio::process::Command::new("claude")
             .arg("--print")
             .arg("--max-turns")
-            .arg("3")
+            .arg("15")
             .arg("--model")
             .arg(&model)
             .arg("--system-prompt")
