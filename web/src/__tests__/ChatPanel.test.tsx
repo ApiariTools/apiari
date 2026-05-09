@@ -1,36 +1,5 @@
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
-
-// Mock Howler globally so it doesn't interfere with other test files
-vi.mock("howler", () => {
-  class MockHowl {
-    play = vi.fn();
-    stop = vi.fn();
-    unload = vi.fn();
-    on = vi.fn();
-    _opts: Record<string, unknown>;
-    constructor(opts: Record<string, unknown>) {
-      this._opts = opts;
-      // Fire onload synchronously so enqueueGeneration works in tests
-      if (opts.preload && typeof opts.onload === "function") {
-        setTimeout(() => (opts.onload as () => void)(), 0);
-      }
-    }
-  }
-  return { Howl: MockHowl, Howler: { ctx: null } };
-});
-
-// Mock sound cues
-const mockStartThinkingCue = vi.fn(() => vi.fn());
-const mockPlaySentCue = vi.fn();
-const mockPlaySpeakingCue = vi.fn();
-vi.mock("../soundCues", () => ({
-  playSentCue: () => mockPlaySentCue(),
-  startThinkingCue: () => mockStartThinkingCue(),
-  playSpeakingCue: () => mockPlaySpeakingCue(),
-  setSharedAudioContext: vi.fn(),
-}));
 
 import { ChatPanel } from "@apiari/chat";
 import type { Message, Followup } from "@apiari/types";
@@ -268,26 +237,6 @@ describe("ChatPanel", () => {
     expect(screen.getByText("new msg")).toBeInTheDocument();
   });
 
-  it("shows play button on assistant messages but not user messages", () => {
-    render(<ChatPanel {...defaultProps} />);
-    // Only the assistant message should have a play button
-    const playButtons = screen.getAllByLabelText("Play");
-    expect(playButtons).toHaveLength(1);
-  });
-
-  it("clicking play changes button state", async () => {
-    const user = userEvent.setup();
-
-    render(<ChatPanel {...defaultProps} messagesLoading={false} />);
-    await user.click(screen.getByLabelText("Play"));
-
-    // After clicking play, button should show Loading or Stop
-    await waitFor(() => {
-      const play = screen.queryByLabelText("Play");
-      expect(play).not.toBeInTheDocument();
-    });
-  });
-
   it("queues messages sent while loading and sends after loading completes", () => {
     const onSend = vi.fn();
     const { rerender } = render(
@@ -310,50 +259,6 @@ describe("ChatPanel", () => {
     render(<ChatPanel {...defaultProps} loading={true} loadingStatus="Thinking..." />);
     const textarea = screen.getByPlaceholderText(/Message Main/) as HTMLTextAreaElement;
     expect(textarea.readOnly).toBe(false);
-  });
-
-  it("clicking active play button stops and restores play", async () => {
-    const user = userEvent.setup();
-
-    render(<ChatPanel {...defaultProps} messagesLoading={false} />);
-    await user.click(screen.getByLabelText("Play"));
-
-    await waitFor(() => {
-      expect(screen.queryByLabelText("Play")).not.toBeInTheDocument();
-    });
-
-    // Click the active button (Loading or Stop) to cancel
-    const btn = screen.queryByLabelText("Loading") || screen.queryByLabelText("Stop");
-    if (btn) {
-      await user.click(btn);
-      await waitFor(() => {
-        expect(screen.getByLabelText("Play")).toBeInTheDocument();
-      });
-    }
-  });
-
-  // ── Sound cue tests ──
-
-  it("voice mode bypasses message queue and sends immediately while loading", async () => {
-    const onSend = vi.fn();
-    const user = userEvent.setup();
-    const { rerender } = render(<ChatPanel {...defaultProps} onSend={onSend} loading={false} />);
-
-    // Enable voice mode
-    await user.click(screen.getByLabelText("Enter voice mode"));
-
-    // Now set loading=true (bot is responding)
-    rerender(
-      <ChatPanel {...defaultProps} onSend={onSend} loading={true} loadingStatus="Thinking..." />,
-    );
-
-    // Send a message while loading — in voice mode it should NOT be queued
-    const textarea = screen.getByPlaceholderText(/Message Main/);
-    (textarea as HTMLTextAreaElement).value = "voice msg";
-    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
-
-    expect(onSend).toHaveBeenCalledWith("voice msg", undefined);
-    expect(screen.queryByText(/queued/)).not.toBeInTheDocument();
   });
 
   it("renders fired followups inline in message feed", () => {
@@ -427,42 +332,6 @@ describe("ChatPanel", () => {
     expect(screen.getByText(/Follow-up in/)).toBeInTheDocument();
     expect(screen.getByText(/Future check/)).toBeInTheDocument();
     expect(screen.getByText("Cancel")).toBeInTheDocument();
-  });
-
-  it("does not play sound cues when voice mode is off", () => {
-    mockPlaySentCue.mockClear();
-    mockStartThinkingCue.mockClear();
-
-    const msgs1: Message[] = [
-      {
-        id: 1,
-        workspace: "test",
-        bot: "Main",
-        role: "user",
-        content: "hello",
-        attachments: null,
-        created_at: new Date().toISOString(),
-      },
-    ];
-    const { rerender } = render(<ChatPanel {...defaultProps} messages={msgs1} loading={true} />);
-
-    // Add a user message — should NOT trigger sent cue since voice mode is off
-    const msgs2: Message[] = [
-      ...msgs1,
-      {
-        id: 2,
-        workspace: "test",
-        bot: "Main",
-        role: "user",
-        content: "world",
-        attachments: null,
-        created_at: new Date().toISOString(),
-      },
-    ];
-    rerender(<ChatPanel {...defaultProps} messages={msgs2} loading={true} />);
-
-    expect(mockPlaySentCue).not.toHaveBeenCalled();
-    expect(mockStartThinkingCue).not.toHaveBeenCalled();
   });
 
   it("uses auto scrolling for streaming updates to avoid jumpy smooth restarts", async () => {

@@ -1,14 +1,11 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ChevronDown, Loader2, Square, Volume2, AudioLines } from "lucide-react";
-import { Howl, Howler } from "howler";
+import { ChevronDown } from "lucide-react";
 import type { Bot, Message, Followup } from "@apiari/types";
-import { splitSentences } from "./voice";
 import { ChatInput } from "./ChatInput";
 import { FollowupCard, FollowupIndicator } from "./FollowupCard";
-import type { Attachment, VoiceState } from "./ChatInput";
-import { playSentCue, startThinkingCue, playSpeakingCue, setSharedAudioContext } from "./soundCues";
+import type { Attachment } from "./ChatInput";
 import styles from "./ChatPanel.module.css";
 
 export type { Attachment };
@@ -18,12 +15,6 @@ export type { Attachment };
 export interface RenderMessageProps {
   message: Message;
   bot: string;
-  /** true while this message's TTS audio is loading */
-  isLoadingTts: boolean;
-  /** true while this message's TTS audio is playing */
-  isPlaying: boolean;
-  /** Toggle TTS playback for this message */
-  onPlayTts: () => void;
 }
 
 export interface RenderInputProps {
@@ -31,12 +22,6 @@ export interface RenderInputProps {
   loading: boolean;
   onSend: (text: string, attachments?: Attachment[]) => void;
   onCancel?: () => void;
-  voiceMode: boolean;
-  voiceState: VoiceState;
-  /** Increment signals the input to start recording immediately */
-  triggerRecord: number;
-  /** Play a TTS URL via the shared AudioContext (voice mode only) */
-  playTts?: (url: string, onEnd?: () => void) => Promise<void>;
   /** Number of messages queued behind the current in-flight response */
   queueCount: number;
 }
@@ -67,8 +52,6 @@ interface Props {
   onWorkersToggle?: () => void;
   onCancel?: () => void;
   onSend: (text: string, attachments?: Attachment[]) => void;
-  ttsVoice?: string;
-  ttsSpeed?: number;
   followups?: Followup[];
   workspace?: string;
   onFollowupCancelled?: () => void;
@@ -110,8 +93,6 @@ export function ChatPanel({
   workerCount,
   onWorkersToggle,
   onCancel,
-  ttsVoice,
-  ttsSpeed,
   followups,
   workspace,
   onFollowupCancelled,
@@ -126,12 +107,6 @@ export function ChatPanel({
   const messagesRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
-  const [playingId, setPlayingId] = useState<number | null>(null);
-  const [loadingTtsId, setLoadingTtsId] = useState<number | null>(null);
-  const [voiceMode, setVoiceMode] = useState(false);
-  const [triggerRecord, setTriggerRecord] = useState(0);
-  const voiceModeRef = useRef(false);
-  const stopThinkingCueRef = useRef<(() => void) | null>(null);
   const isNearBottomRef = useRef(true);
   const restoringOlderHistoryRef = useRef(false);
   const loadingOlderRequestRef = useRef(false);
@@ -143,19 +118,10 @@ export function ChatPanel({
     loadingStatus: undefined as string | undefined,
   });
 
-  // ── Voice state: listening / processing / speaking ──
-  const voiceState: VoiceState = !voiceMode
-    ? "listening"
-    : playingId !== null
-      ? "speaking"
-      : loading
-        ? "processing"
-        : "listening";
-
   // ── Message queue ──
   const handleSendOrQueue = useCallback(
     (text: string, attachments?: Attachment[]) => {
-      if (loading && !voiceModeRef.current) {
+      if (loading) {
         setMessageQueue((q) => [...q, { text, attachments }]);
       } else {
         onSend(text, attachments);
@@ -183,280 +149,6 @@ export function ChatPanel({
     }
     prevLoadingRef.current = loading;
   }, [loading, messageQueue, onSend]);
-
-  // ── Sound cues (voice mode only) ──
-
-  // Thinking pulse: start when bot is loading in voice mode, stop when done
-  useEffect(() => {
-    if (voiceMode && loading && playingId === null) {
-      stopThinkingCueRef.current = startThinkingCue();
-    } else {
-      if (stopThinkingCueRef.current) {
-        stopThinkingCueRef.current();
-        stopThinkingCueRef.current = null;
-      }
-    }
-    return () => {
-      if (stopThinkingCueRef.current) {
-        stopThinkingCueRef.current();
-        stopThinkingCueRef.current = null;
-      }
-    };
-  }, [voiceMode, loading, playingId]);
-
-  // Sent cue: play when user message appears in voice mode
-  const prevMsgCountForCue = useRef(messages.length);
-  useEffect(() => {
-    if (voiceMode && messages.length > prevMsgCountForCue.current) {
-      const last = messages[messages.length - 1];
-      if (last.role === "user") playSentCue();
-    }
-    prevMsgCountForCue.current = messages.length;
-  }, [messages.length, voiceMode]);
-
-  // Speaking cue: play when TTS starts
-  const prevPlayingId = useRef<number | null>(null);
-  useEffect(() => {
-    if (voiceMode && playingId !== null && prevPlayingId.current === null) {
-      playSpeakingCue();
-    }
-    prevPlayingId.current = playingId;
-  }, [playingId, voiceMode]);
-
-  // ── TTS playback (Howler — for user-tapped play buttons) ──
-  const howlRef = useRef<Howl | null>(null);
-  const sentenceQueueRef = useRef<string[]>([]);
-  const readyQueueRef = useRef<Howl[]>([]);
-  const playingMsgRef = useRef<number | null>(null);
-
-  // ── Voice mode: auto-read bot responses via Howler's unlocked AudioContext ──
-  // We use Howler.ctx directly (unlocked by the greeting tap) to play decoded
-  // audio buffers. This avoids creating new Howl instances which re-trigger
-  // iPad's gesture check.
-  const autoPlayedRef = useRef<Set<number>>(new Set());
-  const voiceSourceRef = useRef<AudioBufferSourceNode | null>(null);
-
-  // Play a single TTS URL via Howler's unlocked AudioContext
-  async function playViaCx(url: string, onEnd?: () => void) {
-    const ctx = Howler.ctx;
-    if (!ctx) {
-      onEnd?.();
-      return;
-    }
-    if (ctx.state === "suspended") await ctx.resume();
-    try {
-      const res = await fetch(url);
-      if (!res.ok) {
-        onEnd?.();
-        return;
-      }
-      const arrayBuf = await res.arrayBuffer();
-      const audioBuf = await ctx.decodeAudioData(arrayBuf);
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuf;
-      source.connect(ctx.destination);
-      voiceSourceRef.current = source;
-      source.onended = () => {
-        voiceSourceRef.current = null;
-        onEnd?.();
-      };
-      source.start();
-    } catch {
-      onEnd?.();
-    }
-  }
-
-  async function playVoiceChain(sentences: string[], idx: number, msgId: number) {
-    if (idx >= sentences.length || playingMsgRef.current !== msgId || !voiceModeRef.current) {
-      stopPlaying(true);
-      return;
-    }
-    await playViaCx(buildTtsUrl(sentences[idx]), () => playVoiceChain(sentences, idx + 1, msgId));
-  }
-
-  useEffect(() => {
-    if (!voiceModeRef.current || loading) return;
-    if (messages.length === 0) return;
-
-    const lastMsg = messages[messages.length - 1];
-    if (lastMsg.role !== "assistant") return;
-    if (autoPlayedRef.current.has(lastMsg.id)) return;
-    if (playingMsgRef.current) return;
-
-    autoPlayedRef.current.add(lastMsg.id);
-    const sentences = splitSentences(lastMsg.content);
-    if (sentences.length === 0) return;
-
-    setTimeout(() => {
-      if (!voiceModeRef.current || playingMsgRef.current) return;
-      setPlayingId(lastMsg.id);
-      playingMsgRef.current = lastMsg.id;
-      playVoiceChain(sentences, 0, lastMsg.id);
-    }, 200);
-  }, [messages, loading]);
-
-  // ── Cleanup ──
-  useEffect(() => {
-    return () => {
-      if (howlRef.current) {
-        howlRef.current.unload();
-        howlRef.current = null;
-      }
-    };
-  }, []);
-
-  // ── TTS controls ──
-
-  function stopPlaying(natural = false) {
-    // Stop Howler playback
-    sentenceQueueRef.current = [];
-    playingMsgRef.current = null;
-    if (howlRef.current) {
-      howlRef.current.stop();
-      howlRef.current.unload();
-      howlRef.current = null;
-    }
-    for (const h of readyQueueRef.current) h.unload();
-    readyQueueRef.current = [];
-    // Stop voice chain playback
-    if (voiceSourceRef.current) {
-      try {
-        voiceSourceRef.current.stop();
-      } catch {
-        // Source may already be stopped by the browser.
-      }
-      voiceSourceRef.current = null;
-    }
-    speechSynthesis.cancel();
-
-    setPlayingId(null);
-    setLoadingTtsId(null);
-
-    if (natural && voiceModeRef.current) {
-      setTriggerRecord((n) => n + 1);
-    }
-  }
-
-  function buildTtsUrl(sentence: string): string {
-    const params = new URLSearchParams({ text: sentence });
-    if (ttsVoice) params.set("voice", ttsVoice);
-    if (ttsSpeed) params.set("speed", String(ttsSpeed));
-    return `/api/tts/speak?${params.toString()}`;
-  }
-
-  // Chunked Howler playback — used by play button (has user gesture)
-  function enqueueGeneration() {
-    const queue = sentenceQueueRef.current;
-    if (queue.length === 0 || playingMsgRef.current === null) return;
-
-    const sentence = queue.shift()!;
-    const howl = new Howl({
-      src: [buildTtsUrl(sentence)],
-      format: ["wav"],
-      html5: true,
-      preload: true,
-      onload: () => {
-        if (playingMsgRef.current === null) {
-          howl.unload();
-          return;
-        }
-        readyQueueRef.current.push(howl);
-        if (!howlRef.current) playFromReady();
-      },
-      onloaderror: () => {
-        if (!howlRef.current) stopPlaying();
-      },
-    });
-  }
-
-  function playFromReady() {
-    if (readyQueueRef.current.length === 0) {
-      if (sentenceQueueRef.current.length === 0) stopPlaying(true);
-      return;
-    }
-
-    const howl = readyQueueRef.current.shift()!;
-    howlRef.current = howl;
-
-    howl.on("play", () => {
-      setLoadingTtsId(null);
-      enqueueGeneration();
-    });
-    howl.on("end", () => {
-      howlRef.current = null;
-      playFromReady();
-    });
-    howl.on("playerror", () => stopPlaying());
-
-    howl.play();
-  }
-
-  function playMessage(msg: Message) {
-    if (playingId === msg.id || loadingTtsId === msg.id) {
-      stopPlaying();
-      return;
-    }
-    stopPlaying();
-
-    const sentences = splitSentences(msg.content);
-    if (sentences.length === 0) return;
-
-    setLoadingTtsId(msg.id);
-    setPlayingId(msg.id);
-    playingMsgRef.current = msg.id;
-    sentenceQueueRef.current = sentences;
-    enqueueGeneration();
-    enqueueGeneration();
-  }
-
-  // ── Voice mode toggle ──
-
-  const keepAliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  function toggleVoiceMode() {
-    if (voiceMode) {
-      voiceModeRef.current = false;
-      setVoiceMode(false);
-      stopPlaying();
-      // Stop keep-alive
-      if (keepAliveRef.current) {
-        clearInterval(keepAliveRef.current);
-        keepAliveRef.current = null;
-      }
-    } else {
-      // Play greeting via Howler (user gesture context — unlocks AudioContext on iPad)
-      const params = new URLSearchParams({ text: "Voice mode on." });
-      if (ttsVoice) params.set("voice", ttsVoice);
-      if (ttsSpeed) params.set("speed", String(ttsSpeed));
-      new Howl({
-        src: [`/api/tts/speak?${params.toString()}`],
-        format: ["wav"],
-        html5: true,
-      }).play();
-
-      // Share Howler's gesture-unlocked AudioContext with sound cues
-      if (Howler.ctx) setSharedAudioContext(Howler.ctx);
-
-      // Keep Howler's AudioContext alive by playing silent audio every 4 seconds
-      if (keepAliveRef.current) clearInterval(keepAliveRef.current);
-      keepAliveRef.current = setInterval(() => {
-        const ctx = Howler.ctx;
-        if (ctx && ctx.state === "suspended") ctx.resume();
-        if (ctx && ctx.state === "running") {
-          const buf = ctx.createBuffer(1, 1, 22050);
-          const src = ctx.createBufferSource();
-          src.buffer = buf;
-          src.connect(ctx.destination);
-          src.start();
-        }
-      }, 4000);
-
-      voiceModeRef.current = true;
-      setVoiceMode(true);
-      setTriggerRecord((n) => n + 1);
-      setTimeout(() => scrollToBottom("smooth"), 100);
-    }
-  }
 
   // ── Helpers ──
 
@@ -677,20 +369,13 @@ export function ChatPanel({
             })}
           </div>
         ) : null}
-        <div className={styles.headerActions}>
-          <button
-            className={`${styles.voiceModeBtn} ${voiceMode ? styles.voiceModeActive : ""}`}
-            onClick={toggleVoiceMode}
-            aria-label={voiceMode ? "Exit voice mode" : "Enter voice mode"}
-          >
-            <AudioLines size={16} />
-          </button>
-          {onWorkersToggle && (
+        {onWorkersToggle && (
+          <div className={styles.headerActions}>
             <button className={styles.workersBtn} onClick={onWorkersToggle}>
               {workerCount ? `${workerCount} worker${workerCount !== 1 ? "s" : ""}` : "No workers"}
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       {RenderMessageList ? (
@@ -723,14 +408,7 @@ export function ChatPanel({
                   inline
                 />
               ) : RenderMessage ? (
-                <RenderMessage
-                  key={item.msg.id}
-                  message={item.msg}
-                  bot={bot}
-                  isPlaying={playingId === item.msg.id}
-                  isLoadingTts={loadingTtsId === item.msg.id}
-                  onPlayTts={() => playMessage(item.msg)}
-                />
+                <RenderMessage key={item.msg.id} message={item.msg} bot={bot} />
               ) : (
                 <div
                   key={item.msg.id}
@@ -740,27 +418,6 @@ export function ChatPanel({
                     <strong>{item.msg.role === "user" ? "You" : bot}</strong>
                     {" · "}
                     {formatTime(item.msg.created_at)}
-                    {item.msg.role === "assistant" && (
-                      <button
-                        className={`${styles.playBtn} ${playingId === item.msg.id ? styles.playBtnActive : ""}`}
-                        onClick={() => playMessage(item.msg)}
-                        aria-label={
-                          playingId === item.msg.id
-                            ? "Stop"
-                            : loadingTtsId === item.msg.id
-                              ? "Loading"
-                              : "Play"
-                        }
-                      >
-                        {loadingTtsId === item.msg.id ? (
-                          <Loader2 size={12} className={styles.ttsSpinner} />
-                        ) : playingId === item.msg.id ? (
-                          <Square size={12} />
-                        ) : (
-                          <Volume2 size={12} />
-                        )}
-                      </button>
-                    )}
                   </div>
                   {renderAttachments(item.msg.attachments)}
                   <div className={styles.text}>
@@ -822,7 +479,7 @@ export function ChatPanel({
                   onCancelled={() => onFollowupCancelled?.()}
                 />
               ))}
-            <div style={{ paddingBottom: voiceMode ? 100 : 0 }} />
+            <div />
           </div>
           {followups && followups.some((f) => f.status === "pending") && showScrollBtn && (
             <FollowupIndicator followup={followups.find((f) => f.status === "pending")!} />
@@ -846,10 +503,6 @@ export function ChatPanel({
           loading={loading}
           onSend={handleSendOrQueue}
           onCancel={onCancel}
-          voiceMode={voiceMode}
-          voiceState={voiceState}
-          triggerRecord={triggerRecord}
-          playTts={voiceMode ? playViaCx : undefined}
           queueCount={messageQueue.length}
         />
       ) : (
@@ -857,10 +510,6 @@ export function ChatPanel({
           placeholder={`Message ${bot}...`}
           disabled={loading}
           onSend={handleSendOrQueue}
-          voiceMode={voiceMode}
-          voiceState={voiceState}
-          triggerRecord={triggerRecord}
-          playTts={voiceMode ? playViaCx : undefined}
           queueCount={messageQueue.length}
         />
       )}
