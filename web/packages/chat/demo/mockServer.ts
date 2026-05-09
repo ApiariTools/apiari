@@ -335,15 +335,16 @@ export function triggerIdle(workspace: string, bot: string) {
   });
 }
 
-/** Clear all messages and re-seed initial data. */
+/** Clear all messages and unreads. Does not restore the initial seed. */
 export function resetMockStore() {
   generation++; // cancel all in-flight simulateResponse calls
   for (const key of Object.keys(messageStore)) delete messageStore[key];
-  const fresh = freshUnread();
-  for (const key of Object.keys(unreadStore)) delete unreadStore[key];
-  Object.assign(unreadStore, fresh);
+  for (const ws of Object.keys(unreadStore)) {
+    for (const bot of Object.keys(unreadStore[ws])) {
+      unreadStore[ws][bot] = 0;
+    }
+  }
   msgCounter = 100;
-  // push fresh unread to all listeners immediately
   for (const [workspace, unread] of Object.entries(unreadStore)) {
     broadcast({ type: "unread_sync", workspace, unread });
   }

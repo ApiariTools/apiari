@@ -26,10 +26,8 @@ test("reset clears open windows and unreads", async ({ page }) => {
   await page.waitForTimeout(2000);
   await page.screenshot({ path: "test-results/reset-4-after-settle.png", fullPage: true });
 
-  // No chat windows open
+  // No chat windows, no unread badge, button back to icon
   await expect(page.locator('[class*="windowHeader"]')).not.toBeVisible({ timeout: 1000 });
-
-  // Badge shows Research: 2 again (seed restored); button shows icon (no active conversations)
-  await expect(page.locator('[class*="launcherBadge"]')).toHaveText("2", { timeout: 3000 });
+  await expect(page.locator('[class*="launcherBadge"]')).not.toBeVisible({ timeout: 2000 });
   await expect(page.locator('[class*="launcherCount"]')).not.toBeVisible();
 });

@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
-// Import the mock server internals by side-loading the module fresh each test
-// We use dynamic import + vi.resetModules to get a clean module state per test.
-
 describe("mockServer", () => {
   beforeEach(() => {
     // patch window globals so installMockServer doesn't crash in jsdom
@@ -11,10 +8,8 @@ describe("mockServer", () => {
     };
   });
 
-  it("seeds Research unread=2 on fresh install", async () => {
-    const { installMockServer, resetMockStore } =
-      await import("../../packages/chat/demo/mockServer");
-    resetMockStore();
+  it("seeds Research unread=2 on first load", async () => {
+    const { installMockServer } = await import("../../packages/chat/demo/mockServer");
     installMockServer();
 
     const res = await fetch("/api/workspaces/demo/unread");
@@ -22,32 +17,31 @@ describe("mockServer", () => {
     expect(data).toEqual({ Research: 2 });
   });
 
-  it("getUnread restores initial unread after resetMockStore", async () => {
+  it("reset clears all unreads to zero", async () => {
     const { installMockServer, resetMockStore } =
       await import("../../packages/chat/demo/mockServer");
     installMockServer();
+
+    // sanity: starts with Research=2
+    const before = await (await fetch("/api/workspaces/demo/unread")).json();
+    expect(before).toEqual({ Research: 2 });
+
     resetMockStore();
 
-    const res = await fetch("/api/workspaces/demo/unread");
-    const data = await res.json();
-    expect(data).toEqual({ Research: 2 });
+    const after = await (await fetch("/api/workspaces/demo/unread")).json();
+    expect(after).toEqual({ Research: 0 });
   });
 
-  it("reset restores Research=2 even after markSeen cleared it", async () => {
-    const { installMockServer, resetMockStore } =
+  it("reset zeroes unreads even after additional messages arrived", async () => {
+    const { installMockServer, resetMockStore, triggerIncomingMessage } =
       await import("../../packages/chat/demo/mockServer");
     installMockServer();
+    triggerIncomingMessage("demo", "Main");
+
     resetMockStore();
 
-    // Simulate markSeen clearing Research unread
-    await fetch("/api/workspaces/demo/seen/Research", { method: "POST" });
-    const afterSeen = await (await fetch("/api/workspaces/demo/unread")).json();
-    expect(afterSeen).toEqual({ Research: 0 });
-
-    // Reset should restore Research=2
-    resetMockStore();
-    const afterReset = await (await fetch("/api/workspaces/demo/unread")).json();
-    expect(afterReset).toEqual({ Research: 2 });
+    const after = await (await fetch("/api/workspaces/demo/unread")).json();
+    expect(after).toEqual({ Research: 0, Main: 0 });
   });
 
   it("triggerIncomingMessage emits a WS message event", async () => {
@@ -56,17 +50,14 @@ describe("mockServer", () => {
     resetMockStore();
     installMockServer();
 
-    // Connect a fake WebSocket
     const ws = new WebSocket("ws://localhost/ws");
     const received: MessageEvent[] = [];
     ws.onmessage = (e) => received.push(e);
 
-    // Wait for ws open
     await new Promise((r) => setTimeout(r, 50));
 
     triggerIncomingMessage("demo", "Main");
 
-    // Allow microtasks to flush
     await new Promise((r) => setTimeout(r, 0));
 
     expect(received.length).toBeGreaterThan(0);
