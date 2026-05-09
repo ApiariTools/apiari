@@ -6253,12 +6253,21 @@ async fn v2_context_bot_chat(
             .unwrap_or_else(|| DEFAULT_MODEL.to_string())
     });
 
+    tracing::info!(
+        workspace = %workspace,
+        view = %body.context.view,
+        model = %model,
+        msg_len = body.message.len(),
+        "[context-bot] request"
+    );
+
     // Verify claude CLI is available.
     let which = tokio::process::Command::new("which")
         .arg("claude")
         .output()
         .await;
     if !which.is_ok_and(|out| out.status.success()) {
+        tracing::error!(workspace = %workspace, "[context-bot] claude CLI not found on PATH");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({"error": "claude CLI not available"})),
@@ -6292,17 +6301,33 @@ async fn v2_context_bot_chat(
 
     let raw = match output {
         Ok(Ok(out)) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
+            let response = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            tracing::info!(
+                workspace = %workspace,
+                response_len = response.len(),
+                "[context-bot] ok"
+            );
+            response
         }
         Ok(Ok(out)) => {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let code = out.status.code().unwrap_or(-1);
+            tracing::error!(
+                workspace = %workspace,
+                exit_code = code,
+                stderr = %stderr,
+                stdout = %stdout,
+                "[context-bot] claude exited non-zero"
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("claude exited non-zero: {stderr}")})),
+                Json(serde_json::json!({"error": format!("claude exited non-zero (code {code}): {stderr}")})),
             )
                 .into_response();
         }
         Ok(Err(e)) => {
+            tracing::error!(workspace = %workspace, err = %e, "[context-bot] failed to spawn claude");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({"error": format!("failed to run claude: {e}")})),
@@ -6310,9 +6335,10 @@ async fn v2_context_bot_chat(
                 .into_response();
         }
         Err(_elapsed) => {
+            tracing::error!(workspace = %workspace, "[context-bot] claude timed out after 120s");
             return (
                 StatusCode::GATEWAY_TIMEOUT,
-                Json(serde_json::json!({"error": "claude timed out"})),
+                Json(serde_json::json!({"error": "claude timed out after 120s"})),
             )
                 .into_response();
         }
