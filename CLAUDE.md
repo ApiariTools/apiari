@@ -219,9 +219,8 @@ Dark theme. CSS variables in `web/src/theme.css`:
 - Test on mobile — iOS Safari has quirks
 
 ## Testing
-- 171 tests total (123 Rust + 48 frontend)
 - Rust: `cargo test` — DB, API endpoints, streaming pipeline, bot runner
-- Frontend: `cd web && npx vitest run` — components + integration
+- Frontend: `cd web && npm run check && npx vitest run` — typecheck + lint + format + 241 tests
 - CI runs on every push/PR: fmt, clippy, tests, tsc, vitest, vite build
 - MockBotRunner in `crates/apps/apiari/src/bot.rs` for testing bot pipeline without live CLIs
 - **Add tests for any new feature or bug fix**
