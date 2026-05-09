@@ -1,4 +1,7 @@
 export { ChatPanel } from "./ChatPanel";
+export { ChatLauncher } from "./ChatLauncher/ChatLauncher";
+export type { ChatLauncherProps } from "./ChatLauncher/ChatLauncher";
+export type { ChatTheme } from "./ChatLauncher/chatTheme";
 export type { Attachment } from "./ChatInput";
 export { ChatInput } from "./ChatInput";
 export type { VoiceState } from "./ChatInput";
