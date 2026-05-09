@@ -145,6 +145,7 @@ export function useChatState(workspace: string) {
 
   const closeBot = useCallback((botName: string) => {
     setOpenWindows((prev) => prev.filter((w) => w.bot !== botName));
+    setActiveConversationBots((prev) => prev.filter((b) => b !== botName));
     loadedBots.current.delete(botName);
     setBotStates((prev) => {
       const next = { ...prev };
