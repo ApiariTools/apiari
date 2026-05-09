@@ -75,7 +75,7 @@ test.describe("worker lifecycle", () => {
     const chatInput = page.getByPlaceholder(/Send.*instruction/i);
     await expect(chatInput).toBeVisible({ timeout: 5_000 });
     await chatInput.fill(REVISION_MSG);
-    await page.locator('button[title="Send"]').click();
+    await chatInput.press("Enter");
 
     // ── 6. Message appears in timeline ────────────────────────────────
     await expect(page.getByText(REVISION_MSG).first()).toBeVisible({
