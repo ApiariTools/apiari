@@ -6208,32 +6208,37 @@ struct ContextBotChatResponse {
 }
 
 /// Build the context-bot system prompt by injecting the view context snapshot.
-fn build_context_bot_system_prompt(ctx: &ContextBotContext) -> String {
+fn build_context_bot_system_prompt(
+    ctx: &ContextBotContext,
+    workspace_root: &std::path::Path,
+) -> String {
     let mut prompt = String::from(
-        "You are a context-aware assistant helping the user navigate and manage their project.\n\n",
+        "You are a context-aware assistant embedded in the apiari web UI. \
+         You help the user understand their project, investigate history, and decide what to do next.\n\n",
     );
 
+    prompt.push_str(&format!("Workspace root: {}\n", workspace_root.display()));
     prompt.push_str(&format!("Current view: {}\n", ctx.view));
 
     if let Some(ref entity_id) = ctx.entity_id {
-        prompt.push_str(&format!("You are looking at: {entity_id}\n"));
+        prompt.push_str(&format!("Focused on: {entity_id}\n"));
     }
 
     if let Some(ref snapshot) = ctx.entity_snapshot {
         let pretty =
             serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| snapshot.to_string());
-        prompt.push_str("\nContext snapshot:\n");
+        prompt.push_str("\nCurrent state snapshot:\n");
         prompt.push_str(&pretty);
         prompt.push('\n');
     }
 
     prompt.push_str(
-        "\nYou can help the user:\n\
-         - Understand what's happening with this worker/bot\n\
-         - Decide what action to take\n\
-         - Dispatch a new worker (respond with DISPATCH_WORKER: {goal} on its own line to trigger dispatch)\n\
+        "\nYou have full tool access: use Bash to run git commands, grep, etc. \
+         Use Read to inspect files. The workspace root is your working directory.\n\
          \n\
-         Be concise. The user is a developer. No fluff.",
+         You can also dispatch a new worker by responding with DISPATCH_WORKER: {goal} on its own line.\n\
+         \n\
+         Be concise. The user is a developer. Answer directly.",
     );
 
     prompt
@@ -6287,9 +6292,11 @@ async fn v2_context_bot_chat(
             .into_response();
     }
 
-    let system_prompt = build_context_bot_system_prompt(&body.context);
+    let workspace_root = load_workspace_root(&workspace);
+    let system_prompt = build_context_bot_system_prompt(&body.context, &workspace_root);
 
     // Run claude — pass message via stdin to avoid CLI arg length/quoting issues.
+    // Set cwd to the workspace root so git/file tools work without needing absolute paths.
     let output = tokio::time::timeout(std::time::Duration::from_secs(300), async {
         let mut child = tokio::process::Command::new("claude")
             .arg("--print")
@@ -6297,6 +6304,7 @@ async fn v2_context_bot_chat(
             .arg(&model)
             .arg("--system-prompt")
             .arg(&system_prompt)
+            .current_dir(&workspace_root)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
