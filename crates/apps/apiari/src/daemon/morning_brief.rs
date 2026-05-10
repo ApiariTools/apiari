@@ -313,7 +313,7 @@ pub async fn execute_brief(params: BriefParams) {
         .await
     {
         Ok(response) => {
-            let text = format!("\u{1f305} Morning Brief\n\n{response}");
+            let text = format!("\u{1f305} Morning Brief\n\n{}", response.text);
             let msg = OutboundMessage {
                 chat_id: params.chat_id,
                 text: text.clone(),

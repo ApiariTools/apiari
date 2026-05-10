@@ -27,11 +27,13 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 fn hash_str(s: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
+    // FNV-1a: deterministic across processes/versions, unlike DefaultHasher
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x00000100000001b3);
+    }
+    h
 }
 
 /// Warn when the prompt is likely to fill more than 80% of the context window.
@@ -93,6 +95,54 @@ pub struct UsageStats {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_cost_usd: Option<f64>,
+}
+
+/// Structured response returned by all coordinator dispatch methods.
+///
+/// All providers return this shape. `text` is always populated. `widgets` and
+/// `followups` are populated when the provider emits a JSON envelope of the form
+/// `{"text": "...", "widgets": [...], "followups": [...]}`. Plain-text responses
+/// produce an empty `widgets` and `followups`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StructuredResponse {
+    pub text: String,
+    pub widgets: Vec<serde_json::Value>,
+    pub followups: Vec<String>,
+}
+
+impl StructuredResponse {
+    pub fn from_text(raw: String) -> Self {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('{') {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                let text = v
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| raw.clone());
+                let widgets = v
+                    .get("widgets")
+                    .and_then(|w| w.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let followups = v
+                    .get("followups")
+                    .and_then(|f| f.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                return Self {
+                    text,
+                    widgets,
+                    followups,
+                };
+            }
+        }
+        Self {
+            text: raw,
+            widgets: vec![],
+            followups: vec![],
+        }
+    }
 }
 
 /// Structured events emitted by the coordinator during a turn.
@@ -584,7 +634,7 @@ impl Coordinator {
         message: &str,
         store: &SignalStore,
         on_event: F,
-    ) -> Result<String>
+    ) -> Result<StructuredResponse>
     where
         F: FnMut(CoordinatorEvent),
     {
@@ -603,7 +653,7 @@ impl Coordinator {
         message: &str,
         opts: SessionOptions,
         mut on_event: F,
-    ) -> Result<String>
+    ) -> Result<StructuredResponse>
     where
         F: FnMut(CoordinatorEvent),
     {
@@ -658,7 +708,7 @@ impl Coordinator {
             }
         }
 
-        Ok(response)
+        Ok(StructuredResponse::from_text(response))
     }
 
     /// Build a provider-agnostic dispatch bundle synchronously.
@@ -738,7 +788,7 @@ impl Coordinator {
         bundle: DispatchBundle,
         image_paths: &[PathBuf],
         mut on_event: F,
-    ) -> Result<String>
+    ) -> Result<StructuredResponse>
     where
         F: FnMut(CoordinatorEvent),
     {
@@ -792,7 +842,7 @@ impl Coordinator {
         prompt: &str,
         image_paths: &[PathBuf],
         mut on_event: F,
-    ) -> Result<String>
+    ) -> Result<StructuredResponse>
     where
         F: FnMut(CoordinatorEvent),
     {
@@ -917,11 +967,11 @@ impl Coordinator {
             }
         }
 
-        Ok(response)
+        Ok(StructuredResponse::from_text(response))
     }
 
     /// Run a turn against the Gemini CLI.
-    async fn run_gemini<F>(&mut self, prompt: &str, mut on_event: F) -> Result<String>
+    async fn run_gemini<F>(&mut self, prompt: &str, mut on_event: F) -> Result<StructuredResponse>
     where
         F: FnMut(CoordinatorEvent),
     {
@@ -1123,7 +1173,7 @@ impl Coordinator {
             }
         }
 
-        Ok(response)
+        Ok(StructuredResponse::from_text(response))
     }
 
     /// Convenience wrapper: handle a message ignoring all events.
@@ -1132,7 +1182,9 @@ impl Coordinator {
         message: &str,
         store: &SignalStore,
     ) -> Result<String> {
-        self.handle_message(message, store, |_| {}).await
+        self.handle_message(message, store, |_| {})
+            .await
+            .map(|r| r.text)
     }
 
     /// Reset the session (start fresh).
@@ -1353,8 +1405,8 @@ mod tests {
         }
 
         ProviderScenarioContract {
-            first_turn: to_turn_contract(first_response, first_events),
-            second_turn: to_turn_contract(second_response, second_events),
+            first_turn: to_turn_contract(first_response.text, first_events),
+            second_turn: to_turn_contract(second_response.text, second_events),
             session_token,
         }
     }
@@ -2017,12 +2069,14 @@ mod tests {
                 .await
                 .unwrap();
             let normalized = first_response
+                .text
                 .trim()
-                .trim_matches(|c: char| c == '.' || c.is_whitespace());
+                .trim_matches(|c: char| c == '.' || c.is_whitespace())
+                .to_string();
             assert!(
                 normalized.eq_ignore_ascii_case("ok")
                     || normalized.to_ascii_lowercase().contains("ok"),
-                "provider {provider} returned unexpected first smoke response: {first_response}"
+                "provider {provider} returned unexpected first smoke response: {normalized}"
             );
             let first_token = coord
                 .session_token()
@@ -2040,14 +2094,16 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let actions = crate::buzz::coordinator::actions::parse_actions(&second_response);
+            let actions =
+                crate::buzz::coordinator::actions::parse_actions(&second_response.text);
             assert!(
                 actions.iter().any(|action| matches!(
                     action,
                     crate::buzz::coordinator::actions::BeeAction::Followup { when, action }
                         if when == "1h" && action == "Check CI status again"
                 )),
-                "provider {provider} returned unexpected followup smoke response: {second_response}"
+                "provider {provider} returned unexpected followup smoke response: {}",
+                second_response.text
             );
             let second_token = coord
                 .session_token()

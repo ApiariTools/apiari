@@ -642,13 +642,13 @@ async fn run_coordinator_task(
                         warn!("[{slot_name}] failed to save user message: {e}");
                     }
                     if let Ok(ref response) = result
-                        && !response.trim().is_empty()
+                        && !response.text.trim().is_empty()
                     {
                         let session_id = coordinator.session_token().map(|t| t.token.as_str());
                         let provider = Some(coordinator.provider());
                         if let Err(e) = conv.save_message(
                             "assistant",
-                            response,
+                            &response.text,
                             None,
                             Some("system"),
                             provider,
@@ -663,14 +663,14 @@ async fn run_coordinator_task(
                     Ok(response) => {
                         turn_count += 1;
 
-                        if !response.trim().is_empty()
+                        if !response.text.trim().is_empty()
                             && let Some(ref server) = socket_server
                         {
                             server.broadcast_activity(
                                 "telegram",
                                 &slot_name,
                                 "assistant_message",
-                                &response,
+                                &response.text,
                             );
                         }
 
@@ -694,10 +694,10 @@ async fn run_coordinator_task(
 
                         // If the coordinator only used tools and produced no text,
                         // send a brief fallback so the user knows the run completed.
-                        let final_text = if response.trim().is_empty() {
+                        let final_text = if response.text.trim().is_empty() {
                             "✅ Done.".to_string()
                         } else {
-                            response
+                            response.text
                         };
 
                         let msg = OutboundMessage {
@@ -1270,7 +1270,7 @@ async fn run_coordinator_task(
 
                 match result {
                     Ok(response) => {
-                        if response.trim().is_empty()
+                        if response.text.trim().is_empty()
                             && let Err(log_err) = store.log_bot_turn_failure(
                                 &bee_name,
                                 Some(coordinator.provider()),
@@ -1287,9 +1287,10 @@ async fn run_coordinator_task(
                         // Only persist non-empty assistant responses (tool-only turns
                         // produce empty text which clutters history).
                         let bee_actions =
-                            crate::buzz::coordinator::actions::parse_actions(&response);
-                        let display_response = render_action_only_response(&response, &bee_actions)
-                            .unwrap_or_else(|| response.clone());
+                            crate::buzz::coordinator::actions::parse_actions(&response.text);
+                        let display_response =
+                            render_action_only_response(&response.text, &bee_actions)
+                                .unwrap_or(response.text);
                         if !display_response.trim().is_empty() {
                             let session_id = coordinator.session_token().map(|t| t.token.as_str());
                             let provider = Some(coordinator.provider());
@@ -1514,6 +1515,7 @@ async fn run_coordinator_task(
                             .await
                         {
                             Ok(summary) => {
+                                let summary = summary.text;
                                 let summary = summary.trim();
                                 if !summary.is_empty() {
                                     // Save summary to memory store
@@ -1741,7 +1743,7 @@ async fn run_coordinator_task(
                     .await
                 {
                     Ok(response) => {
-                        let response = response.trim().to_string();
+                        let response = response.text.trim().to_string();
                         info!(
                             "[follow-through] completed: source={source} signal_count={} response_len={} empty={}",
                             signals.len(),
@@ -5175,7 +5177,7 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
                 print_event_to_stderr(&event);
             })
             .await?;
-        println!("{response}");
+        println!("{}", response.text);
     } else {
         println!("apiari chat [{workspace_name}] (type 'quit' to exit)\n");
         let stdin = std::io::stdin();
@@ -5201,7 +5203,7 @@ pub async fn run_chat(workspace_name: &str, message: Option<String>) -> Result<(
                 })
                 .await
             {
-                Ok(response) => println!("\n{response}\n"),
+                Ok(response) => println!("\n{}\n", response.text),
                 Err(e) => eprintln!("error: {e}"),
             }
         }

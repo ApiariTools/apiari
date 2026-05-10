@@ -577,10 +577,10 @@ async fn execute_with_coordinator(
     match result {
         Ok(full_response) => {
             // full_response is the complete assembled text returned by dispatch_message.
-            let response = if full_response.is_empty() {
+            let response = if full_response.text.is_empty() {
                 response_buf
             } else {
-                full_response
+                full_response.text
             };
 
             // Warn about malformed markers before they silently disappear.
