@@ -8,6 +8,7 @@ members = [
     # Core libraries
     "crates/core/common",
     "crates/core/tui",
+    "crates/core/workflow",
     # Provider SDKs
     "crates/providers/claude-sdk",
     "crates/providers/codex-sdk",
