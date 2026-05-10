@@ -111,6 +111,8 @@ export interface Message {
   role: string;
   content: string;
   attachments: string | null;
+  widgets: string | null;
+  suggestions: string | null;
   created_at: string;
 }
 

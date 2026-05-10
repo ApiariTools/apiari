@@ -100,6 +100,8 @@ pub enum WsUpdate {
         role: String,
         content: String,
         attachments: Option<String>,
+        widgets: Option<String>,
+        suggestions: Option<String>,
         created_at: String,
     },
     /// A bot's live status changed.
@@ -985,6 +987,8 @@ struct ConversationMessageView {
     role: String,
     content: String,
     attachments: Option<String>,
+    widgets: Option<String>,
+    suggestions: Option<String>,
     created_at: String,
 }
 
@@ -1688,6 +1692,8 @@ async fn get_workspace_conversations(
                 role: row.role,
                 content: row.content,
                 attachments: row.attachments,
+                widgets: row.widgets,
+                suggestions: row.suggestions,
                 created_at: row.created_at,
             })
             .collect(),
@@ -7763,6 +7769,8 @@ model = "sonnet"
                 Some("system"),
                 None,
                 None,
+                None,
+                None,
             )
             .unwrap();
         let root_scope = crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari");
@@ -7772,6 +7780,8 @@ model = "sonnet"
                 "from workspace scope",
                 None,
                 Some("system"),
+                None,
+                None,
                 None,
                 None,
             )
@@ -8621,12 +8631,30 @@ model = "gpt-5.3-codex"
         let main_scope =
             crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
         main_scope
-            .save_message("assistant", "main reply", None, Some("system"), None, None)
+            .save_message(
+                "assistant",
+                "main reply",
+                None,
+                Some("system"),
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         let codex_scope =
             crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Codex");
         codex_scope
-            .save_message("assistant", "codex reply", None, Some("system"), None, None)
+            .save_message(
+                "assistant",
+                "codex reply",
+                None,
+                Some("system"),
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap();
 
         let unread_before = get_workspace_unread(Path("apiari".to_string())).await.0;
@@ -8679,7 +8707,16 @@ model = "sonnet"
             let main_scope =
                 crate::buzz::conversation::ConversationStore::new(store.conn(), "apiari/Bee");
             main_scope
-                .save_message("assistant", "first reply", None, Some("system"), None, None)
+                .save_message(
+                    "assistant",
+                    "first reply",
+                    None,
+                    Some("system"),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 .unwrap();
         }
 
@@ -8701,6 +8738,8 @@ model = "sonnet"
                     "second reply",
                     None,
                     Some("system"),
+                    None,
+                    None,
                     None,
                     None,
                 )

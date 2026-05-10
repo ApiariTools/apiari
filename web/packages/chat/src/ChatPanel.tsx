@@ -67,6 +67,8 @@ interface Props {
   renderMessage?: React.ComponentType<RenderMessageProps>;
   /** Replace the input area entirely. Receives send/cancel/voice props. */
   renderInput?: React.ComponentType<RenderInputProps>;
+  /** Render structured widgets from a bot response inline below the message text. */
+  renderWidgets?: (widgets: unknown[]) => React.ReactNode;
   /**
    * Replace the entire message list. Receives messages + loading state.
    * When provided: auto-scroll, scroll-to-bottom button, followup cards,
@@ -109,6 +111,7 @@ export function ChatPanel({
   renderMessage: RenderMessage,
   renderInput: RenderInput,
   renderMessageList: RenderMessageList,
+  renderWidgets,
 }: Props) {
   const messagesRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -433,6 +436,43 @@ export function ChatPanel({
                       item.msg.content
                     )}
                   </div>
+                  {item.msg.role === "assistant" &&
+                    renderWidgets &&
+                    item.msg.widgets &&
+                    (() => {
+                      try {
+                        const parsed = JSON.parse(item.msg.widgets);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                          return <div className={styles.msgWidgets}>{renderWidgets(parsed)}</div>;
+                        }
+                      } catch (_) {
+                        return null;
+                      }
+                    })()}
+                  {item.msg.role === "assistant" &&
+                    item.msg.suggestions &&
+                    (() => {
+                      try {
+                        const chips = JSON.parse(item.msg.suggestions);
+                        if (Array.isArray(chips) && chips.length > 0) {
+                          return (
+                            <div className={styles.suggestions}>
+                              {chips.map((chip: string, i: number) => (
+                                <button
+                                  key={i}
+                                  className={styles.suggestionChip}
+                                  onClick={() => onSend(chip)}
+                                >
+                                  {chip}
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        }
+                      } catch (_) {
+                        return null;
+                      }
+                    })()}
                 </div>
               ),
             )}

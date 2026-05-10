@@ -219,6 +219,8 @@ fn send_web_message_update(
     role: &str,
     content: &str,
     attachments: Option<String>,
+    widgets: Option<String>,
+    suggestions: Option<String>,
     created_at: &str,
 ) {
     if let Some(tx) = web_updates_tx {
@@ -229,6 +231,8 @@ fn send_web_message_update(
             role: role.to_string(),
             content: content.to_string(),
             attachments,
+            widgets,
+            suggestions,
             created_at: created_at.to_string(),
         });
     }
@@ -437,6 +441,8 @@ async fn run_coordinator_task(
                                     Some("telegram"),
                                     None,
                                     None,
+                                    None,
+                                    None,
                                 ) {
                                     warn!("[{slot_name}] failed to save user message: {e}");
                                 }
@@ -446,6 +452,8 @@ async fn run_coordinator_task(
                                     None,
                                     Some("system"),
                                     Some(coordinator.provider()),
+                                    None,
+                                    None,
                                     None,
                                 ) {
                                     warn!(
@@ -636,9 +644,16 @@ async fn run_coordinator_task(
                 {
                     let conv_scope = conversation_scope(&slot_name, &bee_name);
                     let conv = ConversationStore::new(store.conn(), &conv_scope);
-                    if let Err(e) =
-                        conv.save_message("user", &text, None, Some("telegram"), None, None)
-                    {
+                    if let Err(e) = conv.save_message(
+                        "user",
+                        &text,
+                        None,
+                        Some("telegram"),
+                        None,
+                        None,
+                        None,
+                        None,
+                    ) {
                         warn!("[{slot_name}] failed to save user message: {e}");
                     }
                     if let Ok(ref response) = result
@@ -653,6 +668,8 @@ async fn run_coordinator_task(
                             Some("system"),
                             provider,
                             session_id,
+                            None,
+                            None,
                         ) {
                             warn!("[{slot_name}] failed to save assistant message: {e}");
                         }
@@ -761,6 +778,8 @@ async fn run_coordinator_task(
                         Some(&source),
                         None,
                         None,
+                        None,
+                        None,
                     ) {
                         Ok(id) => Some(id),
                         Err(e) => {
@@ -783,6 +802,8 @@ async fn run_coordinator_task(
                                 "user",
                                 &text,
                                 attachments_json.clone(),
+                                None,
+                                None,
                                 &user_created_at,
                             );
                         }
@@ -824,6 +845,8 @@ async fn run_coordinator_task(
                                     Some("system"),
                                     Some(coordinator.provider()),
                                     None,
+                                    None,
+                                    None,
                                 ) {
                                     Ok(id) => Some(id),
                                     Err(e) => {
@@ -845,6 +868,8 @@ async fn run_coordinator_task(
                                     &bee_name,
                                     "assistant",
                                     &response_text,
+                                    None,
+                                    None,
                                     None,
                                     &assistant_created_at,
                                 );
@@ -886,6 +911,8 @@ async fn run_coordinator_task(
                                     Some("system"),
                                     Some(coordinator.provider()),
                                     None,
+                                    None,
+                                    None,
                                 ) {
                                     Ok(id) => Some(id),
                                     Err(e) => {
@@ -907,6 +934,8 @@ async fn run_coordinator_task(
                                     &bee_name,
                                     "assistant",
                                     &response_text,
+                                    None,
+                                    None,
                                     None,
                                     &assistant_created_at,
                                 );
@@ -948,6 +977,8 @@ async fn run_coordinator_task(
                                     Some("system"),
                                     Some(coordinator.provider()),
                                     None,
+                                    None,
+                                    None,
                                 ) {
                                     Ok(id) => Some(id),
                                     Err(e) => {
@@ -969,6 +1000,8 @@ async fn run_coordinator_task(
                                     &bee_name,
                                     "assistant",
                                     &response_text,
+                                    None,
+                                    None,
                                     None,
                                     &assistant_created_at,
                                 );
@@ -1010,6 +1043,8 @@ async fn run_coordinator_task(
                                     Some("system"),
                                     Some(coordinator.provider()),
                                     None,
+                                    None,
+                                    None,
                                 ) {
                                     Ok(id) => Some(id),
                                     Err(e) => {
@@ -1031,6 +1066,8 @@ async fn run_coordinator_task(
                                     &bee_name,
                                     "assistant",
                                     &response_text,
+                                    None,
+                                    None,
                                     None,
                                     &assistant_created_at,
                                 );
@@ -1122,6 +1159,8 @@ async fn run_coordinator_task(
                                 Some("system"),
                                 None,
                                 None,
+                                None,
+                                None,
                             ) {
                                 Ok(id) => Some(id),
                                 Err(save_err) => {
@@ -1143,6 +1182,8 @@ async fn run_coordinator_task(
                                 &bee_name,
                                 "assistant",
                                 &err_text,
+                                None,
+                                None,
                                 None,
                                 &err_created_at,
                             );
@@ -1286,6 +1327,16 @@ async fn run_coordinator_task(
                         send_web_bot_status(&web_updates_tx, &ws_name, &bee_name, "idle", "", None);
                         // Only persist non-empty assistant responses (tool-only turns
                         // produce empty text which clutters history).
+                        let widgets_json = if response.widgets.is_empty() {
+                            None
+                        } else {
+                            serde_json::to_string(&response.widgets).ok()
+                        };
+                        let suggestions_json = if response.suggestions.is_empty() {
+                            None
+                        } else {
+                            serde_json::to_string(&response.suggestions).ok()
+                        };
                         let bee_actions =
                             crate::buzz::coordinator::actions::parse_actions(&response.text);
                         let display_response =
@@ -1304,6 +1355,8 @@ async fn run_coordinator_task(
                                     Some("system"),
                                     provider,
                                     session_id,
+                                    widgets_json.as_deref(),
+                                    suggestions_json.as_deref(),
                                 ) {
                                     Ok(id) => Some(id),
                                     Err(e) => {
@@ -1321,6 +1374,8 @@ async fn run_coordinator_task(
                                     "assistant",
                                     &display_response,
                                     None,
+                                    widgets_json.clone(),
+                                    suggestions_json.clone(),
                                     &assistant_created_at,
                                 );
                             }
@@ -1407,6 +1462,8 @@ async fn run_coordinator_task(
                                 Some("system"),
                                 None,
                                 None,
+                                None,
+                                None,
                             ) {
                                 Ok(id) => Some(id),
                                 Err(save_err) => {
@@ -1426,6 +1483,8 @@ async fn run_coordinator_task(
                                 &bee_name,
                                 "assistant",
                                 &err_text,
+                                None,
+                                None,
                                 None,
                                 &err_created_at,
                             );

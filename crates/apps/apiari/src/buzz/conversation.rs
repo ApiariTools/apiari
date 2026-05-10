@@ -29,6 +29,8 @@ pub struct ConversationRow {
     pub source: Option<String>,
     pub provider: Option<String>,
     pub session_id: Option<String>,
+    pub widgets: Option<String>,
+    pub suggestions: Option<String>,
     pub created_at: String,
 }
 
@@ -57,6 +59,8 @@ impl<'a> ConversationStore<'a> {
         source: Option<&str>,
         provider: Option<&str>,
         session_id: Option<&str>,
+        widgets: Option<&str>,
+        suggestions: Option<&str>,
     ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
         if self.is_legacy_schema()? {
@@ -68,8 +72,8 @@ impl<'a> ConversationStore<'a> {
             )?;
         } else {
             self.conn.execute(
-                "INSERT INTO conversations (workspace, role, content, attachments, source, provider, session_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO conversations (workspace, role, content, attachments, source, provider, session_id, widgets, suggestions, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     &self.workspace,
                     role,
@@ -78,6 +82,8 @@ impl<'a> ConversationStore<'a> {
                     source,
                     provider,
                     session_id,
+                    widgets,
+                    suggestions,
                     now
                 ],
             )?;
@@ -90,7 +96,7 @@ impl<'a> ConversationStore<'a> {
         let mut rows: Vec<ConversationRow> = if self.is_legacy_schema()? {
             let (workspace, bot) = split_scope(&self.workspace);
             let mut stmt = self.conn.prepare(
-                "SELECT id, workspace, role, content, attachments, NULL as source, NULL as provider, NULL as session_id, created_at
+                "SELECT id, workspace, role, content, attachments, NULL as source, NULL as provider, NULL as session_id, NULL as widgets, NULL as suggestions, created_at
                  FROM conversations
                  WHERE workspace = ?1 AND bot = ?2
                  ORDER BY created_at DESC, id DESC
@@ -106,13 +112,15 @@ impl<'a> ConversationStore<'a> {
                     source: row.get(5)?,
                     provider: row.get(6)?,
                     session_id: row.get(7)?,
-                    created_at: row.get(8)?,
+                    widgets: row.get(8)?,
+                    suggestions: row.get(9)?,
+                    created_at: row.get(10)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
         } else {
             let mut stmt = self.conn.prepare(
-                "SELECT id, workspace, role, content, attachments, source, provider, session_id, created_at
+                "SELECT id, workspace, role, content, attachments, source, provider, session_id, widgets, suggestions, created_at
                  FROM conversations
                  WHERE workspace = ?1
                  ORDER BY created_at DESC, id DESC
@@ -128,7 +136,9 @@ impl<'a> ConversationStore<'a> {
                     source: row.get(5)?,
                     provider: row.get(6)?,
                     session_id: row.get(7)?,
-                    created_at: row.get(8)?,
+                    widgets: row.get(8)?,
+                    suggestions: row.get(9)?,
+                    created_at: row.get(10)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?
@@ -200,6 +210,8 @@ mod tests {
                 source      TEXT,
                 provider    TEXT,
                 session_id  TEXT,
+                widgets     TEXT,
+                suggestions TEXT,
                 created_at  TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_conversations_workspace
@@ -215,7 +227,16 @@ mod tests {
         let store = ConversationStore::new(&conn, "test");
 
         store
-            .save_message("user", "hello", None, Some("telegram"), None, None)
+            .save_message(
+                "user",
+                "hello",
+                None,
+                Some("telegram"),
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         store
             .save_message(
@@ -225,6 +246,8 @@ mod tests {
                 Some("system"),
                 Some("claude"),
                 Some("sess-123"),
+                None,
+                None,
             )
             .unwrap();
 
@@ -246,7 +269,7 @@ mod tests {
         assert!(store.last_session().unwrap().is_none());
 
         store
-            .save_message("user", "msg1", None, None, None, None)
+            .save_message("user", "msg1", None, None, None, None, None, None)
             .unwrap();
         // Still no session (user messages have no provider)
         assert!(store.last_session().unwrap().is_none());
@@ -259,6 +282,8 @@ mod tests {
                 None,
                 Some("claude"),
                 Some("sess-abc"),
+                None,
+                None,
             )
             .unwrap();
         let token = store.last_session().unwrap().unwrap();
@@ -274,6 +299,8 @@ mod tests {
                 None,
                 Some("claude"),
                 Some("sess-xyz"),
+                None,
+                None,
             )
             .unwrap();
         let token = store.last_session().unwrap().unwrap();
@@ -287,10 +314,10 @@ mod tests {
         let store_b = ConversationStore::new(&conn, "ws-b");
 
         store_a
-            .save_message("user", "from A", None, None, None, None)
+            .save_message("user", "from A", None, None, None, None, None, None)
             .unwrap();
         store_b
-            .save_message("user", "from B", None, None, None, None)
+            .save_message("user", "from B", None, None, None, None, None, None)
             .unwrap();
 
         let a_history = store_a.load_history(10).unwrap();
@@ -309,7 +336,16 @@ mod tests {
 
         for i in 0..10 {
             store
-                .save_message("user", &format!("msg {i}"), None, None, None, None)
+                .save_message(
+                    "user",
+                    &format!("msg {i}"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 .unwrap();
         }
 
@@ -330,6 +366,8 @@ mod tests {
                 "see image",
                 Some(r#"[{"name":"cat.png","type":"image/png","dataUrl":"data:image/png;base64,abc"}]"#),
                 Some("web"),
+                None,
+                None,
                 None,
                 None,
             )

@@ -23,8 +23,12 @@ test.describe("ChatLauncher demo", () => {
   test("clicking launcher opens bot list popover", async ({ page }) => {
     await page.locator('[class*="launcherWrap"] button').first().click();
     await expect(page.locator('[class*="popoverHeader"]')).toBeVisible();
-    await expect(page.locator('button[class*="botItem"]').filter({ hasText: "Main" })).toBeVisible();
-    await expect(page.locator('button[class*="botItem"]').filter({ hasText: "Research" })).toBeVisible();
+    await expect(
+      page.locator('button[class*="botItem"]').filter({ hasText: "Main" }),
+    ).toBeVisible();
+    await expect(
+      page.locator('button[class*="botItem"]').filter({ hasText: "Research" }),
+    ).toBeVisible();
   });
 
   test("opening a bot clears its unread badge", async ({ page }) => {

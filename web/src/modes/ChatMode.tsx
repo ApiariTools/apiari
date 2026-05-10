@@ -1,7 +1,8 @@
 import { ChatPanel } from "@apiari/chat";
 import { PageHeader, ModeScaffold, StatusBadge } from "@apiari/ui";
-import type { Bot, Followup, Message } from "@apiari/types";
+import type { Bot, Followup, Message, DashboardWidget } from "@apiari/types";
 import type { Attachment } from "@apiari/chat";
+import Widget from "../components/widgets/Widget";
 import styles from "./ChatMode.module.css";
 
 interface Props {
@@ -96,6 +97,9 @@ export function ChatMode(props: Props) {
           unread={props.unread}
           onSelectBot={props.onSelectBot}
           compactHeader
+          renderWidgets={(widgets) =>
+            (widgets as DashboardWidget[]).map((w, i) => <Widget key={w.slot ?? i} widget={w} />)
+          }
         />
       </div>
     </ModeScaffold>

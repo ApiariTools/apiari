@@ -221,6 +221,14 @@ impl SignalStore {
                 "ALTER TABLE conversations ADD COLUMN entity_id TEXT;",
                 "entity_id",
             ),
+            (
+                "ALTER TABLE conversations ADD COLUMN widgets TEXT;",
+                "widgets",
+            ),
+            (
+                "ALTER TABLE conversations ADD COLUMN suggestions TEXT;",
+                "suggestions",
+            ),
         ] {
             if let Err(e) = self.conn.execute_batch(sql) {
                 let msg = e.to_string();

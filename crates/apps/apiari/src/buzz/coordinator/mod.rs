@@ -107,40 +107,48 @@ pub struct UsageStats {
 pub struct StructuredResponse {
     pub text: String,
     pub widgets: Vec<serde_json::Value>,
-    pub followups: Vec<String>,
+    /// Suggestion chips shown below the message bubble (short strings like "Tell me more").
+    /// Named `suggestions` to distinguish from the scheduled `Followup` system.
+    pub suggestions: Vec<String>,
 }
 
 impl StructuredResponse {
     pub fn from_text(raw: String) -> Self {
         let trimmed = raw.trim();
-        if trimmed.starts_with('{') {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                let text = v
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .map(String::from)
-                    .unwrap_or_else(|| raw.clone());
-                let widgets = v
-                    .get("widgets")
-                    .and_then(|w| w.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                let followups = v
-                    .get("followups")
-                    .and_then(|f| f.as_array())
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                    .unwrap_or_default();
-                return Self {
-                    text,
-                    widgets,
-                    followups,
-                };
-            }
+        let parsed = trimmed
+            .starts_with('{')
+            .then(|| serde_json::from_str::<serde_json::Value>(trimmed).ok())
+            .flatten();
+        if let Some(v) = parsed {
+            let text = v
+                .get("text")
+                .and_then(|t| t.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| raw.clone());
+            let widgets = v
+                .get("widgets")
+                .and_then(|w| w.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let suggestions = v
+                .get("suggestions")
+                .and_then(|f| f.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            return Self {
+                text,
+                widgets,
+                suggestions,
+            };
         }
         Self {
             text: raw,
             widgets: vec![],
-            followups: vec![],
+            suggestions: vec![],
         }
     }
 }
@@ -2094,8 +2102,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let actions =
-                crate::buzz::coordinator::actions::parse_actions(&second_response.text);
+            let actions = crate::buzz::coordinator::actions::parse_actions(&second_response.text);
             assert!(
                 actions.iter().any(|action| matches!(
                     action,
