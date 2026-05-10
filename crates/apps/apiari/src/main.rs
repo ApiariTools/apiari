@@ -1,5 +1,20 @@
 mod buzz;
 mod config;
+
+/// Single global environment lock shared by all test modules that mutate PATH.
+/// Each module has its own `env_lock()` helper that delegates here.
+#[cfg(test)]
+pub(crate) mod test_env {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    pub fn lock() -> MutexGuard<'static, ()> {
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+}
 mod config_migrate;
 mod config_set;
 mod config_validate;

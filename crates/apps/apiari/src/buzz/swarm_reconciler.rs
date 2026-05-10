@@ -1477,9 +1477,6 @@ mod tests {
     // The fake `gh` outputs JSON matching `gh pr view --json state,statusCheckRollup`.
     // Helper `gh_json(state, ci)` builds common variants.
 
-    /// Mutex so PATH-mutating tests don't run concurrently.
-    static GH_PATH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Write a fake `gh` shell script that prints `output` and make it executable.
     fn write_fake_gh(dir: &std::path::Path, output: &str) -> std::path::PathBuf {
         let script = dir.join("gh");
@@ -1495,7 +1492,7 @@ mod tests {
 
     /// Prepend `gh_path`'s parent dir to PATH for the duration of `f`.
     fn with_gh_on_path<F: FnOnce()>(gh_path: &std::path::Path, f: F) {
-        let _guard = GH_PATH_LOCK.lock().unwrap();
+        let _guard = crate::test_env::lock();
         let original = std::env::var("PATH").unwrap_or_default();
         let dir = gh_path.parent().unwrap();
         unsafe { std::env::set_var("PATH", format!("{}:{original}", dir.display())) };

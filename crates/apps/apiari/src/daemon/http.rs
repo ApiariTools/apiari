@@ -2073,6 +2073,8 @@ async fn get_workspace_worker_diff(
     let output = std::process::Command::new("git")
         .args(["diff", "--no-ext-diff", "--unified=3", "HEAD"])
         .current_dir(worktree)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output();
 
     let diff = output.ok().and_then(|out| {
@@ -6324,6 +6326,8 @@ async fn v2_context_bot_chat(
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
+            .arg("--max-turns")
+            .arg("10")
             .arg("--model")
             .arg(&model)
             .arg("--system-prompt")
@@ -7165,10 +7169,7 @@ mod tests {
     use super::*;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        crate::test_env::lock()
     }
 
     struct HomeGuard {
@@ -7583,6 +7584,7 @@ mod tests {
 
     #[test]
     fn git_ahead_behind_counts_reports_tracking_delta_without_github_api() {
+        let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let remote = temp.path().join("origin.git");
         let local = temp.path().join("local");
@@ -7625,6 +7627,7 @@ mod tests {
         // Regression: when the daemon is launched from within Claude Code's sandbox,
         // GIT_DIR is set in the environment. Without env_remove("GIT_DIR"), git ignores
         // current_dir and operates on the wrong repo, returning None for upstream info.
+        let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let repo = temp.path().join("repo");
         git(temp.path(), &["init", repo.to_str().unwrap()]);
@@ -10292,9 +10295,9 @@ model = "sonnet"
         fs::create_dir_all(&bin_dir).unwrap();
         let script = bin_dir.join("claude");
         // Echo all args to stderr for inspection, drain stdin (message is sent there),
-        // then print the canned response to stdout.
+        // then print the canned response as NDJSON (handler parses stream-json format).
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >&2\ncat > /dev/null\nprintf '%s' '{}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >&2\ncat > /dev/null\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"{}\"}}'\n",
             stdout.replace('\'', "'\"'\"'")
         );
         fs::write(&script, body).unwrap();

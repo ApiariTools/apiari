@@ -8,7 +8,7 @@ test("reset clears open windows and unreads", async ({ page }) => {
 
   // Open Research bot
   await page.locator('[class*="launcherWrap"] button').first().click();
-  await page.locator('[class*="botItem"]').filter({ hasText: "Research" }).click();
+  await page.locator('button[class*="botItem"]').filter({ hasText: "Research" }).click();
   await expect(page.locator('[class*="windowHeader"]').first()).toBeVisible();
 
   // Trigger a streaming response so there's an in-flight simulation

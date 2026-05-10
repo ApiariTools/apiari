@@ -7241,8 +7241,7 @@ mod tests {
     use tokio::sync::{broadcast, mpsc};
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        crate::test_env::lock()
     }
 
     struct PathGuard {

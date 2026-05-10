@@ -893,10 +893,14 @@ impl Coordinator {
                         .as_ref()
                         .and_then(|e| e.message.as_deref())
                         .unwrap_or("codex turn failed");
+                    self.session_id = None;
+                    self.session_token = None;
                     return Err(color_eyre::eyre::eyre!("{msg}"));
                 }
                 apiari_codex_sdk::Event::Error { message } => {
                     let msg = message.as_deref().unwrap_or("codex error");
+                    self.session_id = None;
+                    self.session_token = None;
                     return Err(color_eyre::eyre::eyre!("{msg}"));
                 }
                 _ => {}
@@ -1089,10 +1093,14 @@ impl Coordinator {
                         .as_ref()
                         .and_then(|e| e.message.as_deref())
                         .unwrap_or("gemini turn failed");
+                    self.session_id = None;
+                    self.session_token = None;
                     return Err(color_eyre::eyre::eyre!("{msg}"));
                 }
                 GeminiEvent::Error { message, .. } => {
                     let msg = message.as_deref().unwrap_or("gemini error");
+                    self.session_id = None;
+                    self.session_token = None;
                     return Err(color_eyre::eyre::eyre!("{msg}"));
                 }
                 _ => {}
@@ -1197,8 +1205,7 @@ mod tests {
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        crate::test_env::lock()
     }
 
     struct PathGuard {
