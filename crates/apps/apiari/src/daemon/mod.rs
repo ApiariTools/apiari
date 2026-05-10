@@ -2779,7 +2779,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             });
         }
 
-        // Load workflow graph from workspace, falling back to builtin
+        // Load workflow graph for web UI display (visual only), falling back to builtin
         let workflow_yaml_path = ws.config.root.join(".apiari/workflow.yaml");
         let workflow_graph =
             crate::buzz::orchestrator::graph::builtin::load_workflow(Some(&workflow_yaml_path))
@@ -2797,7 +2797,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             workflow_graph.nodes.len(),
             workflow_graph.edges.len(),
         );
-        let orchestrator = Orchestrator::with_graph(&ws.config.orchestrator, workflow_graph);
+        let workflow_db_path = ws.config.root.join(".apiari/workflow.db");
+        let orchestrator = Orchestrator::with_graph(&ws.config.orchestrator, workflow_graph)
+            .with_workflow_db(
+                &workflow_db_path.to_string_lossy(),
+                &ws.config.orchestrator.workflow,
+            );
 
         // Morning brief scheduler
         let morning_brief_scheduler = ws
@@ -3207,7 +3212,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                         snoozed_until: None,
                     };
                     if let Ok(task_store) = crate::buzz::task::store::TaskStore::open(&slot.db_path) {
-                        match slot.orchestrator.process_signal(&task_store, &slot.name, &signal) {
+                        match slot.orchestrator.process_signal(&task_store, &slot.name, &signal).await {
                             Ok(result) => {
                                 info!(
                                     "[web] processed injected signal '{}': transitioned={}",
@@ -3563,7 +3568,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                     &task_store,
                                                     &slot.name,
                                                     &record,
-                                                ) {
+                                                ).await {
                                                     Ok(orch_result) => {
                                                         // Collect matched actions for follow-through dispatch
                                                         orchestrator_matched_actions.extend(orch_result.matched_actions);
@@ -4148,7 +4153,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                             &crate::buzz::task::TaskAttemptState::Succeeded,
                                                                             Some(&format!("Review verdict: {verdict}")),
                                                                         );
-                                                                        match slot.orchestrator.process_signal(&ts2, &slot.name, &vrecord) {
+                                                                        match slot.orchestrator.process_signal(&ts2, &slot.name, &vrecord).await {
                                                                             Ok(verdict_orch_result) => {
                                                                                 let ve_result = verdict_orch_result.engine_result;
                                                                                 for (wid, msg) in ve_result.worker_messages {
@@ -4369,11 +4374,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                             let notification = if is_new {
                                                 slot.store.get_signal(id).ok().flatten().and_then(|record| {
                                                     let severity = record.severity.clone();
-                                                    let tier = slot.orchestrator.process_signal(
-                                                        &crate::buzz::task::store::TaskStore::open(slot.store.db_path()).ok()?,
-                                                        &slot.name,
-                                                        &record,
-                                                    ).ok()?.notification_tier;
+                                                    let tier = slot.orchestrator.notification_tier_for(&record);
                                                     use crate::buzz::orchestrator::notify::NotificationTier;
                                                     match tier {
                                                         NotificationTier::Silent => {

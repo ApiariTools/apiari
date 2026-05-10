@@ -26,6 +26,7 @@ apiari-swarm = { path = "crates/apps/swarm", default-features = false }
 # Internal crates — core
 apiari-common = { path = "crates/core/common" }
 apiari-tui = { path = "crates/core/tui" }
+apiari-workflow = { path = "crates/core/workflow" }
 # Internal crates — providers
 apiari-claude-sdk = { path = "crates/providers/claude-sdk" }
 apiari-codex-sdk = { path = "crates/providers/codex-sdk" }

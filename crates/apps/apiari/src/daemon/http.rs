@@ -7115,7 +7115,7 @@ pub async fn run_dev_server(port: u16) -> color_eyre::Result<()> {
                     snoozed_until: None,
                 };
 
-                match orchestrator.process_signal(&store, workspace, &signal) {
+                match orchestrator.process_signal(&store, workspace, &signal).await {
                     Ok(result) => {
                         info!(
                             "[dev] processed signal '{}': transitioned={}, workflow_actions={}",
@@ -8966,7 +8966,7 @@ model = "sonnet"
             })),
         };
 
-        let prompt = build_context_bot_system_prompt(&ctx);
+        let prompt = build_context_bot_system_prompt(&ctx, std::path::Path::new("/tmp/test"));
 
         // Prompt should contain the view name
         assert!(
@@ -9028,7 +9028,7 @@ model = "sonnet"
             entity_snapshot: Some(serde_json::json!({"status": "idle"})),
         };
 
-        let prompt = build_context_bot_system_prompt(&ctx);
+        let prompt = build_context_bot_system_prompt(&ctx, std::path::Path::new("/tmp/test"));
         assert!(prompt.contains("auto_bot_feed"));
         assert!(prompt.contains("idle"));
         // "You are looking at:" should NOT appear when entity_id is None

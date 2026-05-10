@@ -117,6 +117,7 @@ dependencies = [
  "apiari-gemini-sdk",
  "apiari-swarm",
  "apiari-tui",
+ "apiari-workflow",
  "async-imap",
  "async-native-tls",
  "async-stream",

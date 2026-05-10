@@ -127,6 +127,41 @@ impl WorkflowEngine {
         Ok(resumed)
     }
 
+    /// Resume a specific parked run by ID, merging `payload` into its context.
+    ///
+    /// Unlike `on_signal()`, this targets a single run regardless of its `waiting_for`
+    /// pattern — useful when the caller has already matched the signal to the correct run.
+    /// Does nothing if the run is not currently parked.
+    pub async fn signal_run(&self, run_id: &str, payload: Value) -> Result<()> {
+        let mut run = {
+            let db = self.db.lock().await;
+            db.get(run_id)?
+        };
+        if run.status != RunStatus::Parked {
+            return Ok(());
+        }
+        info!(run_id = %run.id, "targeted signal resume");
+        merge_context(&mut run.context, &payload);
+        run.waiting_for = None;
+        run.park_until = None;
+        run.status = RunStatus::Running;
+        run.updated_at = Utc::now();
+        run = self.advance_step_name(run);
+        {
+            let db = self.db.lock().await;
+            db.update(&run)?;
+        }
+        if run.status == RunStatus::Completed {
+            info!(run_id = %run.id, "workflow completed at last wait step (signal_run)");
+            return Ok(());
+        }
+        let id = run.id.clone();
+        if let Err(e) = self.advance(run).await {
+            warn!(run_id = %id, "advance error after signal_run: {e}");
+        }
+        Ok(())
+    }
+
     /// Resume time-parked runs whose deadline has passed.
     ///
     /// Call this periodically (e.g. every 30s) to fire WaitUntil timeouts.
