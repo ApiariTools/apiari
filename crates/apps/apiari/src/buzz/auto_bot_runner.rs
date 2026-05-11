@@ -726,6 +726,18 @@ async fn execute_actions(
                     }
                 }
             }
+            BeeAction::Widget {
+                slot,
+                widget_json,
+                ttl_minutes,
+            } => match signal_store.upsert_widget(slot, widget_json, *ttl_minutes) {
+                Ok(()) => info!(
+                    "[auto_bot_runner/{workspace}] bot {bot_id} wrote widget slot={slot}"
+                ),
+                Err(e) => warn!(
+                    "[auto_bot_runner/{workspace}] bot {bot_id} failed to write widget slot={slot}: {e}"
+                ),
+            },
             // Canvas, Research, Followup — logged but not acted on here.
             BeeAction::Canvas { .. } | BeeAction::Research { .. } | BeeAction::Followup { .. } => {}
         }

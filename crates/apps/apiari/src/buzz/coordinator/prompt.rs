@@ -96,30 +96,6 @@ pub fn build_system_prompt(
     );
 
     prompt.push_str(
-        "## Structured Responses\n\
-         When your response includes data, metrics, or status worth visualising, return a JSON \
-         envelope instead of plain text:\n\
-         {\"text\": \"Your conversational reply.\", \"widgets\": [...], \"suggestions\": [\"Follow-up 1\"]}\n\n\
-         - **text** — required. Your human reply. Always present, even when widgets are included.\n\
-         - **widgets** — optional array of widget objects rendered as cards below your message.\n\
-         - **suggestions** — optional short follow-up strings shown as clickable chips.\n\n\
-         Use **plain text** for casual chat, explanations, and questions. \
-         Use the **JSON envelope** when showing data, stats, lists, progress, or CI status — \
-         or when a few follow-up options would help the user.\n\n\
-         ### Widget types (each needs `type`, `slot` (unique id), `title`)\n\
-         - `stat` — single metric: `value`, `unit?`, `trend?`, `trend_direction?` (up/down/neutral), `status?`\n\
-         - `stat_row` — row of metrics: `stats: [{label, value, status?}]`\n\
-         - `list` — item list: `items: [{id, label, meta?, status?, right?, href?}]`, `empty_message?`\n\
-         - `status_grid` — grid of statuses: `items: [{label, status, href?}]`\n\
-         - `activity_feed` — timeline: `items: [{id, timestamp, actor?, event, kind?, href?}]`\n\
-         - `progress` — progress bar: `label`, `percent` (0–100), `status?`, `sublabel?`\n\
-         - `bar_chart` — bar chart: `bars: [{label, value, status?}]`\n\
-         - `alert_banner` — callout: `body`, `severity` (error/warning/info), `action_label?`, `action_href?`\n\
-         - `markdown_block` — freeform markdown: `content`\n\n\
-         Status values: `ok` `warning` `error` `neutral` `running` `pending`\n\n",
-    );
-
-    prompt.push_str(
         "## Action Markers\n\
          When you need the system to take a structured side effect, emit one of these markers exactly:\n\
          - `[DISMISS: <signal_id>]`\n\
@@ -129,7 +105,8 @@ pub fn build_system_prompt(
          - `[TASK: <title>]`\n\
          - `[RESEARCH: <topic>]`\n\
          - `[FOLLOWUP: <delay-or-rfc3339> | <action>]` for scheduled reminders or deferred checks. Use short relative delays like `15m`, `2h`, `1d`, or an absolute RFC3339 timestamp.\n\
-         - `[CANVAS]...[/CANVAS]` for canvas updates.\n\n",
+         - `[CANVAS]...[/CANVAS]` for canvas updates.\n\
+         - `[WIDGET: <slot>]...json...[/WIDGET]` or `[WIDGET: <slot> | <ttl_minutes>]...json...[/WIDGET]` to write a widget to the dashboard. See Dashboard Widgets skill for details.\n\n",
     );
 
     // Separate CI signals from other signals for dedicated section

@@ -22,6 +22,7 @@ mod scripts;
 mod sentry;
 mod signals;
 mod swarm;
+mod widgets;
 
 use std::{
     io::BufRead,
@@ -190,6 +191,7 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
         signals::build_prompt(ctx),
         memory::build_prompt(ctx),
         scripts::build_prompt(ctx),
+        widgets::build_prompt(ctx),
     ];
 
     if let Some(s) = github::build_prompt(ctx) {

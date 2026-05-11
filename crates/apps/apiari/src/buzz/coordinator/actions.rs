@@ -6,7 +6,7 @@
 
 /// Known action marker names — used for both parsing and malformation detection.
 const KNOWN_MARKERS: &[&str] = &[
-    "DISMISS", "ESCALATE", "FIX", "SNOOZE", "TASK", "RESEARCH", "FOLLOWUP", "CANVAS",
+    "DISMISS", "ESCALATE", "FIX", "SNOOZE", "TASK", "RESEARCH", "FOLLOWUP", "CANVAS", "WIDGET",
 ];
 
 /// Scan a coordinator response for likely-intended-but-malformed action markers.
@@ -84,6 +84,12 @@ pub enum BeeAction {
     Followup { when: String, action: String },
     /// Update the Bee's canvas — a freeform markdown display.
     Canvas { content: String },
+    /// Write a widget to the dashboard for the given slot.
+    Widget {
+        slot: String,
+        widget_json: String,
+        ttl_minutes: Option<i64>,
+    },
 }
 
 /// Parse all action markers from a Bee's response text.
@@ -144,6 +150,44 @@ pub fn parse_actions(response: &str) -> Vec<BeeAction> {
                 });
             }
             search_from = content_start + rel_end + canvas_close.len();
+        } else {
+            break;
+        }
+    }
+
+    // Parse [WIDGET: slot | ttl?]...json...[/WIDGET] blocks (multi-line).
+    // Opening tag format: [WIDGET: slot-name] or [WIDGET: slot-name | 60]
+    let widget_close = "[/WIDGET]";
+    let mut search_from = 0;
+    while let Some(start) = response[search_from..].find("[WIDGET:") {
+        let abs_start = search_from + start;
+        // Find the closing `]` of the opening tag.
+        let header_content_start = abs_start + "[WIDGET:".len();
+        if let Some(header_end) = response[header_content_start..].find(']') {
+            let header = response[header_content_start..header_content_start + header_end].trim();
+            let (slot, ttl_minutes) = if let Some((s, t)) = header.split_once('|') {
+                (s.trim().to_string(), t.trim().parse::<i64>().ok())
+            } else {
+                (header.to_string(), None)
+            };
+            let content_start = header_content_start + header_end + 1;
+            if !slot.is_empty() {
+                if let Some(rel_end) = response[content_start..].find(widget_close) {
+                    let widget_json = response[content_start..content_start + rel_end].trim();
+                    if !widget_json.is_empty() {
+                        actions.push(BeeAction::Widget {
+                            slot,
+                            widget_json: widget_json.to_string(),
+                            ttl_minutes,
+                        });
+                    }
+                    search_from = content_start + rel_end + widget_close.len();
+                } else {
+                    break;
+                }
+            } else {
+                search_from = content_start;
+            }
         } else {
             break;
         }
@@ -518,5 +562,73 @@ mod tests {
         // Unknown tags like [FOO] should not produce warnings.
         let warnings = find_malformed_markers("[FOO: bar] [UNKNOWN: baz]");
         assert!(warnings.is_empty());
+    }
+
+    // ── Widget blocks ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_widget_basic() {
+        let text = "[WIDGET: ci-status]\n{\"type\":\"stat\",\"value\":\"3\"}\n[/WIDGET]";
+        let actions = parse_actions(text);
+        assert_eq!(
+            actions,
+            vec![BeeAction::Widget {
+                slot: "ci-status".to_string(),
+                widget_json: "{\"type\":\"stat\",\"value\":\"3\"}".to_string(),
+                ttl_minutes: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_widget_with_ttl() {
+        let text = "[WIDGET: deploy-health | 60]\n{\"type\":\"stat\",\"value\":\"ok\"}\n[/WIDGET]";
+        let actions = parse_actions(text);
+        assert_eq!(
+            actions,
+            vec![BeeAction::Widget {
+                slot: "deploy-health".to_string(),
+                widget_json: "{\"type\":\"stat\",\"value\":\"ok\"}".to_string(),
+                ttl_minutes: Some(60),
+            }]
+        );
+    }
+
+    #[test]
+    fn test_parse_widget_multiline_json() {
+        let text = "[WIDGET: pr-queue]\n{\n  \"type\": \"list\",\n  \"items\": []\n}\n[/WIDGET]";
+        let actions = parse_actions(text);
+        assert_eq!(actions.len(), 1);
+        if let BeeAction::Widget { slot, ttl_minutes, .. } = &actions[0] {
+            assert_eq!(slot, "pr-queue");
+            assert!(ttl_minutes.is_none());
+        } else {
+            panic!("expected Widget action");
+        }
+    }
+
+    #[test]
+    fn test_parse_widget_empty_body_ignored() {
+        let text = "[WIDGET: ci-status]\n   \n[/WIDGET]";
+        let actions = parse_actions(text);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_widget_unclosed_ignored() {
+        let text = "[WIDGET: ci-status]\n{\"type\":\"stat\"}";
+        let actions = parse_actions(text);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_parse_widget_mixed_with_other_actions() {
+        let text = "[DISMISS: 5]\n[WIDGET: ci-status]\n{\"type\":\"stat\"}\n[/WIDGET]\n[TASK: Fix CI]";
+        let actions = parse_actions(text);
+        assert_eq!(actions.len(), 3);
+        // Regular markers (DISMISS, TASK) are collected before block markers (WIDGET).
+        assert_eq!(actions[0], BeeAction::Dismiss { signal_id: 5 });
+        assert_eq!(actions[1], BeeAction::Task { title: "Fix CI".to_string() });
+        assert!(matches!(actions[2], BeeAction::Widget { .. }));
     }
 }

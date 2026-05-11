@@ -2239,6 +2239,19 @@ fn execute_bee_actions(
                     }
                 }
             }
+            BeeAction::Widget {
+                slot,
+                widget_json,
+                ttl_minutes,
+            } => match store.upsert_widget(slot, widget_json, *ttl_minutes) {
+                Ok(()) => info!(
+                    "[{slot_name}/{bee_name}] action: wrote widget slot={slot} ({} bytes)",
+                    widget_json.len()
+                ),
+                Err(e) => warn!(
+                    "[{slot_name}/{bee_name}] action: failed to write widget slot={slot}: {e}"
+                ),
+            },
         }
     }
 }
@@ -2255,6 +2268,14 @@ fn action_marker_text(action: &crate::buzz::coordinator::actions::BeeAction) -> 
         BeeAction::Research { topic } => format!("[RESEARCH: {topic}]"),
         BeeAction::Followup { when, action } => format!("[FOLLOWUP: {when} | {action}]"),
         BeeAction::Canvas { content } => format!("[CANVAS]{content}[/CANVAS]"),
+        BeeAction::Widget {
+            slot,
+            widget_json,
+            ttl_minutes,
+        } => match ttl_minutes {
+            Some(ttl) => format!("[WIDGET: {slot} | {ttl}]\n{widget_json}\n[/WIDGET]"),
+            None => format!("[WIDGET: {slot}]\n{widget_json}\n[/WIDGET]"),
+        },
     }
 }
 
@@ -2274,6 +2295,7 @@ fn humanize_action(action: &crate::buzz::coordinator::actions::BeeAction) -> Opt
             Some(format!("Scheduled follow-up: {action} ({when})"))
         }
         BeeAction::Canvas { .. } => Some("Updated canvas".to_string()),
+        BeeAction::Widget { slot, .. } => Some(format!("Updated dashboard widget: {slot}")),
     }
 }
 
