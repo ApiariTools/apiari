@@ -863,6 +863,8 @@ impl Coordinator {
 
         use apiari_codex_sdk::{CodexClient, ExecOptions, ResumeOptions};
 
+        const STRUCTURED_SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"string"},"widgets":{"type":"array"},"suggestions":{"type":"array","items":{"type":"string"}}},"required":["text"]}"#;
+
         let client = CodexClient::new();
         let model = (!self.model.trim().is_empty()).then(|| self.model.clone());
 
@@ -883,6 +885,7 @@ impl Coordinator {
                         session_id: Some(sid.clone()),
                         model: model.clone(),
                         images: image_paths.to_vec(),
+                        output_schema: Some(STRUCTURED_SCHEMA.to_owned()),
                         dangerously_bypass_sandbox: true,
                         working_dir: self.working_dir.clone(),
                         ..Default::default()
@@ -906,6 +909,7 @@ impl Coordinator {
                         }),
                         approval: Some(apiari_codex_sdk::ApprovalPolicy::Never),
                         images: image_paths.to_vec(),
+                        output_schema: Some(STRUCTURED_SCHEMA.to_owned()),
                         dangerously_bypass_sandbox: matches!(
                             self.execution_policy,
                             crate::config::BeeExecutionPolicy::Autonomous

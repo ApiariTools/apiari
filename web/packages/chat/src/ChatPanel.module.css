@@ -620,3 +620,25 @@
   border-color: var(--accent);
   color: var(--accent);
 }
+
+.codeBlock {
+  margin: 8px 0;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.codeBlock code {
+  display: block;
+  padding: 12px 16px;
+}
+
+.inlineCode {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  font-size: 0.875em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}

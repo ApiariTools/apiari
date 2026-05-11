@@ -1,14 +1,41 @@
 import React, { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
 import { ChevronDown } from "lucide-react";
 import type { Bot, Message, Followup } from "@apiari/types";
 import { ChatInput } from "./ChatInput";
 import { FollowupCard, FollowupIndicator } from "./FollowupCard";
 import type { Attachment } from "./ChatInput";
 import styles from "./ChatPanel.module.css";
+import "highlight.js/styles/github-dark.css";
 
 export type { Attachment };
+
+const MD_PLUGINS = [remarkGfm] as const;
+const MD_REHYPE = [rehypeHighlight] as const;
+const MD_COMPONENTS = {
+  pre: ({ node: _node, ...props }: React.HTMLAttributes<HTMLPreElement> & { node?: unknown }) => (
+    <pre className={styles.codeBlock} {...props} />
+  ),
+  code: ({
+    node: _node,
+    className,
+    children,
+    ...props
+  }: React.HTMLAttributes<HTMLElement> & { node?: unknown; inline?: boolean }) => {
+    const isBlock = className?.startsWith("language-");
+    return isBlock ? (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    ) : (
+      <code className={styles.inlineCode} {...props}>
+        {children}
+      </code>
+    );
+  },
+} as const;
 
 // ── Render prop types — all optional, fall back to built-in defaults ──────────
 
@@ -431,7 +458,13 @@ export function ChatPanel({
                   {renderAttachments(item.msg.attachments)}
                   <div className={styles.text}>
                     {item.msg.role === "assistant" ? (
-                      <Markdown remarkPlugins={[remarkGfm]}>{item.msg.content}</Markdown>
+                      <Markdown
+                        remarkPlugins={MD_PLUGINS}
+                        rehypePlugins={MD_REHYPE}
+                        components={MD_COMPONENTS}
+                      >
+                        {item.msg.content}
+                      </Markdown>
                     ) : (
                       item.msg.content
                     )}
@@ -489,7 +522,13 @@ export function ChatPanel({
                 {streamingContent ? (
                   <>
                     <div className={styles.text}>
-                      <Markdown remarkPlugins={[remarkGfm]}>{streamingContent}</Markdown>
+                      <Markdown
+                        remarkPlugins={MD_PLUGINS}
+                        rehypePlugins={MD_REHYPE}
+                        components={MD_COMPONENTS}
+                      >
+                        {streamingContent}
+                      </Markdown>
                     </div>
                     <div className={styles.streamingIndicator}>
                       <span className={styles.thinkingDots}>

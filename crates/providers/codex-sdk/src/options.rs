@@ -80,6 +80,9 @@ pub struct ResumeOptions {
     /// Additional environment variables to set.
     pub env_vars: Vec<(String, String)>,
 
+    /// JSON schema for structured output validation.
+    pub output_schema: Option<String>,
+
     /// Skip all confirmation prompts and execute without sandboxing.
     /// Maps to `--dangerously-bypass-approvals-and-sandbox`.
     pub dangerously_bypass_sandbox: bool,
@@ -194,6 +197,9 @@ impl ResumeOptions {
         }
         if self.full_auto {
             args.push("--full-auto".to_owned());
+        }
+        if let Some(ref schema) = self.output_schema {
+            args.extend(["--output-schema".to_owned(), schema.clone()]);
         }
         if self.dangerously_bypass_sandbox {
             args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
