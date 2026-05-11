@@ -46,7 +46,7 @@ export default function ContextBotManager({
   }, [fabMenuOpen]);
 
   const effectiveActiveId = activeId ?? sessions[sessions.length - 1]?.id ?? null;
-  const allMinimized = sessions.length === 0 || sessions.every((s) => s.minimized);
+  const allMinimized = sessions.length > 0 && sessions.every((s) => s.minimized);
 
   const handleClose = (id: string) => {
     if (id === effectiveActiveId) {
