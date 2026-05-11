@@ -587,6 +587,10 @@ a.feedEvent:hover {
   overflow-y: auto;
 }
 
+.markdown pre {
+  overflow-x: auto;
+}
+
 .markdown p {
   margin-bottom: var(--space-2);
 }
