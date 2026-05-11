@@ -26,6 +26,8 @@ use color_eyre::eyre::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+const STRUCTURED_SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"string"},"widgets":{"type":"array"},"suggestions":{"type":"array","items":{"type":"string"}}},"required":["text"]}"#;
+
 fn hash_str(s: &str) -> u64 {
     // FNV-1a: deterministic across processes/versions, unlike DefaultHasher
     let mut h: u64 = 0xcbf29ce484222325;
@@ -149,6 +151,33 @@ impl StructuredResponse {
             text: raw,
             widgets: vec![],
             suggestions: vec![],
+        }
+    }
+
+    pub fn from_json_value(v: serde_json::Value) -> Self {
+        let text = v
+            .get("text")
+            .and_then(|t| t.as_str())
+            .map(String::from)
+            .unwrap_or_default();
+        let widgets = v
+            .get("widgets")
+            .and_then(|w| w.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let suggestions = v
+            .get("suggestions")
+            .and_then(|f| f.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            text,
+            widgets,
+            suggestions,
         }
     }
 }
@@ -524,6 +553,7 @@ impl Coordinator {
             working_dir: self.working_dir.clone(),
             settings: merged_settings,
             env_vars: self.token_controls.claude_env_vars(),
+            json_schema: Some(STRUCTURED_SCHEMA.to_owned()),
             ..Default::default()
         };
 
@@ -684,8 +714,15 @@ impl Coordinator {
             .and_then(|hooks| hooks.pre_turn());
 
         let mut response = String::new();
+        let mut structured: Option<serde_json::Value> = None;
 
         while let Ok(Some(event)) = session.next_event().await {
+            if event.is_result() {
+                if let Some(result) = event.as_result() {
+                    structured = result.structured_output.clone();
+                }
+                break;
+            }
             match self.process_event(&event) {
                 Ok(coord_events) => {
                     for coord_event in coord_events {
@@ -701,9 +738,6 @@ impl Coordinator {
                     return Err(color_eyre::eyre::eyre!("Claude session error: {error_msg}"));
                 }
             }
-            if event.is_result() {
-                break;
-            }
         }
 
         // Post-turn: check for file modifications via safety hooks
@@ -716,7 +750,13 @@ impl Coordinator {
             }
         }
 
-        Ok(StructuredResponse::from_text(response))
+        // Prefer native structured output (from --json-schema); fall back to text parsing.
+        let result = if let Some(v) = structured {
+            StructuredResponse::from_json_value(v)
+        } else {
+            StructuredResponse::from_text(response)
+        };
+        Ok(result)
     }
 
     /// Build a provider-agnostic dispatch bundle synchronously.
@@ -862,8 +902,6 @@ impl Coordinator {
         );
 
         use apiari_codex_sdk::{CodexClient, ExecOptions, ResumeOptions};
-
-        const STRUCTURED_SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"string"},"widgets":{"type":"array"},"suggestions":{"type":"array","items":{"type":"string"}}},"required":["text"]}"#;
 
         let client = CodexClient::new();
         let model = (!self.model.trim().is_empty()).then(|| self.model.clone());
