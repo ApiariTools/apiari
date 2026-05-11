@@ -1,3 +1,34 @@
+/* ── Minimized layout: [strips column] [FAB] side by side ────────────── */
+
+.managerMinimized {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.minimalizedStrips {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+/* FAB sits inline in the fixed row — override its own fixed positioning */
+.managerMinimized .fabWrap {
+  position: static;
+}
+
+.managerMinimized .fab {
+  position: relative;
+  bottom: unset;
+  right: unset;
+}
+
 /* ── Manager (container for all panels) ─────────────────────────────── */
 
 .manager {
@@ -148,6 +179,23 @@
     padding: 16px;
     font-size: 15px;
     min-height: 52px;
+  }
+
+  /* On mobile: managerMinimized behaves like fabWrap — strips hidden, FAB only */
+  .managerMinimized {
+    bottom: calc(var(--bottom-bar-height) + env(safe-area-inset-bottom, 0px) + 84px);
+    right: unset;
+    left: 16px;
+    align-items: flex-start;
+  }
+
+  .managerMinimized .minimalizedStrips {
+    display: none;
+  }
+
+  .managerMinimized .fab {
+    width: 44px;
+    height: 44px;
   }
 }
 

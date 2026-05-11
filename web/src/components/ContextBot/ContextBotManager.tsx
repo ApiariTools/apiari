@@ -46,7 +46,7 @@ export default function ContextBotManager({
   }, [fabMenuOpen]);
 
   const effectiveActiveId = activeId ?? sessions[sessions.length - 1]?.id ?? null;
-  const allMinimized = sessions.length === 0 || sessions.every((s) => s.minimized);
+  const allMinimized = sessions.length > 0 && sessions.every((s) => s.minimized);
 
   const handleClose = (id: string) => {
     if (id === effectiveActiveId) {
@@ -118,9 +118,35 @@ export default function ContextBotManager({
     </div>
   );
 
-  // No open sessions — show FAB only (desktop: nothing; mobile: FAB)
-  if (allMinimized) {
+  // No sessions — show FAB only
+  if (sessions.length === 0) {
     return fab;
+  }
+
+  // All sessions minimized: horizontal [strips column][FAB] at bottom-right
+  if (allMinimized) {
+    return (
+      <div className={styles.managerMinimized} data-testid="context-bot-manager">
+        <div className={styles.minimalizedStrips}>
+          {sessions.map((session) => (
+            <ContextBotPanel
+              key={session.id}
+              session={session}
+              isActive={session.id === effectiveActiveId}
+              onSend={onSend}
+              onChangeModel={onChangeModel}
+              onMinimize={(id) => {
+                const next = sessions.find((s) => s.id !== id && !s.minimized);
+                if (next) setActiveId(next.id);
+                onMinimize(id);
+              }}
+              onClose={handleClose}
+            />
+          ))}
+        </div>
+        {fab}
+      </div>
+    );
   }
 
   return (
