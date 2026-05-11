@@ -589,8 +589,9 @@ async fn execute_with_coordinator(
             }
 
             let actions = parse_actions(&response);
+            let widgets = full_response.widgets.clone();
 
-            // Execute actions against the signal/task stores (blocking DB work).
+            // Execute actions and write any dashboard widgets — all blocking DB work.
             let db_path_owned2 = db_path.to_path_buf();
             let workspace_owned2 = workspace.to_string();
             let bot_id = bot.id.clone();
@@ -606,6 +607,27 @@ async fn execute_with_coordinator(
                         &bot_id,
                         &bot_name,
                     ));
+
+                    // Write structured widgets to the dashboard.
+                    for widget in &widgets {
+                        let slot = widget
+                            .get("slot")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("unknown");
+                        match serde_json::to_string(widget) {
+                            Ok(json) => match signal_store.upsert_widget(slot, &json, None) {
+                                Ok(()) => info!(
+                                    "[auto_bot_runner/{workspace_owned2}] bot {bot_id} wrote widget slot={slot}"
+                                ),
+                                Err(e) => warn!(
+                                    "[auto_bot_runner/{workspace_owned2}] bot {bot_id} failed to write widget slot={slot}: {e}"
+                                ),
+                            },
+                            Err(e) => warn!(
+                                "[auto_bot_runner/{workspace_owned2}] bot {bot_id} failed to serialize widget: {e}"
+                            ),
+                        }
+                    }
                 }
             });
 
@@ -726,18 +748,6 @@ async fn execute_actions(
                     }
                 }
             }
-            BeeAction::Widget {
-                slot,
-                widget_json,
-                ttl_minutes,
-            } => match signal_store.upsert_widget(slot, widget_json, *ttl_minutes) {
-                Ok(()) => info!(
-                    "[auto_bot_runner/{workspace}] bot {bot_id} wrote widget slot={slot}"
-                ),
-                Err(e) => warn!(
-                    "[auto_bot_runner/{workspace}] bot {bot_id} failed to write widget slot={slot}: {e}"
-                ),
-            },
             // Canvas, Research, Followup — logged but not acted on here.
             BeeAction::Canvas { .. } | BeeAction::Research { .. } | BeeAction::Followup { .. } => {}
         }

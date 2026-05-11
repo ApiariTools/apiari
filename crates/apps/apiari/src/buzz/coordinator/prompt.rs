@@ -105,8 +105,7 @@ pub fn build_system_prompt(
          - `[TASK: <title>]`\n\
          - `[RESEARCH: <topic>]`\n\
          - `[FOLLOWUP: <delay-or-rfc3339> | <action>]` for scheduled reminders or deferred checks. Use short relative delays like `15m`, `2h`, `1d`, or an absolute RFC3339 timestamp.\n\
-         - `[CANVAS]...[/CANVAS]` for canvas updates.\n\
-         - `[WIDGET: <slot>]...json...[/WIDGET]` or `[WIDGET: <slot> | <ttl_minutes>]...json...[/WIDGET]` to write a widget to the dashboard. See Dashboard Widgets skill for details.\n\n",
+         - `[CANVAS]...[/CANVAS]` for canvas updates.\n\n",
     );
 
     // Separate CI signals from other signals for dedicated section
