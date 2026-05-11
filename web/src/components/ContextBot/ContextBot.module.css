@@ -487,3 +487,50 @@
     display: none;
   }
 }
+
+/* ── Minimized view (all sessions minimized on desktop/iPad) ─────────── */
+
+.managerMinimized {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 100;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.minimalizedStrips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+/* On iPad, minimized strips should behave like bottom sheet */
+@media (max-width: 1024px) and (min-width: 768px) {
+  .managerMinimized {
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    left: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .minimalizedStrips {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 767px) {
+  /* On mobile, this layout shouldn't be used (mobile uses fullscreen modal) */
+  .managerMinimized {
+    display: none;
+  }
+}

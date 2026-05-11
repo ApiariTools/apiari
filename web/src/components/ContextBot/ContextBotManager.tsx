@@ -118,9 +118,35 @@ export default function ContextBotManager({
     </div>
   );
 
-  // No open sessions — show FAB only (desktop: nothing; mobile: FAB)
-  if (allMinimized) {
+  // No open sessions — show FAB only
+  if (sessions.length === 0) {
     return fab;
+  }
+
+  // All sessions minimized — show minimized strips column + FAB in horizontal layout
+  if (allMinimized) {
+    return (
+      <div className={styles.managerMinimized} data-testid="context-bot-manager-minimized">
+        <div className={styles.minimalizedStrips}>
+          {sessions.map((session) => (
+            <ContextBotPanel
+              key={session.id}
+              session={session}
+              isActive={session.id === effectiveActiveId}
+              onSend={onSend}
+              onChangeModel={onChangeModel}
+              onMinimize={(id) => {
+                const next = sessions.find((s) => s.id !== id && !s.minimized);
+                if (next) setActiveId(next.id);
+                onMinimize(id);
+              }}
+              onClose={handleClose}
+            />
+          ))}
+        </div>
+        {fab}
+      </div>
+    );
   }
 
   return (
