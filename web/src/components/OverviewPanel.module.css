@@ -1,6 +1,8 @@
 .page {
   flex: 1;
-  overflow: auto;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--space-7);
   background:
     radial-gradient(circle at top right, rgba(217, 168, 74, 0.05), transparent 24%),
