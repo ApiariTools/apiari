@@ -5,6 +5,7 @@
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--space-7) var(--space-7) var(--space-8);
   background: var(--bg);
   gap: var(--space-6);
@@ -221,7 +222,7 @@
 
 .widgetGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: var(--space-4);
   align-items: start;
 }
@@ -235,6 +236,23 @@
 
   .widgetGrid {
     grid-template-columns: 1fr;
+  }
+
+  .statPills {
+    gap: var(--space-2);
+  }
+
+  .statPill {
+    padding: var(--space-3) var(--space-4);
+    min-width: 0;
+  }
+
+  .statPillNum {
+    font-size: 22px;
+  }
+
+  .statPillLabel {
+    font-size: 11px;
   }
 
   /* FAB handles chat on mobile — hide the Ask button */
