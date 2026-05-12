@@ -23,7 +23,6 @@ export const getBots = vi.fn().mockResolvedValue([
   },
 ]);
 
-export const getWorkers = vi.fn().mockResolvedValue([]);
 export const getWorkerEnvironment = vi.fn().mockResolvedValue({
   repo: "apiari",
   ready: true,
@@ -96,8 +95,6 @@ export const getUnread = vi.fn().mockResolvedValue({ Customer: 2 });
 export const markSeen = vi.fn().mockResolvedValue(undefined);
 export const sendMessage = vi.fn().mockResolvedValue({ ok: true });
 export const cancelBot = vi.fn().mockResolvedValue({ ok: true });
-export const getWorkerDetail = vi.fn().mockResolvedValue(null);
-export const sendWorkerMessage = vi.fn().mockResolvedValue({ ok: true });
 export const getUsage = vi
   .fn()
   .mockResolvedValue({ installed: false, providers: [], updated_at: null });
@@ -172,11 +169,6 @@ export const cancelWorkerV2 = vi.fn().mockResolvedValue(undefined);
 export const requeueWorkerV2 = vi.fn().mockResolvedValue(undefined);
 export const requestWorkerReview = vi.fn().mockResolvedValue(undefined);
 export const listWorkerReviews = vi.fn().mockResolvedValue([]);
-export const promoteWorker = vi.fn().mockResolvedValue({ ok: true, detail: "" });
-export const redispatchWorker = vi.fn().mockResolvedValue({ ok: true, detail: "" });
-export const closeWorker = vi.fn().mockResolvedValue({ ok: true, detail: "" });
-export const getWorkerDiff = vi.fn().mockResolvedValue(null);
-
 // Auto Bot API mocks
 export const listAutoBots = vi.fn().mockResolvedValue([]);
 export const getAutoBot = vi.fn().mockResolvedValue(null);

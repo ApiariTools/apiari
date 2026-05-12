@@ -1,0 +1,57 @@
+.diffFileSection {
+  margin-bottom: 16px;
+}
+
+.diffFileSection:last-child {
+  margin-bottom: 0;
+}
+
+.diffContent {
+  overflow-x: auto;
+}
+
+.diffFileName {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px 6px 0 0;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+.diffFileName:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.chevron {
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.chevronCollapsed {
+  transform: rotate(-90deg);
+}
+
+.empty {
+  color: var(--text-faint);
+  font-size: 14px;
+  text-align: center;
+  margin-top: 40px;
+}

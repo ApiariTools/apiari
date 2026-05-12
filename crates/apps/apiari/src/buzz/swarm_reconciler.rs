@@ -710,7 +710,7 @@ impl SwarmReconciler {
                 let confidence = worker.title_confidence.unwrap_or(0);
                 if confidence < 85 {
                     let count = count_assistant_text_events(&self.swarm_dir, &worker.id);
-                    if count > 0 && count % 3 == 0 {
+                    if count > 0 && count.is_multiple_of(3) {
                         let goal = worker.goal.clone().unwrap_or_default();
                         let snippet = recent_output_snippet(&self.swarm_dir, &worker.id);
                         let workspace = self.workspace.clone();

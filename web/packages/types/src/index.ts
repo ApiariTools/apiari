@@ -116,19 +116,6 @@ export interface Message {
   created_at: string;
 }
 
-export interface WorkerDetail extends Worker {
-  prompt: string | null;
-  output: string | null;
-  conversation: WorkerMessage[];
-  task_packet?: WorkerTaskPacket | null;
-}
-
-export interface WorkerMessage {
-  role: string;
-  content: string;
-  timestamp?: string;
-}
-
 export interface CrossWorkspaceBot {
   workspace: string;
   bot: Bot;

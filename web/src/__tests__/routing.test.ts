@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { parseHash } from "../useWorkspaceConsoleState";
+import { parseHash } from "../routeUtils";
 
 describe("workspace routing", () => {
   beforeEach(() => {

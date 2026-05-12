@@ -1,8 +1,6 @@
 import type {
   Workspace,
   Bot,
-  Worker,
-  WorkerDetail,
   WorkerEnvironmentStatus,
   Task,
   Message,
@@ -52,10 +50,6 @@ export function getBots(workspace: string, remote?: string): Promise<Bot[]> {
   return get(`${wsPath(workspace, remote)}/bots`);
 }
 
-export function getWorkers(workspace: string, remote?: string): Promise<Worker[]> {
-  return get(`${wsPath(workspace, remote)}/workers`);
-}
-
 export function getWorkerEnvironment(
   workspace: string,
   remote?: string,
@@ -79,64 +73,6 @@ export function getConversations(
 ): Promise<Message[]> {
   const params = limit ? `?limit=${limit}` : "";
   return get(`${wsPath(workspace, remote)}/conversations/${encodePathSegment(bot)}${params}`);
-}
-
-export function getWorkerDetail(
-  workspace: string,
-  workerId: string,
-  remote?: string,
-): Promise<WorkerDetail> {
-  return get(`${wsPath(workspace, remote)}/workers/${workerId}`);
-}
-
-export async function sendWorkerMessage(
-  workspace: string,
-  workerId: string,
-  message: string,
-  remote?: string,
-): Promise<{ ok: boolean; error?: string }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/send`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
-  });
-  return res.json();
-}
-
-export async function promoteWorker(
-  workspace: string,
-  workerId: string,
-  remote?: string,
-): Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/promote`, {
-    method: "POST",
-  });
-  return res.json();
-}
-
-export async function redispatchWorker(
-  workspace: string,
-  workerId: string,
-  remote?: string,
-): Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/redispatch`, {
-    method: "POST",
-  });
-  return res.json();
-}
-
-export async function closeWorker(
-  workspace: string,
-  workerId: string,
-  dismissTask = true,
-  remote?: string,
-): Promise<{ ok: boolean; worker_id?: string; pr_url?: string; detail: string }> {
-  const res = await fetch(`${BASE}${wsPath(workspace, remote)}/workers/${workerId}/close`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dismiss_task: dismissTask }),
-  });
-  return res.json();
 }
 
 export interface BotStatus {
@@ -355,17 +291,6 @@ export async function startResearch(
   });
   if (!res.ok) throw new Error(`POST research: ${res.status}`);
   return res.json();
-}
-
-export async function getWorkerDiff(
-  workspace: string,
-  workerId: string,
-  remote?: string,
-): Promise<string | null> {
-  const data = await get<{ diff: string | null }>(
-    `${wsPath(workspace, remote)}/workers/${workerId}/diff`,
-  );
-  return data.diff;
 }
 
 // ── v2 Worker API ────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { DiffView as GitDiffView, DiffModeEnum } from "@git-diff-view/react";
 import { DiffFile, getLang } from "@git-diff-view/core";
 import "@git-diff-view/react/styles/diff-view-pure.css";
-import styles from "./WorkerDetail.module.css";
+import styles from "./WorkerDiffPanel.module.css";
 
 function splitDiffByFile(raw: string): { fileName: string; content: string }[] {
   const files: { fileName: string; content: string }[] = [];

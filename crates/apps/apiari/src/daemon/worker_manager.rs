@@ -331,45 +331,6 @@ impl WorkerManager {
         Ok(())
     }
 
-    /// Close a worker: remove from tracking and clean up its directory.
-    pub async fn close_worker(&self, worker_id: &str) -> Result<()> {
-        let was_live = self.live.lock().await.remove(worker_id);
-        self.pending.lock().await.remove(worker_id);
-
-        if !was_live {
-            return Err(eyre!("worker {worker_id} not found or not running"));
-        }
-
-        // Best-effort: look up paths and isolation mode from DB for cleanup.
-        let paths = read_worker_paths(&self.db_path, &self.workspace, worker_id);
-        let isolation_mode = crate::buzz::worker::WorkerStore::open(&self.db_path)
-            .ok()
-            .and_then(|s| s.get(&self.workspace, worker_id).ok().flatten())
-            .and_then(|w| w.isolation_mode)
-            .unwrap_or_else(|| "worktree".to_string());
-
-        let wt_id = worker_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            if let Ok((work_dir, worktree_path, repo_path, _, _)) = paths {
-                match isolation_mode.as_str() {
-                    "copy" => {
-                        // Just delete the directory; branch lives only in the copy's .git
-                        let _ = std::fs::remove_dir_all(&worktree_path);
-                    }
-                    _ => {
-                        // git worktree remove + delete branch from main repo
-                        let _ =
-                            apiari_swarm::core::git::remove_worktree(&repo_path, &worktree_path);
-                        let _ = apiari_swarm::core::git::delete_branch(&repo_path, &wt_id);
-                    }
-                }
-                update_state_phase(&work_dir, &wt_id, "failed");
-            }
-        });
-
-        Ok(())
-    }
-
     #[cfg(test)]
     pub fn is_live(&self, worker_id: &str) -> bool {
         self.live.try_lock().is_ok_and(|m| m.contains(worker_id))
@@ -1301,14 +1262,6 @@ mod tests {
         let mgr = WorkerManager::new(tmp.path().join("test.db"), "ws".to_string());
         mgr.inject_live_for_test("w-abc1").await;
         assert!(mgr.is_live("w-abc1"));
-    }
-
-    #[tokio::test]
-    async fn close_worker_not_live_returns_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = WorkerManager::new(tmp.path().join("test.db"), "ws".to_string());
-        let err = mgr.close_worker("ghost-1234").await.unwrap_err();
-        assert!(err.to_string().contains("ghost-1234"));
     }
 
     // ── upsert_worker_db_record ───────────────────────────────────────────
