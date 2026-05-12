@@ -5,6 +5,7 @@
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--space-7) var(--space-7) var(--space-8);
   background: var(--bg);
   gap: var(--space-6);
@@ -228,7 +229,7 @@
 
 @media (max-width: 768px) {
   .container {
-    padding: var(--space-4) var(--space-4) var(--space-6);
+    padding: var(--space-4) var(--mobile-gutter) var(--space-6);
     gap: var(--space-4);
     padding-bottom: calc(var(--bottom-bar-height) + var(--space-4));
   }
@@ -240,6 +241,15 @@
   /* FAB handles chat on mobile — hide the Ask button */
   .askBtn {
     display: none;
+  }
+
+  .statPill {
+    padding: var(--space-3) var(--space-4);
+    min-width: 72px;
+  }
+
+  .statPillNum {
+    font-size: 20px;
   }
 }
 
