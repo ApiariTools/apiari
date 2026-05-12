@@ -272,10 +272,6 @@ pub struct SwarmReconciler {
     signal_tx: Option<
         tokio::sync::mpsc::UnboundedSender<(String, crate::buzz::signal::SignalUpdate)>,
     >,
-    /// Workers queued for PR URL discovery. Value = attempts remaining (max 3).
-    /// Populated by apply_rules when a Waiting worker has no pr_url.
-    /// Drained by discover_prs_from_queue in the 5-min slow loop.
-    pr_discovery_queue: std::sync::Mutex<HashMap<String, u32>>,
     /// Last time we checked each waiting worker's PR for merge — throttled to
     /// at most once per 60 seconds to avoid hammering the GitHub API.
     pr_merge_checked: std::sync::Mutex<HashMap<String, std::time::Instant>>,
@@ -295,7 +291,6 @@ impl SwarmReconciler {
             event_tx: config.event_tx,
             db_path: config.db_path,
             signal_tx: config.signal_tx,
-            pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
             pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
         })
     }
@@ -606,16 +601,37 @@ impl SwarmReconciler {
                 // Agent exited from stalled — move to waiting
                 if phase == "completed" || phase == "failed" {
                     info!("[reconciler] {} stalled agent exited → waiting", worker.id);
+                    let branch = swarm_wt.branch.clone().unwrap_or_default();
+                    self.store.update_properties(
+                        &self.workspace,
+                        &worker.id,
+                        WorkerPropertyUpdate {
+                            branch_ready: Some(true),
+                            branch: swarm_wt.branch.clone(),
+                            ..Default::default()
+                        },
+                    )?;
                     self.do_transition(worker, WorkerState::Waiting)?;
+                    if let Some(ref tx) = self.signal_tx {
+                        let update = crate::buzz::signal::SignalUpdate::new(
+                            "swarm_branch_ready",
+                            format!("swarm-branch-ready-{}", worker.id),
+                            format!("Branch ready: {branch}"),
+                            crate::buzz::signal::Severity::Info,
+                        )
+                        .with_metadata(
+                            serde_json::json!({
+                                "worker_id": worker.id,
+                                "branch_name": branch,
+                            })
+                            .to_string(),
+                        );
+                        let _ = tx.send((self.workspace.clone(), update));
+                    }
                     return Ok(());
                 }
             }
             WorkerState::Waiting => {
-                // Queue for PR discovery if we don't have a URL yet.
-                if worker.pr_url.is_none() {
-                    self.queue_pr_discovery(&worker.id);
-                }
-
                 // Resumed — human sent a message, agent is running again
                 if phase == "running" && agent_status.as_deref() != Some("waiting") {
                     info!(
@@ -938,126 +954,6 @@ impl SwarmReconciler {
         }
     }
 
-    /// Add a worker to the PR discovery queue if not already present.
-    /// Idempotent — existing entries keep their current attempt count.
-    fn queue_pr_discovery(&self, worker_id: &str) {
-        self.pr_discovery_queue
-            .lock()
-            .unwrap()
-            .entry(worker_id.to_string())
-            .or_insert(3);
-    }
-
-    /// Drain the PR discovery queue in a single batched GraphQL query.
-    ///
-    /// Looks up each queued worker's branch from SQLite, then fires one
-    /// `gh api graphql` call with all branches as aliased `pullRequests` fields.
-    /// Found URLs are written to DB immediately. Missed workers have their attempt
-    /// counter decremented; they are dropped after 3 misses.
-    ///
-    /// If the GraphQL call itself fails (network/auth), all attempts are preserved
-    /// and we retry next cycle — don't penalise workers for infrastructure hiccups.
-    pub fn discover_prs_from_queue(&self) {
-        let snapshot: Vec<(String, u32)> = {
-            let q = self.pr_discovery_queue.lock().unwrap();
-            q.iter().map(|(k, v)| (k.clone(), *v)).collect()
-        };
-        if snapshot.is_empty() {
-            return;
-        }
-
-        // Resolve branch for each queued worker from SQLite.
-        let jobs: Vec<(String, String, u32)> = snapshot
-            .into_iter()
-            .filter_map(|(worker_id, attempts)| {
-                let branch = self
-                    .store
-                    .get(&self.workspace, &worker_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|w| w.branch)?;
-                Some((worker_id, branch, attempts))
-            })
-            .collect();
-
-        if jobs.is_empty() {
-            return;
-        }
-
-        let workspace_root = self.swarm_dir.parent().unwrap_or(self.swarm_dir.as_path());
-
-        let Some((owner, repo)) = get_repo_nwo(workspace_root) else {
-            return;
-        };
-
-        // One alias per worker: wt_{id}: pullRequests(headRefName: "...") { nodes { url } }
-        let aliases: String = jobs
-            .iter()
-            .map(|(id, branch, _)| {
-                let alias = gql_alias(id);
-                let branch = branch.replace('"', "");
-                format!(
-                    r#"{alias}: pullRequests(headRefName: "{branch}", first: 1, states: [OPEN, MERGED]) {{ nodes {{ url }} }}"#
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let query =
-            format!(r#"{{ repository(owner: "{owner}", name: "{repo}") {{ {aliases} }} }}"#);
-
-        let resp = run_graphql(&query);
-
-        if resp.is_none() {
-            // Whole call failed — preserve all attempts and retry next cycle.
-            warn!("[reconciler/pr-discovery] GraphQL call failed — attempts preserved");
-            return;
-        }
-
-        let repo_data = resp
-            .as_ref()
-            .and_then(|v| v["data"]["repository"].as_object());
-
-        for (worker_id, _branch, attempts) in &jobs {
-            let alias = gql_alias(worker_id);
-            let found_url = repo_data
-                .and_then(|d| d.get(&alias))
-                .and_then(|v| v["nodes"][0]["url"].as_str())
-                .map(|s| s.to_string());
-
-            match found_url {
-                Some(url) => {
-                    info!("[reconciler/pr-discovery] {worker_id} found PR {url} — writing to DB");
-                    let _ = self.store.update_properties(
-                        &self.workspace,
-                        worker_id,
-                        WorkerPropertyUpdate {
-                            pr_url: Some(Some(url)),
-                            ..Default::default()
-                        },
-                    );
-                    if let Ok(Some(w)) = self.store.get(&self.workspace, worker_id) {
-                        let _ = self.emit_event(&w);
-                    }
-                    self.pr_discovery_queue.lock().unwrap().remove(worker_id);
-                }
-                None => {
-                    let mut q = self.pr_discovery_queue.lock().unwrap();
-                    if *attempts <= 1 {
-                        info!("[reconciler/pr-discovery] {worker_id} gave up after 3 attempts");
-                        q.remove(worker_id);
-                    } else {
-                        q.insert(worker_id.clone(), attempts - 1);
-                        debug!(
-                            "[reconciler/pr-discovery] {worker_id} no PR yet, {} attempts left",
-                            attempts - 1
-                        );
-                    }
-                }
-            }
-        }
-    }
-
     fn emit_event(&self, worker: &Worker) -> Result<()> {
         let Some(ref tx) = self.event_tx else {
             return Ok(());
@@ -1142,10 +1038,7 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
                 }
                 _ = pr_interval.tick() => {
                     let r = std::sync::Arc::clone(&reconciler);
-                    // Spawn a blocking task so `gh` subprocess calls don't block
-                    // the async runtime while waiting on GitHub's API.
                     tokio::task::spawn_blocking(move || {
-                        r.discover_prs_from_queue();
                         r.poll_pr_approvals();
                     });
                 }
@@ -1181,7 +1074,6 @@ mod tests {
             event_tx: None,
             db_path: None,
             signal_tx: None,
-            pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
             pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -1455,83 +1347,6 @@ mod tests {
             // State must not have changed
             assert_eq!(updated.state, terminal_state);
         }
-    }
-
-    // ── PR discovery queue tests ────────────────────────────────────────
-
-    #[test]
-    fn waiting_worker_with_no_pr_url_queued_for_discovery() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r = make_reconciler(&tmp);
-        let mut w = default_worker("w1");
-        w.state = WorkerState::Waiting;
-        w.pr_url = None;
-        r.store.upsert(&w).unwrap();
-
-        let wt = swarm_wt("w1", "waiting", None);
-        r.apply_rules(&w, &wt).unwrap();
-
-        let queue = r.pr_discovery_queue.lock().unwrap();
-        assert!(queue.contains_key("w1"), "should be queued for discovery");
-        assert_eq!(queue["w1"], 3);
-    }
-
-    #[test]
-    fn waiting_worker_with_pr_url_not_queued() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r = make_reconciler(&tmp);
-        let mut w = default_worker("w1");
-        w.state = WorkerState::Waiting;
-        w.pr_url = Some("https://github.com/org/repo/pull/1".to_string());
-        r.store.upsert(&w).unwrap();
-
-        let wt = swarm_wt("w1", "waiting", None);
-        r.apply_rules(&w, &wt).unwrap();
-
-        let queue = r.pr_discovery_queue.lock().unwrap();
-        assert!(
-            !queue.contains_key("w1"),
-            "should not queue when pr_url already set"
-        );
-    }
-
-    #[test]
-    fn queue_pr_discovery_is_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r = make_reconciler(&tmp);
-
-        r.queue_pr_discovery("w1");
-        r.queue_pr_discovery("w1"); // second call should not reset attempts
-        r.queue_pr_discovery("w1");
-
-        let queue = r.pr_discovery_queue.lock().unwrap();
-        assert_eq!(
-            queue["w1"], 3,
-            "or_insert should not overwrite existing entry"
-        );
-    }
-
-    #[test]
-    fn discover_prs_from_queue_skips_workers_without_branch() {
-        // Workers with no branch in DB are skipped — queue entry stays untouched
-        // because get_repo_nwo will also fail (no git repo in tmp), so the whole
-        // batch returns early before touching attempts.
-        let tmp = tempfile::tempdir().unwrap();
-        let r = make_reconciler(&tmp);
-
-        // Worker exists in DB but has no branch
-        let w = default_worker("w-no-branch");
-        r.store.upsert(&w).unwrap();
-        r.pr_discovery_queue
-            .lock()
-            .unwrap()
-            .insert("w-no-branch".to_string(), 3);
-
-        r.discover_prs_from_queue();
-
-        // No branch → no jobs → early return → attempt count unchanged
-        let queue = r.pr_discovery_queue.lock().unwrap();
-        assert_eq!(queue.get("w-no-branch"), Some(&3));
     }
 
     #[test]

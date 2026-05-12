@@ -4731,17 +4731,11 @@ fn format_brief_as_prompt(brief: &serde_json::Value) -> String {
         }
     }
 
-    // Review mode instructions — tell the worker explicitly what to do when done
-    let review_mode = brief
-        .get("review_mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("local_first");
-    let review_instructions = if review_mode == "pr_first" {
-        "# When Done\n\nCommit your changes, push the branch, and open a PR with `gh pr create`."
-    } else {
-        "# When Done\n\nCommit your changes and push the branch. Do NOT open a PR — the reviewer will inspect the branch locally first."
-    };
-    parts.push(review_instructions.to_string());
+    // Always instruct workers to push the branch only — the orchestrator creates the PR.
+    parts.push(
+        "# When Done\n\nCommit your changes and push the branch. Do NOT open a PR — the system creates it automatically after you finish."
+            .to_string(),
+    );
 
     // Reporting — tell workers to write a structured report file so the daemon
     // can pick up test results without parsing free-form text.
