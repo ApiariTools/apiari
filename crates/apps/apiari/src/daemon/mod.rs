@@ -3266,32 +3266,15 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             Some((ws_name, update)) = reconciler_signal_rx.recv() => {
                 if let Some(&slot_idx) = name_map.get(&ws_name) {
                     let slot = &mut slots[slot_idx];
-                    match slot.store.upsert_signal(&update) {
-                        Ok((id, is_new)) => {
-                            if is_new
-                                && let Ok(Some(record)) = slot.store.get_signal(id)
-                                && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(&slot.db_path)
-                            {
-                                match slot.orchestrator.process_signal(&task_store, &slot.name, &record).await {
-                                    Ok(orch_result) => {
-                                        info!(
-                                            "[{}] reconciler signal '{}': workflow_actions={}",
-                                            ws_name, update.source, orch_result.workflow_actions.len()
-                                        );
-                                        for wf_action in &orch_result.workflow_actions {
-                                            execute_workflow_action(
-                                                wf_action,
-                                                &slot.config.root,
-                                                slot.store.db_path(),
-                                                &slot.name,
-                                            );
-                                        }
-                                    }
-                                    Err(e) => warn!("[{ws_name}] reconciler signal process error: {e}"),
-                                }
-                            }
-                        }
-                        Err(e) => warn!("[{ws_name}] reconciler signal upsert error: {e}"),
+                    let actions = handle_reconciler_signal(
+                        &update,
+                        &slot.store,
+                        &slot.db_path,
+                        &slot.orchestrator,
+                        &slot.name,
+                    ).await;
+                    for action in &actions {
+                        execute_workflow_action(action, &slot.config.root, slot.store.db_path(), &slot.name);
                     }
                 }
             }
@@ -7170,6 +7153,45 @@ fn should_auto_close_pr_worker(worker: &apiari_swarm::daemon::protocol::WorkerIn
     worker.phase == apiari_swarm::WorkerPhase::Waiting && worker.agent == "claude"
 }
 
+/// Upsert a reconciler-emitted signal and run it through the orchestrator.
+///
+/// Returns the workflow actions to execute (or an empty vec if the signal was a
+/// duplicate / no task matched). Separated from the daemon loop so it can be
+/// tested without a live daemon.
+async fn handle_reconciler_signal(
+    update: &crate::buzz::signal::SignalUpdate,
+    signal_store: &crate::buzz::signal::store::SignalStore,
+    db_path: &std::path::Path,
+    orchestrator: &crate::buzz::orchestrator::Orchestrator,
+    workspace_name: &str,
+) -> Vec<crate::buzz::orchestrator::workflow::WorkflowAction> {
+    match signal_store.upsert_signal(update) {
+        Ok((id, is_new)) => {
+            if is_new
+                && let Ok(Some(record)) = signal_store.get_signal(id)
+                && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(db_path)
+            {
+                match orchestrator
+                    .process_signal(&task_store, workspace_name, &record)
+                    .await
+                {
+                    Ok(orch_result) => {
+                        info!(
+                            "[{workspace_name}] reconciler signal '{}': workflow_actions={}",
+                            update.source,
+                            orch_result.workflow_actions.len()
+                        );
+                        return orch_result.workflow_actions;
+                    }
+                    Err(e) => warn!("[{workspace_name}] reconciler signal process error: {e}"),
+                }
+            }
+        }
+        Err(e) => warn!("[{workspace_name}] reconciler signal upsert error: {e}"),
+    }
+    vec![]
+}
+
 /// Execute a workflow action produced by the orchestrator.
 ///
 /// Spawns async tasks for PR creation, reviewer dispatch, and rework dispatch.
@@ -8448,5 +8470,102 @@ provider = "claude"
                 .with_timezone(&chrono::Utc)
         );
         assert!(super::parse_followup_fires_at("nonsense", now).is_none());
+    }
+
+    // ── handle_reconciler_signal ──────────────────────────────────────────
+
+    fn make_branch_ready_update(worker_id: &str, branch: &str) -> crate::buzz::signal::SignalUpdate {
+        crate::buzz::signal::SignalUpdate::new(
+            "swarm_branch_ready",
+            format!("swarm-branch-ready-{worker_id}"),
+            format!("Branch ready: {branch}"),
+            crate::buzz::signal::Severity::Info,
+        )
+        .with_metadata(
+            serde_json::json!({"worker_id": worker_id, "branch_name": branch}).to_string(),
+        )
+    }
+
+    fn make_orchestrator_with_workflow(
+        db_path: &std::path::Path,
+    ) -> crate::buzz::orchestrator::Orchestrator {
+        let config = crate::buzz::orchestrator::OrchestratorConfig::default();
+        crate::buzz::orchestrator::Orchestrator::new(&config).with_workflow_db(
+            &db_path.to_string_lossy(),
+            &crate::buzz::orchestrator::workflow::WorkflowConfig::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn handle_reconciler_signal_returns_create_pr_action_for_matched_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+
+        let signal_store = SignalStore::open(&db_path, "ws").unwrap();
+        let task_store = TaskStore::open(&db_path).unwrap();
+
+        let task = crate::buzz::task::Task {
+            id: "task-1".to_string(),
+            workspace: "ws".to_string(),
+            title: "Fix login".to_string(),
+            stage: TaskStage::InProgress,
+            source: None,
+            source_url: None,
+            worker_id: Some("worker-abc".to_string()),
+            pr_url: None,
+            pr_number: None,
+            repo: Some("org/repo".to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            resolved_at: None,
+            metadata: serde_json::json!({}),
+        };
+        task_store.create_task(&task).unwrap();
+
+        let orchestrator = make_orchestrator_with_workflow(&db_path);
+        let update = make_branch_ready_update("worker-abc", "swarm/worker-abc-fix");
+        let actions = super::handle_reconciler_signal(
+            &update,
+            &signal_store,
+            &db_path,
+            &orchestrator,
+            "ws",
+        )
+        .await;
+
+        assert!(
+            !actions.is_empty(),
+            "expected at least one workflow action for matched task"
+        );
+        let has_create_pr = actions.iter().any(|a| {
+            matches!(
+                a,
+                crate::buzz::orchestrator::workflow::WorkflowAction::CreatePr { .. }
+                    | crate::buzz::orchestrator::workflow::WorkflowAction::ForceCreatePr { .. }
+            )
+        });
+        assert!(has_create_pr, "expected a CreatePr or ForceCreatePr action");
+    }
+
+    #[tokio::test]
+    async fn handle_reconciler_signal_is_silent_for_duplicate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+
+        let signal_store = SignalStore::open(&db_path, "ws").unwrap();
+        let orchestrator = make_orchestrator_with_workflow(&db_path);
+        let update = make_branch_ready_update("worker-abc", "swarm/worker-abc-fix");
+
+        // First call — upserts (no matching task, so no actions, but signal is stored)
+        super::handle_reconciler_signal(&update, &signal_store, &db_path, &orchestrator, "ws").await;
+
+        // Second call with same external_id — upsert returns is_new=false, no actions
+        let actions =
+            super::handle_reconciler_signal(&update, &signal_store, &db_path, &orchestrator, "ws")
+                .await;
+        assert!(
+            actions.is_empty(),
+            "duplicate signal should produce no actions"
+        );
     }
 }
