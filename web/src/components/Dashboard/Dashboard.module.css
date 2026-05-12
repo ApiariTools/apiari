@@ -5,6 +5,7 @@
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--space-7) var(--space-7) var(--space-8);
   background: var(--bg);
   gap: var(--space-6);
@@ -199,6 +200,10 @@
   font-size: 11px;
   color: var(--text-faint);
   font-family: var(--font-mono);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .repoTag {
@@ -240,6 +245,15 @@
   /* FAB handles chat on mobile — hide the Ask button */
   .askBtn {
     display: none;
+  }
+
+  .statPill {
+    padding: var(--space-3) var(--space-4);
+    min-width: 76px;
+  }
+
+  .statPillNum {
+    font-size: 22px;
   }
 }
 
