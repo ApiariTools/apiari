@@ -27,22 +27,10 @@ use crate::buzz::worker::{Worker, WorkerPropertyUpdate, WorkerState, WorkerStore
 
 // ── Swarm state JSON types ─────────────────────────────────────────────
 
-/// Minimal deserialization of `.swarm/state.json`.
-/// Shape can be an array (old format) or object with a `worktrees` key (new format).
 #[derive(Debug, serde::Deserialize)]
-#[serde(untagged)]
-enum SwarmStateJson {
-    Array(Vec<SwarmWorktree>),
-    Object { worktrees: Vec<SwarmWorktree> },
-}
-
-impl SwarmStateJson {
-    fn into_worktrees(self) -> Vec<SwarmWorktree> {
-        match self {
-            SwarmStateJson::Array(v) => v,
-            SwarmStateJson::Object { worktrees } => worktrees,
-        }
-    }
+struct SwarmStateJson {
+    #[serde(default)]
+    worktrees: Vec<SwarmWorktree>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -99,7 +87,7 @@ fn run_graphql(query: &str) -> Option<serde_json::Value> {
     serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).ok()
 }
 
-// ── Per-worker last-seen event timestamp tracking ──────────────────────
+// ── Agent file readers ─────────────────────────────────────────────────
 
 /// Read `.swarm/agents/{worker_id}/report.json` written by the worker to
 /// explicitly report properties like `tests_passing` and `branch_ready`.
@@ -304,31 +292,20 @@ impl SwarmReconciler {
         let worktrees = self.load_swarm_state();
         let workers = self.store.list(&self.workspace)?;
 
-        // Map existing workers by id for quick lookup.
-        let worker_map: HashMap<String, &Worker> =
-            workers.iter().map(|w| (w.id.clone(), w)).collect();
-
-        // Map swarm worktrees by id.
         let swarm_map: HashMap<String, &SwarmWorktree> =
             worktrees.iter().map(|wt| (wt.id.clone(), wt)).collect();
 
-        // Process each DB worker we know about.
         for worker in &workers {
             if let Some(swarm_wt) = swarm_map.get(&worker.id) {
                 self.apply_rules(worker, swarm_wt)?;
             } else {
-                // Worker is in DB but not in swarm — it disappeared (closed/merged).
                 debug!("[reconciler] worker {} not in swarm state", worker.id);
                 self.apply_disappeared(worker)?;
             }
         }
 
-        // Single unified pass: check PR status (merged + CI) for all active workers.
-        // Runs independently of state.json — SQLite is the only source of truth here.
+        // Runs independently of state.json — SQLite is the only source of truth for PR state.
         self.check_pr_status(&workers)?;
-
-        let _ = swarm_map;
-        let _ = worker_map;
 
         Ok(())
     }
@@ -539,24 +516,7 @@ impl SwarmReconciler {
                         },
                     )?;
                     self.do_transition(worker, WorkerState::Waiting)?;
-                    // Emit swarm_branch_ready signal so the orchestrator's workflow
-                    // chain fires (WorkflowAction::CreatePr etc).
-                    if let Some(ref tx) = self.signal_tx {
-                        let update = crate::buzz::signal::SignalUpdate::new(
-                            "swarm_branch_ready",
-                            format!("swarm-branch-ready-{}", worker.id),
-                            format!("Branch ready: {branch}"),
-                            crate::buzz::signal::Severity::Info,
-                        )
-                        .with_metadata(
-                            serde_json::json!({
-                                "worker_id": worker.id,
-                                "branch_name": branch,
-                            })
-                            .to_string(),
-                        );
-                        let _ = tx.send((self.workspace.clone(), update));
-                    }
+                    self.emit_branch_ready_signal(&worker.id, &branch);
                     return Ok(());
                 }
 
@@ -588,22 +548,7 @@ impl SwarmReconciler {
                         },
                     )?;
                     self.do_transition(worker, WorkerState::Waiting)?;
-                    if let Some(ref tx) = self.signal_tx {
-                        let update = crate::buzz::signal::SignalUpdate::new(
-                            "swarm_branch_ready",
-                            format!("swarm-branch-ready-{}", worker.id),
-                            format!("Branch ready: {branch}"),
-                            crate::buzz::signal::Severity::Info,
-                        )
-                        .with_metadata(
-                            serde_json::json!({
-                                "worker_id": worker.id,
-                                "branch_name": branch,
-                            })
-                            .to_string(),
-                        );
-                        let _ = tx.send((self.workspace.clone(), update));
-                    }
+                    self.emit_branch_ready_signal(&worker.id, &branch);
                     return Ok(());
                 }
             }
@@ -775,6 +720,25 @@ impl SwarmReconciler {
         // Auto-promote associated task stage based on the new worker state.
         self.advance_task_for_worker(&worker.id, new_state);
         Ok(())
+    }
+
+    /// Emit a `swarm_branch_ready` signal so the orchestrator's workflow chain fires.
+    fn emit_branch_ready_signal(&self, worker_id: &str, branch: &str) {
+        let Some(ref tx) = self.signal_tx else { return };
+        let update = crate::buzz::signal::SignalUpdate::new(
+            "swarm_branch_ready",
+            format!("swarm-branch-ready-{worker_id}"),
+            format!("Branch ready: {branch}"),
+            crate::buzz::signal::Severity::Info,
+        )
+        .with_metadata(
+            serde_json::json!({
+                "worker_id": worker_id,
+                "branch_name": branch,
+            })
+            .to_string(),
+        );
+        let _ = tx.send((self.workspace.clone(), update));
     }
 
     /// Advance the task stage for any task linked to this worker.
@@ -967,7 +931,7 @@ impl SwarmReconciler {
             Err(_) => return Vec::new(),
         };
         match serde_json::from_str::<SwarmStateJson>(&content) {
-            Ok(s) => s.into_worktrees(),
+            Ok(s) => s.worktrees,
             Err(e) => {
                 warn!("[reconciler] failed to parse state.json: {e}");
                 Vec::new()
@@ -1254,17 +1218,6 @@ mod tests {
         let updated = r.store.get("test", "w1").unwrap().unwrap();
         // state should remain Running (no rule matches)
         assert_eq!(updated.state, WorkerState::Running);
-    }
-
-    #[test]
-    fn load_swarm_state_array_format() {
-        let tmp = tempfile::tempdir().unwrap();
-        let r = make_reconciler(&tmp);
-        let json = r#"[{"id":"w1","phase":"running"}]"#;
-        std::fs::write(tmp.path().join(".swarm/state.json"), json).unwrap();
-        let wts = r.load_swarm_state();
-        assert_eq!(wts.len(), 1);
-        assert_eq!(wts[0].id, "w1");
     }
 
     #[test]
