@@ -375,6 +375,41 @@ pub struct WorkspaceConfig {
     /// Default model for the context bot (Ask chat). Falls back to claude-sonnet-4-6.
     #[serde(default)]
     pub context_bot_model: Option<String>,
+
+    /// AutoBots declared in the config file. Seeded into the DB on daemon startup.
+    /// Identified by workspace+name so the same config always produces the same bot.
+    #[serde(default)]
+    pub auto_bots: Vec<AutoBotDefinition>,
+}
+
+/// An AutoBot declared in the workspace TOML (`[[auto_bots]]`).
+///
+/// On daemon startup these are upserted into the DB so the config is the
+/// source of truth — the same TOML on any machine produces the same bots.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoBotDefinition {
+    pub name: String,
+    #[serde(default = "default_auto_bot_def_color")]
+    pub color: String,
+    /// "cron" or "signal"
+    pub trigger_type: String,
+    #[serde(default)]
+    pub cron_schedule: Option<String>,
+    #[serde(default)]
+    pub signal_source: Option<String>,
+    #[serde(default)]
+    pub signal_filter: Option<String>,
+    pub prompt: String,
+    #[serde(default = "default_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_auto_bot_def_color() -> String {
+    "#f5c542".to_string()
 }
 
 /// A single daemon TCP endpoint (host + port).
@@ -1170,6 +1205,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
         activity: ActivityConfig::default(),
         token_controls: TokenControls::default(),
         context_bot_model: None,
+        auto_bots: vec![],
     }
 }
 
@@ -2114,6 +2150,7 @@ max_session_turns = 0
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
             context_bot_model: None,
+            auto_bots: vec![],
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -2146,6 +2183,7 @@ max_session_turns = 0
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
             context_bot_model: None,
+            auto_bots: vec![],
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -2182,6 +2220,7 @@ max_session_turns = 0
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
             context_bot_model: None,
+            auto_bots: vec![],
         };
 
         let buzz = to_buzz_config(&ws);
@@ -2572,6 +2611,7 @@ watch = ["sentry"]
             activity: ActivityConfig::default(),
             token_controls: TokenControls::default(),
             context_bot_model: None,
+            auto_bots: vec![],
         }
     }
 

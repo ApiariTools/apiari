@@ -6921,6 +6921,7 @@ mod tests {
             activity: crate::config::ActivityConfig::default(),
             token_controls: crate::config::TokenControls::default(),
             context_bot_model: None,
+            auto_bots: vec![],
         }
     }
 

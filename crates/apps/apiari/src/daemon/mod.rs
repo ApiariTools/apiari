@@ -3030,6 +3030,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             warn!("[{}] auto_bot_runner: schema error: {e}", slot.name);
             continue;
         }
+        seed_auto_bots_from_config(&auto_bot_store, &slot.name, &slot.config);
         let runner = std::sync::Arc::new(
             crate::buzz::auto_bot_runner::AutoBotRunner::new(
                 auto_bot_store,
@@ -7149,6 +7150,46 @@ async fn run_reinstall(workspace_root: &std::path::Path) -> (String, bool) {
 /// `claude-tui` workers are interactive and must stay alive.
 fn should_auto_close_pr_worker(worker: &apiari_swarm::daemon::protocol::WorkerInfo) -> bool {
     worker.phase == apiari_swarm::WorkerPhase::Waiting && worker.agent == "claude"
+}
+
+/// Seed `[[auto_bots]]` from the workspace config into the DB.
+///
+/// Uses a deterministic ID (`config:<workspace>:<slug>`) so the same TOML on
+/// any machine always upserts the same row — making the config the source of
+/// truth. Bots created through the UI (random UUID IDs) are left untouched.
+fn seed_auto_bots_from_config(
+    store: &crate::buzz::auto_bot::AutoBotStore,
+    workspace: &str,
+    config: &crate::config::WorkspaceConfig,
+) {
+    for def in &config.auto_bots {
+        let slug = def.name.to_lowercase().replace(' ', "-");
+        let id = format!("config:{workspace}:{slug}");
+        let now = chrono::Utc::now().to_rfc3339();
+        let bot = crate::buzz::auto_bot::AutoBot {
+            id,
+            workspace: workspace.to_string(),
+            name: def.name.clone(),
+            color: def.color.clone(),
+            trigger_type: def.trigger_type.clone(),
+            cron_schedule: def.cron_schedule.clone(),
+            signal_source: def.signal_source.clone(),
+            signal_filter: def.signal_filter.clone(),
+            prompt: def.prompt.clone(),
+            provider: def.provider.clone(),
+            model: def.model.clone(),
+            enabled: def.enabled,
+            paused_until: None,
+            created_at: now.clone(),
+            updated_at: now,
+            status: String::new(),
+        };
+        if let Err(e) = store.upsert(&bot) {
+            warn!("[{workspace}] failed to seed auto_bot '{}': {e}", def.name);
+        } else {
+            info!("[{workspace}] seeded auto_bot '{}'", def.name);
+        }
+    }
 }
 
 /// Upsert a reconciler-emitted signal and run it through the orchestrator.
