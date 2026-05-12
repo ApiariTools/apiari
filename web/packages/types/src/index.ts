@@ -366,11 +366,9 @@ export interface ContextBotContext {
   entity_snapshot: Record<string, unknown>;
 }
 
-export interface ContextBotChatResponse {
-  response: string;
+export interface ContextBotChatAck {
   session_id: string;
   model: string;
-  dispatched_worker_id?: string;
 }
 
 export interface ContextBotMessage {

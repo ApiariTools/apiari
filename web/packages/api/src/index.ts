@@ -22,7 +22,8 @@ import type {
   AutoBotDetail,
   AutoBotRun,
   ContextBotContext,
-  ContextBotChatResponse,
+  ContextBotChatAck,
+  ContextBotMessage,
 } from "@apiari/types";
 
 const BASE = "/api";
@@ -512,11 +513,19 @@ export async function chatWithContextBot(
   context: ContextBotContext,
   sessionId?: string,
   model?: string,
-): Promise<ContextBotChatResponse> {
+  opts?: { history?: ContextBotMessage[]; title?: string },
+): Promise<ContextBotChatAck> {
   const res = await fetch(`${BASE}/workspaces/${workspace}/v2/context-bot/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, session_id: sessionId ?? null, context, model: model ?? null }),
+    body: JSON.stringify({
+      message,
+      session_id: sessionId ?? null,
+      context,
+      model: model ?? null,
+      history: opts?.history ?? null,
+      title: opts?.title ?? null,
+    }),
   });
   if (!res.ok) {
     let detail = "";

@@ -194,7 +194,6 @@ export const createWorkerV2 = vi.fn().mockResolvedValue({
 
 // Context Bot API mock
 export const chatWithContextBot = vi.fn().mockResolvedValue({
-  response: "Here is your brief.",
   session_id: "session-1",
   model: "claude-sonnet-4-6",
 });

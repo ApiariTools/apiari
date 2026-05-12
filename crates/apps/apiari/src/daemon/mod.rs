@@ -2977,6 +2977,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
         }
     }
 
+    // Shared channel: reconcilers → orchestrator signal processing.
+    // All workspace reconcilers share one sender; messages include workspace name for routing.
+    let (reconciler_signal_tx, reconciler_signal_rx) = tokio::sync::mpsc::unbounded_channel::<(
+        String,
+        crate::buzz::signal::SignalUpdate,
+    )>();
+
     // Spawn v2 swarm reconcilers — one per workspace.
     for slot in &slots {
         let conn = match rusqlite::Connection::open(&slot.db_path) {
@@ -2997,10 +3004,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             workspace_root: slot.config.root.clone(),
             event_tx: None,
             db_path: Some(slot.db_path.clone()),
+            signal_tx: Some(reconciler_signal_tx.clone()),
         };
         crate::buzz::swarm_reconciler::spawn_reconciler(reconciler_config, conn);
         info!("[{}] swarm reconciler started", slot.name);
     }
+    let mut reconciler_signal_rx = reconciler_signal_rx;
 
     // Spawn auto bot runners — one per workspace.
     for slot in &slots {
@@ -3251,6 +3260,40 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 let _ = cancel_tx.send(true);
                 drop(socket_server); // clean up socket file
                 return ExitReason::Shutdown;
+            }
+
+            // ── Reconciler signal injection (swarm_branch_ready etc.) ──
+            Some((ws_name, update)) = reconciler_signal_rx.recv() => {
+                if let Some(&slot_idx) = name_map.get(&ws_name) {
+                    let slot = &mut slots[slot_idx];
+                    match slot.store.upsert_signal(&update) {
+                        Ok((id, is_new)) => {
+                            if is_new
+                                && let Ok(Some(record)) = slot.store.get_signal(id)
+                                && let Ok(task_store) = crate::buzz::task::store::TaskStore::open(&slot.db_path)
+                            {
+                                match slot.orchestrator.process_signal(&task_store, &slot.name, &record).await {
+                                    Ok(orch_result) => {
+                                        info!(
+                                            "[{}] reconciler signal '{}': workflow_actions={}",
+                                            ws_name, update.source, orch_result.workflow_actions.len()
+                                        );
+                                        for wf_action in &orch_result.workflow_actions {
+                                            execute_workflow_action(
+                                                wf_action,
+                                                &slot.config.root,
+                                                slot.store.db_path(),
+                                                &slot.name,
+                                            );
+                                        }
+                                    }
+                                    Err(e) => warn!("[{ws_name}] reconciler signal process error: {e}"),
+                                }
+                            }
+                        }
+                        Err(e) => warn!("[{ws_name}] reconciler signal upsert error: {e}"),
+                    }
+                }
             }
 
             // ── Web UI signal injection ──

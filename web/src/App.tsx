@@ -17,7 +17,6 @@ import {
   connectWebSocket,
   chatWithContextBot,
   listContextBotSessions,
-  upsertContextBotSession,
   deleteContextBotSession,
 } from "@apiari/api";
 import type { WorkerV2, AutoBot, ContextBotContext, ContextBotSession } from "@apiari/types";
@@ -192,7 +191,6 @@ export default function App() {
     const session = contextSessions.find((s) => s.id === sessionId);
     if (!session) return;
 
-    // On first message, title becomes the question (truncated)
     const isFirstMessage = session.messages.length === 0;
     const newTitle = isFirstMessage
       ? message.length > 52
@@ -200,78 +198,51 @@ export default function App() {
         : message
       : session.title;
 
-    // Add user message + set loading
+    const userMsg = {
+      role: "user" as const,
+      content: message,
+      timestamp: new Date().toISOString(),
+    };
+    const messagesWithUser = [...session.messages, userMsg];
+
     setContextSessions((prev) =>
       prev.map((s) =>
         s.id === sessionId
-          ? {
-              ...s,
-              title: newTitle,
-              loading: true,
-              messages: [
-                ...s.messages,
-                { role: "user" as const, content: message, timestamp: new Date().toISOString() },
-              ],
-            }
+          ? { ...s, title: newTitle, loading: true, messages: messagesWithUser }
           : s,
       ),
     );
 
     try {
-      const res = await chatWithContextBot(
+      // Server returns 202 immediately; actual response arrives via WebSocket.
+      // Server also persists user message to DB immediately.
+      const ack = await chatWithContextBot(
         workspace,
         message,
         session.context,
         session.server_session_id,
         session.model,
+        { history: session.messages, title: newTitle },
       );
 
-      const updatedMessages = [
-        ...session.messages,
-        { role: "user" as const, content: message, timestamp: new Date().toISOString() },
-        { role: "assistant" as const, content: res.response, timestamp: new Date().toISOString() },
-      ];
-      const updatedSession = {
-        ...session,
-        title: newTitle,
-        loading: false,
-        activity: undefined,
-        server_session_id: res.session_id,
-        model: res.model,
-        messages: updatedMessages,
-      };
-
-      setContextSessions((prev) => prev.map((s) => (s.id === sessionId ? updatedSession : s)));
-
-      upsertContextBotSession(workspace, updatedSession).catch(() => {});
-
-      // If backend dispatched a worker, refresh workers and select it
-      if (res.dispatched_worker_id) {
-        try {
-          const list = await listWorkersV2(workspace);
-          setWorkers(list);
-        } catch {
-          // ignore
-        }
-        navigateTo("worker", res.dispatched_worker_id);
-      }
+      // Store the server_session_id so the WS handler can match by it.
+      setContextSessions((prev) =>
+        prev.map((s) =>
+          s.id === sessionId ? { ...s, server_session_id: ack.session_id, model: ack.model } : s,
+        ),
+      );
     } catch (err) {
+      // Only fires if the 202 request itself fails (e.g. claude CLI not found).
       const detail = err instanceof Error ? err.message : "unknown error";
+      const errorMsg = {
+        role: "assistant" as const,
+        content: `Error: ${detail}`,
+        timestamp: new Date().toISOString(),
+      };
       setContextSessions((prev) =>
         prev.map((s) =>
           s.id === sessionId
-            ? {
-                ...s,
-                loading: false,
-                messages: [
-                  ...s.messages,
-                  {
-                    role: "assistant" as const,
-                    content: `Error: ${detail}`,
-                    timestamp: new Date().toISOString(),
-                  },
-                ],
-              }
+            ? { ...s, loading: false, messages: [...messagesWithUser, errorMsg] }
             : s,
         ),
       );
@@ -385,6 +356,40 @@ export default function App() {
         setContextSessions((prev) =>
           prev.map((s) => (s.server_session_id === sid ? { ...s, activity } : s)),
         );
+      }
+
+      if (event.type === "context_bot_response") {
+        const sid = event.session_id as string;
+        const response = event.response as string;
+        const model = event.model as string;
+        const error = event.error as string | undefined;
+        const dispatchedWorkerId = event.dispatched_worker_id as string | undefined;
+
+        setContextSessions((prev) =>
+          prev.map((s) => {
+            if (s.server_session_id !== sid) return s;
+            const assistantMsg = {
+              role: "assistant" as const,
+              content: error ? `Error: ${error}` : response,
+              timestamp: new Date().toISOString(),
+            };
+            return {
+              ...s,
+              loading: false,
+              activity: undefined,
+              model,
+              messages: [...s.messages, assistantMsg],
+            };
+          }),
+        );
+
+        if (dispatchedWorkerId && workspaceRef.current) {
+          listWorkersV2(workspaceRef.current)
+            .then((list) => setWorkers(list))
+            .catch(() => {});
+          setSelected({ type: "worker", id: dispatchedWorkerId });
+          updateHash(workspaceRef.current, "worker", dispatchedWorkerId);
+        }
       }
     });
     return () => ws.close();

@@ -93,6 +93,9 @@ pub struct Worker {
     pub updated_at: String,
     /// Short LLM-generated title for display (stored in DB, filled in by row_to_worker).
     pub display_title: Option<String>,
+    /// Confidence in the display title (0–100). Starts low (goal only); rises as
+    /// the model sees actual agent output. Title stops regenerating once this hits 85.
+    pub title_confidence: Option<u8>,
     /// Filesystem path to the worker's directory (worktree or copy). Stored so
     /// the daemon can resume or clean up without reading state.json.
     pub worktree_path: Option<String>,
@@ -208,6 +211,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             display_title TEXT,
+            title_confidence INTEGER,
             worktree_path TEXT,
             isolation_mode TEXT,
             agent_kind TEXT,
@@ -264,6 +268,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         (
             "ci_passing",
             "ALTER TABLE workers ADD COLUMN ci_passing BOOLEAN",
+        ),
+        (
+            "title_confidence",
+            "ALTER TABLE workers ADD COLUMN title_confidence INTEGER",
         ),
     ] {
         if let Err(e) = conn.execute_batch(ddl)
@@ -326,33 +334,35 @@ impl WorkerStore {
               tests_passing, branch_ready, pr_url, pr_approved, is_stalled,
              revision_count, review_mode, blocked_reason,
               last_output_at, state_entered_at, created_at, updated_at, display_title,
-              worktree_path, isolation_mode, agent_kind, model, repo_path, ci_passing)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)
+              title_confidence, worktree_path, isolation_mode, agent_kind, model, repo_path,
+              ci_passing)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)
              ON CONFLICT(id) DO UPDATE SET
-               workspace       = excluded.workspace,
-               state           = excluded.state,
-               brief           = excluded.brief,
-               repo            = excluded.repo,
-               branch          = excluded.branch,
-               goal            = excluded.goal,
-               tests_passing   = excluded.tests_passing,
-               branch_ready    = excluded.branch_ready,
-               pr_url          = excluded.pr_url,
-               pr_approved     = excluded.pr_approved,
-               is_stalled      = excluded.is_stalled,
-               revision_count  = excluded.revision_count,
-               review_mode     = excluded.review_mode,
-               blocked_reason  = excluded.blocked_reason,
-               last_output_at  = excluded.last_output_at,
-               state_entered_at= excluded.state_entered_at,
-               updated_at      = excluded.updated_at,
-               display_title   = COALESCE(excluded.display_title, workers.display_title),
-               worktree_path   = COALESCE(excluded.worktree_path, workers.worktree_path),
-               isolation_mode  = COALESCE(excluded.isolation_mode, workers.isolation_mode),
-               agent_kind      = COALESCE(excluded.agent_kind, workers.agent_kind),
-               model           = COALESCE(excluded.model, workers.model),
-               repo_path       = COALESCE(excluded.repo_path, workers.repo_path),
-               ci_passing      = excluded.ci_passing",
+               workspace        = excluded.workspace,
+               state            = excluded.state,
+               brief            = excluded.brief,
+               repo             = excluded.repo,
+               branch           = excluded.branch,
+               goal             = excluded.goal,
+               tests_passing    = excluded.tests_passing,
+               branch_ready     = excluded.branch_ready,
+               pr_url           = excluded.pr_url,
+               pr_approved      = excluded.pr_approved,
+               is_stalled       = excluded.is_stalled,
+               revision_count   = excluded.revision_count,
+               review_mode      = excluded.review_mode,
+               blocked_reason   = excluded.blocked_reason,
+               last_output_at   = excluded.last_output_at,
+               state_entered_at = excluded.state_entered_at,
+               updated_at       = excluded.updated_at,
+               display_title    = COALESCE(excluded.display_title, workers.display_title),
+               title_confidence = COALESCE(excluded.title_confidence, workers.title_confidence),
+               worktree_path    = COALESCE(excluded.worktree_path, workers.worktree_path),
+               isolation_mode   = COALESCE(excluded.isolation_mode, workers.isolation_mode),
+               agent_kind       = COALESCE(excluded.agent_kind, workers.agent_kind),
+               model            = COALESCE(excluded.model, workers.model),
+               repo_path        = COALESCE(excluded.repo_path, workers.repo_path),
+               ci_passing       = excluded.ci_passing",
             params![
                 worker.id,
                 worker.workspace,
@@ -374,6 +384,7 @@ impl WorkerStore {
                 worker.created_at,
                 worker.updated_at,
                 worker.display_title,
+                worker.title_confidence.map(|v| v as i64),
                 worker.worktree_path,
                 worker.isolation_mode,
                 worker.agent_kind,
@@ -394,7 +405,7 @@ impl WorkerStore {
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
                     last_output_at,state_entered_at,created_at,updated_at,display_title,
-                    worktree_path,isolation_mode,agent_kind,model,repo_path,ci_passing
+                    title_confidence,worktree_path,isolation_mode,agent_kind,model,repo_path,ci_passing
              FROM workers WHERE workspace=?1 AND id=?2",
             params![workspace, id],
             row_to_worker,
@@ -417,7 +428,7 @@ impl WorkerStore {
                     tests_passing,branch_ready,pr_url,pr_approved,is_stalled,
                     revision_count,review_mode,blocked_reason,
                     last_output_at,state_entered_at,created_at,updated_at,display_title,
-                    worktree_path,isolation_mode,agent_kind,model,repo_path,ci_passing
+                    title_confidence,worktree_path,isolation_mode,agent_kind,model,repo_path,ci_passing
              FROM workers WHERE workspace=?1
              ORDER BY updated_at DESC",
         )?;
@@ -562,6 +573,29 @@ impl WorkerStore {
         Ok(())
     }
 
+    /// Set the LLM-generated display title and confidence together.
+    pub fn update_title(
+        &self,
+        workspace: &str,
+        id: &str,
+        title: &str,
+        confidence: u8,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE workers SET display_title=?1, title_confidence=?2, updated_at=?3
+                  WHERE workspace=?4 AND id=?5",
+                params![title, confidence as i64, now, workspace, id],
+            )
+            .wrap_err("update title")?;
+        if rows == 0 {
+            return Err(eyre!("worker not found: {workspace}/{id}"));
+        }
+        Ok(())
+    }
+
     /// Replace a worker's UUID with the swarm-assigned ID.
     /// Deletes the old record and upserts under the new ID.
     pub fn rekey(&self, old_id: &str, new_id: &str) -> Result<()> {
@@ -604,12 +638,13 @@ fn row_to_worker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Worker> {
         created_at: row.get(17)?,
         updated_at: row.get(18)?,
         display_title: row.get(19)?,
-        worktree_path: row.get(20)?,
-        isolation_mode: row.get(21)?,
-        agent_kind: row.get(22)?,
-        model: row.get(23)?,
-        repo_path: row.get(24)?,
-        ci_passing: row.get::<_, Option<i64>>(25)?.map(|v| v != 0),
+        title_confidence: row.get::<_, Option<i64>>(20)?.map(|v| v.min(100) as u8),
+        worktree_path: row.get(21)?,
+        isolation_mode: row.get(22)?,
+        agent_kind: row.get(23)?,
+        model: row.get(24)?,
+        repo_path: row.get(25)?,
+        ci_passing: row.get::<_, Option<i64>>(26)?.map(|v| v != 0),
         // label is filled in by the caller
         label: String::new(),
     })
@@ -645,6 +680,7 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             display_title: None,
+            title_confidence: None,
             worktree_path: None,
             isolation_mode: None,
             agent_kind: None,

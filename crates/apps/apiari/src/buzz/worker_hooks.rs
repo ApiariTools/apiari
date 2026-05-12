@@ -461,6 +461,7 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             display_title: None,
+            title_confidence: None,
             label: String::new(),
             worktree_path: None,
             isolation_mode: None,

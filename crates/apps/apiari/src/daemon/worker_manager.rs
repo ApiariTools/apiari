@@ -846,6 +846,7 @@ fn upsert_worker_db_record(
         review_mode: "local_first".to_string(),
         blocked_reason: None,
         display_title: None,
+        title_confidence: None,
         last_output_at: None,
         state_entered_at: now.clone(),
         created_at: now.clone(),

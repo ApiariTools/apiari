@@ -187,6 +187,17 @@ pub enum WsUpdate {
         session_id: String,
         activity: String,
     },
+    /// Context bot turn completed — response ready for client.
+    ContextBotResponse {
+        workspace: String,
+        session_id: String,
+        response: String,
+        model: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dispatched_worker_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// A test signal to inject (dev mode).
@@ -4528,6 +4539,7 @@ async fn v2_create_worker(
         created_at: now.clone(),
         updated_at: now,
         display_title: None,
+        title_confidence: None,
         worktree_path: None,
         isolation_mode: None,
         agent_kind: Some(selected_agent.clone()),
@@ -4625,15 +4637,7 @@ async fn v2_create_worker(
     }
 }
 
-/// Semaphore capping concurrent title-generation claude subprocesses.
-static TITLE_GEN_SEMAPHORE: std::sync::OnceLock<tokio::sync::Semaphore> =
-    std::sync::OnceLock::new();
-
-fn title_gen_semaphore() -> &'static tokio::sync::Semaphore {
-    TITLE_GEN_SEMAPHORE.get_or_init(|| tokio::sync::Semaphore::new(4))
-}
-
-/// Generate a short display title for a worker using Claude and store it in the DB.
+/// Generate a short display title for a worker using apfel and store it in the DB.
 /// Runs as a background task; failures are silently logged.
 async fn generate_and_store_worker_title(
     workspace: &str,
@@ -4641,84 +4645,22 @@ async fn generate_and_store_worker_title(
     goal: &str,
     db_path: &std::path::Path,
 ) {
-    use tokio::io::AsyncWriteExt as _;
     use tracing::{info, warn};
 
-    // Limit concurrent claude subprocesses for title generation
-    let _permit = match title_gen_semaphore().try_acquire() {
-        Ok(p) => p,
-        Err(_) => {
-            warn!("[worker-title/{workspace}/{worker_id}] skipped: title generation at capacity");
-            return;
+    match crate::buzz::title_gen::generate_worker_title(goal, None).await {
+        Some((title, confidence)) => {
+            match open_worker_store_from_path(db_path) {
+                Ok(store) => match store.update_title(workspace, worker_id, &title, confidence) {
+                    Ok(()) => info!(
+                        "[worker-title/{workspace}/{worker_id}] generated: {title:?} \
+                         (confidence={confidence})"
+                    ),
+                    Err(e) => warn!("[worker-title/{workspace}/{worker_id}] db update failed: {e}"),
+                },
+                Err(e) => warn!("[worker-title/{workspace}/{worker_id}] open store failed: {e}"),
+            }
         }
-    };
-
-    let prompt = format!(
-        "Generate a short display title (4-8 words) for this task. \
-         Output only the title, no punctuation, no markdown, no explanation.\n\nTask: {goal}"
-    );
-
-    let result = async {
-        let mut child = tokio::process::Command::new("claude")
-            .arg("--print")
-            .arg("--max-turns")
-            .arg("1")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("spawn claude: {e}"))?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt.as_bytes())
-                .await
-                .map_err(|e| format!("write stdin: {e}"))?;
-        }
-
-        // 30-second timeout to avoid hanging tasks
-        let output = match tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            child.wait_with_output(),
-        )
-        .await
-        {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(format!("wait: {e}")),
-            Err(_) => return Err("timeout waiting for claude".to_string()),
-        };
-
-        if !output.status.success() {
-            return Err("claude exited non-zero".to_string());
-        }
-
-        let raw = String::from_utf8_lossy(&output.stdout);
-        let title = raw
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim()
-            .to_string();
-
-        if title.is_empty() {
-            return Err("empty title from claude".to_string());
-        }
-
-        // Truncate to 80 chars on a character boundary (not byte index)
-        let title: String = title.chars().take(80).collect();
-
-        let store = open_worker_store_from_path(db_path).map_err(|e| format!("open store: {e}"))?;
-        store
-            .update_display_title(workspace, worker_id, &title)
-            .map_err(|e| format!("update: {e}"))?;
-
-        Ok::<String, String>(title)
-    }
-    .await;
-
-    match result {
-        Ok(title) => info!("[worker-title/{workspace}/{worker_id}] generated: {title:?}"),
-        Err(e) => warn!("[worker-title/{workspace}/{worker_id}] failed: {e}"),
+        None => warn!("[worker-title/{workspace}/{worker_id}] apfel unavailable or returned no title"),
     }
 }
 
@@ -4988,6 +4930,7 @@ async fn v2_send_message(
             review_mode,
             blocked_reason: None,
             display_title: worker.display_title.clone(),
+            title_confidence: worker.title_confidence,
             last_output_at: worker.last_output_at.clone(),
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: worker.created_at.clone(),
@@ -5248,6 +5191,7 @@ async fn v2_requeue_worker(
         created_at: worker.created_at.clone(),
         updated_at: now,
         display_title: worker.display_title.clone(),
+        title_confidence: worker.title_confidence,
         worktree_path: None,
         isolation_mode: None,
         agent_kind: worker.agent_kind.clone(),
@@ -5392,6 +5336,7 @@ async fn auto_requeue_with_feedback(
         created_at: worker.created_at.clone(),
         updated_at: now,
         display_title: worker.display_title.clone(),
+        title_confidence: worker.title_confidence,
         worktree_path: None,
         isolation_mode: None,
         agent_kind: worker.agent_kind.clone(),
@@ -6186,8 +6131,16 @@ async fn v2_delete_worker_hook(
 
 // ── v2 Context-bot API routes ──────────────────────────────────────────
 
+/// A single message item in the context-bot conversation history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ContextBotMessageItem {
+    role: String,
+    content: String,
+    timestamp: String,
+}
+
 /// Context snapshot sent with each context bot message.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ContextBotContext {
     view: String,
     #[serde(default)]
@@ -6201,7 +6154,6 @@ struct ContextBotContext {
 struct ContextBotChatBody {
     message: String,
     /// Client-managed session ID — echoed back in the response.
-    /// Not used for server-side resumption (each call is stateless).
     #[serde(default)]
     session_id: Option<String>,
     context: ContextBotContext,
@@ -6209,16 +6161,19 @@ struct ContextBotChatBody {
     /// config `context_bot_model`, then to `claude-sonnet-4-6`.
     #[serde(default)]
     model: Option<String>,
+    /// Prior messages in this session (for immediate server-side persistence).
+    #[serde(default)]
+    history: Option<Vec<ContextBotMessageItem>>,
+    /// Session title (for server-side persistence).
+    #[serde(default)]
+    title: Option<String>,
 }
 
-/// Response from the context bot endpoint.
+/// Immediate 202 acknowledgment — actual response arrives via WebSocket.
 #[derive(Debug, Serialize)]
-struct ContextBotChatResponse {
-    response: String,
+struct ContextBotChatAck {
     session_id: String,
     model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    dispatched_worker_id: Option<String>,
 }
 
 /// Build the context-bot system prompt by injecting the view context snapshot.
@@ -6250,9 +6205,18 @@ fn build_context_bot_system_prompt(
         "\nYou have full tool access: use Bash to run git commands, grep, etc. \
          Use Read to inspect files. The workspace root is your working directory.\n\
          \n\
-         You can also dispatch a new worker by responding with DISPATCH_WORKER: {goal} on its own line.\n\
+         IMPORTANT: Always respond with a JSON object — never plain text.\n\
          \n\
-         Be concise. The user is a developer. Answer directly.",
+         Minimal response:\n\
+         {\"text\": \"Your answer here.\"}\n\
+         \n\
+         To dispatch a worker to do coding work:\n\
+         {\"text\": \"Brief confirmation to the user.\", \"dispatch_worker\": {\"goal\": \"One clear sentence describing what the worker should accomplish.\"}}\n\
+         \n\
+         Rules:\n\
+         - text: required. What the user sees. Be concise.\n\
+         - dispatch_worker: optional. Only include when the user explicitly asks to create/dispatch/start a worker.\n\
+         - dispatch_worker.goal: a single plain-text sentence — no markdown, no headers.",
     );
 
     prompt
@@ -6271,15 +6235,11 @@ fn format_tool_activity(name: &str, input: &serde_json::Value) -> String {
     format!("{name}{detail}")
 }
 
-/// POST /api/workspaces/{ws}/v2/context-bot/chat — stateless context bot turn.
+/// POST /api/workspaces/{ws}/v2/context-bot/chat — fire-and-forget context bot turn.
 ///
-/// Session history is managed client-side. Each call is independent; the
-/// session_id is echoed back for client tracking.
-///
-/// TODO: Session resumption via `claude --continue` / `--resume` is a future
-/// enhancement. The client already tracks message history locally and sends
-/// the full context snapshot on each call, so stateless operation is sufficient
-/// for now.
+/// Returns 202 immediately with {session_id, model}. The actual response is
+/// delivered via WebSocket as a `context_bot_response` event and saved to DB,
+/// so a browser refresh cannot lose the work.
 async fn v2_context_bot_chat(
     Path(workspace): Path<String>,
     State(state): State<HttpState>,
@@ -6305,7 +6265,7 @@ async fn v2_context_bot_chat(
         "[context-bot] request"
     );
 
-    // Verify claude CLI is available.
+    // Verify claude CLI is available before accepting the job.
     let which = tokio::process::Command::new("which")
         .arg("claude")
         .output()
@@ -6321,152 +6281,252 @@ async fn v2_context_bot_chat(
 
     let workspace_root = load_workspace_root(&workspace);
     let system_prompt = build_context_bot_system_prompt(&body.context, &workspace_root);
+    let now = chrono::Utc::now().to_rfc3339();
 
-    // Run claude with stream-json output so we can broadcast live tool activity.
-    // Message is passed via stdin; cwd is the workspace root for git/file access.
-    let raw = match tokio::time::timeout(std::time::Duration::from_secs(300), async {
+    // Immediately persist the user message so a refresh won't lose it.
+    if let (Some(title), Some(history)) = (&body.title, &body.history) {
+        let user_msg = ContextBotMessageItem {
+            role: "user".to_string(),
+            content: body.message.clone(),
+            timestamp: now.clone(),
+        };
+        let mut msgs = history.clone();
+        msgs.push(user_msg);
+        let msgs_json = serde_json::to_value(&msgs).unwrap_or_default();
+        let db_path = state.db_path.as_ref().clone();
+        let sid = session_id.clone();
+        let ws = workspace.clone();
+        let title = title.clone();
+        let m = model.clone();
+        let view = body.context.view.clone();
+        let eid = body.context.entity_id.clone();
+        let snap = body.context.entity_snapshot.clone();
+        let now2 = now.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                let _ = conn.execute(
+                    "INSERT INTO context_bot_sessions
+                        (id, workspace, title, model, context_view, context_entity_id,
+                         context_snapshot, messages, created_at, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                     ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        model = excluded.model,
+                        context_snapshot = excluded.context_snapshot,
+                        messages = excluded.messages,
+                        updated_at = excluded.updated_at",
+                    rusqlite::params![
+                        sid, ws, title, m, view, eid,
+                        snap.as_ref().map(|v| v.to_string()),
+                        msgs_json.to_string(),
+                        now2, now2,
+                    ],
+                );
+            }
+        })
+        .await;
+    }
+
+    // Clone state for the background task.
+    let workspace_bg = workspace.clone();
+    let session_id_bg = session_id.clone();
+    let model_bg = model.clone();
+    let updates_tx = state.updates_tx.clone();
+    let db_path_bg = state.db_path.as_ref().clone();
+    let worker_manager = state.worker_manager.clone();
+    let title_bg = body.title.clone();
+    let history_bg = body.history.clone().unwrap_or_default();
+    let context_bg = body.context.clone();
+    let message_bg = body.message.clone();
+
+    // Spawn detached — a client disconnect cannot cancel this work.
+    tokio::spawn(async move {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-        let mut child = tokio::process::Command::new("claude")
-            .arg("--print")
-            .arg("--output-format")
-            .arg("stream-json")
-            .arg("--verbose")
-            .arg("--max-turns")
-            .arg("10")
-            .arg("--model")
-            .arg(&model)
-            .arg("--system-prompt")
-            .arg(&system_prompt)
-            .current_dir(&workspace_root)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
+        let raw = match tokio::time::timeout(std::time::Duration::from_secs(300), async {
+            let mut child = tokio::process::Command::new("claude")
+                .arg("--print")
+                .arg("--output-format")
+                .arg("stream-json")
+                .arg("--verbose")
+                .arg("--max-turns")
+                .arg("10")
+                .arg("--model")
+                .arg(&model_bg)
+                .arg("--system-prompt")
+                .arg(&system_prompt)
+                .current_dir(&workspace_root)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
 
-        // Write message then close stdin so claude knows input is done.
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(body.message.as_bytes()).await;
-        }
-
-        // Read NDJSON lines and broadcast tool activity over WebSocket.
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let mut response = String::new();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if line.is_empty() {
-                continue;
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(message_bg.as_bytes()).await;
             }
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                match val.get("type").and_then(|t| t.as_str()) {
-                    Some("assistant") => {
-                        if let Some(blocks) = val["message"]["content"].as_array() {
-                            for block in blocks {
-                                match block.get("type").and_then(|t| t.as_str()) {
-                                    Some("tool_use") => {
-                                        let name = block
-                                            .get("name")
-                                            .and_then(|n| n.as_str())
-                                            .unwrap_or("tool");
-                                        let input = block.get("input").cloned().unwrap_or_default();
-                                        let activity = format_tool_activity(name, &input);
-                                        let _ =
-                                            state.updates_tx.send(WsUpdate::ContextBotActivity {
-                                                workspace: workspace.clone(),
-                                                session_id: session_id.clone(),
+
+            // Read stderr concurrently so we have it for error messages.
+            let stderr_reader = child.stderr.take().unwrap();
+            let stderr_task = tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut buf = String::new();
+                let _ = BufReader::new(stderr_reader).read_to_string(&mut buf).await;
+                buf
+            });
+
+            let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+            let mut response = String::new();
+            let mut result_error: Option<String> = None;
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                    match val.get("type").and_then(|t| t.as_str()) {
+                        Some("assistant") => {
+                            if let Some(blocks) = val["message"]["content"].as_array() {
+                                for block in blocks {
+                                    match block.get("type").and_then(|t| t.as_str()) {
+                                        Some("tool_use") => {
+                                            let name = block
+                                                .get("name")
+                                                .and_then(|n| n.as_str())
+                                                .unwrap_or("tool");
+                                            let input =
+                                                block.get("input").cloned().unwrap_or_default();
+                                            let activity = format_tool_activity(name, &input);
+                                            let _ = updates_tx.send(WsUpdate::ContextBotActivity {
+                                                workspace: workspace_bg.clone(),
+                                                session_id: session_id_bg.clone(),
                                                 activity,
                                             });
-                                    }
-                                    Some("text") => {
-                                        if let Some(t) = block.get("text").and_then(|t| t.as_str())
-                                        {
-                                            response.push_str(t);
                                         }
+                                        Some("text") => {
+                                            if let Some(t) =
+                                                block.get("text").and_then(|t| t.as_str())
+                                            {
+                                                response.push_str(t);
+                                            }
+                                        }
+                                        _ => {}
                                     }
-                                    _ => {}
                                 }
                             }
                         }
-                    }
-                    Some("result") => {
-                        // result.result is the canonical final text
-                        if let Some(r) = val.get("result").and_then(|r| r.as_str()) {
-                            response = r.to_string();
+                        Some("result") => {
+                            let is_error =
+                                val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                            if let Some(r) = val.get("result").and_then(|r| r.as_str()) {
+                                if is_error {
+                                    result_error = Some(r.to_string());
+                                } else {
+                                    response = r.to_string();
+                                }
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
-        }
 
-        let status = child.wait().await?;
-        Ok::<(String, bool), std::io::Error>((response, status.success()))
-    })
-    .await
-    {
-        Ok(Ok((text, true))) => {
-            let response = text.trim().to_string();
-            tracing::info!(
-                workspace = %workspace,
-                response_len = response.len(),
-                "[context-bot] ok"
-            );
-            response
-        }
-        Ok(Ok((text, false))) => {
-            let code = -1i32;
-            tracing::error!(
-                workspace = %workspace,
-                exit_code = code,
-                stdout = %text,
-                "[context-bot] claude exited non-zero"
-            );
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("claude exited non-zero: {text}")})),
-            )
-                .into_response();
-        }
-        Ok(Err(e)) => {
-            tracing::error!(workspace = %workspace, err = %e, "[context-bot] failed to spawn claude");
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": format!("failed to run claude: {e}")})),
-            )
-                .into_response();
-        }
-        Err(_elapsed) => {
-            tracing::error!(workspace = %workspace, "[context-bot] claude timed out after 300s");
-            return (
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(serde_json::json!({"error": "claude timed out after 300s"})),
-            )
-                .into_response();
-        }
-    };
+            let status = child.wait().await?;
+            let stderr = stderr_task.await.unwrap_or_default();
+            Ok::<(String, bool, String, Option<String>), std::io::Error>((
+                response,
+                status.success(),
+                stderr,
+                result_error,
+            ))
+        })
+        .await
+        {
+            Ok(Ok((text, true, _, _))) => text.trim().to_string(),
+            Ok(Ok((_text, false, stderr, result_err))) => {
+                let detail = result_err
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        let s = stderr.trim().to_string();
+                        if s.is_empty() { None } else { Some(s) }
+                    })
+                    .unwrap_or_else(|| "claude exited non-zero".to_string());
+                tracing::error!(
+                    workspace = %workspace_bg,
+                    detail = %detail,
+                    "[context-bot] claude exited non-zero"
+                );
+                let _ = updates_tx.send(WsUpdate::ContextBotResponse {
+                    workspace: workspace_bg,
+                    session_id: session_id_bg,
+                    response: String::new(),
+                    model: model_bg,
+                    dispatched_worker_id: None,
+                    error: Some(detail),
+                });
+                return;
+            }
+            Ok(Err(e)) => {
+                tracing::error!(workspace = %workspace_bg, err = %e, "[context-bot] failed to spawn claude");
+                let _ = updates_tx.send(WsUpdate::ContextBotResponse {
+                    workspace: workspace_bg,
+                    session_id: session_id_bg,
+                    response: String::new(),
+                    model: model_bg,
+                    dispatched_worker_id: None,
+                    error: Some(format!("failed to run claude: {e}")),
+                });
+                return;
+            }
+            Err(_elapsed) => {
+                tracing::error!(workspace = %workspace_bg, "[context-bot] claude timed out after 300s");
+                let _ = updates_tx.send(WsUpdate::ContextBotResponse {
+                    workspace: workspace_bg,
+                    session_id: session_id_bg,
+                    response: String::new(),
+                    model: model_bg,
+                    dispatched_worker_id: None,
+                    error: Some("claude timed out after 300s".to_string()),
+                });
+                return;
+            }
+        };
 
-    // Check for DISPATCH_WORKER: directive.
-    let mut dispatched_worker_id: Option<String> = None;
-    let ws = load_workspace_by_name(&workspace);
+        tracing::info!(
+            workspace = %workspace_bg,
+            response_len = raw.len(),
+            "[context-bot] ok"
+        );
 
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if let Some(goal) = trimmed.strip_prefix("DISPATCH_WORKER:") {
+        // Parse JSON response — claude always returns {"text": "...", "dispatch_worker"?: {"goal": "..."}}
+        let (display_text, dispatch_goal) =
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let text = val["text"].as_str().unwrap_or(&raw).to_string();
+                let goal = val["dispatch_worker"]["goal"]
+                    .as_str()
+                    .map(|s| s.to_string());
+                (text, goal)
+            } else {
+                (raw.clone(), None)
+            };
+
+        let mut dispatched_worker_id: Option<String> = None;
+        let ws_cfg = load_workspace_by_name(&workspace_bg);
+
+        if let Some(goal) = dispatch_goal {
             let goal = goal.trim().to_string();
             if !goal.is_empty() {
-                let repo = ws
+                let repo = ws_cfg
                     .as_ref()
                     .and_then(|w| w.config.repos.first())
                     .map(String::as_str)
                     .unwrap_or("");
 
-                // Build a structured brief — same shape as the modal dispatch path — so the
-                // worker gets full instructions and the Brief tab has content to display.
                 let brief_json = serde_json::json!({
                     "goal": goal,
                     "context": {
-                        "view": body.context.view,
-                        "entity_id": body.context.entity_id,
-                        "snapshot": body.context.entity_snapshot,
+                        "view": context_bg.view,
+                        "entity_id": context_bg.entity_id,
+                        "snapshot": context_bg.entity_snapshot,
                     },
                     "constraints": [],
                     "acceptance_criteria": [],
@@ -6474,13 +6534,12 @@ async fn v2_context_bot_chat(
                 });
                 let prompt_content = format_brief_as_prompt(&brief_json);
 
-                // Save to SQLite before dispatch so the Brief tab shows content immediately.
-                if let Ok(store) = open_worker_store_from_path(&state.db_path) {
+                if let Ok(store) = open_worker_store_from_path(&db_path_bg) {
                     let pre_id = uuid::Uuid::new_v4().to_string();
                     let now = chrono::Utc::now().to_rfc3339();
                     let worker = crate::buzz::worker::Worker {
                         id: pre_id.clone(),
-                        workspace: workspace.clone(),
+                        workspace: workspace_bg.clone(),
                         state: crate::buzz::worker::WorkerState::Briefed,
                         brief: Some(brief_json),
                         repo: Some(repo.to_string()),
@@ -6500,6 +6559,7 @@ async fn v2_context_bot_chat(
                         created_at: now.clone(),
                         updated_at: now,
                         display_title: None,
+                        title_confidence: None,
                         worktree_path: None,
                         isolation_mode: None,
                         agent_kind: Some("codex".to_string()),
@@ -6509,8 +6569,7 @@ async fn v2_context_bot_chat(
                     };
                     let _ = store.upsert(&worker);
 
-                    if let Ok(swarm_id) = state
-                        .worker_manager
+                    if let Ok(swarm_id) = worker_manager
                         .create_worker_with_task_dir(
                             &workspace_root,
                             repo,
@@ -6522,13 +6581,12 @@ async fn v2_context_bot_chat(
                         )
                         .await
                     {
-                        // Re-key to the real swarm ID if it differs
                         let final_id = if !swarm_id.is_empty() && swarm_id != pre_id {
                             let _ = store.rekey(&pre_id, &swarm_id);
                             swarm_id
                         } else {
                             let _ = store.transition(
-                                &workspace,
+                                &workspace_bg,
                                 &pre_id,
                                 crate::buzz::worker::WorkerState::Queued,
                             );
@@ -6537,20 +6595,74 @@ async fn v2_context_bot_chat(
                         dispatched_worker_id = Some(final_id);
                     }
                 }
-                break;
             }
         }
-    }
 
-    let _ = state.updates_tx; // keep state alive (ws broadcast not needed for this endpoint)
+        // Save completed session (with assistant response) to DB.
+        if let Some(title) = title_bg {
+            let assistant_msg = ContextBotMessageItem {
+                role: "assistant".to_string(),
+                content: display_text.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+            let mut msgs = history_bg;
+            msgs.push(ContextBotMessageItem {
+                role: "user".to_string(),
+                content: message_bg,
+                timestamp: now.clone(),
+            });
+            msgs.push(assistant_msg);
+            let msgs_json = serde_json::to_value(&msgs).unwrap_or_default();
+            let updated_at = chrono::Utc::now().to_rfc3339();
+            let db_path = db_path_bg.clone();
+            let sid = session_id_bg.clone();
+            let ws = workspace_bg.clone();
+            let m = model_bg.clone();
+            let view = context_bg.view.clone();
+            let eid = context_bg.entity_id.clone();
+            let snap = context_bg.entity_snapshot.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                    let _ = conn.execute(
+                        "INSERT INTO context_bot_sessions
+                            (id, workspace, title, model, context_view, context_entity_id,
+                             context_snapshot, messages, created_at, updated_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                         ON CONFLICT(id) DO UPDATE SET
+                            title = excluded.title,
+                            model = excluded.model,
+                            context_snapshot = excluded.context_snapshot,
+                            messages = excluded.messages,
+                            updated_at = excluded.updated_at",
+                        rusqlite::params![
+                            sid, ws, title, m, view, eid,
+                            snap.as_ref().map(|v| v.to_string()),
+                            msgs_json.to_string(),
+                            now, updated_at,
+                        ],
+                    );
+                }
+            })
+            .await;
+        }
 
-    Json(ContextBotChatResponse {
-        response: raw,
-        session_id,
-        model,
-        dispatched_worker_id,
-    })
-    .into_response()
+        // Broadcast response to all connected WebSocket clients.
+        let _ = updates_tx.send(WsUpdate::ContextBotResponse {
+            workspace: workspace_bg,
+            session_id: session_id_bg,
+            response: display_text,
+            model: model_bg,
+            dispatched_worker_id,
+            error: None,
+        });
+    });
+
+    // Acknowledge immediately — client listens on WebSocket for the response.
+    (
+        StatusCode::ACCEPTED,
+        Json(ContextBotChatAck { session_id, model }),
+    )
+        .into_response()
 }
 
 // ── Dashboard widget handlers ──────────────────────────────────────────
@@ -9038,18 +9150,21 @@ model = "sonnet"
 
         // Prompt should contain the dispatch instruction
         assert!(
-            prompt.contains("DISPATCH_WORKER"),
+            prompt.contains("dispatch_worker"),
             "prompt should explain the dispatch directive"
         );
 
-        // Response shape: verify ContextBotChatResponse serializes correctly
-        let resp = ContextBotChatResponse {
-            response: "The tests are failing because...".to_string(),
+        // WS event shape: verify ContextBotResponse serializes correctly
+        let event = WsUpdate::ContextBotResponse {
+            workspace: "apiari".to_string(),
             session_id: "ctx-abc123".to_string(),
+            response: "The tests are failing because...".to_string(),
             model: "claude-sonnet-4-6".to_string(),
             dispatched_worker_id: None,
+            error: None,
         };
-        let json = serde_json::to_value(&resp).unwrap();
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"].as_str(), Some("context_bot_response"));
         assert_eq!(json["session_id"].as_str(), Some("ctx-abc123"));
         assert_eq!(
             json["response"].as_str(),
@@ -9082,14 +9197,16 @@ model = "sonnet"
 
     #[test]
     fn context_bot_response_with_dispatched_worker_serializes_worker_id() {
-        let resp = ContextBotChatResponse {
+        let event = WsUpdate::ContextBotResponse {
+            workspace: "apiari".to_string(),
+            session_id: "ctx-xyz".to_string(),
             response: "Dispatching worker.\n\nDISPATCH_WORKER: Fix the failing auth tests"
                 .to_string(),
-            session_id: "ctx-xyz".to_string(),
             model: "claude-opus-4-7".to_string(),
             dispatched_worker_id: Some("apiari-5".to_string()),
+            error: None,
         };
-        let json = serde_json::to_value(&resp).unwrap();
+        let json = serde_json::to_value(&event).unwrap();
         assert_eq!(
             json["dispatched_worker_id"].as_str(),
             Some("apiari-5"),
@@ -9155,6 +9272,7 @@ model = "sonnet"
             review_mode: "local_first".to_string(),
             blocked_reason: None,
             display_title: None,
+            title_confidence: None,
             last_output_at: None,
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -9289,6 +9407,7 @@ model = "sonnet"
             review_mode: "local_first".to_string(),
             blocked_reason: None,
             display_title: Some("Fix the bug".to_string()),
+            title_confidence: None,
             last_output_at: last_output_at.map(str::to_string),
             state_entered_at: chrono::Utc::now().to_rfc3339(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -9876,6 +9995,7 @@ model = "sonnet"
                 review_mode: "local_first".to_string(),
                 blocked_reason: None,
                 display_title: None,
+                title_confidence: None,
                 last_output_at: None,
                 state_entered_at: chrono::Utc::now().to_rfc3339(),
                 created_at: chrono::Utc::now().to_rfc3339(),
@@ -10368,6 +10488,9 @@ model = "sonnet"
         let db = temp.path().join("test.db");
         let state = make_context_bot_state(&db);
 
+        // Subscribe to WS events before calling the handler.
+        let mut rx = state.updates_tx.subscribe();
+
         let resp = v2_context_bot_chat(
             axum::extract::Path("apiari".to_string()),
             axum::extract::State(state),
@@ -10375,6 +10498,8 @@ model = "sonnet"
                 message: "What's the status?".to_string(),
                 session_id: None,
                 model: None,
+                history: None,
+                title: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,
@@ -10385,20 +10510,31 @@ model = "sonnet"
         .await
         .into_response();
 
-        let json = response_json(resp).await;
-        assert_eq!(json["response"].as_str(), Some("Everything looks good."));
-        assert!(
-            json["session_id"].as_str().is_some(),
-            "session_id must be present"
-        );
-        assert!(
-            json["model"].as_str().is_some(),
-            "model must be present in response"
-        );
-        assert!(
-            json.get("dispatched_worker_id").is_none(),
-            "no dispatch expected"
-        );
+        // 202 Accepted with session_id + model in body.
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let ack = response_json(resp).await;
+        let session_id = ack["session_id"].as_str().expect("session_id in ack");
+        assert!(ack["model"].as_str().is_some(), "model must be in ack");
+
+        // Wait for the WS ContextBotResponse event.
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(WsUpdate::ContextBotResponse { response, session_id: sid, dispatched_worker_id, error, .. }) => {
+                        return (response, sid, dispatched_worker_id, error);
+                    }
+                    Ok(_) => continue,
+                    Err(_) => panic!("broadcast channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("ContextBotResponse must arrive within 5s");
+
+        assert_eq!(event.0, "Everything looks good.", "response content");
+        assert_eq!(event.1, session_id, "session_id must match ack");
+        assert!(event.2.is_none(), "no dispatch expected");
+        assert!(event.3.is_none(), "no error expected");
     }
 
     #[tokio::test]
@@ -10417,6 +10553,8 @@ model = "sonnet"
                 message: "Hello".to_string(),
                 session_id: Some("my-session-42".to_string()),
                 model: None,
+                history: None,
+                title: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,
@@ -10427,6 +10565,8 @@ model = "sonnet"
         .await
         .into_response();
 
+        // 202 must echo the provided session_id.
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
         let json = response_json(resp).await;
         assert_eq!(json["session_id"].as_str(), Some("my-session-42"));
     }
@@ -10473,6 +10613,8 @@ model = "sonnet"
                 message: "hi".to_string(),
                 session_id: None,
                 model: None,
+                history: None,
+                title: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,
@@ -10481,6 +10623,9 @@ model = "sonnet"
             }),
         )
         .await;
+
+        // Wait for the spawned task to run claude and write the log.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let logged = fs::read_to_string(&log).unwrap_or_default();
         assert!(
@@ -10556,6 +10701,8 @@ model = "sonnet"
                 message: tricky_message.to_string(),
                 session_id: None,
                 model: None,
+                history: None,
+                title: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,
@@ -10564,6 +10711,9 @@ model = "sonnet"
             }),
         )
         .await;
+
+        // Wait for the spawned task to run claude and write the logs.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         let args_logged = fs::read_to_string(&log).unwrap_or_default();
         let stdin_logged = fs::read_to_string(&stdin_log).unwrap_or_default();
@@ -10604,6 +10754,8 @@ model = "sonnet"
                 message: "hi".to_string(),
                 session_id: None,
                 model: None,
+                history: None,
+                title: None,
                 context: ContextBotContext {
                     view: "dashboard".to_string(),
                     entity_id: None,

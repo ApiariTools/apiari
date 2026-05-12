@@ -143,6 +143,51 @@ struct WorkerReport {
     branch_ready: Option<bool>,
 }
 
+/// Count how many `assistant_text` events exist for a worker.
+/// Used to decide when to refresh the display title.
+fn count_assistant_text_events(swarm_dir: &Path, worker_id: &str) -> usize {
+    let path = swarm_dir
+        .join("agents")
+        .join(worker_id)
+        .join("events.jsonl");
+    let content = std::fs::read_to_string(path).unwrap_or_default();
+    content
+        .lines()
+        .filter(|line| line.contains("\"assistant_text\""))
+        .count()
+}
+
+/// Collect the last ~800 chars of assistant_text content for title context.
+fn recent_output_snippet(swarm_dir: &Path, worker_id: &str) -> Option<String> {
+    let path = swarm_dir
+        .join("agents")
+        .join(worker_id)
+        .join("events.jsonl");
+    let content = std::fs::read_to_string(path).ok()?;
+
+    let mut buf = String::new();
+    for line in content.lines() {
+        let val: serde_json::Value = serde_json::from_str(line).ok()?;
+        if val.get("type").and_then(|t| t.as_str()) == Some("assistant_text")
+            && let Some(text) = val.get("text").and_then(|t| t.as_str())
+        {
+            buf.push_str(text);
+            buf.push('\n');
+        }
+    }
+
+    if buf.is_empty() {
+        return None;
+    }
+    // Keep only the tail
+    let snippet = if buf.len() > 800 {
+        buf[buf.len() - 800..].to_string()
+    } else {
+        buf
+    };
+    Some(snippet)
+}
+
 /// Read the most-recent `assistant_text` or `user_message` event timestamp
 /// from `.swarm/agents/{worker_id}/events.jsonl`.
 fn last_output_timestamp(swarm_dir: &Path, worker_id: &str) -> Option<chrono::DateTime<Utc>> {
@@ -209,6 +254,11 @@ pub struct SwarmReconcilerConfig {
     /// DB path for opening TaskStore to auto-promote task stages.
     /// Optional — task promotion is skipped when not provided.
     pub db_path: Option<std::path::PathBuf>,
+    /// Channel for emitting signals that should be routed through the orchestrator.
+    /// Tuple is (workspace_name, signal_update).
+    pub signal_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<(String, crate::buzz::signal::SignalUpdate)>,
+    >,
 }
 
 /// The actual reconciler logic — separated from the task for testability.
@@ -218,6 +268,10 @@ pub struct SwarmReconciler {
     store: WorkerStore,
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     db_path: Option<std::path::PathBuf>,
+    /// Channel for emitting signals to the orchestrator (e.g. swarm_branch_ready).
+    signal_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<(String, crate::buzz::signal::SignalUpdate)>,
+    >,
     /// Workers queued for PR URL discovery. Value = attempts remaining (max 3).
     /// Populated by apply_rules when a Waiting worker has no pr_url.
     /// Drained by discover_prs_from_queue in the 5-min slow loop.
@@ -240,6 +294,7 @@ impl SwarmReconciler {
             store,
             event_tx: config.event_tx,
             db_path: config.db_path,
+            signal_tx: config.signal_tx,
             pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
             pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
         })
@@ -502,6 +557,7 @@ impl SwarmReconciler {
                         "[reconciler] {} agent exited (phase={phase}) → waiting",
                         worker.id
                     );
+                    let branch = swarm_wt.branch.clone().unwrap_or_default();
                     self.store.update_properties(
                         &self.workspace,
                         &worker.id,
@@ -512,6 +568,24 @@ impl SwarmReconciler {
                         },
                     )?;
                     self.do_transition(worker, WorkerState::Waiting)?;
+                    // Emit swarm_branch_ready signal so the orchestrator's workflow
+                    // chain fires (WorkflowAction::CreatePr etc).
+                    if let Some(ref tx) = self.signal_tx {
+                        let update = crate::buzz::signal::SignalUpdate::new(
+                            "swarm_branch_ready",
+                            format!("swarm-branch-ready-{}", worker.id),
+                            format!("Branch ready: {branch}"),
+                            crate::buzz::signal::Severity::Info,
+                        )
+                        .with_metadata(
+                            serde_json::json!({
+                                "worker_id": worker.id,
+                                "branch_name": branch,
+                            })
+                            .to_string(),
+                        );
+                        let _ = tx.send((self.workspace.clone(), update));
+                    }
                     return Ok(());
                 }
 
@@ -639,6 +713,35 @@ impl SwarmReconciler {
                 } else {
                     self.emit_event(worker)?;
                 }
+
+                // Refresh display title every 3 assistant_text events while confidence < 85.
+                let confidence = worker.title_confidence.unwrap_or(0);
+                if confidence < 85 {
+                    let count = count_assistant_text_events(&self.swarm_dir, &worker.id);
+                    if count > 0 && count % 3 == 0 {
+                        let goal = worker.goal.clone().unwrap_or_default();
+                        let snippet = recent_output_snippet(&self.swarm_dir, &worker.id);
+                        let workspace = self.workspace.clone();
+                        let worker_id = worker.id.clone();
+                        let conn = self.store.conn_arc();
+                        tokio::spawn(async move {
+                            if let Some((title, conf)) =
+                                crate::buzz::title_gen::generate_worker_title(
+                                    &goal,
+                                    snippet.as_deref(),
+                                )
+                                .await
+                                && let Ok(store) = crate::buzz::worker::WorkerStore::new(conn)
+                            {
+                                let _ = store.update_title(&workspace, &worker_id, &title, conf);
+                                info!(
+                                    "[title-gen] {worker_id} → {title:?} (confidence={conf})"
+                                );
+                            }
+                        });
+                    }
+                }
+
                 return Ok(());
             }
 
@@ -1077,6 +1180,7 @@ mod tests {
             store,
             event_tx: None,
             db_path: None,
+            signal_tx: None,
             pr_discovery_queue: std::sync::Mutex::new(HashMap::new()),
             pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
         }
@@ -1106,6 +1210,7 @@ mod tests {
             created_at: now.clone(),
             updated_at: now,
             display_title: None,
+            title_confidence: None,
             label: "Queued".to_string(),
             worktree_path: None,
             isolation_mode: None,

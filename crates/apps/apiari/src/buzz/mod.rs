@@ -13,6 +13,7 @@ pub mod schedule;
 pub mod signal;
 pub mod swarm_reconciler;
 pub mod task;
+pub mod title_gen;
 pub mod watcher;
 pub mod worker;
 pub mod worker_hooks;
