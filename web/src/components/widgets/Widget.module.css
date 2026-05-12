@@ -600,6 +600,9 @@ a.feedEvent:hover {
   font-family: var(--font-mono);
   font-size: 12px;
 }
+.markdown pre {
+  overflow-x: auto;
+}
 .markdown blockquote {
   border-left: 2px solid var(--accent);
   padding-left: var(--space-3);
