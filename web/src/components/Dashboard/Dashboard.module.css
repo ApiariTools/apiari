@@ -237,6 +237,15 @@
     grid-template-columns: 1fr;
   }
 
+  .statPill {
+    padding: 10px 14px;
+    min-width: 75px;
+  }
+
+  .statPillNum {
+    font-size: 20px;
+  }
+
   /* FAB handles chat on mobile — hide the Ask button */
   .askBtn {
     display: none;

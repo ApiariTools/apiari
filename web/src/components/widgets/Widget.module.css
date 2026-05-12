@@ -178,6 +178,7 @@
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
   border-right: 1px solid var(--border);
 }
@@ -196,6 +197,9 @@
   line-height: 1;
   letter-spacing: -0.02em;
   color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .statRowLabel {
@@ -657,4 +661,34 @@ a.feedEvent:hover {
   font-size: 12px;
   color: var(--text-faint);
   font-family: var(--font-mono);
+}
+
+/* ── Mobile ──────────────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .statValue {
+    font-size: 26px;
+  }
+
+  .statRow {
+    flex-wrap: wrap;
+  }
+
+  .statRowCell {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding: var(--space-2) 0;
+  }
+
+  .statRowCell:last-child {
+    border-bottom: none;
+  }
+
+  .statRowValue {
+    font-size: 18px;
+  }
+
+  .sparklineValue {
+    font-size: 22px;
+  }
 }
