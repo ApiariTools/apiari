@@ -3,13 +3,12 @@
 Workspace chat hub — Rust daemon + React SPA.
 
 ## Rules
-1. You are working in a git worktree on a `swarm/*` branch. Never commit to `main`.
-2. Only modify files within this repository.
-3. Do NOT run `cargo install` or modify system state.
-4. Run ALL checks before committing: `cargo fmt && cargo clippy -- -D warnings -A clippy::too_many_arguments && cargo test`
-5. For frontend changes, also run: `cd web && npm run check && npx vitest run`
+1. Only modify files within this repository.
+2. Do NOT run `cargo install` or modify system state.
+3. Run ALL checks before committing: `cargo fmt && cargo clippy -- -D warnings -A clippy::too_many_arguments && cargo test`
+4. For frontend changes, also run: `cd web && npm run check && npx vitest run`
    (`npm run check` = typecheck + eslint + prettier format check)
-6. A `pre-push` git hook runs all checks automatically. If push is rejected, fix the issues before retrying.
+5. A `pre-push` git hook runs all checks automatically. If push is rejected, fix the issues before retrying.
 
 ## Architecture
 
