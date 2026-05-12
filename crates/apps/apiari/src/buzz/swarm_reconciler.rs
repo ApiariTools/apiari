@@ -1170,6 +1170,87 @@ mod tests {
     }
 
     #[test]
+    fn rule_completed_phase_emits_branch_ready_signal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(workspace_root.join(".swarm")).unwrap();
+
+        let conn = Arc::new(Mutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        ));
+        conn.lock()
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
+        let r = SwarmReconciler {
+            workspace: "test".to_string(),
+            swarm_dir: workspace_root.join(".swarm"),
+            store,
+            event_tx: None,
+            db_path: None,
+            signal_tx: Some(tx),
+            pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
+        };
+
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        r.store.upsert(&w).unwrap();
+
+        let mut wt = swarm_wt("w1", "completed", None);
+        wt.branch = Some("swarm/w1-fix".to_string());
+        r.apply_rules(&w, &wt).unwrap();
+
+        let (ws, signal) = rx.try_recv().expect("signal should have been sent");
+        assert_eq!(ws, "test");
+        assert_eq!(signal.source, "swarm_branch_ready");
+        assert_eq!(signal.external_id, "swarm-branch-ready-w1");
+        assert!(signal.metadata.as_deref().unwrap_or("").contains("swarm/w1-fix"));
+    }
+
+    #[test]
+    fn rule_stalled_completed_phase_emits_branch_ready_signal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(workspace_root.join(".swarm")).unwrap();
+
+        let conn = Arc::new(Mutex::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+        ));
+        conn.lock()
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
+        let r = SwarmReconciler {
+            workspace: "test".to_string(),
+            swarm_dir: workspace_root.join(".swarm"),
+            store,
+            event_tx: None,
+            db_path: None,
+            signal_tx: Some(tx),
+            pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
+        };
+
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Stalled;
+        r.store.upsert(&w).unwrap();
+
+        let mut wt = swarm_wt("w1", "completed", None);
+        wt.branch = Some("swarm/w1-stalled-fix".to_string());
+        r.apply_rules(&w, &wt).unwrap();
+
+        let (ws, signal) = rx.try_recv().expect("signal should have been sent from stalled exit");
+        assert_eq!(ws, "test");
+        assert_eq!(signal.source, "swarm_branch_ready");
+        assert!(signal.metadata.as_deref().unwrap_or("").contains("swarm/w1-stalled-fix"));
+    }
+
+    #[test]
     fn rule_pr_url_property_set() {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
