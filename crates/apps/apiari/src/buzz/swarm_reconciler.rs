@@ -959,12 +959,11 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
             warn!("[reconciler] startup reset error: {e}");
         }
 
-        // Fast loop: file reads only (swarm state.json, agent-status files).
-        // No external subprocesses — must stay cheap.
+        // Fast loop: runs in spawn_blocking (does file I/O + occasional `gh pr view`).
         let mut fast_interval = tokio::time::interval(std::time::Duration::from_secs(5));
         fast_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // Slow loop: PR approval polling via `gh pr view`.
+        // Slow loop: PR approval polling via GraphQL `gh api`.
         // Runs every 5 minutes. Only fires if there are tasks in InAiReview.
         let mut pr_interval = tokio::time::interval(std::time::Duration::from_secs(5 * 60));
         pr_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -972,9 +971,12 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
         loop {
             tokio::select! {
                 _ = fast_interval.tick() => {
-                    if let Err(e) = reconciler.reconcile_once() {
-                        warn!("[reconciler] error: {e}");
-                    }
+                    let r = std::sync::Arc::clone(&reconciler);
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = r.reconcile_once() {
+                            warn!("[reconciler] error: {e}");
+                        }
+                    });
                 }
                 _ = pr_interval.tick() => {
                     let r = std::sync::Arc::clone(&reconciler);

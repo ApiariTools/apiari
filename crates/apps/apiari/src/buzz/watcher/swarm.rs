@@ -32,7 +32,6 @@ use crate::buzz::signal::{Severity, SignalStatus, SignalUpdate, store::SignalSto
 struct TrackedWorker {
     phase: WorkerPhase,
     has_pr: bool,
-    ready_branch: Option<String>,
     role: Option<String>,
     running_count: u32,
 }
@@ -150,46 +149,14 @@ impl SwarmWatcher {
         }
     }
 
-    /// Read `ready_branch` from `.swarm/state.json`.
-    fn read_ready_branches(&self) -> HashMap<String, (String, String)> {
-        let raw = match std::fs::read_to_string(&self.state_path) {
-            Ok(s) => s,
-            Err(_) => return HashMap::new(),
-        };
-        let state: serde_json::Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(_) => return HashMap::new(),
-        };
-        let mut map = HashMap::new();
-        if let Some(wts) = state.get("worktrees").and_then(|w| w.as_array()) {
-            for wt in wts {
-                let id = wt.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                if id.is_empty() {
-                    continue;
-                }
-                if let Some(branch) = wt.get("ready_branch").and_then(|v| v.as_str()) {
-                    let repo = wt
-                        .get("repo_path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    map.insert(id.to_string(), (branch.to_string(), repo));
-                }
-            }
-        }
-        map
-    }
-
     /// Diff the full worker list against tracked state, emit signals.
     fn diff_workers(&mut self, workers: &[WorkerInfo]) -> Vec<SignalUpdate> {
-        let ready_branches = self.read_ready_branches();
         let mut signals = Vec::new();
 
         for w in workers {
             let id = &w.id;
             let prev = self.tracked.get(id);
             let has_pr = w.pr_url.is_some();
-            let ready_branch = ready_branches.get(id.as_str()).map(|(b, _)| b.clone());
             let role = w.role.as_deref().unwrap_or("worker");
 
             // New worker spawned
@@ -206,28 +173,6 @@ impl SwarmWatcher {
                         w.agent,
                         truncate_prompt(&w.prompt)
                     )),
-                );
-            }
-
-            // Branch ready transition
-            let had_ready = prev.and_then(|p| p.ready_branch.as_deref()).is_some();
-            if ready_branch.is_some() && !had_ready && !has_pr {
-                let branch = ready_branch.as_deref().unwrap_or("");
-                let repo = ready_branches
-                    .get(id.as_str())
-                    .map(|(_, r)| r.as_str())
-                    .unwrap_or("");
-                signals.push(
-                    SignalUpdate::new(
-                        "swarm_branch_ready",
-                        format!("swarm-branch-ready-{id}"),
-                        format!("Branch ready for review: {branch}"),
-                        Severity::Info,
-                    )
-                    .with_metadata(
-                        serde_json::json!({"worker_id": id, "branch_name": branch, "repo": repo})
-                            .to_string(),
-                    ),
                 );
             }
 
@@ -312,7 +257,6 @@ impl SwarmWatcher {
                 TrackedWorker {
                     phase: w.phase.clone(),
                     has_pr,
-                    ready_branch,
                     role: w.role.clone(),
                     running_count,
                 },
@@ -405,14 +349,12 @@ impl Watcher for SwarmWatcher {
         };
 
         if !self.initialized {
-            let ready_branches = self.read_ready_branches();
             for w in &workers {
                 self.tracked.insert(
                     w.id.clone(),
                     TrackedWorker {
                         phase: w.phase.clone(),
                         has_pr: w.pr_url.is_some(),
-                        ready_branch: ready_branches.get(&w.id).map(|(b, _)| b.clone()),
                         role: w.role.clone(),
                         running_count: 0,
                     },
@@ -578,7 +520,6 @@ mod tests {
         TrackedWorker {
             phase,
             has_pr,
-            ready_branch: None,
             role: role.map(String::from),
             running_count: 1,
         }
@@ -718,31 +659,4 @@ mod tests {
         assert!(state.worktrees[0].pr.is_some());
     }
 
-    #[test]
-    fn test_read_ready_branches_uses_explicit_state_path() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("workspace");
-        let state_dir = temp.path().join("custom-swarm");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&state_dir).unwrap();
-        std::fs::write(
-            state_dir.join("state.json"),
-            r#"{
-                "worktrees": [{
-                    "id": "w1",
-                    "ready_branch": "common/fix-sdk",
-                    "repo_path": "/tmp/common"
-                }]
-            }"#,
-        )
-        .unwrap();
-
-        let watcher = SwarmWatcher::new(root, state_dir.join("state.json"));
-        let ready = watcher.read_ready_branches();
-
-        assert_eq!(
-            ready.get("w1"),
-            Some(&(String::from("common/fix-sdk"), String::from("/tmp/common")))
-        );
-    }
 }
