@@ -17,7 +17,11 @@ pub async fn generate_worker_title(
     let context = match recent_output {
         Some(s) if !s.trim().is_empty() => {
             // Cap at 800 chars to keep the prompt short
-            let snippet = if s.len() > 800 { &s[s.len() - 800..] } else { s };
+            let snippet = if s.len() > 800 {
+                &s[s.len() - 800..]
+            } else {
+                s
+            };
             format!("\n\nRecent progress:\n{snippet}")
         }
         _ => String::new(),
@@ -32,20 +36,20 @@ pub async fn generate_worker_title(
     );
 
     let child = tokio::process::Command::new("apfel")
-        .args(["-s", "You generate concise task titles. Respond with JSON only."])
+        .args([
+            "-s",
+            "You generate concise task titles. Respond with JSON only.",
+        ])
         .arg(&prompt)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
 
-    let output = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        child.wait_with_output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output())
+        .await
+        .ok()?
+        .ok()?;
 
     if !output.status.success() {
         return None;

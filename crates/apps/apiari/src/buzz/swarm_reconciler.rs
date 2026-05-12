@@ -220,9 +220,8 @@ pub struct SwarmReconcilerConfig {
     pub db_path: Option<std::path::PathBuf>,
     /// Channel for emitting signals that should be routed through the orchestrator.
     /// Tuple is (workspace_name, signal_update).
-    pub signal_tx: Option<
-        tokio::sync::mpsc::UnboundedSender<(String, crate::buzz::signal::SignalUpdate)>,
-    >,
+    pub signal_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<(String, crate::buzz::signal::SignalUpdate)>>,
 }
 
 /// The actual reconciler logic — separated from the task for testability.
@@ -233,9 +232,8 @@ pub struct SwarmReconciler {
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     db_path: Option<std::path::PathBuf>,
     /// Channel for emitting signals to the orchestrator (e.g. swarm_branch_ready).
-    signal_tx: Option<
-        tokio::sync::mpsc::UnboundedSender<(String, crate::buzz::signal::SignalUpdate)>,
-    >,
+    signal_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<(String, crate::buzz::signal::SignalUpdate)>>,
     /// Last time we checked each waiting worker's PR for merge — throttled to
     /// at most once per 60 seconds to avoid hammering the GitHub API.
     pr_merge_checked: std::sync::Mutex<HashMap<String, std::time::Instant>>,
@@ -671,9 +669,7 @@ impl SwarmReconciler {
                                 && let Ok(store) = crate::buzz::worker::WorkerStore::new(conn)
                             {
                                 let _ = store.update_title(&workspace, &worker_id, &title, conf);
-                                info!(
-                                    "[title-gen] {worker_id} → {title:?} (confidence={conf})"
-                                );
+                                info!("[title-gen] {worker_id} → {title:?} (confidence={conf})");
                             }
                         });
                     }
@@ -1175,16 +1171,15 @@ mod tests {
         let workspace_root = tmp.path().to_path_buf();
         std::fs::create_dir_all(workspace_root.join(".swarm")).unwrap();
 
-        let conn = Arc::new(Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        ));
+        let conn = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
         conn.lock()
             .unwrap()
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .unwrap();
         let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
         let r = SwarmReconciler {
             workspace: "test".to_string(),
             swarm_dir: workspace_root.join(".swarm"),
@@ -1207,7 +1202,13 @@ mod tests {
         assert_eq!(ws, "test");
         assert_eq!(signal.source, "swarm_branch_ready");
         assert_eq!(signal.external_id, "swarm-branch-ready-w1");
-        assert!(signal.metadata.as_deref().unwrap_or("").contains("swarm/w1-fix"));
+        assert!(
+            signal
+                .metadata
+                .as_deref()
+                .unwrap_or("")
+                .contains("swarm/w1-fix")
+        );
     }
 
     #[test]
@@ -1216,16 +1217,15 @@ mod tests {
         let workspace_root = tmp.path().to_path_buf();
         std::fs::create_dir_all(workspace_root.join(".swarm")).unwrap();
 
-        let conn = Arc::new(Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        ));
+        let conn = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
         conn.lock()
             .unwrap()
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .unwrap();
         let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
         let r = SwarmReconciler {
             workspace: "test".to_string(),
             swarm_dir: workspace_root.join(".swarm"),
@@ -1244,10 +1244,18 @@ mod tests {
         wt.branch = Some("swarm/w1-stalled-fix".to_string());
         r.apply_rules(&w, &wt).unwrap();
 
-        let (ws, signal) = rx.try_recv().expect("signal should have been sent from stalled exit");
+        let (ws, signal) = rx
+            .try_recv()
+            .expect("signal should have been sent from stalled exit");
         assert_eq!(ws, "test");
         assert_eq!(signal.source, "swarm_branch_ready");
-        assert!(signal.metadata.as_deref().unwrap_or("").contains("swarm/w1-stalled-fix"));
+        assert!(
+            signal
+                .metadata
+                .as_deref()
+                .unwrap_or("")
+                .contains("swarm/w1-stalled-fix")
+        );
     }
 
     #[test]

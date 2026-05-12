@@ -2979,10 +2979,8 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
 
     // Shared channel: reconcilers → orchestrator signal processing.
     // All workspace reconcilers share one sender; messages include workspace name for routing.
-    let (reconciler_signal_tx, reconciler_signal_rx) = tokio::sync::mpsc::unbounded_channel::<(
-        String,
-        crate::buzz::signal::SignalUpdate,
-    )>();
+    let (reconciler_signal_tx, reconciler_signal_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
 
     // Spawn v2 swarm reconcilers — one per workspace.
     for slot in &slots {
@@ -8474,7 +8472,10 @@ provider = "claude"
 
     // ── handle_reconciler_signal ──────────────────────────────────────────
 
-    fn make_branch_ready_update(worker_id: &str, branch: &str) -> crate::buzz::signal::SignalUpdate {
+    fn make_branch_ready_update(
+        worker_id: &str,
+        branch: &str,
+    ) -> crate::buzz::signal::SignalUpdate {
         crate::buzz::signal::SignalUpdate::new(
             "swarm_branch_ready",
             format!("swarm-branch-ready-{worker_id}"),
@@ -8524,14 +8525,9 @@ provider = "claude"
 
         let orchestrator = make_orchestrator_with_workflow(&db_path);
         let update = make_branch_ready_update("worker-abc", "swarm/worker-abc-fix");
-        let actions = super::handle_reconciler_signal(
-            &update,
-            &signal_store,
-            &db_path,
-            &orchestrator,
-            "ws",
-        )
-        .await;
+        let actions =
+            super::handle_reconciler_signal(&update, &signal_store, &db_path, &orchestrator, "ws")
+                .await;
 
         assert!(
             !actions.is_empty(),
@@ -8557,7 +8553,8 @@ provider = "claude"
         let update = make_branch_ready_update("worker-abc", "swarm/worker-abc-fix");
 
         // First call — upserts (no matching task, so no actions, but signal is stored)
-        super::handle_reconciler_signal(&update, &signal_store, &db_path, &orchestrator, "ws").await;
+        super::handle_reconciler_signal(&update, &signal_store, &db_path, &orchestrator, "ws")
+            .await;
 
         // Second call with same external_id — upsert returns is_new=false, no actions
         let actions =

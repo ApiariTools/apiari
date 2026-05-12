@@ -4166,19 +4166,19 @@ async fn generate_and_store_worker_title(
     use tracing::{info, warn};
 
     match crate::buzz::title_gen::generate_worker_title(goal, None).await {
-        Some((title, confidence)) => {
-            match open_worker_store_from_path(db_path) {
-                Ok(store) => match store.update_title(workspace, worker_id, &title, confidence) {
-                    Ok(()) => info!(
-                        "[worker-title/{workspace}/{worker_id}] generated: {title:?} \
+        Some((title, confidence)) => match open_worker_store_from_path(db_path) {
+            Ok(store) => match store.update_title(workspace, worker_id, &title, confidence) {
+                Ok(()) => info!(
+                    "[worker-title/{workspace}/{worker_id}] generated: {title:?} \
                          (confidence={confidence})"
-                    ),
-                    Err(e) => warn!("[worker-title/{workspace}/{worker_id}] db update failed: {e}"),
-                },
-                Err(e) => warn!("[worker-title/{workspace}/{worker_id}] open store failed: {e}"),
-            }
+                ),
+                Err(e) => warn!("[worker-title/{workspace}/{worker_id}] db update failed: {e}"),
+            },
+            Err(e) => warn!("[worker-title/{workspace}/{worker_id}] open store failed: {e}"),
+        },
+        None => {
+            warn!("[worker-title/{workspace}/{worker_id}] apfel unavailable or returned no title")
         }
-        None => warn!("[worker-title/{workspace}/{worker_id}] apfel unavailable or returned no title"),
     }
 }
 
@@ -5828,10 +5828,16 @@ async fn v2_context_bot_chat(
                         messages = excluded.messages,
                         updated_at = excluded.updated_at",
                     rusqlite::params![
-                        sid, ws, title, m, view, eid,
+                        sid,
+                        ws,
+                        title,
+                        m,
+                        view,
+                        eid,
                         snap.as_ref().map(|v| v.to_string()),
                         msgs_json.to_string(),
-                        now2, now2,
+                        now2,
+                        now2,
                     ],
                 );
             }
@@ -5927,8 +5933,10 @@ async fn v2_context_bot_chat(
                             }
                         }
                         Some("result") => {
-                            let is_error =
-                                val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let is_error = val
+                                .get("is_error")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                             if let Some(r) = val.get("result").and_then(|r| r.as_str()) {
                                 if is_error {
                                     result_error = Some(r.to_string());
@@ -6147,10 +6155,16 @@ async fn v2_context_bot_chat(
                             messages = excluded.messages,
                             updated_at = excluded.updated_at",
                         rusqlite::params![
-                            sid, ws, title, m, view, eid,
+                            sid,
+                            ws,
+                            title,
+                            m,
+                            view,
+                            eid,
                             snap.as_ref().map(|v| v.to_string()),
                             msgs_json.to_string(),
-                            now, updated_at,
+                            now,
+                            updated_at,
                         ],
                     );
                 }
@@ -9456,7 +9470,13 @@ model = "sonnet"
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match rx.recv().await {
-                    Ok(WsUpdate::ContextBotResponse { response, session_id: sid, dispatched_worker_id, error, .. }) => {
+                    Ok(WsUpdate::ContextBotResponse {
+                        response,
+                        session_id: sid,
+                        dispatched_worker_id,
+                        error,
+                        ..
+                    }) => {
                         return (response, sid, dispatched_worker_id, error);
                     }
                     Ok(_) => continue,

@@ -658,5 +658,4 @@ mod tests {
         assert_eq!(state.worktrees.len(), 1);
         assert!(state.worktrees[0].pr.is_some());
     }
-
 }
