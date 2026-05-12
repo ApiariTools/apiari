@@ -66,13 +66,7 @@ struct SwarmPr {
     url: Option<String>,
 }
 
-// ── GraphQL batch helpers ──────────────────────────────────────────────
-
-/// Sanitize a worker ID to a valid GraphQL alias (letters, digits, underscores).
-fn gql_alias(worker_id: &str) -> String {
-    let s = worker_id.replace(['-', '.'], "_");
-    format!("wt_{s}")
-}
+// ── GraphQL helpers ────────────────────────────────────────────────────
 
 /// Parse `(owner, repo, pr_number)` from a GitHub PR URL.
 /// `https://github.com/ApiariTools/apiari/pull/21` → `("ApiariTools", "apiari", 21)`
@@ -86,24 +80,6 @@ fn parse_pr_url(url: &str) -> Option<(String, String, u64)> {
         parts[0].to_string(),
         parts[1].to_string(),
         parts[3].parse().ok()?,
-    ))
-}
-
-/// Fetch the GitHub owner+repo for the workspace root using `gh repo view`.
-fn get_repo_nwo(workspace_root: &Path) -> Option<(String, String)> {
-    let out = std::process::Command::new("gh")
-        .args(["repo", "view", "--json", "owner,name"])
-        .current_dir(workspace_root)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let val: serde_json::Value =
-        serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).ok()?;
-    Some((
-        val["owner"]["login"].as_str()?.to_string(),
-        val["name"].as_str()?.to_string(),
     ))
 }
 
@@ -1363,12 +1339,6 @@ mod tests {
         assert!(parse_pr_url("https://github.com/ApiariTools/apiari").is_none());
         assert!(parse_pr_url("https://github.com/ApiariTools/apiari/issues/5").is_none());
         assert!(parse_pr_url("not-a-url").is_none());
-    }
-
-    #[test]
-    fn gql_alias_sanitizes_hyphens() {
-        assert_eq!(gql_alias("apiari-e6bf"), "wt_apiari_e6bf");
-        assert_eq!(gql_alias("worker.1"), "wt_worker_1");
     }
 
     #[test]

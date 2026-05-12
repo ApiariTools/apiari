@@ -146,9 +146,12 @@ All routes defined in `routes.rs`:
 | POST | `/api/workspaces/{ws}/seen/{bot}` | Mark bot conversation as read |
 | POST | `/api/transcribe` | Transcribe audio (multipart, requires ffmpeg + whisper-cli) |
 | GET | `/api/workspaces/{ws}/repos` | List git repos in workspace root |
-| GET | `/api/workspaces/{ws}/workers` | List swarm workers |
-| GET | `/api/workspaces/{ws}/workers/{id}` | Worker detail (prompt, output, conversation) |
-| POST | `/api/workspaces/{ws}/workers/{id}/send` | Send message to worker (JSON: `{message}`) |
+| GET | `/api/workspaces/{ws}/v2/workers` | List workers (v2, SQLite-backed — use this) |
+| GET | `/api/workspaces/{ws}/v2/workers/{id}` | Worker detail |
+| POST | `/api/workspaces/{ws}/v2/workers` | Create worker |
+| POST | `/api/workspaces/{ws}/v2/workers/{id}/send` | Send message to worker |
+| GET | `/api/workspaces/{ws}/workers` | **Deprecated** — legacy v1 worker list |
+| GET | `/api/workspaces/{ws}/workers/{id}` | **Deprecated** — legacy v1 worker detail |
 | GET | `/ws` | WebSocket for real-time events |
 
 Body limit: 50MB (for image attachments).
@@ -251,7 +254,7 @@ Dark theme. CSS variables in `web/src/theme.css`:
 
 ## Common Pitfalls
 - `overflow: hidden` on message containers HIDES ALL TEXT — we've hit this 3 times
-- Swarm state uses `worktrees` not `workers`, `agent_kind` not `agent`
+- `.swarm/state.json` uses a `worktrees` array (not `workers`); each entry has `agent` (the CLI name) and an optional `agent_kind` field
 - Bot responses start with `\n\n` — always trim before storing
 - `GH_TOKEN` from Claude Code sandbox breaks git — daemon strips it on startup
 - Canvas elements need explicit `width` — `left`/`right` doesn't stretch them
