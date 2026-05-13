@@ -2490,4 +2490,219 @@ mod tests {
             "no signal when branch_ready already was true"
         );
     }
+
+    // ── Event-driven handler tests ─────────────────────────────────────────
+
+    #[test]
+    fn event_queued_running_phase_transitions_to_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let w = default_worker("w1");
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Running)
+            .unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Running);
+    }
+
+    #[test]
+    fn event_running_waiting_phase_transitions_to_waiting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Waiting)
+            .unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+    }
+
+    #[test]
+    fn event_running_completed_sets_branch_ready_and_waiting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (r, _rx) = make_reconciler_with_signal(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        w.branch = Some("swarm/w1-fix".to_string());
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Completed)
+            .unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+        assert!(updated.branch_ready);
+    }
+
+    #[test]
+    fn event_running_completed_emits_branch_ready_signal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (r, mut rx) = make_reconciler_with_signal(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        w.branch = Some("swarm/w1-fix".to_string());
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Completed)
+            .unwrap();
+
+        let (ws, signal) = rx
+            .try_recv()
+            .expect("branch_ready signal must be emitted on Completed");
+        assert_eq!(ws, "test");
+        assert_eq!(signal.source, "swarm_branch_ready");
+        assert_eq!(signal.external_id, "swarm-branch-ready-w1");
+    }
+
+    #[test]
+    fn event_running_failed_sets_branch_ready_and_waiting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (r, _rx) = make_reconciler_with_signal(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        w.branch = Some("swarm/w1-fail".to_string());
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Failed)
+            .unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+        assert!(updated.branch_ready);
+    }
+
+    #[test]
+    fn event_waiting_running_phase_increments_revision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Waiting;
+        w.revision_count = 2;
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Running)
+            .unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Running);
+        assert_eq!(updated.revision_count, 3);
+    }
+
+    #[test]
+    fn event_stalled_running_phase_unstalls() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Stalled;
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Running)
+            .unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Running);
+    }
+
+    #[test]
+    fn event_unknown_worker_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        // No worker in DB — should not panic or error
+        r.handle_phase_change("nonexistent", apiari_swarm::WorkerPhase::Running)
+            .unwrap();
+    }
+
+    #[test]
+    fn event_terminal_worker_is_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (r, mut rx) = make_reconciler_with_signal(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Done;
+        w.branch = Some("swarm/w1-done".to_string());
+        r.store.upsert(&w).unwrap();
+
+        // Completed event on a Done worker should not re-emit signal
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Completed)
+            .unwrap();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "no signal for workers already in terminal state"
+        );
+    }
+
+    #[test]
+    fn handle_agent_output_updates_last_output_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        r.store.upsert(&w).unwrap();
+
+        r.handle_agent_output("w1").unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert!(
+            updated.last_output_at.is_some(),
+            "last_output_at must be set after agent output"
+        );
+    }
+
+    #[test]
+    fn handle_agent_output_unstalls_stalled_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Stalled;
+        r.store.upsert(&w).unwrap();
+
+        r.handle_agent_output("w1").unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Running);
+    }
+
+    #[test]
+    fn check_stalls_detects_silent_running_worker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        // state_entered_at 20 minutes ago → should stall
+        let old_ts = (Utc::now() - chrono::Duration::minutes(20)).to_rfc3339();
+        w.state_entered_at = old_ts;
+        r.store.upsert(&w).unwrap();
+
+        r.check_stalls().unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Stalled);
+    }
+
+    #[test]
+    fn event_waiting_phase_with_branch_ready_emits_signal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (r, mut rx) = make_reconciler_with_signal(&tmp);
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        w.branch_ready = true;
+        w.branch = Some("swarm/w1-fix".to_string());
+        r.store.upsert(&w).unwrap();
+
+        r.handle_phase_change("w1", apiari_swarm::WorkerPhase::Waiting)
+            .unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+        let (ws, signal) = rx
+            .try_recv()
+            .expect("signal must fire when branch_ready was already set");
+        assert_eq!(ws, "test");
+        assert_eq!(signal.source, "swarm_branch_ready");
+    }
 }
