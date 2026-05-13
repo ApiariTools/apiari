@@ -35,8 +35,7 @@ When you finish your task, write a summary of what you did and the outcome to `.
 - Stay on your `swarm/*` branch
 - NEVER push to or merge into `main`
 - Commit early and often
-- **Do NOT run `gh pr create` or open a pull request (PR) yourself** unless the task explicitly tells you to. The coordinator or orchestrator opens the PR automatically.
-- When the system will open the PR for you: commit all changes, push your branch, then output exactly:
+- **NEVER run `gh pr create`** — not under any circumstances. Do not write `pr.json`. The orchestrator opens the PR automatically.
+- When your work is complete: commit all changes, push your branch, then output this as the **very last line**:
   `BRANCH_READY: <your-branch-name>`
-- Only open the PR yourself if the task explicitly says to. In that case output exactly:
-  `PR_OPENED: <pr-url>`
+- Nothing comes after `BRANCH_READY`. No PR json. No PR creation. Just that line, then stop.
