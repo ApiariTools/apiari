@@ -5729,8 +5729,15 @@ fn build_context_bot_system_prompt(
     if let Some(ref snapshot) = ctx.entity_snapshot {
         let pretty =
             serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| snapshot.to_string());
+        // Truncate to avoid hitting OS arg-length limits when passed as --system-prompt.
+        const MAX_SNAPSHOT: usize = 4000;
+        let truncated = if pretty.len() > MAX_SNAPSHOT {
+            format!("{}... [truncated]", &pretty[..MAX_SNAPSHOT])
+        } else {
+            pretty
+        };
         prompt.push_str("\nCurrent state snapshot:\n");
-        prompt.push_str(&pretty);
+        prompt.push_str(&truncated);
         prompt.push('\n');
     }
 
@@ -5738,18 +5745,13 @@ fn build_context_bot_system_prompt(
         "\nYou have full tool access: use Bash to run git commands, grep, etc. \
          Use Read to inspect files. The workspace root is your working directory.\n\
          \n\
-         IMPORTANT: Always respond with a JSON object — never plain text.\n\
+         Respond in plain markdown. Be concise and direct.\n\
          \n\
-         Minimal response:\n\
-         {\"text\": \"Your answer here.\"}\n\
+         If the user explicitly asks you to create, dispatch, or start a worker to do coding work, \
+         include a line at the very end of your response in exactly this format:\n\
+         DISPATCH_WORKER: <one clear sentence describing what the worker should accomplish>\n\
          \n\
-         To dispatch a worker to do coding work:\n\
-         {\"text\": \"Brief confirmation to the user.\", \"dispatch_worker\": {\"goal\": \"One clear sentence describing what the worker should accomplish.\"}}\n\
-         \n\
-         Rules:\n\
-         - text: required. What the user sees. Be concise.\n\
-         - dispatch_worker: optional. Only include when the user explicitly asks to create/dispatch/start a worker.\n\
-         - dispatch_worker.goal: a single plain-text sentence — no markdown, no headers.",
+         Only include DISPATCH_WORKER when explicitly requested. Never include it for questions or investigations.",
     );
 
     prompt
@@ -5877,6 +5879,7 @@ async fn v2_context_bot_chat(
     let history_bg = body.history.clone().unwrap_or_default();
     let context_bg = body.context.clone();
     let message_bg = body.message.clone();
+    let system_prompt_len = system_prompt.len();
 
     // Spawn detached — a client disconnect cannot cancel this work.
     tokio::spawn(async move {
@@ -5888,8 +5891,7 @@ async fn v2_context_bot_chat(
                 .arg("--output-format")
                 .arg("stream-json")
                 .arg("--verbose")
-                .arg("--max-turns")
-                .arg("10")
+                .arg("--dangerously-skip-permissions")
                 .arg("--model")
                 .arg(&model_bg)
                 .arg("--system-prompt")
@@ -5900,8 +5902,24 @@ async fn v2_context_bot_chat(
                 .stderr(std::process::Stdio::piped())
                 .spawn()?;
 
+            // Build the full message: prepend conversation history so Claude has context.
+            let mut full_message = String::new();
+            if !history_bg.is_empty() {
+                full_message.push_str("[Prior conversation]\n");
+                for msg in &history_bg {
+                    let role = if msg.role == "user" {
+                        "User"
+                    } else {
+                        "Assistant"
+                    };
+                    full_message.push_str(&format!("{}: {}\n", role, msg.content));
+                }
+                full_message.push_str("\n[Current message]\n");
+            }
+            full_message.push_str(&message_bg);
+
             if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(message_bg.as_bytes()).await;
+                let _ = stdin.write_all(full_message.as_bytes()).await;
             }
 
             // Read stderr concurrently so we have it for error messages.
@@ -5994,6 +6012,7 @@ async fn v2_context_bot_chat(
                 tracing::error!(
                     workspace = %workspace_bg,
                     detail = %detail,
+                    system_prompt_len = system_prompt_len,
                     "[context-bot] claude exited non-zero"
                 );
                 let _ = updates_tx.send(WsUpdate::ContextBotResponse {
@@ -6038,17 +6057,20 @@ async fn v2_context_bot_chat(
             "[context-bot] ok"
         );
 
-        // Parse JSON response — claude always returns {"text": "...", "dispatch_worker"?: {"goal": "..."}}
-        let (display_text, dispatch_goal) =
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let text = val["text"].as_str().unwrap_or(&raw).to_string();
-                let goal = val["dispatch_worker"]["goal"]
-                    .as_str()
-                    .map(|s| s.to_string());
-                (text, goal)
+        // Scan for optional DISPATCH_WORKER: directive; everything else is display text.
+        let mut dispatch_goal: Option<String> = None;
+        let mut display_lines: Vec<&str> = Vec::new();
+        for line in raw.lines() {
+            if let Some(goal) = line.trim().strip_prefix("DISPATCH_WORKER:") {
+                let goal = goal.trim().to_string();
+                if !goal.is_empty() {
+                    dispatch_goal = Some(goal);
+                }
             } else {
-                (raw.clone(), None)
-            };
+                display_lines.push(line);
+            }
+        }
+        let display_text = display_lines.join("\n").trim().to_string();
 
         let mut dispatched_worker_id: Option<String> = None;
         let ws_cfg = load_workspace_by_name(&workspace_bg);
@@ -6884,8 +6906,6 @@ mod tests {
         Command::new("git")
             .args(["init", "-q"])
             .current_dir(path)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
     }
@@ -6894,8 +6914,6 @@ mod tests {
         Command::new("git")
             .args(["remote", "add", "origin", origin])
             .current_dir(path)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
     }
@@ -6904,15 +6922,11 @@ mod tests {
         Command::new("git")
             .args(["config", "user.email", "test@example.com"])
             .current_dir(path)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
         Command::new("git")
             .args(["config", "user.name", "Test User"])
             .current_dir(path)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
     }
@@ -6921,8 +6935,6 @@ mod tests {
         let status = Command::new("git")
             .args(args)
             .current_dir(path)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
         assert!(
@@ -8148,7 +8160,7 @@ model = "sonnet"
 
         // Prompt should contain the dispatch instruction
         assert!(
-            prompt.contains("dispatch_worker"),
+            prompt.contains("DISPATCH_WORKER"),
             "prompt should explain the dispatch directive"
         );
 
@@ -9759,8 +9771,8 @@ model = "sonnet"
             "handler must pass --print, got: {logged}"
         );
         assert!(
-            logged.contains("--max-turns"),
-            "handler must pass --max-turns, got: {logged}"
+            logged.contains("--dangerously-skip-permissions"),
+            "handler must pass --dangerously-skip-permissions, got: {logged}"
         );
         assert!(
             logged.contains("--model"),
