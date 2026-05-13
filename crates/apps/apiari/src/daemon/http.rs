@@ -3868,7 +3868,7 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    content
+    let mut events: Vec<serde_json::Value> = content
         .lines()
         .filter_map(|line| {
             let val: serde_json::Value = serde_json::from_str(line).ok()?;
@@ -3960,7 +3960,16 @@ fn read_worker_events(path: &std::path::Path) -> Vec<serde_json::Value> {
                 _ => None,
             }
         })
-        .collect()
+        .collect();
+
+    // Sort by timestamp so orchestrator-appended events (e.g. "PR created") land
+    // after the worker's final messages even if the file write raced ahead of them.
+    events.sort_by(|a, b| {
+        let ta = a.get("created_at").and_then(|t| t.as_str()).unwrap_or("");
+        let tb = b.get("created_at").and_then(|t| t.as_str()).unwrap_or("");
+        ta.cmp(tb)
+    });
+    events
 }
 
 /// POST /api/workspaces/{ws}/v2/workers — create a worker from a brief.
