@@ -5,6 +5,7 @@
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--space-7) var(--space-7) var(--space-8);
   background: var(--bg);
   gap: var(--space-6);
@@ -228,13 +229,41 @@
 
 @media (max-width: 768px) {
   .container {
-    padding: var(--space-4) var(--space-4) var(--space-6);
-    gap: var(--space-4);
+    padding: var(--space-3) var(--space-3) var(--space-6);
+    gap: var(--space-3);
     padding-bottom: calc(var(--bottom-bar-height) + var(--space-4));
   }
 
   .widgetGrid {
     grid-template-columns: 1fr;
+  }
+
+  .statPill {
+    min-width: 0;
+    flex: 1;
+    padding: var(--space-3) var(--space-3);
+  }
+
+  .statPillNum {
+    font-size: 20px;
+  }
+
+  .statPillLabel {
+    font-size: 11px;
+  }
+
+  .attentionId {
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .repoBranch {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 120px;
   }
 
   /* FAB handles chat on mobile — hide the Ask button */
