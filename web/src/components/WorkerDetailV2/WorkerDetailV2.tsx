@@ -1080,7 +1080,7 @@ export default function WorkerDetailV2({
       {/* ── Tab content (scrollable) ── */}
       <div key={activeTab} className={styles.tabContent}>
         {activeTab === "timeline" && (
-          <div className={styles.timelinePanel}>
+          <div className={styles.timelinePanel} data-testid="tab-timeline">
             {/* Top divider: Worker started */}
             <div className={styles.stateDivider}>
               <span className={styles.stateDividerText}>

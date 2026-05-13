@@ -133,9 +133,14 @@ async function fulfillJson(route: Route, body: unknown) {
 }
 
 async function wireMockApi(page: Page, fixture: AppFixture) {
-  await page.route("**/api/**", async (route) => {
+  await page.route(/\/api\//, async (route) => {
     const req = route.request();
     const url = new URL(req.url());
+    // Only intercept requests to the dev server's own /api/* endpoints,
+    // not JS module paths that happen to contain "api" in the package name.
+    if (!url.pathname.startsWith("/api/")) {
+      return route.continue();
+    }
     const method = req.method();
     const path = url.pathname;
 

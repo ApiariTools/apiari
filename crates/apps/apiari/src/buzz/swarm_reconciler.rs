@@ -305,15 +305,14 @@ impl SwarmReconciler {
                 worker.id
             );
             // Delete any stale signal so the next upsert treats it as new.
-            if let Some(ref db_path) = self.db_path {
-                if let Ok(store) =
+            if let Some(ref db_path) = self.db_path
+                && let Ok(store) =
                     crate::buzz::signal::store::SignalStore::open(db_path, &self.workspace)
-                {
-                    let _ = store.delete_signal(
-                        "swarm_branch_ready",
-                        &format!("swarm-branch-ready-{}", worker.id),
-                    );
-                }
+            {
+                let _ = store.delete_signal(
+                    "swarm_branch_ready",
+                    &format!("swarm-branch-ready-{}", worker.id),
+                );
             }
             self.emit_branch_ready_signal(&worker.id, &branch);
         }

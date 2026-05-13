@@ -847,7 +847,7 @@ async fn execute_plain(
                 None
             }
         })
-        .last()
+        .next_back()
         .unwrap_or_default();
 
     let outcome = if raw_output.trim().is_empty() {
