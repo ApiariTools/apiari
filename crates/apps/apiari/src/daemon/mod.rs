@@ -7258,26 +7258,31 @@ fn execute_workflow_action(
             let db_path = db_path.to_path_buf();
             let workspace_name = _workspace_name.to_string();
 
+            // Preserve workspace root before we remap work_dir to the worktree.
+            let workspace_root = work_dir.to_path_buf();
+
             // Use the worker's worktree path so `gh pr create` runs inside the
             // actual git repo, not the workspace root (which is not a git repo).
-            let work_dir = {
+            let (work_dir, pr_worker_id) = {
                 let task = crate::buzz::task::store::TaskStore::open(&db_path)
                     .ok()
                     .and_then(|ts| ts.get_task(&task_id).ok().flatten());
                 let worker_id = task.as_ref().and_then(|t| t.worker_id.clone());
-                worker_id
+                let wt = worker_id
+                    .as_ref()
                     .and_then(|wid| {
                         crate::buzz::worker::WorkerStore::open(&db_path)
                             .ok()
                             .and_then(|ws| {
-                                ws.get(_workspace_name, &wid).ok().flatten().and_then(|w| {
+                                ws.get(_workspace_name, wid).ok().flatten().and_then(|w| {
                                     w.worktree_path
                                         .or(w.repo_path)
                                         .map(std::path::PathBuf::from)
                                 })
                             })
                     })
-                    .unwrap_or_else(|| work_dir.to_path_buf())
+                    .unwrap_or_else(|| workspace_root.clone());
+                (wt, worker_id)
             };
 
             info!(
@@ -7285,18 +7290,27 @@ fn execute_workflow_action(
                 work_dir.display()
             );
 
-            // Look up task title for the PR
-            let title = crate::buzz::task::store::TaskStore::open(&db_path)
-                .ok()
-                .and_then(|ts| ts.get_task(&task_id).ok().flatten())
-                .map(|t| t.title.clone())
-                .unwrap_or_else(|| format!("PR for {branch_name}"));
+            // Prefer a worker-authored PR description; fall back to defaults.
+            let pr_desc = pr_worker_id.as_deref().and_then(|wid| {
+                crate::buzz::orchestrator::workflow::read_pr_description(&workspace_root, wid)
+            });
 
-            let is_forced = matches!(action, WorkflowAction::ForceCreatePr { .. });
-            let body = if is_forced {
-                "Created by apiari orchestrator (max review cycles exceeded)".to_string()
+            let (title, body) = if let Some(desc) = pr_desc {
+                info!("[workflow] using worker-authored PR description for task {task_id}");
+                (desc.title, desc.body)
             } else {
-                "Created by apiari orchestrator".to_string()
+                let fallback_title = crate::buzz::task::store::TaskStore::open(&db_path)
+                    .ok()
+                    .and_then(|ts| ts.get_task(&task_id).ok().flatten())
+                    .map(|t| t.title.clone())
+                    .unwrap_or_else(|| format!("PR for {branch_name}"));
+                let is_forced = matches!(action, WorkflowAction::ForceCreatePr { .. });
+                let fallback_body = if is_forced {
+                    "Created by apiari orchestrator (max review cycles exceeded)".to_string()
+                } else {
+                    "Created by apiari orchestrator".to_string()
+                };
+                (fallback_title, fallback_body)
             };
 
             tokio::spawn(async move {

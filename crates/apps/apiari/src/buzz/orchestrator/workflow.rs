@@ -69,6 +69,24 @@ pub enum WorkflowAction {
     },
 }
 
+/// PR title + body written by the worker to `.swarm/agents/{id}/pr.json`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PrDescriptionFile {
+    pub title: String,
+    pub body: String,
+}
+
+/// Read a worker-authored PR description from its agent directory, if present.
+pub fn read_pr_description(workspace_root: &Path, worker_id: &str) -> Option<PrDescriptionFile> {
+    let path = workspace_root
+        .join(".swarm")
+        .join("agents")
+        .join(worker_id)
+        .join("pr.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 /// Result of a system PR creation.
 #[derive(Debug, Clone)]
 pub struct PrCreationResult {

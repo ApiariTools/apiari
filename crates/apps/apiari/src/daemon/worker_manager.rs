@@ -240,6 +240,24 @@ impl WorkerManager {
         let agent_dir = work_dir_copy.join(".swarm").join("agents").join(&worker_id);
         std::fs::create_dir_all(&agent_dir)?;
 
+        // Append the PR description protocol so the worker knows where to
+        // write pr.json before signaling BRANCH_READY.
+        let pr_json_path = agent_dir.join("pr.json");
+        let effective_prompt = format!(
+            "{}\n\n---\n\n## PR Description\n\
+            Before signaling `BRANCH_READY`, write the PR title and body to:\n\
+            `{}`\n\n\
+            ```json\n\
+            {{\n  \"title\": \"type(scope): short description (under 72 chars)\",\
+            \n  \"body\": \"## Summary\\n\\n- what changed and why\
+            \\n\\n## Test plan\\n\\n- [ ] step to verify\"\n}}\n\
+            ```\n\
+            Use conventional commit format for the title. \
+            The body renders as Markdown on GitHub.",
+            effective_prompt,
+            pr_json_path.display()
+        );
+
         let agent = spawn_managed_agent(SpawnOptions {
             kind: kind.clone(),
             prompt: effective_prompt.clone(),
