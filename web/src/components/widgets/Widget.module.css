@@ -658,3 +658,17 @@ a.feedEvent:hover {
   color: var(--text-faint);
   font-family: var(--font-mono);
 }
+
+@media (max-width: 768px) {
+  .card {
+    padding: var(--space-3) var(--space-4);
+  }
+
+  .barLabel {
+    display: inline-block;
+    width: 60px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

@@ -9532,7 +9532,7 @@ model = "sonnet"
     #[allow(clippy::await_holding_lock)]
     async fn context_bot_chat_uses_system_prompt_flag() {
         // Verifies the handler passes --system-prompt (not the old --system).
-        // The fake claude logs all args to stderr; we capture them via a log file.
+        // The fake claude logs all args to a file; we wait for the WS event.
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let log = temp.path().join("args.log");
@@ -9542,7 +9542,7 @@ model = "sonnet"
         let script = bin_dir.join("claude");
         let log_display = log.display().to_string();
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nprintf '%s' 'ok'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"ok\"}}'\n",
             log_display
         );
         fs::write(&script, &body).unwrap();
@@ -9562,6 +9562,7 @@ model = "sonnet"
 
         let db = temp.path().join("test.db");
         let state = make_context_bot_state(&db);
+        let mut rx = state.updates_tx.subscribe();
 
         v2_context_bot_chat(
             axum::extract::Path("apiari".to_string()),
@@ -9581,8 +9582,18 @@ model = "sonnet"
         )
         .await;
 
-        // Wait for the spawned task to run claude and write the log.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Wait for the background task to complete via WS event.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(WsUpdate::ContextBotResponse { .. }) => break,
+                    Ok(_) => continue,
+                    Err(_) => panic!("broadcast channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("ContextBotResponse must arrive within 5s");
 
         let logged = fs::read_to_string(&log).unwrap_or_default();
         assert!(
@@ -9627,9 +9638,9 @@ model = "sonnet"
         let script = bin_dir.join("claude");
         let log_display = log.display().to_string();
         let stdin_display = stdin_log.display().to_string();
-        // Write args to args.log, stdin content to stdin.log, then respond ok.
+        // Write args to args.log, stdin content to stdin.log, then respond valid JSON.
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\ncat >> '{}'\nprintf '%s' 'ok'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\ncat >> '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"ok\"}}'\n",
             log_display, stdin_display
         );
         fs::write(&script, &body).unwrap();
@@ -9651,6 +9662,7 @@ model = "sonnet"
 
         let db = temp.path().join("test.db");
         let state = make_context_bot_state(&db);
+        let mut rx = state.updates_tx.subscribe();
         v2_context_bot_chat(
             axum::extract::Path("apiari".to_string()),
             axum::extract::State(state),
@@ -9669,8 +9681,18 @@ model = "sonnet"
         )
         .await;
 
-        // Wait for the spawned task to run claude and write the logs.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Wait for the background task to complete via WS event.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(WsUpdate::ContextBotResponse { .. }) => break,
+                    Ok(_) => continue,
+                    Err(_) => panic!("broadcast channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("ContextBotResponse must arrive within 5s");
 
         let args_logged = fs::read_to_string(&log).unwrap_or_default();
         let stdin_logged = fs::read_to_string(&stdin_log).unwrap_or_default();
