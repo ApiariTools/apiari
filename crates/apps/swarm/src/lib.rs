@@ -49,7 +49,7 @@ pub mod core {
 pub mod daemon;
 
 #[cfg(all(unix, feature = "server"))]
-pub use daemon::{start_in_process, InProcessHandle};
+pub use daemon::{InProcessHandle, start_in_process};
 
 /// Daemon protocol types and IPC client only (Unix-only, requires `client` feature, no `server`).
 #[cfg(all(unix, feature = "client", not(feature = "server")))]
