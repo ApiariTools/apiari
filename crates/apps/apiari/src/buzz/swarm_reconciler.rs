@@ -300,6 +300,21 @@ impl SwarmReconciler {
             if branch.is_empty() {
                 continue;
             }
+            // Skip if the linked task already has a PR — the orchestrator already ran.
+            if let Some(ref db_path) = self.db_path
+                && let Ok(ts) = crate::buzz::task::store::TaskStore::open(db_path)
+                && let Ok(Some(task)) = ts.find_task_by_worker(&self.workspace, &worker.id)
+                && (task.pr_url.is_some()
+                    || task.stage == crate::buzz::task::TaskStage::HumanReview
+                    || task.stage == crate::buzz::task::TaskStage::Merged
+                    || task.stage == crate::buzz::task::TaskStage::Dismissed)
+            {
+                info!(
+                    "[reconciler] startup: skipping branch_ready re-queue for {} — PR already created",
+                    worker.id
+                );
+                continue;
+            }
             info!(
                 "[reconciler] startup: re-queuing branch_ready signal for {}",
                 worker.id
