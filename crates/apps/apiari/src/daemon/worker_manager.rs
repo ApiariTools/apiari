@@ -855,10 +855,10 @@ fn stamp_phase_running(work_dir: &Path, worker_id: &str) {
         return;
     };
     for wt in worktrees.iter_mut() {
-        if wt.get("id").and_then(|v| v.as_str()) == Some(worker_id) {
-            if let Some(obj) = wt.as_object_mut() {
-                obj.insert("phase".to_string(), serde_json::json!("running"));
-            }
+        if wt.get("id").and_then(|v| v.as_str()) == Some(worker_id)
+            && let Some(obj) = wt.as_object_mut()
+        {
+            obj.insert("phase".to_string(), serde_json::json!("running"));
         }
     }
     let _ = std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap_or(raw));

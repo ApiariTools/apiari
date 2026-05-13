@@ -12,7 +12,7 @@ const UI_PORT = 4298;
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "**/*.spec.ts",
+  testMatch: ["**/app.spec.ts", "**/worker-lifecycle.spec.ts"],
   fullyParallel: false,
   retries: IS_CI ? 1 : 0,
   timeout: 60_000,

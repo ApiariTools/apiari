@@ -7324,20 +7324,18 @@ fn execute_workflow_action(
                                 Some("System PR created".to_string()),
                             );
                             // Also write the PR URL back to the worker so the UI shows it.
-                            if let Ok(Some(task)) = ts.get_task(&task_id) {
-                                if let Some(worker_id) = task.worker_id {
-                                    if let Ok(ws) = crate::buzz::worker::WorkerStore::open(&db_path)
-                                    {
-                                        let _ = ws.update_properties(
-                                            &workspace_name,
-                                            &worker_id,
-                                            crate::buzz::worker::WorkerPropertyUpdate {
-                                                pr_url: Some(Some(pr_result.pr_url.clone())),
-                                                ..Default::default()
-                                            },
-                                        );
-                                    }
-                                }
+                            if let Ok(Some(task)) = ts.get_task(&task_id)
+                                && let Some(worker_id) = task.worker_id
+                                && let Ok(ws) = crate::buzz::worker::WorkerStore::open(&db_path)
+                            {
+                                let _ = ws.update_properties(
+                                    &workspace_name,
+                                    &worker_id,
+                                    crate::buzz::worker::WorkerPropertyUpdate {
+                                        pr_url: Some(Some(pr_result.pr_url.clone())),
+                                        ..Default::default()
+                                    },
+                                );
                             }
                         }
                     }
