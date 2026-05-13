@@ -9724,10 +9724,18 @@ model = "sonnet"
         )
         .await;
 
-        // Wait for the spawned task to run claude and write the log.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        let logged = fs::read_to_string(&log).unwrap_or_default();
+        // Poll until the spawned task writes the log (up to 3s).
+        let logged = {
+            let mut out = String::new();
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                out = fs::read_to_string(&log).unwrap_or_default();
+                if !out.is_empty() {
+                    break;
+                }
+            }
+            out
+        };
         assert!(
             logged.contains("--system-prompt"),
             "handler must pass --system-prompt, got: {logged}"
@@ -9812,11 +9820,20 @@ model = "sonnet"
         )
         .await;
 
-        // Wait for the spawned task to run claude and write the logs.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-        let args_logged = fs::read_to_string(&log).unwrap_or_default();
-        let stdin_logged = fs::read_to_string(&stdin_log).unwrap_or_default();
+        // Poll until the spawned task writes the logs (up to 3s).
+        let (args_logged, stdin_logged) = {
+            let mut args = String::new();
+            let mut stdin = String::new();
+            for _ in 0..30 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                args = fs::read_to_string(&log).unwrap_or_default();
+                stdin = fs::read_to_string(&stdin_log).unwrap_or_default();
+                if !stdin.is_empty() {
+                    break;
+                }
+            }
+            (args, stdin)
+        };
 
         // Message must arrive via stdin, verbatim
         assert!(
