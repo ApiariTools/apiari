@@ -7412,7 +7412,9 @@ fn execute_workflow_action(
                         crate::buzz::orchestrator::workflow::append_worker_system_event(
                             &workspace_root,
                             &code_worker_id,
-                            &format!("**Review dispatched:** reviewer `{reviewer_id}` is checking `{branch_name}`"),
+                            &format!(
+                                "**Review dispatched:** reviewer `{reviewer_id}` is checking `{branch_name}`"
+                            ),
                         );
                         if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path)
                             && let Ok(Some(task)) = ts.get_task(&task_id)

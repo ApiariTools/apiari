@@ -93,7 +93,11 @@ pub fn append_worker_system_event(workspace_root: &Path, worker_id: &str, text: 
         "text": text,
         "timestamp": timestamp,
     });
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = writeln!(f, "{}", line);
     }
 }
