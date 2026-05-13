@@ -111,13 +111,11 @@ pub fn read_pr_description(
     worker_id: &str,
     worktree_path: Option<&Path>,
 ) -> Option<PrDescriptionFile> {
-    if let Some(wt) = worktree_path {
-        let path = wt.join("pr.json");
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(desc) = serde_json::from_str(&content) {
-                return Some(desc);
-            }
-        }
+    if let Some(wt) = worktree_path
+        && let Ok(content) = std::fs::read_to_string(wt.join("pr.json"))
+        && let Ok(desc) = serde_json::from_str(&content)
+    {
+        return Some(desc);
     }
     let path = workspace_root
         .join(".swarm")
