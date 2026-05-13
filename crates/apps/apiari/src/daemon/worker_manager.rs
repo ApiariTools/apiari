@@ -1223,6 +1223,8 @@ mod tests {
         Command::new("git")
             .args(["init", "-q"])
             .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
     }
