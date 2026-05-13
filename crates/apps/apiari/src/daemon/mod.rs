@@ -7277,7 +7277,11 @@ fn execute_workflow_action(
 
             // Prefer a worker-authored PR description; fall back to defaults.
             let pr_desc = pr_worker_id.as_deref().and_then(|wid| {
-                crate::buzz::orchestrator::workflow::read_pr_description(&workspace_root, wid)
+                crate::buzz::orchestrator::workflow::read_pr_description(
+                    &workspace_root,
+                    wid,
+                    Some(work_dir.as_path()),
+                )
             });
 
             let (title, body) = if let Some(desc) = pr_desc {

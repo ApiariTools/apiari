@@ -102,8 +102,23 @@ pub fn append_worker_system_event(workspace_root: &Path, worker_id: &str, text: 
     }
 }
 
-/// Read a worker-authored PR description from its agent directory, if present.
-pub fn read_pr_description(workspace_root: &Path, worker_id: &str) -> Option<PrDescriptionFile> {
+/// Read a worker-authored PR description.
+///
+/// Checks the worktree root first (workers write `pr.json` to their working
+/// directory), then falls back to `.swarm/agents/{id}/pr.json` for compat.
+pub fn read_pr_description(
+    workspace_root: &Path,
+    worker_id: &str,
+    worktree_path: Option<&Path>,
+) -> Option<PrDescriptionFile> {
+    if let Some(wt) = worktree_path {
+        let path = wt.join("pr.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(desc) = serde_json::from_str(&content) {
+                return Some(desc);
+            }
+        }
+    }
     let path = workspace_root
         .join(".swarm")
         .join("agents")
