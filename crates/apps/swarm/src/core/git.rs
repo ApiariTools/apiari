@@ -485,6 +485,8 @@ pub fn checkout_main(repo_path: &Path) -> Result<()> {
     let output = match Command::new("git")
         .args(["checkout", "main"])
         .current_dir(repo_path)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output()
     {
         Ok(o) => o,
@@ -693,6 +695,8 @@ mod tests {
         Command::new("git")
             .args(["init", "-b", "main"])
             .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
         Command::new("git")
@@ -707,12 +711,16 @@ mod tests {
                 "init",
             ])
             .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
         // Create and switch to another branch
         Command::new("git")
             .args(["checkout", "-b", "other"])
             .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
 
@@ -722,6 +730,8 @@ mod tests {
         let out = Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "main");
