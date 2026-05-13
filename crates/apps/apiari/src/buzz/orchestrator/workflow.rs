@@ -159,7 +159,10 @@ pub async fn create_system_pr(
         {
             info!("[workflow] PR already exists for {branch_name}: {url}");
             let pr_number = url.rsplit('/').next().and_then(|s| s.parse::<i64>().ok());
-            return Ok(PrCreationResult { pr_url: url, pr_number });
+            return Ok(PrCreationResult {
+                pr_url: url,
+                pr_number,
+            });
         }
         bail!("gh pr create failed: {stderr}");
     }

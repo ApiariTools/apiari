@@ -107,6 +107,8 @@ struct WorkspaceSlot {
     db_path: std::path::PathBuf,
     /// Broadcast sender for web UI WebSocket updates.
     web_updates_tx: Option<tokio::sync::broadcast::Sender<http::WsUpdate>>,
+    /// In-process swarm daemon handle (None if swarm is not enabled for this workspace).
+    swarm_handle: Option<apiari_swarm::InProcessHandle>,
 }
 
 /// Key for routing Telegram messages to workspaces.
@@ -379,6 +381,7 @@ async fn run_coordinator_task(
     cancel_token: Arc<std::sync::Mutex<Option<CancellationToken>>>,
     max_session_turns: u32,
     authority: crate::config::WorkspaceAuthority,
+    swarm_client: Option<crate::buzz::coordinator::swarm_client::InProcessSwarmClient>,
 ) {
     let mut turn_count: u32 = 0;
 
@@ -415,7 +418,12 @@ async fn run_coordinator_task(
                 if coordinator.execution_policy() == crate::config::BeeExecutionPolicy::DispatchOnly
                 {
                     match try_direct_dispatch_for_dispatch_only(
-                        &slot_name, &ws_config, &bee_name, &text, false,
+                        &slot_name,
+                        &ws_config,
+                        &bee_name,
+                        &text,
+                        false,
+                        swarm_client.clone(),
                     )
                     .await
                     {
@@ -822,6 +830,7 @@ async fn run_coordinator_task(
                         &bee_name,
                         &text,
                         !image_paths.is_empty(),
+                        swarm_client.clone(),
                     )
                     .await
                     {
@@ -2607,11 +2616,21 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             );
         }
 
+        let mut swarm_handle_for_slot: Option<apiari_swarm::InProcessHandle> = None;
+
         if let Some(swarm_config) = &buzz_config.watchers.swarm
             && swarm_config.enabled
         {
-            // Auto-start the swarm daemon if it isn't running
-            ensure_swarm_daemon(&ws.config.root).await;
+            // Start the swarm daemon in-process
+            match apiari_swarm::start_in_process(ws.config.root.clone()).await {
+                Ok(handle) => {
+                    info!("[{}] swarm daemon started in-process", ws.name);
+                    swarm_handle_for_slot = Some(handle);
+                }
+                Err(e) => {
+                    warn!("[{}] failed to start in-process swarm daemon: {e}", ws.name);
+                }
+            }
 
             info!(
                 "[{}] enabling swarm watcher (daemon IPC, workspace: {})",
@@ -2806,6 +2825,12 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             };
             let (coord_tx, coord_rx) = mpsc::unbounded_channel::<CoordinatorJob>();
             let cancel_token = Arc::new(std::sync::Mutex::new(None));
+            let coord_swarm_client = swarm_handle_for_slot.as_ref().map(|h| {
+                crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(
+                    h,
+                    ws.config.root.clone(),
+                )
+            });
             let coord_handle = tokio::spawn(run_coordinator_task(
                 coordinator,
                 coord_store,
@@ -2814,6 +2839,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                 cancel_token.clone(),
                 bee.max_session_turns,
                 ws.config.authority,
+                coord_swarm_client,
             ));
 
             bee_map.insert(bee.name.clone(), bee_idx);
@@ -2900,6 +2926,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             morning_brief: morning_brief_scheduler,
             db_path: db.clone(),
             web_updates_tx: None,
+            swarm_handle: swarm_handle_for_slot,
         });
     }
 
@@ -3004,8 +3031,17 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
             db_path: Some(slot.db_path.clone()),
             signal_tx: Some(reconciler_signal_tx.clone()),
         };
-        crate::buzz::swarm_reconciler::spawn_reconciler(reconciler_config, conn);
-        info!("[{}] swarm reconciler started", slot.name);
+        if let Some(ref handle) = slot.swarm_handle {
+            crate::buzz::swarm_reconciler::spawn_event_driven_reconciler(
+                reconciler_config,
+                conn,
+                handle.subscribe(),
+            );
+            info!("[{}] swarm reconciler started (event-driven)", slot.name);
+        } else {
+            crate::buzz::swarm_reconciler::spawn_reconciler(reconciler_config, conn);
+            info!("[{}] swarm reconciler started (polling)", slot.name);
+        }
     }
     let mut reconciler_signal_rx = reconciler_signal_rx;
 
@@ -3272,8 +3308,11 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                         &slot.orchestrator,
                         &slot.name,
                     ).await;
+                    let slot_swarm_client = slot.swarm_handle.as_ref().map(|h| {
+                        crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())
+                    });
                     for action in &actions {
-                        execute_workflow_action(action, &slot.config.root, slot.store.db_path(), &slot.name);
+                        execute_workflow_action(action, &slot.config.root, slot.store.db_path(), &slot.name, slot_swarm_client.clone());
                     }
                 }
             }
@@ -3485,6 +3524,9 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                         let cancel_token = Arc::new(std::sync::Mutex::new(None));
                         bee.coord_tx = new_tx;
                         bee.cancel_token = cancel_token.clone();
+                        let respawn_swarm_client = slot.swarm_handle.as_ref().map(|h| {
+                            crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())
+                        });
                         bee.coord_handle = Some(tokio::spawn(run_coordinator_task(
                             coordinator,
                             coord_store,
@@ -3493,6 +3535,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                             cancel_token,
                             bee.max_session_turns,
                             slot.config.authority,
+                            respawn_swarm_client,
                         )));
                         bee.coord_respawn_count += 1;
                         bee.coord_last_respawn = Some(std::time::Instant::now());
@@ -3660,28 +3703,31 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                         orchestrator_matched_actions.extend(orch_result.matched_actions);
 
                                                         // Execute workflow actions (system PR creation, reviewer dispatch, etc.)
+                                                        let wf_swarm_client = slot.swarm_handle.as_ref().map(|h| {
+                                                            crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())
+                                                        });
                                                         for wf_action in &orch_result.workflow_actions {
                                                             execute_workflow_action(
                                                                 wf_action,
                                                                 &slot.config.root,
                                                                 slot.store.db_path(),
                                                                 &slot.name,
+                                                                wf_swarm_client.clone(),
                                                             );
                                                         }
 
                                                         let engine_result = orch_result.engine_result;
                                                         for (worker_id, message) in engine_result.worker_messages {
                                                             info!("[task-engine] forwarding to worker {worker_id}: {message}");
-                                                            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
-                                                                slot.config.root.clone(),
-                                                            );
-                                                            tokio::spawn(async move {
-                                                                if let Err(e) = swarm.send_message(&worker_id, &message).await {
-                                                                    tracing::warn!(
-                                                                        "[task-engine] failed to forward to worker {worker_id}: {e}"
-                                                                    );
-                                                                }
-                                                            });
+                                                            if let Some(swarm) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
+                                                                tokio::spawn(async move {
+                                                                    if let Err(e) = swarm.send_message(&worker_id, &message).await {
+                                                                        tracing::warn!(
+                                                                            "[task-engine] failed to forward to worker {worker_id}: {e}"
+                                                                        );
+                                                                    }
+                                                                });
+                                                            }
                                                         }
                                                         for notification in &engine_result.notifications {
                                                             if let Some(ref server) = socket_server {
@@ -3935,9 +3981,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                         .next_back()
                                                         .unwrap_or(repo.as_str())
                                                         .to_string();
-                                                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
-                                                        slot.config.root.clone(),
-                                                    );
+                                                    if let Some(swarm) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
                                                     let task_id = task.id.clone();
                                                     let task_title = task.title.clone();
                                                     let mut meta = task.metadata.clone();
@@ -3995,14 +4039,14 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                             }
                                                         }
                                                     });
+                                                    } // if let Some(swarm)
                                                 }
                                             }
 
                                             // Auto-close the worker that opened the PR — it has delivered its work
                                             if is_new && (update.source == "swarm_pr_opened" || (update.source == "swarm" && update.external_id.starts_with("swarm-pr-"))) {
                                                 let worker_id = update.external_id.strip_prefix("swarm-pr-").unwrap_or("").to_string();
-                                                if !worker_id.is_empty() {
-                                                    let swarm_for_close = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
+                                                if !worker_id.is_empty() && let Some(swarm_for_close) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
                                                     let wid = worker_id.clone();
                                                     tokio::spawn(async move {
                                                         match swarm_for_close.list_workers().await {
@@ -4060,9 +4104,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                             .unwrap_or(&short_repo)
                                                             .to_string();
 
-                                                        let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(
-                                                            slot.config.root.clone(),
-                                                        );
+                                                        if let Some(swarm) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
                                                         let task_id = task.id.clone();
                                                         let task_title = task.title.clone();
                                                         let mut meta2 = meta;
@@ -4119,6 +4161,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                 }
                                                             }
                                                         });
+                                                        } // if let Some(swarm)
                                                     }
                                                 }
                                             }
@@ -4243,12 +4286,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                             Ok(verdict_orch_result) => {
                                                                                 let ve_result = verdict_orch_result.engine_result;
                                                                                 for (wid, msg) in ve_result.worker_messages {
-                                                                                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                                                    tokio::spawn(async move {
-                                                                                        if let Err(e) = swarm.send_message(&wid, &msg).await {
-                                                                                            tracing::warn!("[task-engine] failed to send review feedback to worker {wid}: {e}");
-                                                                                        }
-                                                                                    });
+                                                                                    if let Some(swarm) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
+                                                                                        tokio::spawn(async move {
+                                                                                            if let Err(e) = swarm.send_message(&wid, &msg).await {
+                                                                                                tracing::warn!("[task-engine] failed to send review feedback to worker {wid}: {e}");
+                                                                                            }
+                                                                                        });
+                                                                                    }
                                                                                 }
                                                                                 for notification in &ve_result.notifications {
                                                                                     if let Some(ref server) = socket_server {
@@ -4313,7 +4357,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                                 }
 
                                                                                 // Auto-close the reviewer worker — it has delivered its verdict
-                                                                                let swarm_for_close = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
+                                                                                if let Some(swarm_for_close) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
                                                                                 let reviewer_id_to_close = worker_id.clone();
                                                                                 tokio::spawn(async move {
                                                                                     if let Err(e) = swarm_for_close.close_worker(&reviewer_id_to_close).await {
@@ -4322,6 +4366,7 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                                                         tracing::info!("auto-closed reviewer worker {reviewer_id_to_close}");
                                                                                     }
                                                                                 });
+                                                                                } // if let Some(swarm_for_close)
                                                                             }
                                                                             Err(e) => {
                                                                                 tracing::warn!("[task-engine] error processing verdict signal: {e}");
@@ -4423,12 +4468,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                     job_url.map(|u| format!("Error details: {}. ", u)).unwrap_or_default()
                                                 );
                                                 info!("auto-forwarded CI failure to worker {worker_id} for PR #{pr_number}");
-                                                let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                tokio::spawn(async move {
-                                                    if let Err(e) = swarm.send_message(&worker_id, &error_msg).await {
-                                                        tracing::warn!("failed to auto-forward CI failure to worker {worker_id}: {e}");
-                                                    }
-                                                });
+                                                if let Some(swarm) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
+                                                    tokio::spawn(async move {
+                                                        if let Err(e) = swarm.send_message(&worker_id, &error_msg).await {
+                                                            tracing::warn!("failed to auto-forward CI failure to worker {worker_id}: {e}");
+                                                        }
+                                                    });
+                                                }
                                             }
 
                                             // Auto-forward CI pass to the matching swarm worker
@@ -4447,12 +4493,13 @@ async fn run_event_loop(workspaces: Vec<Workspace>, web_port: u16) -> ExitReason
                                                     "CI is green on your PR #{pr_number}. All checks passed!"
                                                 );
                                                 info!("auto-forwarded CI pass to worker {worker_id} for PR #{pr_number}");
-                                                let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(slot.config.root.clone());
-                                                tokio::spawn(async move {
-                                                    if let Err(e) = swarm.send_message(&worker_id, &pass_msg).await {
-                                                        tracing::warn!("failed to auto-forward CI pass to worker {worker_id}: {e}");
-                                                    }
-                                                });
+                                                if let Some(swarm) = slot.swarm_handle.as_ref().map(|h| crate::buzz::coordinator::swarm_client::InProcessSwarmClient::new(h, slot.config.root.clone())) {
+                                                    tokio::spawn(async move {
+                                                        if let Err(e) = swarm.send_message(&worker_id, &pass_msg).await {
+                                                            tracing::warn!("failed to auto-forward CI pass to worker {worker_id}: {e}");
+                                                        }
+                                                    });
+                                                }
                                             }
 
                                             // Determine notification via orchestrator tier routing
@@ -5348,74 +5395,6 @@ pub fn ensure_daemon() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Ensure the swarm daemon is running for a workspace, starting it if needed.
-///
-/// Pings the daemon over its Unix socket. If unreachable, starts it with
-/// `swarm --dir <root> daemon start` and waits up to ~2 seconds for it
-/// to respond to ping.
-async fn ensure_swarm_daemon(workspace_root: &std::path::Path) {
-    use crate::buzz::coordinator::swarm_client::SwarmClient;
-
-    let root_display = workspace_root.display();
-
-    // Check if swarm daemon is already running via socket ping
-    let dir = workspace_root.to_path_buf();
-    let is_running = tokio::task::spawn_blocking(move || SwarmClient::ping_sync(&dir))
-        .await
-        .unwrap_or(false);
-
-    if is_running {
-        info!("swarm daemon already running for {}", root_display);
-        return;
-    }
-
-    // Daemon not running — start it
-    info!("swarm daemon not running for {}, starting...", root_display);
-    let result = tokio::process::Command::new("swarm")
-        .arg("--dir")
-        .arg(workspace_root)
-        .args(["daemon", "start"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::null())
-        .output()
-        .await;
-
-    match &result {
-        Ok(o) if !o.status.success() => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            warn!(
-                "swarm daemon start returned {}: {}",
-                o.status,
-                stderr.trim()
-            );
-            return;
-        }
-        Err(e) => {
-            warn!("failed to start swarm daemon for {}: {}", root_display, e);
-            return;
-        }
-        _ => {}
-    }
-
-    // Wait up to ~2 seconds for daemon to respond to ping
-    for _ in 0..20 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let dir = workspace_root.to_path_buf();
-        let alive = tokio::task::spawn_blocking(move || SwarmClient::ping_sync(&dir))
-            .await
-            .unwrap_or(false);
-        if alive {
-            info!("swarm daemon started for {}", root_display);
-            return;
-        }
-    }
-    warn!(
-        "swarm daemon may not have started in time for {}",
-        root_display
-    );
 }
 
 fn read_pid() -> Option<u32> {
@@ -6395,6 +6374,7 @@ async fn try_direct_dispatch_for_dispatch_only(
     bee_name: &str,
     text: &str,
     has_attachments: bool,
+    swarm_client: Option<crate::buzz::coordinator::swarm_client::InProcessSwarmClient>,
 ) -> Result<DirectDispatchDecision> {
     if has_attachments {
         return Ok(DirectDispatchDecision::Skipped(
@@ -6460,7 +6440,6 @@ async fn try_direct_dispatch_for_dispatch_only(
         });
     }
 
-    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(ws_config.root.clone());
     let task_shape = shape_dispatch_task(ws_config, &repo, text)?;
     if task_shape.confidence == "low" && task_shape.likely_files.is_empty() {
         return Ok(DirectDispatchDecision::NeedsClarification {
@@ -6472,6 +6451,11 @@ async fn try_direct_dispatch_for_dispatch_only(
             response_text: dispatch_clarification_question(&task_shape),
         });
     }
+    let Some(swarm) = swarm_client else {
+        return Ok(DirectDispatchDecision::Skipped(
+            "swarm_not_initialized".to_string(),
+        ));
+    };
     let worker_mode =
         crate::buzz::coordinator::swarm_client::infer_worker_mode(&task_shape.shaped_prompt);
     let task_dir =
@@ -7240,6 +7224,7 @@ fn execute_workflow_action(
     work_dir: &std::path::Path,
     db_path: &std::path::Path,
     _workspace_name: &str,
+    swarm_client: Option<crate::buzz::coordinator::swarm_client::InProcessSwarmClient>,
 ) {
     use crate::buzz::orchestrator::workflow::WorkflowAction;
 
@@ -7399,7 +7384,12 @@ fn execute_workflow_action(
                 .unwrap_or("repo")
                 .to_string();
 
-            let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(work_dir.clone());
+            let Some(swarm) = swarm_client.clone() else {
+                tracing::warn!(
+                    "[workflow] swarm not initialized; cannot dispatch reviewer for task {task_id}"
+                );
+                return;
+            };
             tokio::spawn(async move {
                 match swarm
                     .create_reviewer_worker_for_branch(&short_repo, &branch_name)
@@ -7444,7 +7434,6 @@ fn execute_workflow_action(
             let feedback = feedback.clone();
             let db_path = db_path.to_path_buf();
             let workspace_root = work_dir.to_path_buf();
-            let work_dir = work_dir.to_path_buf();
 
             tokio::spawn(async move {
                 // Find the original worker and send feedback
@@ -7457,18 +7446,19 @@ fn execute_workflow_action(
                         worker_id,
                         &format!("**Rework requested:** review feedback sent\n\n{feedback}"),
                     );
-                    let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(work_dir);
-                    let msg = format!(
-                        "Review requested changes. Please address the feedback and push again:\n\n{feedback}"
-                    );
-                    if let Err(e) = swarm.send_message(worker_id, &msg).await {
-                        tracing::warn!(
-                            "[workflow] failed to send rework feedback to worker {worker_id}: {e}"
+                    if let Some(swarm) = swarm_client {
+                        let msg = format!(
+                            "Review requested changes. Please address the feedback and push again:\n\n{feedback}"
                         );
-                    } else {
-                        tracing::info!(
-                            "[workflow] sent rework feedback to worker {worker_id} for task {task_id}"
-                        );
+                        if let Err(e) = swarm.send_message(worker_id, &msg).await {
+                            tracing::warn!(
+                                "[workflow] failed to send rework feedback to worker {worker_id}: {e}"
+                            );
+                        } else {
+                            tracing::info!(
+                                "[workflow] sent rework feedback to worker {worker_id} for task {task_id}"
+                            );
+                        }
                     }
                 }
             });
@@ -7796,6 +7786,7 @@ default_agent = "codex"
             "Codex",
             "Make the overview cards better on mobile.",
             false,
+            None,
         )
         .await
         .unwrap();
@@ -7852,6 +7843,7 @@ default_agent = "codex"
             "Codex",
             "Reduce the vertical padding in the worker cards on small screens so the Workers list is more compact on mobile.",
             false,
+            None,
         )
         .await
         .unwrap()
@@ -8194,6 +8186,7 @@ provider = "claude"
                 cancel_token,
                 0,
                 crate::config::WorkspaceAuthority::default(),
+                None,
             )
             .await;
         });
@@ -8317,6 +8310,7 @@ provider = "claude"
                 cancel_token,
                 0,
                 crate::config::WorkspaceAuthority::default(),
+                None,
             )
             .await;
         });
@@ -8423,6 +8417,7 @@ provider = "claude"
                 cancel_token,
                 0,
                 crate::config::WorkspaceAuthority::default(),
+                None,
             )
             .await;
         });
@@ -8544,6 +8539,7 @@ provider = "claude"
             morning_brief: None,
             db_path,
             web_updates_tx: Some(updates_tx),
+            swarm_handle: None,
         };
 
         super::dispatch_due_followups(&mut slot, &None, &std::collections::HashMap::new());

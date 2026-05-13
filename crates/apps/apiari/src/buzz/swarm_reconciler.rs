@@ -1027,6 +1027,204 @@ impl SwarmReconciler {
             }
         }
     }
+
+    fn load_worker_branch_from_state(&self, worker_id: &str) -> Option<String> {
+        self.load_swarm_state()
+            .into_iter()
+            .find(|wt| wt.id == worker_id)
+            .and_then(|wt| wt.branch)
+    }
+
+    // ── Event-driven handlers ──────────────────────────────────────────────
+
+    pub fn handle_swarm_event(&self, event: apiari_swarm::client::DaemonResponse) {
+        use apiari_swarm::client::DaemonResponse;
+        match event {
+            DaemonResponse::StateChanged { worktree_id, phase } => {
+                if let Err(e) = self.handle_phase_change(&worktree_id, phase) {
+                    warn!("[reconciler] phase change error for {worktree_id}: {e}");
+                }
+            }
+            DaemonResponse::AgentEvent { worktree_id, .. } => {
+                if let Err(e) = self.handle_agent_output(&worktree_id) {
+                    warn!("[reconciler] agent event error for {worktree_id}: {e}");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_phase_change(&self, worker_id: &str, phase: apiari_swarm::WorkerPhase) -> Result<()> {
+        use apiari_swarm::WorkerPhase;
+
+        let Some(worker) = self.store.get(&self.workspace, worker_id)? else {
+            debug!(
+                "[reconciler] StateChanged for unknown worker {} (phase={})",
+                worker_id, phase
+            );
+            return Ok(());
+        };
+
+        match phase {
+            WorkerPhase::Running => match worker.state {
+                WorkerState::Queued | WorkerState::Created | WorkerState::Briefed => {
+                    self.do_transition(&worker, WorkerState::Running)?;
+                }
+                WorkerState::Waiting => {
+                    info!(
+                        "[reconciler] {} resumed from waiting (revision {})",
+                        worker_id,
+                        worker.revision_count + 1
+                    );
+                    self.store.update_properties(
+                        &self.workspace,
+                        worker_id,
+                        WorkerPropertyUpdate {
+                            increment_revision: true,
+                            ..Default::default()
+                        },
+                    )?;
+                    self.do_transition(&worker, WorkerState::Running)?;
+                }
+                WorkerState::Stalled => {
+                    self.do_transition(&worker, WorkerState::Running)?;
+                }
+                _ => {}
+            },
+
+            WorkerPhase::Waiting => match worker.state {
+                WorkerState::Running | WorkerState::Stalled => {
+                    info!("[reconciler] {} agent waiting (StateChanged)", worker_id);
+                    self.do_transition(&worker, WorkerState::Waiting)?;
+                    if worker.branch_ready {
+                        let branch = worker.branch.clone().unwrap_or_default();
+                        self.emit_branch_ready_signal(worker_id, &branch);
+                    }
+                }
+                _ => {}
+            },
+
+            WorkerPhase::Completed | WorkerPhase::Failed => match worker.state {
+                WorkerState::Running | WorkerState::Stalled | WorkerState::Waiting => {
+                    info!(
+                        "[reconciler] {} agent exited (phase={}) → waiting",
+                        worker_id, phase
+                    );
+                    let branch = worker.branch.clone().unwrap_or_else(|| {
+                        self.load_worker_branch_from_state(worker_id)
+                            .unwrap_or_default()
+                    });
+                    self.store.update_properties(
+                        &self.workspace,
+                        worker_id,
+                        WorkerPropertyUpdate {
+                            branch_ready: Some(true),
+                            branch: if branch.is_empty() {
+                                None
+                            } else {
+                                Some(branch.clone())
+                            },
+                            ..Default::default()
+                        },
+                    )?;
+                    self.do_transition(&worker, WorkerState::Waiting)?;
+                    self.emit_branch_ready_signal(worker_id, &branch);
+                }
+                _ => {}
+            },
+
+            WorkerPhase::Creating | WorkerPhase::Starting => {}
+        }
+
+        Ok(())
+    }
+
+    fn handle_agent_output(&self, worker_id: &str) -> Result<()> {
+        let Some(worker) = self.store.get(&self.workspace, worker_id)? else {
+            return Ok(());
+        };
+
+        let now = Utc::now().to_rfc3339();
+        self.store.update_properties(
+            &self.workspace,
+            worker_id,
+            WorkerPropertyUpdate {
+                last_output_at: Some(now),
+                ..Default::default()
+            },
+        )?;
+
+        if worker.state == WorkerState::Stalled {
+            info!(
+                "[reconciler] {} output resumed (AgentEvent) → running",
+                worker_id
+            );
+            self.do_transition(&worker, WorkerState::Running)?;
+        } else {
+            self.emit_event(&worker)?;
+        }
+
+        // Refresh display title every 3 assistant_text events while confidence < 85.
+        let confidence = worker.title_confidence.unwrap_or(0);
+        if confidence < 85 {
+            let count = count_assistant_text_events(&self.swarm_dir, worker_id);
+            if count > 0 && count.is_multiple_of(3) {
+                let goal = worker.goal.clone().unwrap_or_default();
+                let snippet = recent_output_snippet(&self.swarm_dir, worker_id);
+                let workspace = self.workspace.clone();
+                let worker_id = worker_id.to_string();
+                let conn = self.store.conn_arc();
+                tokio::spawn(async move {
+                    if let Some((title, conf)) =
+                        crate::buzz::title_gen::generate_worker_title(&goal, snippet.as_deref())
+                            .await
+                        && let Ok(store) = crate::buzz::worker::WorkerStore::new(conn)
+                    {
+                        let _ = store.update_title(&workspace, &worker_id, &title, conf);
+                        info!("[title-gen] {worker_id} → {title:?} (confidence={conf})");
+                    }
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Periodic stall detection for Running workers.
+    pub fn check_stalls(&self) -> Result<()> {
+        let workers = self.store.list(&self.workspace)?;
+        for worker in &workers {
+            match worker.state {
+                WorkerState::Running | WorkerState::Stalled => {
+                    self.check_stall_and_output(worker)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Public wrapper for PR status check (used by event-driven reconciler).
+    pub fn run_pr_status_check(&self) -> Result<()> {
+        let workers = self.store.list(&self.workspace)?;
+        self.check_pr_status(&workers)
+    }
+
+    /// Periodic check for workers that disappeared from state.json.
+    pub fn check_disappeared_workers(&self) -> Result<()> {
+        let worktrees = self.load_swarm_state();
+        let workers = self.store.list(&self.workspace)?;
+        let swarm_ids: std::collections::HashSet<&str> =
+            worktrees.iter().map(|wt| wt.id.as_str()).collect();
+
+        for worker in &workers {
+            if !swarm_ids.contains(worker.id.as_str()) {
+                debug!("[reconciler] worker {} not in swarm state", worker.id);
+                self.apply_disappeared(worker)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── Background task ────────────────────────────────────────────────────
@@ -1074,6 +1272,101 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
                     let r = std::sync::Arc::clone(&reconciler);
                     tokio::task::spawn_blocking(move || {
                         r.poll_pr_approvals();
+                    });
+                }
+            }
+        }
+    });
+}
+
+/// Spawn the reconciler driven by the in-process swarm's broadcast channel.
+///
+/// Reacts immediately to `StateChanged` and `AgentEvent` messages from the
+/// swarm daemon instead of polling state.json every 5 seconds. Periodic timers
+/// are kept only for: stall detection (60s), PR status (60s), PR approval (5m),
+/// and disappeared-worker cleanup (5m).
+///
+/// NOTE: `requeue_branch_ready_on_startup` is intentionally NOT called here —
+/// it was the root cause of repeated PR creation on every daemon restart.
+pub fn spawn_event_driven_reconciler(
+    config: SwarmReconcilerConfig,
+    conn: Arc<Mutex<rusqlite::Connection>>,
+    mut event_rx: tokio::sync::broadcast::Receiver<apiari_swarm::client::DaemonResponse>,
+) {
+    use std::time::Duration;
+
+    tokio::spawn(async move {
+        let reconciler = match SwarmReconciler::new(config, conn) {
+            Ok(r) => std::sync::Arc::new(r),
+            Err(e) => {
+                warn!("[reconciler] failed to initialize: {e}");
+                return;
+            }
+        };
+
+        if let Err(e) = reconciler.reset_stalled_on_startup() {
+            warn!("[reconciler] startup reset error: {e}");
+        }
+
+        // Stall detection: check Running workers every 60s
+        let mut stall_interval = tokio::time::interval(Duration::from_secs(60));
+        stall_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // PR status (merged + CI): throttled per-worker inside check_pr_status
+        let mut pr_interval = tokio::time::interval(Duration::from_secs(60));
+        pr_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // PR approval polling (GraphQL): every 5 minutes
+        let mut approval_interval = tokio::time::interval(Duration::from_secs(5 * 60));
+        approval_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Disappeared workers: check every 5 minutes
+        let mut disappeared_interval = tokio::time::interval(Duration::from_secs(5 * 60));
+        disappeared_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                result = event_rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            let r = std::sync::Arc::clone(&reconciler);
+                            tokio::task::spawn_blocking(move || r.handle_swarm_event(event));
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("[reconciler] lagged behind by {n} swarm events");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            warn!("[reconciler] swarm event channel closed — stopping");
+                            break;
+                        }
+                    }
+                }
+                _ = stall_interval.tick() => {
+                    let r = std::sync::Arc::clone(&reconciler);
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = r.check_stalls() {
+                            warn!("[reconciler] stall check error: {e}");
+                        }
+                    });
+                }
+                _ = pr_interval.tick() => {
+                    let r = std::sync::Arc::clone(&reconciler);
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = r.run_pr_status_check() {
+                            warn!("[reconciler] PR status check error: {e}");
+                        }
+                    });
+                }
+                _ = approval_interval.tick() => {
+                    let r = std::sync::Arc::clone(&reconciler);
+                    tokio::task::spawn_blocking(move || r.poll_pr_approvals());
+                }
+                _ = disappeared_interval.tick() => {
+                    let r = std::sync::Arc::clone(&reconciler);
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(e) = r.check_disappeared_workers() {
+                            warn!("[reconciler] disappeared check error: {e}");
+                        }
                     });
                 }
             }

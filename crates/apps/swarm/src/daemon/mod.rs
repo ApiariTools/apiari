@@ -353,13 +353,82 @@ async fn register_workspace(
 
 // ── Main daemon loop ─────────────────────────────────────
 
+/// Handle to a swarm daemon running in-process.
+pub struct InProcessHandle {
+    /// Send requests directly to the daemon's main loop (bypasses Unix socket).
+    pub request_tx: tokio::sync::mpsc::UnboundedSender<(
+        protocol::DaemonRequest,
+        tokio::sync::mpsc::UnboundedSender<protocol::DaemonResponse>,
+    )>,
+    /// Broadcast channel — subscribe to receive all daemon events.
+    pub event_tx: tokio::sync::broadcast::Sender<protocol::DaemonResponse>,
+}
+
+impl InProcessHandle {
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<protocol::DaemonResponse> {
+        self.event_tx.subscribe()
+    }
+}
+
+/// Start the swarm daemon embedded in the current process.
+///
+/// The daemon loop runs as a detached tokio task. The Unix socket is still
+/// started so external tools (TUI, CLI) can connect to it if needed.
+/// No PID file is written and no signal handlers are installed.
+pub async fn start_in_process(
+    initial_work_dir: std::path::PathBuf,
+) -> color_eyre::Result<InProcessHandle> {
+    let (event_tx, _) = tokio::sync::broadcast::channel::<protocol::DaemonResponse>(1024);
+    let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = InProcessHandle {
+        request_tx: req_tx,
+        event_tx: event_tx.clone(),
+    };
+    tokio::spawn(run_daemon_inner(
+        Some(initial_work_dir),
+        None,
+        None,
+        true,
+        event_tx,
+        req_rx,
+    ));
+    Ok(handle)
+}
+
 /// The main daemon event loop.
 pub(crate) async fn run_daemon(
     initial_work_dir: Option<PathBuf>,
     tcp_bind: Option<String>,
     auth_token: Option<String>,
 ) -> Result<()> {
-    write_pid()?;
+    let (event_tx, _) = broadcast::channel::<DaemonResponse>(1024);
+    // Dummy extra channel — nobody sends to it in subprocess mode
+    let (_, extra_req_rx) = mpsc::unbounded_channel();
+    run_daemon_inner(
+        initial_work_dir,
+        tcp_bind,
+        auth_token,
+        false,
+        event_tx,
+        extra_req_rx,
+    )
+    .await
+}
+
+async fn run_daemon_inner(
+    initial_work_dir: Option<PathBuf>,
+    tcp_bind: Option<String>,
+    auth_token: Option<String>,
+    in_process: bool,
+    event_tx: broadcast::Sender<DaemonResponse>,
+    mut extra_req_rx: mpsc::UnboundedReceiver<(
+        DaemonRequest,
+        mpsc::UnboundedSender<DaemonResponse>,
+    )>,
+) -> Result<()> {
+    if !in_process {
+        write_pid()?;
+    }
     // Init file logging — _log_guard must stay alive for the process lifetime.
     let _log_guard = initial_work_dir.as_deref().map(crate::core::log::init);
 
@@ -380,10 +449,6 @@ pub(crate) async fn run_daemon(
     // Set up signal handlers
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-
-    // Event broadcast channel for subscribers — carries full DaemonResponse
-    // so both AgentEvent and StateChanged can be pushed to subscribers.
-    let (event_tx, _) = broadcast::channel::<DaemonResponse>(1024);
 
     // Supervisor event channel
     let (supervisor_tx, mut supervisor_rx) = mpsc::unbounded_channel::<SupervisorEvent>();
@@ -575,6 +640,20 @@ pub(crate) async fn run_daemon(
 
             // HTTP requests from the A2A HTTP server
             Some((request, resp_tx)) = http_req_rx.recv() => {
+                handle_request(
+                    request,
+                    &resp_tx,
+                    &mut workspaces,
+                    &event_tx,
+                    &supervisor_tx,
+                    &mut state_dirty,
+                    &mut triggered_pr_poll_ids,
+                    a2a_port,
+                ).await;
+            }
+
+            // In-process requests — direct channel, bypasses Unix socket
+            Some((request, resp_tx)) = extra_req_rx.recv() => {
                 handle_request(
                     request,
                     &resp_tx,
@@ -884,7 +963,9 @@ pub(crate) async fn run_daemon(
 
     // Final state save
     save_all_workspace_states(&workspaces);
-    remove_pid();
+    if !in_process {
+        remove_pid();
+    }
     tracing::info!("Daemon stopped");
 
     Ok(())

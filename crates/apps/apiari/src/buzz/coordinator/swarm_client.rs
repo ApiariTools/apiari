@@ -212,6 +212,181 @@ impl SwarmClient {
     }
 }
 
+/// In-process client — bypasses Unix socket, sends directly to the daemon's select loop.
+#[derive(Clone)]
+pub struct InProcessSwarmClient {
+    request_tx: tokio::sync::mpsc::UnboundedSender<(
+        DaemonRequest,
+        tokio::sync::mpsc::UnboundedSender<DaemonResponse>,
+    )>,
+    work_dir: PathBuf,
+}
+
+impl InProcessSwarmClient {
+    pub fn new(handle: &apiari_swarm::InProcessHandle, work_dir: PathBuf) -> Self {
+        Self {
+            request_tx: handle.request_tx.clone(),
+            work_dir,
+        }
+    }
+
+    async fn request(&self, req: DaemonRequest) -> Result<DaemonResponse> {
+        let (resp_tx, mut resp_rx) = tokio::sync::mpsc::unbounded_channel::<DaemonResponse>();
+        self.request_tx
+            .send((req, resp_tx))
+            .map_err(|_| color_eyre::eyre::eyre!("swarm daemon in-process channel closed"))?;
+        resp_rx
+            .recv()
+            .await
+            .ok_or_else(|| color_eyre::eyre::eyre!("swarm daemon response channel closed"))
+    }
+
+    fn load_review_skill(&self) -> String {
+        let path = self.work_dir.join(".apiari/skills/code-review.md");
+        std::fs::read_to_string(&path).unwrap_or_default()
+    }
+
+    fn reviewer_prompt(&self, base: &str) -> String {
+        let skill = self.load_review_skill();
+        if skill.is_empty() {
+            base.to_string()
+        } else {
+            format!("{skill}\n\n---\n\n{base}")
+        }
+    }
+
+    pub async fn create_worker(&self, repo: &str, prompt: &str, agent: &str) -> Result<String> {
+        self.create_worker_with_task_dir(repo, prompt, agent, None)
+            .await
+    }
+
+    pub async fn create_worker_with_task_dir(
+        &self,
+        repo: &str,
+        prompt: &str,
+        agent: &str,
+        task_dir: Option<TaskDirPayload>,
+    ) -> Result<String> {
+        let resp = self
+            .request(DaemonRequest::CreateWorker {
+                prompt: prompt.to_string(),
+                agent: agent.to_string(),
+                repo: Some(repo.to_string()),
+                start_point: None,
+                workspace: Some(self.work_dir.clone()),
+                profile: None,
+                task_dir,
+                role: None,
+                review_pr: None,
+                base_branch: None,
+            })
+            .await?;
+        match resp {
+            DaemonResponse::Ok { data } => Ok(data
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default()),
+            DaemonResponse::Error { message } => bail!("create_worker failed: {message}"),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
+    pub async fn create_reviewer_worker(&self, repo: &str, pr_number: i64) -> Result<String> {
+        let prompt = self.reviewer_prompt(&format!("Review PR #{pr_number}"));
+        let resp = self
+            .request(DaemonRequest::CreateWorker {
+                prompt,
+                agent: "claude".to_string(),
+                repo: Some(repo.to_string()),
+                start_point: None,
+                workspace: Some(self.work_dir.clone()),
+                profile: None,
+                task_dir: None,
+                role: Some("reviewer".to_string()),
+                review_pr: Some(pr_number as u64),
+                base_branch: Some("main".to_string()),
+            })
+            .await?;
+        match resp {
+            DaemonResponse::Ok { data } => Ok(data
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default()),
+            DaemonResponse::Error { message } => bail!("create_reviewer_worker failed: {message}"),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
+    pub async fn create_reviewer_worker_for_branch(
+        &self,
+        repo: &str,
+        branch_name: &str,
+    ) -> Result<String> {
+        let prompt = self.reviewer_prompt(&format!("Review branch {branch_name}"));
+        let resp = self
+            .request(DaemonRequest::CreateWorker {
+                prompt,
+                agent: "claude".to_string(),
+                repo: Some(repo.to_string()),
+                start_point: None,
+                workspace: Some(self.work_dir.clone()),
+                profile: None,
+                task_dir: None,
+                role: Some("reviewer".to_string()),
+                review_pr: None,
+                base_branch: Some("main".to_string()),
+            })
+            .await?;
+        match resp {
+            DaemonResponse::Ok { data } => Ok(data
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default()),
+            DaemonResponse::Error { message } => {
+                bail!("create_reviewer_worker_for_branch failed: {message}")
+            }
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
+    pub async fn send_message(&self, worktree_id: &str, message: &str) -> Result<()> {
+        let resp = self
+            .request(DaemonRequest::SendMessage {
+                worktree_id: worktree_id.to_string(),
+                message: message.to_string(),
+            })
+            .await?;
+        match resp {
+            DaemonResponse::Ok { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("send_message failed: {message}"),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
+    pub async fn close_worker(&self, worktree_id: &str) -> Result<()> {
+        let resp = self
+            .request(DaemonRequest::CloseWorker {
+                worktree_id: worktree_id.to_string(),
+            })
+            .await?;
+        match resp {
+            DaemonResponse::Ok { .. } => Ok(()),
+            DaemonResponse::Error { message } => bail!("close_worker failed: {message}"),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+
+    pub async fn list_workers(&self) -> Result<Vec<WorkerInfo>> {
+        let resp = self
+            .request(DaemonRequest::ListWorkers {
+                workspace: Some(self.work_dir.clone()),
+            })
+            .await?;
+        match resp {
+            DaemonResponse::Workers { workers } => Ok(workers),
+            DaemonResponse::Error { message } => bail!("list_workers failed: {message}"),
+            other => bail!("unexpected response: {other:?}"),
+        }
+    }
+}
+
 fn worker_title(prompt: &str) -> String {
     let line = prompt.lines().next().unwrap_or(prompt).trim();
     let trimmed = line.trim_end_matches(['.', '!', '?']).trim();
