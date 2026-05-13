@@ -178,6 +178,7 @@
   flex-direction: column;
   gap: 2px;
   flex: 1;
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
   border-right: 1px solid var(--border);
 }
@@ -196,11 +197,17 @@
   line-height: 1;
   letter-spacing: -0.02em;
   color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .statRowLabel {
   font-size: 11px;
   color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── List ────────────────────────────────────────────────────────────────── */

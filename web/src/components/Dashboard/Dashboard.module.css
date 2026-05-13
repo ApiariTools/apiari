@@ -5,6 +5,7 @@
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--space-7) var(--space-7) var(--space-8);
   background: var(--bg);
   gap: var(--space-6);
@@ -234,7 +235,16 @@
   }
 
   .widgetGrid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .statPill {
+    padding: var(--space-2) var(--space-3);
+    min-width: 70px;
+  }
+
+  .statPillNum {
+    font-size: 20px;
   }
 
   /* FAB handles chat on mobile — hide the Ask button */
