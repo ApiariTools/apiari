@@ -7327,6 +7327,17 @@ fn execute_workflow_action(
                             "[workflow] system PR created for task {task_id}: {}",
                             pr_result.pr_url
                         );
+                        if let Some(ref wid) = pr_worker_id {
+                            let msg = format!(
+                                "**PR created:** [{}]({})",
+                                pr_result.pr_url, pr_result.pr_url
+                            );
+                            crate::buzz::orchestrator::workflow::append_worker_system_event(
+                                &workspace_root,
+                                wid,
+                                &msg,
+                            );
+                        }
                         if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path) {
                             if let Some(num) = pr_result.pr_number {
                                 let _ = ts.update_task_pr(&task_id, &pr_result.pr_url, num);
@@ -7357,6 +7368,14 @@ fn execute_workflow_action(
                         tracing::warn!(
                             "[workflow] system PR creation failed for task {task_id}: {e}"
                         );
+                        if let Some(ref wid) = pr_worker_id {
+                            let msg = format!("**PR creation failed:** {e}");
+                            crate::buzz::orchestrator::workflow::append_worker_system_event(
+                                &workspace_root,
+                                wid,
+                                &msg,
+                            );
+                        }
                     }
                 }
             });
@@ -7364,10 +7383,12 @@ fn execute_workflow_action(
         WorkflowAction::DispatchReviewer {
             task_id,
             branch_name,
-            worker_id: _,
+            worker_id,
         } => {
             let task_id = task_id.clone();
             let branch_name = branch_name.clone();
+            let code_worker_id = worker_id.clone();
+            let workspace_root = work_dir.to_path_buf();
             let work_dir = work_dir.to_path_buf();
             let db_path = db_path.to_path_buf();
 
@@ -7387,6 +7408,11 @@ fn execute_workflow_action(
                     Ok(reviewer_id) if !reviewer_id.is_empty() => {
                         tracing::info!(
                             "[workflow] dispatched reviewer {reviewer_id} for task {task_id}"
+                        );
+                        crate::buzz::orchestrator::workflow::append_worker_system_event(
+                            &workspace_root,
+                            &code_worker_id,
+                            &format!("**Review dispatched:** reviewer `{reviewer_id}` is checking `{branch_name}`"),
                         );
                         if let Ok(ts) = crate::buzz::task::store::TaskStore::open(&db_path)
                             && let Ok(Some(task)) = ts.get_task(&task_id)
@@ -7415,6 +7441,7 @@ fn execute_workflow_action(
             let task_id = task_id.clone();
             let feedback = feedback.clone();
             let db_path = db_path.to_path_buf();
+            let workspace_root = work_dir.to_path_buf();
             let work_dir = work_dir.to_path_buf();
 
             tokio::spawn(async move {
@@ -7423,6 +7450,11 @@ fn execute_workflow_action(
                     && let Ok(Some(task)) = ts.get_task(&task_id)
                     && let Some(ref worker_id) = task.worker_id
                 {
+                    crate::buzz::orchestrator::workflow::append_worker_system_event(
+                        &workspace_root,
+                        worker_id,
+                        &format!("**Rework requested:** review feedback sent\n\n{feedback}"),
+                    );
                     let swarm = crate::buzz::coordinator::swarm_client::SwarmClient::new(work_dir);
                     let msg = format!(
                         "Review requested changes. Please address the feedback and push again:\n\n{feedback}"

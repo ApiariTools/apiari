@@ -76,6 +76,28 @@ pub struct PrDescriptionFile {
     pub body: String,
 }
 
+/// Append a `system` event to a worker's `events.jsonl`.
+///
+/// Silently does nothing if the file or directory can't be written — timeline
+/// events are best-effort and must never block the orchestrator.
+pub fn append_worker_system_event(workspace_root: &Path, worker_id: &str, text: &str) {
+    use std::io::Write;
+    let path = workspace_root
+        .join(".swarm")
+        .join("agents")
+        .join(worker_id)
+        .join("events.jsonl");
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let line = serde_json::json!({
+        "type": "system",
+        "text": text,
+        "timestamp": timestamp,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
 /// Read a worker-authored PR description from its agent directory, if present.
 pub fn read_pr_description(workspace_root: &Path, worker_id: &str) -> Option<PrDescriptionFile> {
     let path = workspace_root
