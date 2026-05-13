@@ -5757,6 +5757,18 @@ fn build_context_bot_system_prompt(
     prompt
 }
 
+/// Detect which CLI provider to use from the model name.
+/// Returns "claude", "codex", or "gemini".
+fn detect_context_bot_provider(model: &str) -> &'static str {
+    if model.starts_with("gemini") {
+        "gemini"
+    } else if model.starts_with("claude") {
+        "claude"
+    } else {
+        "codex"
+    }
+}
+
 fn format_tool_activity(name: &str, input: &serde_json::Value) -> String {
     let detail = input
         .get("command")
@@ -5800,19 +5812,21 @@ async fn v2_context_bot_chat(
         "[context-bot] request"
     );
 
-    // Verify claude CLI is available before accepting the job.
+    // Verify the provider CLI is available before accepting the job.
+    let provider = detect_context_bot_provider(&model);
     let which = tokio::process::Command::new("which")
-        .arg("claude")
+        .arg(provider)
         .output()
         .await;
     if !which.is_ok_and(|out| out.status.success()) {
-        tracing::error!(workspace = %workspace, "[context-bot] claude CLI not found on PATH");
+        tracing::error!(workspace = %workspace, provider = %provider, "[context-bot] CLI not found on PATH");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "claude CLI not available"})),
+            Json(serde_json::json!({"error": format!("{provider} CLI not available")})),
         )
             .into_response();
     }
+    let provider = provider.to_string();
 
     let workspace_root = load_workspace_root(&workspace);
     let system_prompt = build_context_bot_system_prompt(&body.context, &workspace_root);
@@ -5880,140 +5894,310 @@ async fn v2_context_bot_chat(
     let context_bg = body.context.clone();
     let message_bg = body.message.clone();
     let system_prompt_len = system_prompt.len();
+    let provider_bg = provider;
 
     // Spawn detached — a client disconnect cannot cancel this work.
     tokio::spawn(async move {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-        let raw = match tokio::time::timeout(std::time::Duration::from_secs(300), async {
-            let mut child = tokio::process::Command::new("claude")
-                .arg("--print")
-                .arg("--output-format")
-                .arg("stream-json")
-                .arg("--verbose")
-                .arg("--dangerously-skip-permissions")
-                .arg("--model")
-                .arg(&model_bg)
-                .arg("--system-prompt")
-                .arg(&system_prompt)
-                .current_dir(&workspace_root)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()?;
-
-            // Build the full message: prepend conversation history so Claude has context.
-            let mut full_message = String::new();
-            if !history_bg.is_empty() {
-                full_message.push_str("[Prior conversation]\n");
-                for msg in &history_bg {
-                    let role = if msg.role == "user" {
-                        "User"
-                    } else {
-                        "Assistant"
-                    };
-                    full_message.push_str(&format!("{}: {}\n", role, msg.content));
-                }
-                full_message.push_str("\n[Current message]\n");
+        // Build history-prepended message (common to all providers).
+        let mut full_message = String::new();
+        if !history_bg.is_empty() {
+            full_message.push_str("[Prior conversation]\n");
+            for msg in &history_bg {
+                let role = if msg.role == "user" {
+                    "User"
+                } else {
+                    "Assistant"
+                };
+                full_message.push_str(&format!("{}: {}\n", role, msg.content));
             }
-            full_message.push_str(&message_bg);
+            full_message.push_str("\n[Current message]\n");
+        }
+        full_message.push_str(&message_bg);
 
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(full_message.as_bytes()).await;
-            }
+        let run_result: Result<String, String> =
+            tokio::time::timeout(std::time::Duration::from_secs(300), async {
+                match provider_bg.as_str() {
+                    "claude" => {
+                        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+                        let mut child = tokio::process::Command::new("claude")
+                            .arg("--print")
+                            .arg("--output-format")
+                            .arg("stream-json")
+                            .arg("--verbose")
+                            .arg("--dangerously-skip-permissions")
+                            .arg("--model")
+                            .arg(&model_bg)
+                            .arg("--system-prompt")
+                            .arg(&system_prompt)
+                            .current_dir(&workspace_root)
+                            .stdin(std::process::Stdio::piped())
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .map_err(|e| format!("failed to spawn claude: {e}"))?;
 
-            // Read stderr concurrently so we have it for error messages.
-            let stderr_reader = child.stderr.take().unwrap();
-            let stderr_task = tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut buf = String::new();
-                let _ = BufReader::new(stderr_reader).read_to_string(&mut buf).await;
-                buf
-            });
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(full_message.as_bytes()).await;
+                        }
 
-            let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-            let mut response = String::new();
-            let mut result_error: Option<String> = None;
+                        let stderr_reader = child.stderr.take().unwrap();
+                        let stderr_task = tokio::spawn(async move {
+                            use tokio::io::AsyncReadExt;
+                            let mut buf = String::new();
+                            let _ = BufReader::new(stderr_reader).read_to_string(&mut buf).await;
+                            buf
+                        });
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.is_empty() {
-                    continue;
-                }
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                    match val.get("type").and_then(|t| t.as_str()) {
-                        Some("assistant") => {
-                            if let Some(blocks) = val["message"]["content"].as_array() {
-                                for block in blocks {
-                                    match block.get("type").and_then(|t| t.as_str()) {
-                                        Some("tool_use") => {
-                                            let name = block
-                                                .get("name")
-                                                .and_then(|n| n.as_str())
-                                                .unwrap_or("tool");
-                                            let input =
-                                                block.get("input").cloned().unwrap_or_default();
-                                            let activity = format_tool_activity(name, &input);
-                                            let _ = updates_tx.send(WsUpdate::ContextBotActivity {
-                                                workspace: workspace_bg.clone(),
-                                                session_id: session_id_bg.clone(),
-                                                activity,
-                                            });
-                                        }
-                                        Some("text") => {
-                                            if let Some(t) =
-                                                block.get("text").and_then(|t| t.as_str())
-                                            {
-                                                response.push_str(t);
+                        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+                        let mut response = String::new();
+                        let mut result_error: Option<String> = None;
+
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                                match val.get("type").and_then(|t| t.as_str()) {
+                                    Some("assistant") => {
+                                        if let Some(blocks) = val["message"]["content"].as_array() {
+                                            for block in blocks {
+                                                match block.get("type").and_then(|t| t.as_str()) {
+                                                    Some("tool_use") => {
+                                                        let name = block
+                                                            .get("name")
+                                                            .and_then(|n| n.as_str())
+                                                            .unwrap_or("tool");
+                                                        let input = block
+                                                            .get("input")
+                                                            .cloned()
+                                                            .unwrap_or_default();
+                                                        let _ = updates_tx.send(
+                                                            WsUpdate::ContextBotActivity {
+                                                                workspace: workspace_bg.clone(),
+                                                                session_id: session_id_bg.clone(),
+                                                                activity: format_tool_activity(
+                                                                    name, &input,
+                                                                ),
+                                                            },
+                                                        );
+                                                    }
+                                                    Some("text") => {
+                                                        if let Some(t) = block
+                                                            .get("text")
+                                                            .and_then(|t| t.as_str())
+                                                        {
+                                                            response.push_str(t);
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
                                             }
                                         }
-                                        _ => {}
                                     }
+                                    Some("result") => {
+                                        let is_error = val
+                                            .get("is_error")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false);
+                                        if let Some(r) = val.get("result").and_then(|r| r.as_str())
+                                        {
+                                            if is_error {
+                                                result_error = Some(r.to_string());
+                                            } else {
+                                                response = r.to_string();
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
-                        Some("result") => {
-                            let is_error = val
-                                .get("is_error")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            if let Some(r) = val.get("result").and_then(|r| r.as_str()) {
-                                if is_error {
-                                    result_error = Some(r.to_string());
-                                } else {
-                                    response = r.to_string();
-                                }
+
+                        let status = child
+                            .wait()
+                            .await
+                            .map_err(|e| format!("claude wait failed: {e}"))?;
+                        let stderr = stderr_task.await.unwrap_or_default();
+
+                        if status.success() {
+                            Ok(response)
+                        } else {
+                            let detail = result_error
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| {
+                                    let s = stderr.trim().to_string();
+                                    if s.is_empty() { None } else { Some(s) }
+                                })
+                                .unwrap_or_else(|| "claude exited non-zero".to_string());
+                            tracing::error!(
+                                workspace = %workspace_bg,
+                                detail = %detail,
+                                system_prompt_len = system_prompt_len,
+                                "[context-bot] claude exited non-zero"
+                            );
+                            Err(detail)
+                        }
+                    }
+
+                    "codex" => {
+                        use apiari_codex_sdk::{CodexClient, ExecOptions};
+                        // Codex has no system-prompt flag — prepend context to the message.
+                        let prompt = format!("{system_prompt}\n\n---\n\n{full_message}");
+                        let client = CodexClient::new();
+                        let mut execution = client
+                            .exec(
+                                &prompt,
+                                ExecOptions {
+                                    model: Some(model_bg.clone()),
+                                    working_dir: Some(workspace_root.clone()),
+                                    full_auto: true,
+                                    dangerously_bypass_sandbox: true,
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                            .map_err(|e| format!("failed to spawn codex: {e}"))?;
+
+                        let mut response = String::new();
+                        loop {
+                            match execution.next_event().await {
+                                Ok(Some(event)) => match &event {
+                                    apiari_codex_sdk::Event::ItemStarted {
+                                        item:
+                                            apiari_codex_sdk::Item::CommandExecution {
+                                                command: Some(cmd),
+                                                ..
+                                            },
+                                    } => {
+                                        let _ = updates_tx.send(WsUpdate::ContextBotActivity {
+                                            workspace: workspace_bg.clone(),
+                                            session_id: session_id_bg.clone(),
+                                            activity: format!(
+                                                "Bash: {}",
+                                                &cmd[..cmd.len().min(80)]
+                                            ),
+                                        });
+                                    }
+                                    apiari_codex_sdk::Event::ItemCompleted {
+                                        item:
+                                            apiari_codex_sdk::Item::AgentMessage {
+                                                text: Some(text),
+                                                ..
+                                            },
+                                    } => {
+                                        response = text.clone();
+                                    }
+                                    apiari_codex_sdk::Event::TurnFailed { error, .. } => {
+                                        let msg = error
+                                            .as_ref()
+                                            .and_then(|e| e.message.as_deref())
+                                            .unwrap_or("codex turn failed");
+                                        return Err(msg.to_string());
+                                    }
+                                    apiari_codex_sdk::Event::Error { message } => {
+                                        return Err(message
+                                            .as_deref()
+                                            .unwrap_or("codex error")
+                                            .to_string());
+                                    }
+                                    _ => {}
+                                },
+                                Ok(None) => break,
+                                Err(e) => return Err(format!("codex stream error: {e}")),
                             }
                         }
-                        _ => {}
+                        Ok(response)
+                    }
+
+                    _ => {
+                        // gemini
+                        use apiari_gemini_sdk::{GeminiClient, GeminiOptions};
+                        let prompt = format!("{system_prompt}\n\n---\n\n{full_message}");
+                        let client = GeminiClient::new();
+                        let mut execution = client
+                            .exec(
+                                &prompt,
+                                GeminiOptions {
+                                    model: Some(model_bg.clone()),
+                                    working_dir: Some(workspace_root.clone()),
+                                    yolo: true,
+                                    ..Default::default()
+                                },
+                            )
+                            .await
+                            .map_err(|e| format!("failed to spawn gemini: {e}"))?;
+
+                        let mut response = String::new();
+                        loop {
+                            match execution.next_event().await {
+                                Ok(Some(event)) => match &event {
+                                    apiari_gemini_sdk::Event::ToolRequest { name, .. } => {
+                                        let _ = updates_tx.send(WsUpdate::ContextBotActivity {
+                                            workspace: workspace_bg.clone(),
+                                            session_id: session_id_bg.clone(),
+                                            activity: name.as_deref().unwrap_or("tool").to_string(),
+                                        });
+                                    }
+                                    apiari_gemini_sdk::Event::Message { role, delta, .. } => {
+                                        if role.as_deref() == Some("assistant")
+                                            && let Some(text) = event.text()
+                                        {
+                                            if delta.unwrap_or(false) {
+                                                response.push_str(&text);
+                                            } else {
+                                                response = text;
+                                            }
+                                        }
+                                    }
+                                    apiari_gemini_sdk::Event::JsonOutput {
+                                        response: Some(r),
+                                        ..
+                                    } => {
+                                        let trimmed = r.trim().to_string();
+                                        if !trimmed.is_empty() && response.trim().is_empty() {
+                                            response = trimmed;
+                                        }
+                                    }
+                                    apiari_gemini_sdk::Event::ItemCompleted { item } => {
+                                        if let Some(text) = item.text()
+                                            && !text.is_empty()
+                                        {
+                                            response = text.to_string();
+                                        }
+                                    }
+                                    apiari_gemini_sdk::Event::TurnFailed { error, .. } => {
+                                        let msg = error
+                                            .as_ref()
+                                            .and_then(|e| e.message.as_deref())
+                                            .unwrap_or("gemini turn failed");
+                                        return Err(msg.to_string());
+                                    }
+                                    apiari_gemini_sdk::Event::Error { message, .. } => {
+                                        return Err(message
+                                            .as_deref()
+                                            .unwrap_or("gemini error")
+                                            .to_string());
+                                    }
+                                    _ => {}
+                                },
+                                Ok(None) => break,
+                                Err(e) => return Err(format!("gemini stream error: {e}")),
+                            }
+                        }
+                        Ok(response)
                     }
                 }
-            }
+            })
+            .await
+            .unwrap_or_else(|_| Err(format!("{provider_bg} timed out after 300s")));
 
-            let status = child.wait().await?;
-            let stderr = stderr_task.await.unwrap_or_default();
-            Ok::<(String, bool, String, Option<String>), std::io::Error>((
-                response,
-                status.success(),
-                stderr,
-                result_error,
-            ))
-        })
-        .await
-        {
-            Ok(Ok((text, true, _, _))) => text.trim().to_string(),
-            Ok(Ok((_text, false, stderr, result_err))) => {
-                let detail = result_err
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        let s = stderr.trim().to_string();
-                        if s.is_empty() { None } else { Some(s) }
-                    })
-                    .unwrap_or_else(|| "claude exited non-zero".to_string());
+        let raw = match run_result {
+            Ok(text) => text.trim().to_string(),
+            Err(detail) => {
                 tracing::error!(
                     workspace = %workspace_bg,
                     detail = %detail,
-                    system_prompt_len = system_prompt_len,
-                    "[context-bot] claude exited non-zero"
+                    "[context-bot] error"
                 );
                 let _ = updates_tx.send(WsUpdate::ContextBotResponse {
                     workspace: workspace_bg,
@@ -6022,30 +6206,6 @@ async fn v2_context_bot_chat(
                     model: model_bg,
                     dispatched_worker_id: None,
                     error: Some(detail),
-                });
-                return;
-            }
-            Ok(Err(e)) => {
-                tracing::error!(workspace = %workspace_bg, err = %e, "[context-bot] failed to spawn claude");
-                let _ = updates_tx.send(WsUpdate::ContextBotResponse {
-                    workspace: workspace_bg,
-                    session_id: session_id_bg,
-                    response: String::new(),
-                    model: model_bg,
-                    dispatched_worker_id: None,
-                    error: Some(format!("failed to run claude: {e}")),
-                });
-                return;
-            }
-            Err(_elapsed) => {
-                tracing::error!(workspace = %workspace_bg, "[context-bot] claude timed out after 300s");
-                let _ = updates_tx.send(WsUpdate::ContextBotResponse {
-                    workspace: workspace_bg,
-                    session_id: session_id_bg,
-                    response: String::new(),
-                    model: model_bg,
-                    dispatched_worker_id: None,
-                    error: Some("claude timed out after 300s".to_string()),
                 });
                 return;
             }
@@ -9906,5 +10066,134 @@ model = "sonnet"
         .into_response();
 
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ── Unit tests for pure helper logic ──────────────────────────────────────
+
+    #[test]
+    fn context_bot_snapshot_truncated_at_4000_chars() {
+        // A snapshot larger than 4000 chars must be truncated so the system prompt
+        // doesn't blow past OS arg-length limits when passed as --system-prompt.
+        let big_value = "x".repeat(5000);
+        let ctx = ContextBotContext {
+            view: "worker_detail".to_string(),
+            entity_id: None,
+            entity_snapshot: Some(serde_json::json!({ "data": big_value })),
+        };
+        let prompt = build_context_bot_system_prompt(&ctx, std::path::Path::new("/tmp"));
+        assert!(
+            prompt.contains("... [truncated]"),
+            "prompt must contain truncation marker"
+        );
+        // The snapshot portion of the prompt should not contain the full 5000-char value.
+        assert!(
+            !prompt.contains(&"x".repeat(4001)),
+            "snapshot must not exceed 4000 chars in prompt"
+        );
+    }
+
+    #[test]
+    fn context_bot_history_prepended_to_message() {
+        // build_context_bot_system_prompt is a pure fn; the history-prepend logic
+        // lives in the background task. We test it in isolation here by replicating
+        // the same logic used in v2_context_bot_chat.
+        let history = vec![
+            ContextBotMessageItem {
+                role: "user".to_string(),
+                content: "What's the plan?".to_string(),
+                timestamp: String::new(),
+            },
+            ContextBotMessageItem {
+                role: "assistant".to_string(),
+                content: "We need to refactor the auth module.".to_string(),
+                timestamp: String::new(),
+            },
+        ];
+        let current_message = "Got it. Can you do it?";
+
+        let mut full_message = String::new();
+        if !history.is_empty() {
+            full_message.push_str("[Prior conversation]\n");
+            for msg in &history {
+                let role = if msg.role == "user" {
+                    "User"
+                } else {
+                    "Assistant"
+                };
+                full_message.push_str(&format!("{}: {}\n", role, msg.content));
+            }
+            full_message.push_str("\n[Current message]\n");
+        }
+        full_message.push_str(current_message);
+
+        assert!(
+            full_message.contains("[Prior conversation]"),
+            "must include prior conversation header"
+        );
+        assert!(
+            full_message.contains("User: What's the plan?"),
+            "must include user history turn"
+        );
+        assert!(
+            full_message.contains("Assistant: We need to refactor"),
+            "must include assistant history turn"
+        );
+        assert!(
+            full_message.contains("[Current message]"),
+            "must include current message header"
+        );
+        assert!(
+            full_message.ends_with(current_message),
+            "current message must be last"
+        );
+    }
+
+    #[test]
+    fn context_bot_dispatch_worker_line_parsed() {
+        // The DISPATCH_WORKER line must be stripped from display text and its goal
+        // extracted. Lines before/after it remain in display output.
+        let raw = "The worker is failing CI.\n\nDISPATCH_WORKER: Fix the failing auth tests\n\nLet me know if you need more.";
+
+        let mut dispatch_goal: Option<String> = None;
+        let mut display_lines: Vec<&str> = Vec::new();
+        for line in raw.lines() {
+            if let Some(goal) = line.trim().strip_prefix("DISPATCH_WORKER:") {
+                let goal = goal.trim().to_string();
+                if !goal.is_empty() {
+                    dispatch_goal = Some(goal);
+                }
+            } else {
+                display_lines.push(line);
+            }
+        }
+        let display_text = display_lines.join("\n").trim().to_string();
+
+        assert_eq!(
+            dispatch_goal.as_deref(),
+            Some("Fix the failing auth tests"),
+            "must extract goal from DISPATCH_WORKER line"
+        );
+        assert!(
+            !display_text.contains("DISPATCH_WORKER"),
+            "DISPATCH_WORKER line must not appear in display text"
+        );
+        assert!(
+            display_text.contains("The worker is failing CI."),
+            "preceding text must remain in display"
+        );
+        assert!(
+            display_text.contains("Let me know"),
+            "following text must remain in display"
+        );
+    }
+
+    #[test]
+    fn detect_context_bot_provider_routes_correctly() {
+        assert_eq!(detect_context_bot_provider("claude-sonnet-4-6"), "claude");
+        assert_eq!(detect_context_bot_provider("claude-opus-4-7"), "claude");
+        assert_eq!(detect_context_bot_provider("gemini-2.5-pro"), "gemini");
+        assert_eq!(detect_context_bot_provider("gemini-flash"), "gemini");
+        assert_eq!(detect_context_bot_provider("o4-mini"), "codex");
+        assert_eq!(detect_context_bot_provider("o3"), "codex");
     }
 }

@@ -18,6 +18,8 @@ const MODELS = [
   { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
   { id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
   { id: "claude-opus-4-7", label: "Opus 4.7" },
+  { id: "o4-mini", label: "o4-mini (Codex)" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
 ];
 
 function modelLabel(id: string): string {
