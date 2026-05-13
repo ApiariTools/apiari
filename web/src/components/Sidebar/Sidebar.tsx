@@ -21,7 +21,7 @@ export interface ActivityItem {
 }
 
 export interface SidebarProps {
-  selectedType: "auto_bot" | "worker" | null;
+  selectedType: "auto_bot" | "worker" | "completed_workers" | null;
   selectedId: string | null;
   onSelect: (type: "auto_bot" | "worker", id: string) => void;
   onHome: () => void;

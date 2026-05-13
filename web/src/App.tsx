@@ -29,7 +29,7 @@ function nextSessionId() {
   return String(++_nextSessionId);
 }
 
-type EntityType = "auto_bot" | "worker";
+type EntityType = "auto_bot" | "worker" | "completed_workers";
 
 interface SelectedEntity {
   type: EntityType;
@@ -40,15 +40,19 @@ interface SelectedEntity {
 const URL_SEGMENT_TO_TYPE: Record<string, EntityType> = {
   worker: "worker",
   "auto-bot": "auto_bot",
+  "completed-workers": "completed_workers",
 };
 
 const TYPE_TO_URL_SEGMENT: Record<EntityType, string> = {
   worker: "worker",
   auto_bot: "auto-bot",
+  completed_workers: "completed-workers",
 };
 
 function updateHash(ws: string, type?: EntityType, id?: string) {
-  if (type && id) {
+  if (type === "completed_workers") {
+    window.location.hash = `/${ws}/${TYPE_TO_URL_SEGMENT[type]}`;
+  } else if (type && id) {
     window.location.hash = `/${ws}/${TYPE_TO_URL_SEGMENT[type]}/${id}`;
   } else {
     window.location.hash = `/${ws}`;
@@ -57,6 +61,7 @@ function updateHash(ws: string, type?: EntityType, id?: string) {
 
 function parseHash(hash: string): { ws: string; type?: EntityType; id?: string } | null {
   // hash looks like "#/workspace" or "#/workspace/worker/id" or "#/workspace/auto-bot/id"
+  // or "#/workspace/completed-workers" (no id)
   const stripped = hash.replace(/^#\//, "");
   if (!stripped) return null;
   const parts = stripped.split("/");
@@ -64,9 +69,12 @@ function parseHash(hash: string): { ws: string; type?: EntityType; id?: string }
   if (!ws) return null;
   const segment = parts[1];
   const id = parts[2];
-  if (segment && id) {
+  if (segment) {
     const type = URL_SEGMENT_TO_TYPE[segment];
-    if (type) return { ws, type, id };
+    if (type) {
+      if (id) return { ws, type, id };
+      return { ws, type };
+    }
   }
   return { ws };
 }
@@ -102,7 +110,6 @@ export default function App() {
   const [workers, setWorkers] = useState<WorkerV2[]>([]);
   const [autoBots, setAutoBots] = useState<AutoBot[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showDoneWorkers, setShowDoneWorkers] = useState(false);
   const [contextSessions, setContextSessions] = useState<ContextBotSession[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [quickDispatchOpen, setQuickDispatchOpen] = useState(false);
@@ -127,9 +134,8 @@ export default function App() {
         const parsed = parseHash(window.location.hash);
         if (parsed && names.includes(parsed.ws)) {
           setWorkspace(parsed.ws);
-          if (parsed.type && parsed.id) {
-            setShowDoneWorkers(false);
-            setSelected({ type: parsed.type, id: parsed.id });
+          if (parsed.type) {
+            setSelected({ type: parsed.type, id: parsed.id ?? "" });
           }
         } else {
           setWorkspace(names[0]);
@@ -142,7 +148,6 @@ export default function App() {
   }, []);
 
   const navigateTo = (type: EntityType, id: string) => {
-    setShowDoneWorkers(false);
     setSelected({ type, id });
     updateHash(workspace, type, id);
   };
@@ -430,12 +435,10 @@ export default function App() {
       const parsed = parseHash(window.location.hash);
       if (!parsed) return;
       if (parsed.ws) setWorkspace(parsed.ws);
-      if (parsed.type && parsed.id) {
-        setShowDoneWorkers(false);
-        setSelected({ type: parsed.type, id: parsed.id });
+      if (parsed.type) {
+        setSelected({ type: parsed.type, id: parsed.id ?? "" });
       } else {
         setSelected(null);
-        setShowDoneWorkers(false);
       }
     }
     window.addEventListener("hashchange", handleHashChange);
@@ -462,7 +465,6 @@ export default function App() {
       onSelect={handleSelect}
       onHome={() => {
         setSelected(null);
-        setShowDoneWorkers(false);
         setMobileTab("dashboard");
         updateHash(workspace);
       }}
@@ -470,17 +472,16 @@ export default function App() {
       workers={sidebarWorkers}
       doneWorkerCount={doneWorkers.length}
       onShowDoneWorkers={() => {
-        setSelected(null);
-        setShowDoneWorkers(true);
+        setSelected({ type: "completed_workers", id: "" });
         setMobileTab("dashboard");
+        updateHash(workspace, "completed_workers");
       }}
-      doneWorkersSelected={showDoneWorkers}
+      doneWorkersSelected={selected?.type === "completed_workers"}
       workspaces={workspaces}
       workspace={workspace}
       onWorkspaceChange={(ws) => {
         setWorkspace(ws);
         setSelected(null);
-        setShowDoneWorkers(false);
         updateHash(ws);
       }}
       onQuickDispatch={() => setQuickDispatchOpen(true)}
@@ -510,6 +511,11 @@ export default function App() {
         onOpenContextBot={openContextBot}
         onNavigateToWorker={(id) => navigateTo("worker", id)}
       />
+    ) : selected.type === "completed_workers" ? (
+      <CompletedWorkersView
+        workers={doneWorkers}
+        onSelectWorker={(id) => navigateTo("worker", id)}
+      />
     ) : (
       <AutoBotDetail
         workspace={workspace}
@@ -518,8 +524,6 @@ export default function App() {
         onOpenContextBot={openContextBot}
       />
     )
-  ) : showDoneWorkers ? (
-    <CompletedWorkersView workers={doneWorkers} onSelectWorker={(id) => navigateTo("worker", id)} />
   ) : (
     <Dashboard
       workspace={workspace}
@@ -543,11 +547,18 @@ export default function App() {
               workerId={selected.id}
               onBack={() => {
                 setSelected(null);
-                setShowDoneWorkers(false);
                 updateHash(workspace);
               }}
               onOpenContextBot={openContextBot}
               onNavigateToWorker={(id) => navigateTo("worker", id)}
+            />
+          );
+        }
+        if (selected?.type === "completed_workers") {
+          return (
+            <CompletedWorkersView
+              workers={doneWorkers}
+              onSelectWorker={(id) => navigateTo("worker", id)}
             />
           );
         }
@@ -564,14 +575,6 @@ export default function App() {
         // No selection — show tab content
         if (mobileTab === "workers") return mobileList;
         if (mobileTab === "auto_bots") return mobileList;
-        if (showDoneWorkers) {
-          return (
-            <CompletedWorkersView
-              workers={doneWorkers}
-              onSelectWorker={(id) => navigateTo("worker", id)}
-            />
-          );
-        }
         return (
           <Dashboard
             workspace={workspace}
@@ -640,23 +643,21 @@ export default function App() {
             onSelect={handleSelect}
             onHome={() => {
               setSelected(null);
-              setShowDoneWorkers(false);
               updateHash(workspace);
             }}
             autoBots={sidebarAutoBots}
             workers={sidebarWorkers}
             doneWorkerCount={doneWorkers.length}
             onShowDoneWorkers={() => {
-              setSelected(null);
-              setShowDoneWorkers(true);
+              setSelected({ type: "completed_workers", id: "" });
+              updateHash(workspace, "completed_workers");
             }}
-            doneWorkersSelected={showDoneWorkers}
+            doneWorkersSelected={selected?.type === "completed_workers"}
             workspaces={workspaces}
             workspace={workspace}
             onWorkspaceChange={(ws) => {
               setWorkspace(ws);
               setSelected(null);
-              setShowDoneWorkers(false);
               updateHash(ws);
             }}
             onQuickDispatch={() => setQuickDispatchOpen(true)}
@@ -671,7 +672,6 @@ export default function App() {
             onTabChange={(id) => {
               setMobileTab(id);
               setSelected(null);
-              setShowDoneWorkers(false);
               updateHash(workspace);
             }}
           />
