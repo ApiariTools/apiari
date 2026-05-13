@@ -290,9 +290,8 @@ impl AutoBotRunner {
 
 /// Execute one auto bot run, using a pre-existing run record.
 ///
-/// Execute one auto bot run, using a pre-existing run record.
-///
-/// Used by the HTTP trigger endpoint which inserts the run record before calling this.
+/// Used by the HTTP trigger and chat endpoints which insert the run record before calling this.
+/// If `custom_prompt` is `Some`, it is appended to the bot's stored prompt.
 pub async fn run_bot_external(
     bot: AutoBot,
     triggered_by: String,
@@ -302,15 +301,21 @@ pub async fn run_bot_external(
     workspace_root: PathBuf,
     db_path: PathBuf,
     workspace_config: Option<crate::config::WorkspaceConfig>,
+    custom_prompt: Option<String>,
 ) {
     info!(
         "[auto_bot_runner/{}] bot {} external run {} (triggered_by={triggered_by})",
         workspace, bot.id, run_id
     );
 
+    let prompt = match custom_prompt {
+        Some(ref q) => format!("{}\n\n---\n\nUser question: {q}", bot.prompt),
+        None => bot.prompt.clone(),
+    };
+
     let (outcome, summary, worker_id, cost_usd) = execute_bot_prompt(
         &bot,
-        &bot.prompt,
+        &prompt,
         &workspace,
         &workspace_root,
         &db_path,
@@ -357,6 +362,7 @@ async fn run_bot(
         summary: None,
         worker_id: None,
         cost_usd: None,
+        chat_message: None,
     };
 
     if let Err(e) = store.insert_run(&run) {
@@ -608,6 +614,9 @@ async fn execute_with_coordinator(
                         &bot_name,
                     ));
 
+                    // Clear stale widgets from previous runs before writing fresh ones.
+                    let _ = signal_store.delete_widgets_by_bot(&bot_id);
+
                     // Write structured widgets to the dashboard.
                     for widget in &widgets {
                         let slot = widget
@@ -615,7 +624,12 @@ async fn execute_with_coordinator(
                             .and_then(|s| s.as_str())
                             .unwrap_or("unknown");
                         match serde_json::to_string(widget) {
-                            Ok(json) => match signal_store.upsert_widget(slot, &json, None) {
+                            Ok(json) => match signal_store.upsert_widget(
+                                slot,
+                                &json,
+                                None,
+                                Some(bot_id.as_str()),
+                            ) {
                                 Ok(()) => info!(
                                     "[auto_bot_runner/{workspace_owned2}] bot {bot_id} wrote widget slot={slot}"
                                 ),
@@ -791,6 +805,9 @@ async fn execute_plain(
 
     let output = Command::new("claude")
         .arg("--print")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
         .arg("--max-turns")
         .arg("7")
         .arg(&full_prompt)
@@ -798,7 +815,7 @@ async fn execute_plain(
         .output()
         .await;
 
-    let raw_output = match output {
+    let stdout = match output {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
         Ok(o) => {
             let stderr = String::from_utf8_lossy(&o.stderr).to_string();
@@ -816,6 +833,22 @@ async fn execute_plain(
             return ("error".to_string(), e.to_string(), None);
         }
     };
+
+    // Extract only the final result from stream-json output, not all intermediate turns.
+    let raw_output = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|val| {
+            if val.get("type").and_then(|t| t.as_str()) == Some("result") {
+                val.get("result")
+                    .and_then(|r| r.as_str())
+                    .map(str::to_string)
+            } else {
+                None
+            }
+        })
+        .last()
+        .unwrap_or_default();
 
     let outcome = if raw_output.trim().is_empty() {
         "noise"
@@ -883,7 +916,8 @@ mod tests {
                  outcome TEXT,
                  summary TEXT,
                  worker_id TEXT,
-                 cost_usd REAL
+                 cost_usd REAL,
+                 chat_message TEXT
              );",
         )
         .unwrap();
@@ -964,6 +998,7 @@ mod tests {
             summary: None,
             worker_id: None,
             cost_usd: None,
+            chat_message: None,
         };
         store.insert_run(&run).unwrap();
 

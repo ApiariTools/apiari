@@ -624,10 +624,14 @@ function BriefTab({
   brief,
   goal,
   taskPacket,
+  worktreePath,
+  repoPath,
 }: {
   brief: WorkerBrief | null;
   goal: string | null;
   taskPacket?: WorkerTaskPacket | null;
+  worktreePath?: string | null;
+  repoPath?: string | null;
 }) {
   const hasTaskPacket = Boolean(
     taskPacket?.task_md ||
@@ -644,6 +648,23 @@ function BriefTab({
 
   return (
     <div className={styles.briefBody}>
+      {(worktreePath || repoPath) && (
+        <BriefSection label="Path">
+          {worktreePath && (
+            <div className={styles.briefContextRow}>
+              <span className={styles.briefContextKey}>worktree</span>
+              <span className={styles.briefContextVal}>{worktreePath}</span>
+            </div>
+          )}
+          {repoPath && (
+            <div className={styles.briefContextRow}>
+              <span className={styles.briefContextKey}>repo</span>
+              <span className={styles.briefContextVal}>{repoPath}</span>
+            </div>
+          )}
+        </BriefSection>
+      )}
+
       {brief && (
         <>
           <BriefSection label="Goal">
@@ -929,7 +950,7 @@ export default function WorkerDetailV2({
     );
   }
 
-  const canCancel = ["running", "waiting", "queued"].includes(data.state);
+  const canCancel = ["running", "waiting", "queued", "stalled"].includes(data.state);
   const hasRequestChangesReview = reviews.some((r) => r.verdict === "request_changes");
   const canRequeue =
     data.state === "abandoned" || (data.state === "waiting" && hasRequestChangesReview);
@@ -1168,7 +1189,13 @@ export default function WorkerDetailV2({
 
         {activeTab === "brief" && (
           <div className={styles.briefPanel}>
-            <BriefTab brief={data.brief} goal={data.goal} taskPacket={data.task_packet} />
+            <BriefTab
+              brief={data.brief}
+              goal={data.goal}
+              taskPacket={data.task_packet}
+              worktreePath={data.worktree_path}
+              repoPath={data.repo_path}
+            />
           </div>
         )}
       </div>

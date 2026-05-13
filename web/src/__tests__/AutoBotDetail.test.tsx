@@ -4,7 +4,13 @@ import AutoBotDetail from "../components/AutoBotDetail/AutoBotDetail";
 import * as api from "@apiari/api";
 import type { AutoBotDetail as AutoBotDetailData } from "@apiari/types";
 
-vi.mock("@apiari/api");
+vi.mock("@apiari/api", () => ({
+  getAutoBot: vi.fn(),
+  triggerAutoBot: vi.fn(),
+  updateAutoBot: vi.fn(),
+  listWidgets: vi.fn(),
+  chatWithAutoBot: vi.fn(),
+}));
 
 const baseBot: AutoBotDetailData = {
   id: "bot-1",
@@ -77,6 +83,8 @@ const botWithRuns: AutoBotDetailData = {
 
 beforeEach(() => {
   vi.mocked(api.getAutoBot).mockResolvedValue(baseBot);
+  vi.mocked(api.listWidgets).mockResolvedValue([]);
+  vi.mocked(api.chatWithAutoBot).mockResolvedValue({ run_id: "r-1" });
 });
 
 describe("AutoBotDetail", () => {

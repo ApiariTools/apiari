@@ -19,10 +19,49 @@ use apiari_swarm::core::agent::AgentKind;
 use apiari_swarm::daemon::event_logger::{AgentEvent, EventLogger};
 use apiari_swarm::daemon::managed_agent::{SpawnOptions, spawn_managed_agent};
 use apiari_swarm::daemon::protocol::{AgentEventWire, TaskDirPayload};
+use async_trait::async_trait;
 use chrono::Utc;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use std::collections::{HashMap, HashSet, VecDeque};
+
+// ── WorkerManagerHandle trait ──────────────────────────────────────────
+
+/// Abstraction over WorkerManager so HTTP handlers can be tested with a mock.
+#[async_trait]
+pub trait WorkerManagerHandle: Send + Sync {
+    async fn send_message(&self, worker_id: &str, message: &str) -> Result<()>;
+    async fn create_worker(
+        &self,
+        work_dir: &std::path::Path,
+        repo: &str,
+        prompt: &str,
+        agent: &str,
+        model: Option<&str>,
+    ) -> Result<String>;
+    async fn create_worker_with_task_dir(
+        &self,
+        work_dir: &std::path::Path,
+        repo: &str,
+        prompt: &str,
+        agent: &str,
+        model: Option<&str>,
+        task_dir: Option<TaskDirPayload>,
+        isolation: crate::config::WorkerIsolation,
+    ) -> Result<String>;
+
+    /// Test-only: inject a worker ID into the live set. Panics in production impls.
+    #[cfg(test)]
+    async fn inject_live_for_test(&self, _worker_id: &str) {
+        panic!("inject_live_for_test not supported on this WorkerManagerHandle impl");
+    }
+
+    /// Test-only: drain the pending queue for a worker. Panics in production impls.
+    #[cfg(test)]
+    async fn pending_for_test(&self, _worker_id: &str) -> Vec<String> {
+        panic!("pending_for_test not supported on this WorkerManagerHandle impl");
+    }
+}
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -287,6 +326,20 @@ impl WorkerManager {
         let (work_dir, worktree_path, repo_path, kind, model) =
             read_worker_paths(&self.db_path, &self.workspace, worker_id)?;
 
+        // Stamp state.json phase="running" before the agent starts so the
+        // reconciler doesn't immediately flip the worker back to Waiting on its
+        // next tick (it reads phase from state.json, not from the DB).
+        stamp_phase_running(&work_dir, worker_id);
+
+        // Delete stale report.json so apply_report doesn't re-apply branch_ready=true
+        // from the previous agent run.
+        let report_path = work_dir
+            .join(".swarm")
+            .join("agents")
+            .join(worker_id)
+            .join("report.json");
+        let _ = std::fs::remove_file(&report_path);
+
         let wt_clone = worktree_path.clone();
         let msg_clone = message.to_string();
 
@@ -349,6 +402,117 @@ impl WorkerManager {
             .get(worker_id)
             .map(|q| q.iter().cloned().collect())
             .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl WorkerManagerHandle for WorkerManager {
+    async fn send_message(&self, worker_id: &str, message: &str) -> Result<()> {
+        self.send_message(worker_id, message).await
+    }
+
+    async fn create_worker(
+        &self,
+        work_dir: &std::path::Path,
+        repo: &str,
+        prompt: &str,
+        agent: &str,
+        model: Option<&str>,
+    ) -> Result<String> {
+        self.create_worker(work_dir, repo, prompt, agent, model)
+            .await
+    }
+
+    async fn create_worker_with_task_dir(
+        &self,
+        work_dir: &std::path::Path,
+        repo: &str,
+        prompt: &str,
+        agent: &str,
+        model: Option<&str>,
+        task_dir: Option<TaskDirPayload>,
+        isolation: crate::config::WorkerIsolation,
+    ) -> Result<String> {
+        self.create_worker_with_task_dir(work_dir, repo, prompt, agent, model, task_dir, isolation)
+            .await
+    }
+
+    #[cfg(test)]
+    async fn inject_live_for_test(&self, worker_id: &str) {
+        self.inject_live_for_test(worker_id).await;
+    }
+
+    #[cfg(test)]
+    async fn pending_for_test(&self, worker_id: &str) -> Vec<String> {
+        self.pending_for_test(worker_id).await
+    }
+}
+
+// ── MockWorkerManager ─────────────────────────────────────────────────
+
+#[cfg(test)]
+pub struct MockWorkerManager {
+    pub sent: Arc<tokio::sync::Mutex<Vec<(String, String)>>>,
+    pub send_result: Result<(), String>,
+}
+
+#[cfg(test)]
+impl MockWorkerManager {
+    pub fn new() -> Self {
+        Self {
+            sent: Arc::new(tokio::sync::Mutex::new(vec![])),
+            send_result: Ok(()),
+        }
+    }
+
+    pub fn failing(error: &str) -> Self {
+        Self {
+            sent: Arc::new(tokio::sync::Mutex::new(vec![])),
+            send_result: Err(error.to_string()),
+        }
+    }
+
+    pub async fn sent_calls(&self) -> Vec<(String, String)> {
+        self.sent.lock().await.clone()
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl WorkerManagerHandle for MockWorkerManager {
+    async fn send_message(&self, worker_id: &str, message: &str) -> Result<()> {
+        self.sent
+            .lock()
+            .await
+            .push((worker_id.to_string(), message.to_string()));
+        match &self.send_result {
+            Ok(()) => Ok(()),
+            Err(e) => Err(color_eyre::eyre::eyre!("{e}")),
+        }
+    }
+
+    async fn create_worker(
+        &self,
+        _work_dir: &std::path::Path,
+        _repo: &str,
+        _prompt: &str,
+        _agent: &str,
+        _model: Option<&str>,
+    ) -> Result<String> {
+        Ok("mock-worker-id".to_string())
+    }
+
+    async fn create_worker_with_task_dir(
+        &self,
+        _work_dir: &std::path::Path,
+        _repo: &str,
+        _prompt: &str,
+        _agent: &str,
+        _model: Option<&str>,
+        _task_dir: Option<TaskDirPayload>,
+        _isolation: crate::config::WorkerIsolation,
+    ) -> Result<String> {
+        Ok("mock-worker-id".to_string())
     }
 }
 
@@ -449,6 +613,11 @@ async fn run_agent_task(
                 }
             }
             None => {
+                // Apply report.json to the DB before writing phase="waiting" so
+                // the reconciler sees branch_ready=true when it processes the
+                // Running→Waiting transition and fires the signal on the right tick.
+                apply_report_to_db(&work_dir, &worker_id, &db_path, &workspace);
+
                 update_state_phase(&work_dir, &worker_id, "waiting");
                 // Agent is now idle. Look up the PR via gh — branch was written
                 // to SQLite at creation, so we don't need state.json here.
@@ -462,6 +631,47 @@ async fn run_agent_task(
         apiari_swarm::core::git::pull_main(&repo_path);
     })
     .await;
+}
+
+/// Read `.swarm/agents/{worker_id}/report.json` and write the reported values
+/// directly to the DB. Called from `run_agent_task` before writing phase="waiting"
+/// so the reconciler sees correct `branch_ready`/`tests_passing` on the very tick
+/// it processes the Running→Waiting transition and fires the signal.
+fn apply_report_to_db(work_dir: &Path, worker_id: &str, db_path: &Path, workspace: &str) {
+    #[derive(serde::Deserialize)]
+    struct Report {
+        #[serde(default)]
+        tests_passing: Option<bool>,
+        #[serde(default)]
+        branch_ready: Option<bool>,
+    }
+
+    let report_path = work_dir
+        .join(".swarm")
+        .join("agents")
+        .join(worker_id)
+        .join("report.json");
+    let Ok(content) = std::fs::read_to_string(&report_path) else {
+        return;
+    };
+    let Ok(report) = serde_json::from_str::<Report>(&content) else {
+        return;
+    };
+    if report.tests_passing.is_none() && report.branch_ready.is_none() {
+        return;
+    }
+    let Ok(store) = crate::buzz::worker::WorkerStore::open(db_path) else {
+        return;
+    };
+    let _ = store.update_properties(
+        workspace,
+        worker_id,
+        crate::buzz::worker::WorkerPropertyUpdate {
+            tests_passing: report.tests_passing,
+            branch_ready: report.branch_ready,
+            ..Default::default()
+        },
+    );
 }
 
 /// Read the worker's branch from SQLite, ask GitHub for the PR URL, and write
@@ -623,6 +833,35 @@ fn read_session_id(db_path: &Path, workspace: &str, worker_id: &str) -> Option<S
         .find(|wt| wt.get("id").and_then(|v| v.as_str()) == Some(worker_id))
         .and_then(|wt| wt.get("session_id").and_then(|v| v.as_str()))
         .map(|s| s.to_string())
+}
+
+// ── state.json phase helpers ───────────────────────────────────────────
+
+/// Write phase="running" into state.json for the given worker so the reconciler
+/// doesn't flip the worker back to Waiting before the agent process starts.
+fn stamp_phase_running(work_dir: &Path, worker_id: &str) {
+    let path = work_dir.join(".swarm").join("state.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let worktrees = if let Some(arr) = json.get_mut("worktrees").and_then(|v| v.as_array_mut()) {
+        arr
+    } else if let Some(arr) = json.as_array_mut() {
+        arr
+    } else {
+        return;
+    };
+    for wt in worktrees.iter_mut() {
+        if wt.get("id").and_then(|v| v.as_str()) == Some(worker_id) {
+            if let Some(obj) = wt.as_object_mut() {
+                obj.insert("phase".to_string(), serde_json::json!("running"));
+            }
+        }
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap_or(raw));
 }
 
 // ── Worker path resolution ─────────────────────────────────────────────
@@ -1574,6 +1813,107 @@ mod tests {
         assert_eq!(
             worker.pr_url.as_deref(),
             Some("https://github.com/owner/repo/pull/1")
+        );
+    }
+
+    // ── apply_report_to_db ─────────────────────────────────────────────────
+
+    fn seed_minimal_worker(db_path: &std::path::Path, workspace: &str, id: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let store = crate::buzz::worker::WorkerStore::open(db_path).unwrap();
+        let _ = store.upsert(&crate::buzz::worker::Worker {
+            id: id.to_string(),
+            workspace: workspace.to_string(),
+            state: crate::buzz::worker::WorkerState::Running,
+            branch_ready: false,
+            tests_passing: false,
+            branch: Some("feat/fix".to_string()),
+            brief: None,
+            repo: None,
+            goal: None,
+            pr_url: None,
+            pr_approved: false,
+            ci_passing: None,
+            is_stalled: false,
+            revision_count: 0,
+            review_mode: "local_first".to_string(),
+            blocked_reason: None,
+            last_output_at: None,
+            state_entered_at: now.clone(),
+            created_at: now.clone(),
+            updated_at: now,
+            display_title: None,
+            title_confidence: None,
+            worktree_path: None,
+            isolation_mode: None,
+            agent_kind: None,
+            model: None,
+            repo_path: None,
+            label: String::new(),
+        });
+    }
+
+    #[test]
+    fn apply_report_to_db_writes_branch_ready_and_tests_passing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work_dir = tmp.path().to_path_buf();
+        let db_path = tmp.path().join("test.db");
+        let worker_id = "w-report";
+
+        seed_minimal_worker(&db_path, "ws", worker_id);
+
+        // Write report.json
+        let agents_dir = work_dir.join(".swarm").join("agents").join(worker_id);
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("report.json"),
+            r#"{"branch_ready": true, "tests_passing": true}"#,
+        )
+        .unwrap();
+
+        apply_report_to_db(&work_dir, worker_id, &db_path, "ws");
+
+        let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
+        let worker = store.get("ws", worker_id).unwrap().unwrap();
+        assert!(worker.branch_ready, "branch_ready must be written to DB");
+        assert!(worker.tests_passing, "tests_passing must be written to DB");
+    }
+
+    #[test]
+    fn apply_report_to_db_noop_when_no_report_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work_dir = tmp.path().to_path_buf();
+        let db_path = tmp.path().join("test.db");
+
+        seed_minimal_worker(&db_path, "ws", "w-noreport");
+        // No report.json written — should not panic or modify DB
+        apply_report_to_db(&work_dir, "w-noreport", &db_path, "ws");
+
+        let store = crate::buzz::worker::WorkerStore::open(&db_path).unwrap();
+        let w = store.get("ws", "w-noreport").unwrap().unwrap();
+        assert!(!w.branch_ready);
+        assert!(!w.tests_passing);
+    }
+
+    #[test]
+    fn apply_report_to_db_does_not_delete_file() {
+        // apply_report_to_db only writes to DB; deletion is the reconciler's job.
+        let tmp = tempfile::tempdir().unwrap();
+        let work_dir = tmp.path().to_path_buf();
+        let db_path = tmp.path().join("test.db");
+
+        seed_minimal_worker(&db_path, "ws", "w-nodelete");
+
+        let agents_dir = work_dir.join(".swarm").join("agents").join("w-nodelete");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        let report_path = agents_dir.join("report.json");
+        std::fs::write(&report_path, r#"{"branch_ready": true}"#).unwrap();
+
+        apply_report_to_db(&work_dir, "w-nodelete", &db_path, "ws");
+
+        assert!(
+            report_path.exists(),
+            "apply_report_to_db must not delete report.json"
         );
     }
 }

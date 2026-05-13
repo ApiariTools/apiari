@@ -50,6 +50,9 @@ pub struct AutoBotRun {
     /// LLM cost in USD for this run, if the provider reported it.
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    /// Chat message that triggered this run (only set for chat-triggered runs).
+    #[serde(default)]
+    pub chat_message: Option<String>,
 }
 
 /// Per-bot cost summary row returned by `AutoBotStore::cost_summary`.
@@ -95,7 +98,8 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
             outcome TEXT,
             summary TEXT,
             worker_id TEXT,
-            cost_usd REAL
+            cost_usd REAL,
+            chat_message TEXT
         );
         ",
     )
@@ -105,6 +109,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // ALTER TABLE ADD COLUMN is idempotent (error ignored when column exists).
     let _ = conn.execute("ALTER TABLE auto_bot_runs ADD COLUMN cost_usd REAL", []);
     let _ = conn.execute("ALTER TABLE auto_bots ADD COLUMN paused_until TEXT", []);
+    let _ = conn.execute("ALTER TABLE auto_bot_runs ADD COLUMN chat_message TEXT", []);
 
     Ok(())
 }
@@ -257,8 +262,8 @@ impl AutoBotStore {
         conn.execute(
             "INSERT INTO auto_bot_runs
              (id, auto_bot_id, workspace, triggered_by, started_at,
-              finished_at, outcome, summary, worker_id, cost_usd)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+              finished_at, outcome, summary, worker_id, cost_usd, chat_message)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 run.id,
                 run.auto_bot_id,
@@ -270,6 +275,7 @@ impl AutoBotStore {
                 run.summary,
                 run.worker_id,
                 run.cost_usd,
+                run.chat_message,
             ],
         )
         .wrap_err("insert auto_bot_run")?;
@@ -330,10 +336,9 @@ impl AutoBotStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id,auto_bot_id,workspace,triggered_by,started_at,
-                    finished_at,outcome,summary,worker_id,cost_usd
+                    finished_at,outcome,summary,worker_id,cost_usd,chat_message
              FROM auto_bot_runs WHERE auto_bot_id=?1
-             ORDER BY started_at DESC
-             LIMIT ?2",
+             ORDER BY started_at DESC LIMIT ?2",
         )?;
         let runs = stmt
             .query_map(params![auto_bot_id, limit as i64], row_to_run)?
@@ -347,7 +352,7 @@ impl AutoBotStore {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
             "SELECT id,auto_bot_id,workspace,triggered_by,started_at,
-                    finished_at,outcome,summary,worker_id,cost_usd
+                    finished_at,outcome,summary,worker_id,cost_usd,chat_message
              FROM auto_bot_runs WHERE auto_bot_id=?1
              ORDER BY started_at DESC
              LIMIT 1",
@@ -501,6 +506,7 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutoBotRun> {
         summary: row.get(7)?,
         worker_id: row.get(8)?,
         cost_usd: row.get(9).unwrap_or(None),
+        chat_message: row.get(10).unwrap_or(None),
     })
 }
 
@@ -553,6 +559,7 @@ mod tests {
             summary: None,
             worker_id: None,
             cost_usd: None,
+            chat_message: None,
         }
     }
 

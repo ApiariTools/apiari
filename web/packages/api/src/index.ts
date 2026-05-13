@@ -378,7 +378,10 @@ export async function listAutoBots(workspace: string): Promise<AutoBot[]> {
 }
 
 export async function getAutoBot(workspace: string, id: string): Promise<AutoBotDetail> {
-  return get<AutoBotDetail>(`/workspaces/${workspace}/v2/auto-bots/${id}`);
+  const data = await get<{ auto_bot: AutoBot; runs: AutoBotRun[] }>(
+    `/workspaces/${workspace}/v2/auto-bots/${id}`,
+  );
+  return { ...data.auto_bot, runs: data.runs };
 }
 
 export async function createAutoBot(workspace: string, data: Partial<AutoBot>): Promise<AutoBot> {
@@ -543,8 +546,26 @@ export async function sendMessage(
 
 // ── Dashboard widgets ──────────────────────────────────────────────────
 
-export async function listWidgets(workspace: string): Promise<DashboardWidget[]> {
-  return get<DashboardWidget[]>(`/workspaces/${workspace}/v2/widgets`);
+export async function listWidgets(
+  workspace: string,
+  autoBotId?: string,
+): Promise<DashboardWidget[]> {
+  const qs = autoBotId ? `?auto_bot_id=${encodeURIComponent(autoBotId)}` : "";
+  return get<DashboardWidget[]>(`/workspaces/${workspace}/v2/widgets${qs}`);
+}
+
+export async function chatWithAutoBot(
+  workspace: string,
+  id: string,
+  message: string,
+): Promise<{ run_id: string }> {
+  const res = await fetch(`${BASE}/workspaces/${workspace}/v2/auto-bots/${id}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  if (!res.ok) throw new Error(`chat with auto bot failed: ${res.status}`);
+  return res.json();
 }
 
 export async function upsertWidget(

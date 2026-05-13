@@ -542,10 +542,36 @@ impl Orchestrator {
                     .get("worker_id")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let run_id = self.get_or_create_run(mgr, store, task).await;
-                if run_id.is_empty() {
+
+                // Respect review_mode: local_first means branch is ready for the
+                // developer to review locally — skip the PR-creation workflow entirely.
+                let review_mode = task
+                    .metadata
+                    .get("review_mode")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| self.worker_review_mode(&task.workspace, worker_id));
+                info!(
+                    "[orchestrator] swarm_branch_ready: worker={worker_id} branch={branch_name} \
+                     task={} review_mode={:?}",
+                    task.id, review_mode
+                );
+                if review_mode.as_deref() != Some("pr_first") {
+                    info!(
+                        "[orchestrator] worker {worker_id} is local_first — skipping PR workflow"
+                    );
                     return vec![];
                 }
+
+                let run_id = self.get_or_create_run(mgr, store, task).await;
+                if run_id.is_empty() {
+                    warn!(
+                        "[orchestrator] failed to get/create workflow run for task {}",
+                        task.id
+                    );
+                    return vec![];
+                }
+                info!("[orchestrator] worker {worker_id} → on_branch_ready (run={run_id})");
                 mgr.on_branch_ready(&run_id, &task.id, branch_name, worker_id)
                     .await
             }
@@ -608,6 +634,17 @@ impl Orchestrator {
                 String::new()
             }
         }
+    }
+
+    /// Look up a worker's review_mode from the DB. Returns None if the worker
+    /// can't be found — callers should treat None the same as "local_first".
+    fn worker_review_mode(&self, workspace: &str, worker_id: &str) -> Option<String> {
+        let store = crate::buzz::worker::WorkerStore::open(&crate::config::db_path()).ok()?;
+        store
+            .get(workspace, worker_id)
+            .ok()
+            .flatten()
+            .map(|w| w.review_mode)
     }
 }
 
@@ -1019,6 +1056,7 @@ mod tests {
         task.pr_url = None;
         task.pr_number = None;
         task.repo = None;
+        task.metadata = serde_json::json!({"review_mode": "pr_first"});
         store.create_task(&task).unwrap();
 
         let mut signal = make_signal("swarm_branch_ready", "Branch ready");
@@ -1058,6 +1096,7 @@ mod tests {
         task.pr_url = None;
         task.pr_number = None;
         task.repo = None;
+        task.metadata = serde_json::json!({"review_mode": "pr_first"});
         store.create_task(&task).unwrap();
 
         let mut signal = make_signal("swarm_branch_ready", "Branch ready");
@@ -1078,6 +1117,365 @@ mod tests {
             &result.workflow_actions[0],
             WorkflowAction::DispatchReviewer { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn test_local_first_skips_workflow() {
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::DirectPr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let orchestrator =
+            Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+
+        let mut task = make_task("test", TaskStage::InProgress);
+        task.metadata = serde_json::json!({"review_mode": "local_first"});
+        store.create_task(&task).unwrap();
+
+        let mut signal = make_signal("swarm_branch_ready", "Branch ready");
+        signal.metadata = Some(
+            serde_json::json!({
+                "branch_name": "feat/foo",
+                "worker_id": task.worker_id.as_ref().unwrap(),
+            })
+            .to_string(),
+        );
+
+        let result = orchestrator
+            .process_signal(&store, "test", &signal)
+            .await
+            .unwrap();
+        assert!(
+            result.workflow_actions.is_empty(),
+            "local_first should produce no workflow actions"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pr_first_runs_workflow() {
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::DirectPr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let orchestrator =
+            Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+
+        let mut task = make_task("test", TaskStage::InProgress);
+        task.metadata = serde_json::json!({"review_mode": "pr_first"});
+        store.create_task(&task).unwrap();
+
+        let mut signal = make_signal("swarm_branch_ready", "Branch ready");
+        signal.metadata = Some(
+            serde_json::json!({
+                "branch_name": "feat/foo",
+                "worker_id": task.worker_id.as_ref().unwrap(),
+            })
+            .to_string(),
+        );
+
+        let result = orchestrator
+            .process_signal(&store, "test", &signal)
+            .await
+            .unwrap();
+        assert_eq!(result.workflow_actions.len(), 1);
+        assert!(matches!(
+            &result.workflow_actions[0],
+            WorkflowAction::CreatePr { .. }
+        ));
+    }
+
+    // ── Full workflow matrix ────────────────────────────────────────────────
+    //
+    // Tests every meaningful combination through the orchestrator:
+    // review_mode × branch_ready_action × signal sequence × expected actions
+    //
+    // local_first: branch ready → no PR, dev reviews locally
+    // pr_first + DirectPr: branch ready → CreatePr immediately
+    // pr_first + AiReview: branch ready → DispatchReviewer
+    //                      approve verdict → CreatePr
+    //                      request_changes verdict → DispatchRework
+    //                      max cycles exceeded → ForceCreatePr
+    //                      PR merged → done
+    //                      PR closed → Dismissed
+
+    #[tokio::test]
+    async fn workflow_matrix_local_first_no_pr() {
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::DirectPr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let orch = Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("ws", TaskStage::InProgress);
+        task.metadata = serde_json::json!({"review_mode": "local_first"});
+        store.create_task(&task).unwrap();
+
+        let mut sig = make_signal("swarm_branch_ready", "Branch ready");
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "worker_id": task.worker_id.as_ref().unwrap()}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+
+        assert!(
+            r.workflow_actions.is_empty(),
+            "local_first must never produce a PR action"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_matrix_pr_first_direct_pr() {
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::DirectPr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let orch = Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("ws", TaskStage::InProgress);
+        task.pr_url = None;
+        task.pr_number = None;
+        task.repo = None;
+        task.metadata = serde_json::json!({"review_mode": "pr_first"});
+        store.create_task(&task).unwrap();
+
+        let mut sig = make_signal("swarm_branch_ready", "Branch ready");
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "worker_id": task.worker_id.as_ref().unwrap()}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+
+        assert_eq!(r.workflow_actions.len(), 1);
+        assert!(
+            matches!(&r.workflow_actions[0], WorkflowAction::CreatePr { branch_name, .. } if branch_name == "feat/x")
+        );
+    }
+
+    /// Simulate the daemon executing a DispatchReviewer action: store reviewer_worker_id
+    /// in task metadata so the verdict signal can be matched back to the task.
+    fn inject_reviewer(store: &TaskStore, task_id: &str, reviewer_id: &str) {
+        let task = store.get_task(task_id).unwrap().unwrap();
+        let mut meta = task.metadata.clone();
+        meta["reviewer_worker_id"] = serde_json::Value::String(reviewer_id.to_string());
+        store.update_task_metadata(task_id, &meta).unwrap();
+    }
+
+    #[tokio::test]
+    async fn workflow_matrix_pr_first_ai_review_then_approve() {
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::AiReview,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let orch = Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("ws", TaskStage::InProgress);
+        task.pr_url = None;
+        task.pr_number = None;
+        task.repo = None;
+        task.metadata = serde_json::json!({"review_mode": "pr_first"});
+        store.create_task(&task).unwrap();
+
+        // Step 1: branch ready → DispatchReviewer
+        let mut sig = make_signal("swarm_branch_ready", "Branch ready");
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "worker_id": task.worker_id.as_ref().unwrap()}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+        assert_eq!(r.workflow_actions.len(), 1);
+        assert!(
+            matches!(
+                &r.workflow_actions[0],
+                WorkflowAction::DispatchReviewer { .. }
+            ),
+            "ai_review should dispatch reviewer first"
+        );
+
+        // Simulate daemon injecting reviewer_worker_id into task metadata
+        inject_reviewer(&store, &task.id, "reviewer-1");
+
+        // Step 2: reviewer approves → CreatePr
+        let mut sig = make_signal("swarm_review_verdict", "Approved");
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "verdict": "APPROVED", "comments": "", "reviewer_worker_id": "reviewer-1"}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+        assert_eq!(
+            r.workflow_actions.len(),
+            1,
+            "approve verdict should produce 1 action, got: {:?}",
+            r.workflow_actions
+        );
+        assert!(
+            matches!(&r.workflow_actions[0], WorkflowAction::CreatePr { .. }),
+            "approve verdict should create PR"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_matrix_pr_first_ai_review_then_request_changes() {
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::AiReview,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let orch = Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("ws", TaskStage::InProgress);
+        task.pr_url = None;
+        task.pr_number = None;
+        task.repo = None;
+        task.metadata = serde_json::json!({"review_mode": "pr_first"});
+        store.create_task(&task).unwrap();
+
+        // Branch ready → reviewer dispatched
+        let mut sig = make_signal("swarm_branch_ready", "Branch ready");
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "worker_id": task.worker_id.as_ref().unwrap()}).to_string());
+        orch.process_signal(&store, "ws", &sig).await.unwrap();
+
+        inject_reviewer(&store, &task.id, "reviewer-1");
+
+        // Reviewer requests changes → DispatchRework
+        let mut sig = make_signal("swarm_review_verdict", "Changes requested");
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "verdict": "CHANGES_REQUESTED", "comments": "Fix the tests", "reviewer_worker_id": "reviewer-1"}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+        assert_eq!(
+            r.workflow_actions.len(),
+            1,
+            "request_changes should produce 1 action, got: {:?}",
+            r.workflow_actions
+        );
+        assert!(
+            matches!(
+                &r.workflow_actions[0],
+                WorkflowAction::DispatchRework { .. }
+            ),
+            "request_changes should dispatch rework"
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_matrix_pr_first_ai_review_max_cycles_force_pr() {
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::AiReview,
+                max_review_cycles: 1,
+            },
+            ..Default::default()
+        };
+        let orch = Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("ws", TaskStage::InProgress);
+        task.pr_url = None;
+        task.pr_number = None;
+        task.repo = None;
+        task.metadata = serde_json::json!({"review_mode": "pr_first"});
+        store.create_task(&task).unwrap();
+
+        let worker_id = task.worker_id.clone().unwrap();
+
+        // Cycle 1: branch ready → reviewer dispatched
+        let mut sig = make_signal("swarm_branch_ready", "Branch ready");
+        sig.metadata =
+            Some(serde_json::json!({"branch_name": "feat/x", "worker_id": worker_id}).to_string());
+        orch.process_signal(&store, "ws", &sig).await.unwrap();
+        inject_reviewer(&store, &task.id, "reviewer-1");
+
+        // Cycle 1: request_changes → rework, review_cycles counter becomes 1
+        let mut sig = make_signal("swarm_review_verdict", "Changes");
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "verdict": "CHANGES_REQUESTED", "comments": "fix it", "reviewer_worker_id": "reviewer-1"}).to_string());
+        orch.process_signal(&store, "ws", &sig).await.unwrap();
+
+        // Cycle 2: worker reworked, branch ready again → reviewer dispatched again
+        let mut sig = make_signal("swarm_branch_ready", "Branch ready again");
+        sig.external_id = "ext-2".to_string();
+        sig.metadata =
+            Some(serde_json::json!({"branch_name": "feat/x", "worker_id": worker_id}).to_string());
+        orch.process_signal(&store, "ws", &sig).await.unwrap();
+        inject_reviewer(&store, &task.id, "reviewer-2");
+
+        // Cycle 2: request_changes again — cycles(1) >= max_review_cycles(1) → ForceCreatePr
+        let mut sig = make_signal("swarm_review_verdict", "Changes again");
+        sig.external_id = "ext-3".to_string();
+        sig.metadata = Some(serde_json::json!({"branch_name": "feat/x", "verdict": "CHANGES_REQUESTED", "comments": "still broken", "reviewer_worker_id": "reviewer-2"}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+        assert!(
+            r.workflow_actions.iter().any(|a| matches!(
+                a,
+                WorkflowAction::ForceCreatePr { .. } | WorkflowAction::CreatePr { .. }
+            )),
+            "max cycles exceeded should force PR creation, got: {:?}",
+            r.workflow_actions
+        );
+    }
+
+    #[tokio::test]
+    async fn workflow_matrix_pr_merged_resolves_task() {
+        let config = OrchestratorConfig::default();
+        let orch = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("ws", TaskStage::HumanReview);
+        task.pr_number = Some(7);
+        task.pr_url = Some("https://github.com/org/repo/pull/7".to_string());
+        task.repo = Some("org/repo".to_string());
+        store.create_task(&task).unwrap();
+
+        let mut sig = make_signal("github_merged_pr", "PR merged");
+        sig.metadata = Some(serde_json::json!({"repo": "org/repo", "pr_number": 7}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+
+        assert!(r.engine_result.transitioned);
+        let updated = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(updated.stage, TaskStage::Merged);
+    }
+
+    #[tokio::test]
+    async fn workflow_matrix_pr_closed_without_merge_dismisses_task() {
+        let config = OrchestratorConfig::default();
+        let orch = Orchestrator::new(&config);
+        let store = TaskStore::open_memory().unwrap();
+        let mut task = make_task("ws", TaskStage::HumanReview);
+        task.pr_number = Some(8);
+        task.pr_url = Some("https://github.com/org/repo/pull/8".to_string());
+        task.repo = Some("org/repo".to_string());
+        store.create_task(&task).unwrap();
+
+        let mut sig = make_signal("github_pr_closed", "PR closed");
+        sig.metadata = Some(serde_json::json!({"repo": "org/repo", "pr_number": 8}).to_string());
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+
+        assert!(r.engine_result.transitioned);
+        let updated = store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(updated.stage, TaskStage::Dismissed);
+    }
+
+    #[tokio::test]
+    async fn workflow_matrix_no_task_no_action() {
+        // Signal arrives but no task is linked to the worker — no crash, no action
+        let config = OrchestratorConfig {
+            workflow: WorkflowConfig {
+                branch_ready_action: workflow::BranchReadyAction::DirectPr,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let orch = Orchestrator::new(&config).with_workflow_db(":memory:", &config.workflow);
+        let store = TaskStore::open_memory().unwrap();
+
+        let mut sig = make_signal("swarm_branch_ready", "Branch ready");
+        sig.metadata = Some(
+            serde_json::json!({"branch_name": "feat/x", "worker_id": "ghost-worker"}).to_string(),
+        );
+        let r = orch.process_signal(&store, "ws", &sig).await.unwrap();
+        assert!(r.workflow_actions.is_empty(), "no task → no actions");
     }
 
     #[test]

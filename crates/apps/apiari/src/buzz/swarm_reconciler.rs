@@ -285,6 +285,41 @@ impl SwarmReconciler {
         Ok(())
     }
 
+    /// On daemon startup, re-emit branch_ready signals for workers that are already
+    /// in Waiting state with branch_ready=true. These workers may have transitioned
+    /// while the daemon was down, so no signal was ever stored (or the signal was stored
+    /// before the task had a linked review_mode). Deleting the stale signal and
+    /// re-emitting ensures the orchestrator sees it as new and can create the PR.
+    pub fn requeue_branch_ready_on_startup(&self) -> Result<()> {
+        let workers = self.store.list(&self.workspace)?;
+        for worker in &workers {
+            if worker.state != WorkerState::Waiting || !worker.branch_ready {
+                continue;
+            }
+            let branch = worker.branch.clone().unwrap_or_default();
+            if branch.is_empty() {
+                continue;
+            }
+            info!(
+                "[reconciler] startup: re-queuing branch_ready signal for {}",
+                worker.id
+            );
+            // Delete any stale signal so the next upsert treats it as new.
+            if let Some(ref db_path) = self.db_path {
+                if let Ok(store) =
+                    crate::buzz::signal::store::SignalStore::open(db_path, &self.workspace)
+                {
+                    let _ = store.delete_signal(
+                        "swarm_branch_ready",
+                        &format!("swarm-branch-ready-{}", worker.id),
+                    );
+                }
+            }
+            self.emit_branch_ready_signal(&worker.id, &branch);
+        }
+        Ok(())
+    }
+
     /// Run one reconciliation cycle.
     pub fn reconcile_once(&self) -> Result<()> {
         let worktrees = self.load_swarm_state();
@@ -485,6 +520,10 @@ impl SwarmReconciler {
                 if agent_status.as_deref() == Some("waiting") {
                     info!("[reconciler] {} agent waiting (agent-status)", worker.id);
                     self.do_transition(worker, WorkerState::Waiting)?;
+                    if worker.branch_ready {
+                        let branch = worker.branch.clone().unwrap_or_default();
+                        self.emit_branch_ready_signal(&worker.id, &branch);
+                    }
                     return Ok(());
                 }
 
@@ -494,6 +533,10 @@ impl SwarmReconciler {
                 if phase == "waiting" {
                     info!("[reconciler] {} agent waiting (swarm phase)", worker.id);
                     self.do_transition(worker, WorkerState::Waiting)?;
+                    if worker.branch_ready {
+                        let branch = worker.branch.clone().unwrap_or_default();
+                        self.emit_branch_ready_signal(&worker.id, &branch);
+                    }
                     return Ok(());
                 }
 
@@ -529,6 +572,10 @@ impl SwarmReconciler {
                 if agent_status.as_deref() == Some("waiting") || phase == "waiting" {
                     info!("[reconciler] {} stalled agent now waiting", worker.id);
                     self.do_transition(worker, WorkerState::Waiting)?;
+                    if worker.branch_ready {
+                        let branch = worker.branch.clone().unwrap_or_default();
+                        self.emit_branch_ready_signal(&worker.id, &branch);
+                    }
                     return Ok(());
                 }
 
@@ -584,9 +631,20 @@ impl SwarmReconciler {
     /// Read `.swarm/agents/{id}/report.json` and apply reported properties to DB
     /// if they differ from current state.
     fn apply_report(&self, worker: &Worker) -> Result<()> {
+        let report_path = self
+            .swarm_dir
+            .join("agents")
+            .join(&worker.id)
+            .join("report.json");
+
         let Some(report) = read_worker_report(&self.swarm_dir, &worker.id) else {
             return Ok(());
         };
+
+        // Always delete after reading — prevents infinite re-application on every
+        // tick and prevents stale reports from being re-applied after a resume
+        // clears branch_ready. The worker writes a fresh report.json on next completion.
+        let _ = std::fs::remove_file(&report_path);
 
         let tests_changed = report
             .tests_passing
@@ -614,6 +672,17 @@ impl SwarmReconciler {
                 },
             )?;
             self.emit_event(worker)?;
+
+            // Safety net: if branch_ready just became true for the first time,
+            // emit the signal here. The primary path (apply_report_to_db in
+            // run_agent_task) should already have set branch_ready=true in the
+            // DB before the Running→Waiting transition, so the signal fires there
+            // with the correct worker state. This fallback covers daemon crashes
+            // or other cases where apply_report_to_db didn't run.
+            if branch_changed && report.branch_ready == Some(true) {
+                let branch = worker.branch.clone().unwrap_or_default();
+                self.emit_branch_ready_signal(&worker.id, &branch);
+            }
         }
 
         Ok(())
@@ -720,7 +789,17 @@ impl SwarmReconciler {
 
     /// Emit a `swarm_branch_ready` signal so the orchestrator's workflow chain fires.
     fn emit_branch_ready_signal(&self, worker_id: &str, branch: &str) {
-        let Some(ref tx) = self.signal_tx else { return };
+        let Some(ref tx) = self.signal_tx else {
+            warn!(
+                "[reconciler] {} branch ready but no signal_tx — orchestrator won't fire",
+                worker_id
+            );
+            return;
+        };
+        info!(
+            "[reconciler] {} emitting swarm_branch_ready (branch={})",
+            worker_id, branch
+        );
         let update = crate::buzz::signal::SignalUpdate::new(
             "swarm_branch_ready",
             format!("swarm-branch-ready-{worker_id}"),
@@ -953,6 +1032,9 @@ pub fn spawn_reconciler(config: SwarmReconcilerConfig, conn: Arc<Mutex<rusqlite:
 
         if let Err(e) = reconciler.reset_stalled_on_startup() {
             warn!("[reconciler] startup reset error: {e}");
+        }
+        if let Err(e) = reconciler.requeue_branch_ready_on_startup() {
+            warn!("[reconciler] startup branch_ready requeue error: {e}");
         }
 
         // Fast loop: runs in spawn_blocking (does file I/O + occasional `gh pr view`).
@@ -1259,6 +1341,106 @@ mod tests {
     }
 
     #[test]
+    fn rule_phase_waiting_with_branch_ready_emits_signal() {
+        // Regression: agent sets branch_ready=true in report.json (applied on tick N),
+        // then transitions via phase="waiting" on tick N+1. Signal must still fire.
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(workspace_root.join(".swarm")).unwrap();
+
+        let conn = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        conn.lock()
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
+        let r = SwarmReconciler {
+            workspace: "test".to_string(),
+            swarm_dir: workspace_root.join(".swarm"),
+            store,
+            event_tx: None,
+            db_path: None,
+            signal_tx: Some(tx),
+            pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
+        };
+
+        // Worker already has branch_ready=true (set by a previous apply_report tick)
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        w.branch_ready = true;
+        w.branch = Some("swarm/w1-fix".to_string());
+        r.store.upsert(&w).unwrap();
+
+        // This tick: phase="waiting" (agent asking for input, not fully done)
+        let mut wt = swarm_wt("w1", "waiting", None);
+        wt.branch = Some("swarm/w1-fix".to_string());
+        r.apply_rules(&w, &wt).unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+        let (ws, signal) = rx
+            .try_recv()
+            .expect("signal should fire when branch_ready was pre-set");
+        assert_eq!(ws, "test");
+        assert_eq!(signal.source, "swarm_branch_ready");
+        assert_eq!(signal.external_id, "swarm-branch-ready-w1");
+    }
+
+    #[test]
+    fn rule_agent_status_waiting_with_branch_ready_emits_signal() {
+        // Same regression via agent-status=waiting path
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(workspace_root.join(".swarm")).unwrap();
+
+        let conn = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        conn.lock()
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
+
+        let (tx, mut rx) =
+            tokio::sync::mpsc::unbounded_channel::<(String, crate::buzz::signal::SignalUpdate)>();
+        let r = SwarmReconciler {
+            workspace: "test".to_string(),
+            swarm_dir: workspace_root.join(".swarm"),
+            store,
+            event_tx: None,
+            db_path: None,
+            signal_tx: Some(tx),
+            pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
+        };
+
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Running;
+        w.branch_ready = true;
+        w.branch = Some("swarm/w1-fix".to_string());
+        r.store.upsert(&w).unwrap();
+
+        // Write agent-status=waiting file
+        let status_dir = workspace_root.join(".swarm").join("agent-status");
+        std::fs::create_dir_all(&status_dir).unwrap();
+        std::fs::write(status_dir.join("w1"), "waiting").unwrap();
+
+        let mut wt = swarm_wt("w1", "running", None);
+        wt.branch = Some("swarm/w1-fix".to_string());
+        r.apply_rules(&w, &wt).unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert_eq!(updated.state, WorkerState::Waiting);
+        let (ws, signal) = rx
+            .try_recv()
+            .expect("signal should fire when branch_ready was pre-set");
+        assert_eq!(ws, "test");
+        assert_eq!(signal.source, "swarm_branch_ready");
+        assert_eq!(signal.external_id, "swarm-branch-ready-w1");
+    }
+
+    #[test]
     fn rule_pr_url_property_set() {
         let tmp = tempfile::tempdir().unwrap();
         let r = make_reconciler(&tmp);
@@ -1309,6 +1491,272 @@ mod tests {
         let updated = r.store.get("test", "w1").unwrap().unwrap();
         // state should remain Running (no rule matches)
         assert_eq!(updated.state, WorkerState::Running);
+    }
+
+    // ── State transition + signal matrix ───────────────────────────────────
+    //
+    // Every combination of (initial_state, phase, agent_status, branch_ready)
+    // is checked for: resulting state AND whether swarm_branch_ready fires.
+    //
+    // Columns: initial_state | phase | agent_status | branch_ready_preset
+    //        | expected_state | expect_signal
+    #[test]
+    fn matrix_state_transitions_and_signals() {
+        #[derive(Debug)]
+        struct Case {
+            label: &'static str,
+            initial: WorkerState,
+            phase: &'static str,
+            agent_status: Option<&'static str>,
+            branch_ready_preset: bool,
+            branch_preset: Option<&'static str>,
+            expected_state: WorkerState,
+            expect_signal: bool,
+        }
+
+        let cases = vec![
+            // ── Queued ──────────────────────────────────────────────────────
+            Case {
+                label: "queued+running→running",
+                initial: WorkerState::Queued,
+                phase: "running",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Running,
+                expect_signal: false,
+            },
+            Case {
+                label: "queued+waiting→queued(no rule)",
+                initial: WorkerState::Queued,
+                phase: "waiting",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Queued,
+                expect_signal: false,
+            },
+            // ── Running, no branch_ready ─────────────────────────────────
+            Case {
+                label: "running+completed→waiting+signal",
+                initial: WorkerState::Running,
+                phase: "completed",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            Case {
+                label: "running+failed→waiting+signal",
+                initial: WorkerState::Running,
+                phase: "failed",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            Case {
+                label: "running+phase-waiting→waiting,no signal",
+                initial: WorkerState::Running,
+                phase: "waiting",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Waiting,
+                expect_signal: false,
+            },
+            Case {
+                label: "running+agent-waiting→waiting,no signal",
+                initial: WorkerState::Running,
+                phase: "running",
+                agent_status: Some("waiting"),
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Waiting,
+                expect_signal: false,
+            },
+            Case {
+                label: "running+running→stays running",
+                initial: WorkerState::Running,
+                phase: "running",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Running,
+                expect_signal: false,
+            },
+            // ── Running, branch_ready already set (from prior apply_report) ──
+            Case {
+                label: "running+phase-waiting+br→waiting+signal",
+                initial: WorkerState::Running,
+                phase: "waiting",
+                agent_status: None,
+                branch_ready_preset: true,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            Case {
+                label: "running+agent-waiting+br→waiting+signal",
+                initial: WorkerState::Running,
+                phase: "running",
+                agent_status: Some("waiting"),
+                branch_ready_preset: true,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            // ── Stalled ──────────────────────────────────────────────────
+            Case {
+                label: "stalled+completed→waiting+signal",
+                initial: WorkerState::Stalled,
+                phase: "completed",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            Case {
+                label: "stalled+failed→waiting+signal",
+                initial: WorkerState::Stalled,
+                phase: "failed",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            Case {
+                label: "stalled+phase-waiting,no br→waiting,no signal",
+                initial: WorkerState::Stalled,
+                phase: "waiting",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Waiting,
+                expect_signal: false,
+            },
+            Case {
+                label: "stalled+phase-waiting+br→waiting+signal",
+                initial: WorkerState::Stalled,
+                phase: "waiting",
+                agent_status: None,
+                branch_ready_preset: true,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            Case {
+                label: "stalled+agent-waiting+br→waiting+signal",
+                initial: WorkerState::Stalled,
+                phase: "waiting",
+                agent_status: Some("waiting"),
+                branch_ready_preset: true,
+                branch_preset: Some("feat/fix"),
+                expected_state: WorkerState::Waiting,
+                expect_signal: true,
+            },
+            // ── Waiting (already waiting, agent resumes) ─────────────────
+            Case {
+                label: "waiting+running→running(revision)",
+                initial: WorkerState::Waiting,
+                phase: "running",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Running,
+                expect_signal: false,
+            },
+            Case {
+                label: "waiting+completed→stays waiting",
+                initial: WorkerState::Waiting,
+                phase: "completed",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Waiting,
+                expect_signal: false,
+            },
+            // ── Terminal states — nothing moves them ─────────────────────
+            Case {
+                label: "done+anything→stays done",
+                initial: WorkerState::Done,
+                phase: "running",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Done,
+                expect_signal: false,
+            },
+            Case {
+                label: "abandoned+anything→stays abandoned",
+                initial: WorkerState::Abandoned,
+                phase: "completed",
+                agent_status: None,
+                branch_ready_preset: false,
+                branch_preset: None,
+                expected_state: WorkerState::Abandoned,
+                expect_signal: false,
+            },
+        ];
+
+        for case in &cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let workspace_root = tmp.path().to_path_buf();
+            std::fs::create_dir_all(workspace_root.join(".swarm/agent-status")).unwrap();
+
+            let conn = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+            conn.lock()
+                .unwrap()
+                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+                .unwrap();
+            let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(
+                String,
+                crate::buzz::signal::SignalUpdate,
+            )>();
+            let r = SwarmReconciler {
+                workspace: "test".to_string(),
+                swarm_dir: workspace_root.join(".swarm"),
+                store,
+                event_tx: None,
+                db_path: None,
+                signal_tx: Some(tx),
+                pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
+            };
+
+            let mut w = default_worker("w1");
+            w.state = case.initial.clone();
+            w.branch_ready = case.branch_ready_preset;
+            w.branch = case.branch_preset.map(|s| s.to_string());
+            r.store.upsert(&w).unwrap();
+
+            if let Some(status) = case.agent_status {
+                std::fs::write(workspace_root.join(".swarm/agent-status/w1"), status).unwrap();
+            }
+
+            let mut wt = swarm_wt("w1", case.phase, None);
+            wt.branch = case.branch_preset.map(|s| s.to_string());
+            r.apply_rules(&w, &wt).unwrap();
+
+            let updated = r.store.get("test", "w1").unwrap().unwrap();
+            assert_eq!(
+                updated.state, case.expected_state,
+                "[{}] expected state {:?} got {:?}",
+                case.label, case.expected_state, updated.state
+            );
+
+            let got_signal = rx.try_recv().is_ok();
+            assert_eq!(
+                got_signal, case.expect_signal,
+                "[{}] expect_signal={} but got_signal={}",
+                case.label, case.expect_signal, got_signal
+            );
+        }
     }
 
     #[test]
@@ -1568,6 +2016,171 @@ mod tests {
         assert_eq!(
             r.store.get("test", "w-throttle").unwrap().unwrap().state,
             WorkerState::Waiting
+        );
+    }
+
+    // ── apply_report lifecycle ─────────────────────────────────────────────
+
+    fn make_reconciler_with_signal(
+        tmp: &tempfile::TempDir,
+    ) -> (
+        SwarmReconciler,
+        tokio::sync::mpsc::UnboundedReceiver<(String, crate::buzz::signal::SignalUpdate)>,
+    ) {
+        let workspace_root = tmp.path().to_path_buf();
+        std::fs::create_dir_all(workspace_root.join(".swarm")).unwrap();
+        let conn = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+        conn.lock()
+            .unwrap()
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .unwrap();
+        let store = WorkerStore::new(Arc::clone(&conn)).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let r = SwarmReconciler {
+            workspace: "test".to_string(),
+            swarm_dir: workspace_root.join(".swarm"),
+            store,
+            event_tx: None,
+            db_path: None,
+            signal_tx: Some(tx),
+            pr_merge_checked: std::sync::Mutex::new(HashMap::new()),
+        };
+        (r, rx)
+    }
+
+    fn write_report(
+        swarm_dir: &std::path::Path,
+        worker_id: &str,
+        branch_ready: bool,
+        tests_passing: bool,
+    ) {
+        let agents_dir = swarm_dir.join("agents").join(worker_id);
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("report.json"),
+            format!(r#"{{"branch_ready": {branch_ready}, "tests_passing": {tests_passing}}}"#),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn apply_report_deletes_file_after_reading() {
+        // report.json must be deleted after apply_report reads it so it cannot
+        // be re-applied on subsequent ticks.
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Waiting;
+        r.store.upsert(&w).unwrap();
+
+        write_report(&r.swarm_dir, "w1", true, true);
+        let report_path = r.swarm_dir.join("agents").join("w1").join("report.json");
+        assert!(report_path.exists(), "precondition: report.json must exist");
+
+        let wt = swarm_wt("w1", "waiting", None);
+        r.apply_rules(&w, &wt).unwrap();
+
+        assert!(
+            !report_path.exists(),
+            "apply_report must delete report.json after reading"
+        );
+    }
+
+    #[test]
+    fn apply_report_does_not_reapply_after_deletion() {
+        // After apply_report deletes report.json, a second apply_rules call must
+        // not re-apply the values (file is gone so there's nothing to re-read).
+        let tmp = tempfile::tempdir().unwrap();
+        let r = make_reconciler(&tmp);
+
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Waiting;
+        r.store.upsert(&w).unwrap();
+
+        write_report(&r.swarm_dir, "w1", true, true);
+
+        let wt = swarm_wt("w1", "waiting", None);
+        // First call: applies and deletes
+        r.apply_rules(&w, &wt).unwrap();
+        let after_first = r.store.get("test", "w1").unwrap().unwrap();
+        assert!(after_first.branch_ready);
+
+        // Manually reset branch_ready in DB (simulates v2_send_message clearing it)
+        r.store
+            .update_properties(
+                "test",
+                "w1",
+                crate::buzz::worker::WorkerPropertyUpdate {
+                    branch_ready: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        // Second call: report.json is gone — must NOT restore branch_ready=true
+        r.apply_rules(&w, &wt).unwrap();
+        let after_second = r.store.get("test", "w1").unwrap().unwrap();
+        assert!(
+            !after_second.branch_ready,
+            "branch_ready must not be restored after file was deleted"
+        );
+    }
+
+    #[test]
+    fn apply_report_emits_signal_when_branch_ready_first_set() {
+        // apply_report acts as a fallback signal emitter: if branch_ready transitions
+        // false→true (e.g. apply_report_to_db didn't run before phase="waiting"),
+        // it must emit swarm_branch_ready so the orchestrator can act.
+        let tmp = tempfile::tempdir().unwrap();
+        let (r, mut rx) = make_reconciler_with_signal(&tmp);
+
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Waiting;
+        w.branch = Some("swarm/w1-fix".to_string());
+        w.branch_ready = false;
+        r.store.upsert(&w).unwrap();
+
+        write_report(&r.swarm_dir, "w1", true, true);
+
+        let mut wt = swarm_wt("w1", "waiting", None);
+        wt.branch = Some("swarm/w1-fix".to_string());
+        r.apply_rules(&w, &wt).unwrap();
+
+        let updated = r.store.get("test", "w1").unwrap().unwrap();
+        assert!(updated.branch_ready);
+
+        let (ws, signal) = rx
+            .try_recv()
+            .expect("signal must be emitted when branch_ready first becomes true via report");
+        assert_eq!(ws, "test");
+        assert_eq!(signal.source, "swarm_branch_ready");
+        assert_eq!(signal.external_id, "swarm-branch-ready-w1");
+    }
+
+    #[test]
+    fn apply_report_no_signal_when_branch_ready_already_set() {
+        // If branch_ready is already true in the DB and the report also says true,
+        // no signal should be re-emitted (branch_changed = false).
+        let tmp = tempfile::tempdir().unwrap();
+        let (r, mut rx) = make_reconciler_with_signal(&tmp);
+
+        let mut w = default_worker("w1");
+        w.state = WorkerState::Waiting;
+        w.branch = Some("swarm/w1-fix".to_string());
+        w.branch_ready = true; // already set
+        r.store.upsert(&w).unwrap();
+
+        write_report(&r.swarm_dir, "w1", true, true);
+
+        let mut wt = swarm_wt("w1", "waiting", None);
+        wt.branch = Some("swarm/w1-fix".to_string());
+        r.apply_rules(&w, &wt).unwrap();
+
+        // branch_changed = false → no signal from apply_report
+        assert!(
+            rx.try_recv().is_err(),
+            "no signal when branch_ready already was true"
         );
     }
 }

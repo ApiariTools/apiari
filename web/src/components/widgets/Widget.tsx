@@ -86,6 +86,7 @@ function trendColor(dir?: string): string {
 
 function Card({
   title,
+  description,
   updated_at,
   href,
   children,
@@ -95,6 +96,7 @@ function Card({
   editable,
 }: {
   title: string;
+  description?: string;
   updated_at?: string;
   href?: string;
   children: React.ReactNode;
@@ -163,6 +165,7 @@ function Card({
           </div>
         </div>
       </div>
+      {description && <p className={styles.cardDescription}>{description}</p>}
       {children}
     </div>
   );
@@ -173,6 +176,7 @@ function Card({
 function meta(w: WidgetBase) {
   return {
     slot: w.slot,
+    description: w.description,
     source: w.source,
     editable: w.editable,
     updated_at: w.updated_at,

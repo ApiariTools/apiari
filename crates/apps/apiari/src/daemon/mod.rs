@@ -7255,8 +7255,35 @@ fn execute_workflow_action(
         } => {
             let task_id = task_id.clone();
             let branch_name = branch_name.clone();
-            let work_dir = work_dir.to_path_buf();
             let db_path = db_path.to_path_buf();
+            let workspace_name = _workspace_name.to_string();
+
+            // Use the worker's worktree path so `gh pr create` runs inside the
+            // actual git repo, not the workspace root (which is not a git repo).
+            let work_dir = {
+                let task = crate::buzz::task::store::TaskStore::open(&db_path)
+                    .ok()
+                    .and_then(|ts| ts.get_task(&task_id).ok().flatten());
+                let worker_id = task.as_ref().and_then(|t| t.worker_id.clone());
+                worker_id
+                    .and_then(|wid| {
+                        crate::buzz::worker::WorkerStore::open(&db_path)
+                            .ok()
+                            .and_then(|ws| {
+                                ws.get(_workspace_name, &wid).ok().flatten().and_then(|w| {
+                                    w.worktree_path
+                                        .or(w.repo_path)
+                                        .map(std::path::PathBuf::from)
+                                })
+                            })
+                    })
+                    .unwrap_or_else(|| work_dir.to_path_buf())
+            };
+
+            info!(
+                "[workflow] executing CreatePr action: task={task_id} branch={branch_name} dir={}",
+                work_dir.display()
+            );
 
             // Look up task title for the PR
             let title = crate::buzz::task::store::TaskStore::open(&db_path)
@@ -7296,6 +7323,22 @@ fn execute_workflow_action(
                                 &crate::buzz::task::TaskStage::HumanReview,
                                 Some("System PR created".to_string()),
                             );
+                            // Also write the PR URL back to the worker so the UI shows it.
+                            if let Ok(Some(task)) = ts.get_task(&task_id) {
+                                if let Some(worker_id) = task.worker_id {
+                                    if let Ok(ws) = crate::buzz::worker::WorkerStore::open(&db_path)
+                                    {
+                                        let _ = ws.update_properties(
+                                            &workspace_name,
+                                            &worker_id,
+                                            crate::buzz::worker::WorkerPropertyUpdate {
+                                                pr_url: Some(Some(pr_result.pr_url.clone())),
+                                                ..Default::default()
+                                            },
+                                        );
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -8560,7 +8603,7 @@ provider = "claude"
             created_at: Utc::now(),
             updated_at: Utc::now(),
             resolved_at: None,
-            metadata: serde_json::json!({}),
+            metadata: serde_json::json!({"review_mode": "pr_first"}),
         };
         task_store.create_task(&task).unwrap();
 

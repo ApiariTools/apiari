@@ -250,6 +250,8 @@ export interface WorkerV2 {
   model?: string | null;
   brief: WorkerBrief | null;
   repo: string | null;
+  repo_path: string | null;
+  worktree_path: string | null;
   branch: string | null;
   goal: string | null;
   display_title?: string | null;
@@ -339,6 +341,7 @@ export interface AutoBotRun {
   outcome: "dispatched_worker" | "notified" | "noise" | "error" | null;
   summary: string | null;
   worker_id: string | null;
+  chat_message?: string | null;
 }
 
 export interface AutoBotDetail extends AutoBot {
@@ -385,6 +388,7 @@ export type WidgetSeverity = "error" | "warning" | "info";
 interface WidgetBase {
   slot: string;
   title: string;
+  description?: string;
   updated_at?: string;
   href?: string;
   source?: string; // who wrote this (e.g. "GitHub bot", "Coordinator")

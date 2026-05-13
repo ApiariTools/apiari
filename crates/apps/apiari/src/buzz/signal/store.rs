@@ -251,15 +251,22 @@ impl SignalStore {
         self.conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS dashboard_widgets (
-                workspace  TEXT NOT NULL,
-                slot       TEXT NOT NULL,
+                workspace   TEXT NOT NULL,
+                slot        TEXT NOT NULL,
                 widget_json TEXT NOT NULL,
-                expires_at TEXT,
-                updated_at TEXT NOT NULL,
+                expires_at  TEXT,
+                updated_at  TEXT NOT NULL,
+                auto_bot_id TEXT,
                 PRIMARY KEY(workspace, slot)
             );
             ",
         )?;
+
+        // Migrate existing tables.
+        let _ = self.conn.execute(
+            "ALTER TABLE dashboard_widgets ADD COLUMN auto_bot_id TEXT",
+            [],
+        );
 
         Ok(())
     }
@@ -273,18 +280,28 @@ impl SignalStore {
         slot: &str,
         widget_json: &str,
         ttl_minutes: Option<i64>,
+        auto_bot_id: Option<&str>,
     ) -> Result<()> {
         let now = Utc::now();
         let updated_at = now.to_rfc3339();
         let expires_at = ttl_minutes.map(|m| (now + chrono::Duration::minutes(m)).to_rfc3339());
         self.conn.execute(
-            "INSERT INTO dashboard_widgets (workspace, slot, widget_json, expires_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO dashboard_widgets
+             (workspace, slot, widget_json, expires_at, updated_at, auto_bot_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(workspace, slot) DO UPDATE SET
                widget_json = excluded.widget_json,
                expires_at  = excluded.expires_at,
-               updated_at  = excluded.updated_at",
-            params![self.workspace, slot, widget_json, expires_at, updated_at],
+               updated_at  = excluded.updated_at,
+               auto_bot_id = excluded.auto_bot_id",
+            params![
+                self.workspace,
+                slot,
+                widget_json,
+                expires_at,
+                updated_at,
+                auto_bot_id
+            ],
         )?;
         Ok(())
     }
@@ -296,7 +313,7 @@ impl SignalStore {
             "SELECT slot, widget_json, updated_at FROM dashboard_widgets
              WHERE workspace = ?1
                AND (expires_at IS NULL OR expires_at > ?2)
-             ORDER BY updated_at DESC",
+             ORDER BY slot ASC",
         )?;
         let rows = stmt.query_map(params![self.workspace, now], |row| {
             Ok((
@@ -307,6 +324,36 @@ impl SignalStore {
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .wrap_err("failed to query widgets")
+    }
+
+    /// Return active (non-expired) widgets written by a specific autobot.
+    pub fn get_widgets_by_bot(&self, auto_bot_id: &str) -> Result<Vec<(String, String, String)>> {
+        let now = Utc::now().to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "SELECT slot, widget_json, updated_at FROM dashboard_widgets
+             WHERE workspace = ?1
+               AND auto_bot_id = ?2
+               AND (expires_at IS NULL OR expires_at > ?3)
+             ORDER BY slot ASC",
+        )?;
+        let rows = stmt.query_map(params![self.workspace, auto_bot_id, now], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .wrap_err("failed to query widgets by bot")
+    }
+
+    /// Delete all widgets written by a specific autobot (called before a fresh run).
+    pub fn delete_widgets_by_bot(&self, auto_bot_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM dashboard_widgets WHERE workspace = ?1 AND auto_bot_id = ?2",
+            params![self.workspace, auto_bot_id],
+        )?;
+        Ok(())
     }
 
     /// Delete a widget slot.
@@ -380,6 +427,17 @@ impl SignalStore {
             let id = self.conn.last_insert_rowid();
             Ok((id, true))
         }
+    }
+
+    /// Delete a signal by source and external_id. Used to force re-processing
+    /// of signals that were previously stored but never acted on (e.g. branch_ready
+    /// signals from before a task was linked to the worker).
+    pub fn delete_signal(&self, source: &str, external_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM signals WHERE workspace = ?1 AND source = ?2 AND external_id = ?3",
+            params![self.workspace, source, external_id],
+        )?;
+        Ok(())
     }
 
     /// Get all signals with non-resolved/stale status for this workspace.

@@ -31,7 +31,7 @@ use crate::buzz::{
     orchestrator::graph::{WorkflowGraph, walker::GraphCursor},
     task::{Task, TaskAttempt, store::TaskStore},
 };
-use crate::daemon::worker_manager::WorkerManager;
+use crate::daemon::worker_manager::{WorkerManager, WorkerManagerHandle};
 
 // ── Shared state ───────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ pub struct HttpState {
     /// Channel for cancellation requests from the web UI.
     cancel_tx: mpsc::UnboundedSender<WebCancelRequest>,
     /// In-process worker manager — creates worktrees and spawns agents directly.
-    pub worker_manager: Arc<WorkerManager>,
+    pub worker_manager: Arc<dyn WorkerManagerHandle>,
 }
 
 /// A WebSocket update message sent to all connected clients.
@@ -4126,6 +4126,30 @@ async fn v2_create_worker(
                     properties: serde_json::json!({}),
                 });
 
+            // Create a task record so the orchestrator workflow fires (PR creation, etc.)
+            let task_title = goal.clone().unwrap_or_else(|| "Worker task".to_string());
+            let task = crate::buzz::task::Task {
+                id: uuid::Uuid::new_v4().to_string(),
+                workspace: workspace.clone(),
+                title: task_title.clone(),
+                stage: crate::buzz::task::TaskStage::InProgress,
+                source: Some("manual".to_string()),
+                source_url: None,
+                worker_id: Some(final_id.clone()),
+                pr_url: None,
+                pr_number: None,
+                repo: Some(body.repo.clone()),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                resolved_at: None,
+                metadata: serde_json::json!({"review_mode": review_mode}),
+            };
+            if let Ok(task_store) =
+                crate::buzz::task::store::TaskStore::open(&crate::config::db_path())
+            {
+                let _ = task_store.create_task(&task);
+            }
+
             if let Some(goal_text) = goal.filter(|g| !g.is_empty()) {
                 let title_workspace = workspace.clone();
                 let title_id = final_id.clone();
@@ -4194,6 +4218,10 @@ fn copy_agent_dir(swarm_root: &std::path::Path, old_id: &str, new_id: &str) {
     for entry in std::fs::read_dir(&src).into_iter().flatten().flatten() {
         let from = entry.path();
         if let Some(name) = from.file_name() {
+            // Don't carry forward stale status — the new worker must earn its own.
+            if name == "report.json" {
+                continue;
+            }
             let _ = std::fs::copy(&from, dst.join(name));
         }
     }
@@ -4287,6 +4315,15 @@ async fn v2_send_message(
     State(state): State<HttpState>,
     Json(body): Json<V2SendMessageBody>,
 ) -> impl IntoResponse {
+    tracing::info!(workspace = %workspace, worker_id = %id, "[send] received");
+    if load_workspace_by_name(&workspace).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("workspace '{workspace}' not found")})),
+        )
+            .into_response();
+    }
+
     let store = match open_worker_store_from_path(&state.db_path) {
         Ok(s) => s,
         Err(e) => {
@@ -4321,162 +4358,31 @@ async fn v2_send_message(
         }
     };
 
-    let ws = match load_workspace_by_name(&workspace) {
-        Some(w) => w,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({"error": format!("workspace '{workspace}' not found")})),
-            )
-                .into_response();
-        }
-    };
+    // Reset branch_ready + increment revision before spawning the resume so the
+    // DB reflects "working again" even if the spawn itself fails.
+    let _ = store.update_properties(
+        &workspace,
+        &id,
+        crate::buzz::worker::WorkerPropertyUpdate {
+            branch_ready: Some(false),
+            increment_revision: true,
+            ..Default::default()
+        },
+    );
 
-    // If branch_ready, OR the agent isn't in the live map (daemon restarted and
-    // the agent process is gone), spawn a fresh agent with the message prepended.
-    if worker.branch_ready {
-        let brief = match &worker.brief {
-            Some(b) => b.clone(),
-            None => serde_json::json!({}),
-        };
-        let repo = match &worker.repo {
-            Some(r) => r.clone(),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "worker has no repo"})),
-                )
-                    .into_response();
-            }
-        };
-
-        let mut prompt = format!(
-            "# Revision Instructions\n\n{}\n\n{}",
-            body.message,
-            format_brief_as_prompt(&brief)
-        );
-
-        // Also include any review feedback if present.
-        let review_feedback: Option<String> = open_review_store_from_path(&state.db_path)
-            .ok()
-            .and_then(|rs| rs.list_for_worker(&workspace, &id).ok())
-            .and_then(|reviews| {
-                reviews
-                    .into_iter()
-                    .find(|r| r.verdict == "request_changes" && r.worker_message.is_some())
-                    .and_then(|r| r.worker_message)
-            });
-        if let Some(ref feedback) = review_feedback {
-            prompt.push_str(&format!("\n\n# Prior Review Feedback\n\n{feedback}"));
-        }
-
-        let tmp_id = uuid::Uuid::new_v4().to_string();
-        let prompt_file = std::env::temp_dir().join(format!("worker-send-{tmp_id}.txt"));
-        if let Err(e) = std::fs::write(&prompt_file, &prompt) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("failed to write prompt file: {e}")})),
-            )
-                .into_response();
-        }
-
-        let _ = std::fs::remove_file(&prompt_file);
-
-        let new_swarm_id = match state
-            .worker_manager
-            .create_worker_with_task_dir(
-                &ws.config.root,
-                &repo,
-                &prompt,
-                worker
-                    .agent_kind
-                    .as_deref()
-                    .unwrap_or(&ws.config.swarm.default_agent),
-                worker.model.as_deref(),
-                None,
-                ws.config.swarm.worker_isolation.clone(),
-            )
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": e.to_string()})),
-                )
-                    .into_response();
-            }
-        };
-
-        if new_swarm_id.is_empty() {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "swarm create did not return a worker ID"})),
-            )
-                .into_response();
-        }
-
-        let _ = store.rekey(&id, &new_swarm_id);
-        copy_agent_dir(&ws.config.root.join(".swarm"), &id, &new_swarm_id);
-        let review_mode = brief
-            .get("review_mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("local_first")
-            .to_string();
-        let new_revision = worker.revision_count + 1;
-        let updated_worker = crate::buzz::worker::Worker {
-            id: new_swarm_id.clone(),
-            workspace: workspace.clone(),
-            state: crate::buzz::worker::WorkerState::Queued,
-            brief: Some(brief),
-            repo: Some(repo),
-            branch: worker.branch.clone(),
-            goal: worker.goal.clone(),
-            tests_passing: worker.tests_passing,
-            branch_ready: false,
-            pr_url: worker.pr_url.clone(),
-            pr_approved: worker.pr_approved,
-            ci_passing: worker.ci_passing,
-            is_stalled: false,
-            revision_count: new_revision,
-            review_mode,
-            blocked_reason: None,
-            display_title: worker.display_title.clone(),
-            title_confidence: worker.title_confidence,
-            last_output_at: worker.last_output_at.clone(),
-            state_entered_at: chrono::Utc::now().to_rfc3339(),
-            created_at: worker.created_at.clone(),
-            updated_at: chrono::Utc::now().to_rfc3339(),
-            worktree_path: None,
-            isolation_mode: None,
-            agent_kind: worker.agent_kind.clone(),
-            model: worker.model.clone(),
-            repo_path: None,
-            label: String::new(),
-        };
-        let _ = store.upsert(&updated_worker);
-
-        return Json(serde_json::json!({"ok": true, "new_id": new_swarm_id})).into_response();
-    }
-
+    tracing::info!(workspace = %workspace, worker_id = %id, "[send] calling resume");
     if let Err(e) = state.worker_manager.send_message(&id, &body.message).await {
+        tracing::warn!(workspace = %workspace, worker_id = %id, error = %e, "[send] resume failed");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
         )
             .into_response();
     }
+    tracing::info!(workspace = %workspace, worker_id = %id, "[send] resume ok");
 
-    // Waiting → running, increment revision
+    // Waiting → running
     if worker.state == crate::buzz::worker::WorkerState::Waiting {
-        let _ = store.update_properties(
-            &workspace,
-            &id,
-            crate::buzz::worker::WorkerPropertyUpdate {
-                increment_revision: true,
-                ..Default::default()
-            },
-        );
         let _ = store.transition(&workspace, &id, crate::buzz::worker::WorkerState::Running);
 
         if let Ok(Some(updated)) = store.get(&workspace, &id) {
@@ -4751,7 +4657,7 @@ async fn auto_requeue_with_feedback(
     workspace_root: &std::path::Path,
     db_path: &std::path::Path,
     updates_tx: tokio::sync::broadcast::Sender<WsUpdate>,
-    worker_manager: Arc<WorkerManager>,
+    worker_manager: Arc<dyn WorkerManagerHandle>,
 ) {
     let brief = match &worker.brief {
         Some(b) => b.clone(),
@@ -5467,6 +5373,7 @@ async fn v2_trigger_auto_bot(
         summary: None,
         worker_id: None,
         cost_usd: None,
+        chat_message: None,
     };
 
     if let Err(e) = store.insert_run(&run) {
@@ -5500,10 +5407,112 @@ async fn v2_trigger_auto_bot(
             workspace_root,
             db_path,
             workspace_config,
+            None,
         )
         .await;
 
         // Broadcast finished event (we don't know outcome here, so emit a generic done)
+        let _ = updates_tx.send(WsUpdate::AutoBotRunFinished {
+            workspace,
+            auto_bot_id: bot_id,
+            run_id,
+            outcome: "unknown".to_string(),
+        });
+    });
+
+    Json(serde_json::json!({"run_id": run.id, "ok": true})).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct ChatAutoBotBody {
+    message: String,
+}
+
+/// POST /api/workspaces/{workspace}/v2/auto-bots/{bot_id}/chat — run the bot with a user question.
+async fn v2_chat_with_auto_bot(
+    Path((workspace, bot_id)): Path<(String, String)>,
+    State(state): State<HttpState>,
+    Json(body): Json<ChatAutoBotBody>,
+) -> impl IntoResponse {
+    let store = match open_auto_bot_store_from_path(&state.db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let bot = match store.get(&workspace, &bot_id) {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "not found"})),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let run = crate::buzz::auto_bot::AutoBotRun {
+        id: run_id.clone(),
+        auto_bot_id: bot_id.clone(),
+        workspace: workspace.clone(),
+        triggered_by: "chat".to_string(),
+        started_at: now,
+        finished_at: None,
+        outcome: None,
+        summary: None,
+        worker_id: None,
+        cost_usd: None,
+        chat_message: Some(body.message.clone()),
+    };
+
+    if let Err(e) = store.insert_run(&run) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response();
+    }
+
+    let _ = state.updates_tx.send(WsUpdate::AutoBotRunStarted {
+        workspace: workspace.clone(),
+        auto_bot_id: bot_id.clone(),
+        run_id: run_id.clone(),
+    });
+
+    let store = std::sync::Arc::new(store);
+    let workspace_root = load_workspace_root(&workspace);
+    let db_path = (*state.db_path).clone();
+    let workspace_config = load_workspace_by_name(&workspace).map(|ws| ws.config);
+    let updates_tx = state.updates_tx.clone();
+    let chat_message = body.message.clone();
+    tokio::spawn(async move {
+        crate::buzz::auto_bot_runner::run_bot_external(
+            bot,
+            "chat".to_string(),
+            run_id.clone(),
+            store,
+            workspace.clone(),
+            workspace_root,
+            db_path,
+            workspace_config,
+            Some(chat_message),
+        )
+        .await;
+
         let _ = updates_tx.send(WsUpdate::AutoBotRunFinished {
             workspace,
             auto_bot_id: bot_id,
@@ -6329,9 +6338,16 @@ async fn v2_delete_context_bot_session(
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+struct ListWidgetsQuery {
+    auto_bot_id: Option<String>,
+}
+
 /// GET /api/workspaces/{workspace}/v2/widgets — return all active widget slots.
+/// Optional query param: `?auto_bot_id=<id>` filters to widgets written by that bot.
 async fn v2_list_widgets(
     Path(workspace): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListWidgetsQuery>,
     State(state): State<HttpState>,
 ) -> impl IntoResponse {
     let db_path = state.db_path.as_ref().clone();
@@ -6346,7 +6362,12 @@ async fn v2_list_widgets(
                 .into_response();
         }
     };
-    match store.get_widgets() {
+    let result = if let Some(ref bot_id) = query.auto_bot_id {
+        store.get_widgets_by_bot(bot_id)
+    } else {
+        store.get_widgets()
+    };
+    match result {
         Ok(rows) => {
             let widgets: Vec<serde_json::Value> = rows
                 .into_iter()
@@ -6405,7 +6426,7 @@ async fn v2_upsert_widget(
         }
     };
 
-    if let Err(e) = store.upsert_widget(&slot, &widget_json, body.ttl_minutes) {
+    if let Err(e) = store.upsert_widget(&slot, &widget_json, body.ttl_minutes, None) {
         error!("[widgets] upsert: {e}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -6604,6 +6625,10 @@ pub async fn start_http_server(
         .route(
             "/api/workspaces/{workspace}/v2/auto-bots/{bot_id}/trigger",
             post(v2_trigger_auto_bot),
+        )
+        .route(
+            "/api/workspaces/{workspace}/v2/auto-bots/{bot_id}/chat",
+            post(v2_chat_with_auto_bot),
         )
         // v2 worker-hooks routes
         .route(
@@ -8197,6 +8222,29 @@ model = "sonnet"
         }
     }
 
+    fn make_test_state_with_mock(
+        db_path: &std::path::Path,
+        mock: Arc<crate::daemon::worker_manager::MockWorkerManager>,
+    ) -> HttpState {
+        let (updates_tx, _) = broadcast::channel(4);
+        let (signal_tx, _) = mpsc::unbounded_channel();
+        let (chat_tx, _) = mpsc::unbounded_channel();
+        let (cancel_tx, _) = mpsc::unbounded_channel();
+        HttpState {
+            graph: Arc::new(RwLock::new(
+                crate::buzz::orchestrator::graph::builtin::builtin_workflow(),
+            )),
+            yaml_path: Arc::new(None),
+            db_path: Arc::new(db_path.to_path_buf()),
+            workspace: Arc::new("apiari".to_string()),
+            updates_tx,
+            signal_tx,
+            chat_tx,
+            cancel_tx,
+            worker_manager: mock,
+        }
+    }
+
     fn seed_waiting_worker(
         db_path: &std::path::Path,
         id: &str,
@@ -8456,9 +8504,10 @@ model = "sonnet"
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn send_message_requeue_preserves_branch_and_pr_url() {
-        // Regression: requeue was losing branch, pr_url, pr_approved, tests_passing.
-        // After requeue the new worker record must carry all of these forward.
+    async fn send_message_to_branch_ready_worker_resumes_in_place() {
+        // Sending a message to a branch_ready worker must resume the existing
+        // session in the existing worktree — NOT spawn a new worker from main.
+        // branch_ready is reset to false and revision_count is incremented.
         let _env_guard = env_lock();
         let temp = tempfile::tempdir().unwrap();
         let _home_guard = install_temp_home(temp.path());
@@ -8474,7 +8523,7 @@ model = "sonnet"
             crate::buzz::worker::WorkerState::Waiting,
             Some("norepo"),
             Some(serde_json::json!({"goal": "fix auth", "review_mode": "local_first"})),
-            true, // branch_ready → takes requeue path without needing live agent
+            true, // branch_ready
             Some("https://github.com/org/repo/pull/42"),
             true, // pr_approved
             true, // tests_passing
@@ -8483,32 +8532,6 @@ model = "sonnet"
             3,
         );
 
-        let store = open_worker_store_from_path(&db_path).unwrap();
-        let original = store.get("ws", "w-1").unwrap().unwrap();
-        assert_eq!(original.branch.as_deref(), Some("feat/fix-auth-1a2b"));
-        assert_eq!(
-            original.pr_url.as_deref(),
-            Some("https://github.com/org/repo/pull/42")
-        );
-        assert!(original.pr_approved);
-        assert!(original.tests_passing);
-        assert_eq!(original.revision_count, 3);
-        assert_eq!(original.display_title.as_deref(), Some("Fix the bug"));
-
-        // The requeue path fails at create_worker (no real repo) but the
-        // key assertion is that field preservation happens before the
-        // create_worker call. We test the fields that are set on the worker
-        // struct before upsert. Since create_worker will fail, we inspect
-        // the pre-requeue state from the seed and verify the struct fields
-        // are wired correctly in v2_requeue_worker by checking the updated
-        // record IF requeue succeeded, or verifying the source fields match.
-        // Direct field check on original:
-        assert_eq!(
-            original.last_output_at.as_deref(),
-            Some("2026-05-01T12:00:00Z")
-        );
-
-        // Verify the handler reaches the requeue path (not 500 "not found"):
         let state = make_test_state_with_db(&db_path);
         let resp = v2_send_message(
             Path(("ws".to_string(), "w-1".to_string())),
@@ -8520,17 +8543,125 @@ model = "sonnet"
         .await
         .into_response();
 
+        // resume_worker fails (no worktree_path in DB) — that's expected.
+        // The important assertions: branch_ready was cleared and revision bumped.
+        let _ = response_json(resp).await;
+
+        let store = open_worker_store_from_path(&db_path).unwrap();
+        let updated = store.get("ws", "w-1").unwrap().unwrap();
+        assert!(
+            !updated.branch_ready,
+            "branch_ready must be cleared on send"
+        );
+        assert_eq!(
+            updated.revision_count, 4,
+            "revision_count must be incremented"
+        );
+        // Worker ID must not have changed — no new worker spawned.
+        assert_eq!(updated.id, "w-1");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_calls_worker_manager_send_message() {
+        // The mock records calls to send_message — verify the handler actually
+        // invokes it with the right worker_id and message text.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        seed_worker(
+            &db_path,
+            "w-mock",
+            "ws",
+            crate::buzz::worker::WorkerState::Waiting,
+            Some("norepo"),
+            Some(serde_json::json!({"goal": "fix tests"})),
+            false, // not branch_ready — straight send_message path
+            None,
+            false,
+            false,
+            None,
+            None,
+            0,
+        );
+
+        let mock = Arc::new(crate::daemon::worker_manager::MockWorkerManager::new());
+        let state = make_test_state_with_mock(&db_path, Arc::clone(&mock));
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "w-mock".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "please run the tests again".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        // Mock succeeds, so we expect 200.
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let calls = mock.sent_calls().await;
+        assert_eq!(calls.len(), 1, "send_message must be called exactly once");
+        assert_eq!(calls[0].0, "w-mock");
+        assert_eq!(calls[0].1, "please run the tests again");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn send_message_returns_500_when_worker_manager_fails() {
+        // When the underlying WorkerManager returns an error, the handler must
+        // propagate it as a 500 — not silently swallow it.
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _home_guard = install_temp_home(temp.path());
+        let root = temp.path().join("ws");
+        fs::create_dir_all(&root).unwrap();
+        write_minimal_workspace(temp.path(), "ws", &root);
+        let db_path = temp.path().join("test.db");
+
+        seed_worker(
+            &db_path,
+            "w-fail",
+            "ws",
+            crate::buzz::worker::WorkerState::Waiting,
+            Some("norepo"),
+            Some(serde_json::json!({"goal": "fix tests"})),
+            false,
+            None,
+            false,
+            false,
+            None,
+            None,
+            0,
+        );
+
+        let mock = Arc::new(crate::daemon::worker_manager::MockWorkerManager::failing(
+            "agent process died",
+        ));
+        let state = make_test_state_with_mock(&db_path, Arc::clone(&mock));
+
+        let resp = v2_send_message(
+            Path(("ws".to_string(), "w-fail".to_string())),
+            State(state),
+            Json(V2SendMessageBody {
+                message: "go".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let json = response_json(resp).await;
         let err = json["error"].as_str().unwrap_or("");
         assert!(
-            !err.contains("not found or not running"),
-            "must not hit dead send_message path: '{err}'"
-        );
-        // Fails at repo lookup — that's expected without a real git repo.
-        // The important thing: it tried to requeue, not to call send_message.
-        assert!(
-            err.contains("repo") || json["ok"].as_bool() == Some(true),
-            "should fail at repo resolution, not at send_message: '{err}'"
+            err.contains("agent process died"),
+            "error must propagate: '{err}'"
         );
     }
 
