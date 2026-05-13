@@ -483,6 +483,8 @@ pub fn checkout_main(repo_path: &Path) -> Result<()> {
     let output = match Command::new("git")
         .args(["checkout", "main"])
         .current_dir(repo_path)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output()
     {
         Ok(o) => o,
@@ -631,6 +633,17 @@ fn sanitize_ai_branch_name(raw: &str) -> String {
 mod tests {
     use super::*;
 
+    fn git(path: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {:?} failed", args);
+    }
+
     #[test]
     fn generate_branch_name_basic() {
         let name = generate_branch_name("fix the auth bug", "a1b2");
@@ -687,14 +700,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
 
-        // Init a repo with a commit on main
-        Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args([
+        git(repo, &["init", "-b", "main"]);
+        git(
+            repo,
+            &[
                 "-c",
                 "user.name=test",
                 "-c",
@@ -703,23 +712,17 @@ mod tests {
                 "--allow-empty",
                 "-m",
                 "init",
-            ])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        // Create and switch to another branch
-        Command::new("git")
-            .args(["checkout", "-b", "other"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
+            ],
+        );
+        git(repo, &["checkout", "-b", "other"]);
 
         assert!(checkout_main(repo).is_ok());
 
-        // Verify we're on main
         let out = Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .current_dir(repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "main");
@@ -730,14 +733,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path();
 
-        // Init a repo with a commit on a non-main branch
-        Command::new("git")
-            .args(["init", "-b", "develop"])
-            .current_dir(repo)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args([
+        git(repo, &["init", "-b", "develop"]);
+        git(
+            repo,
+            &[
                 "-c",
                 "user.name=test",
                 "-c",
@@ -746,10 +745,8 @@ mod tests {
                 "--allow-empty",
                 "-m",
                 "init",
-            ])
-            .current_dir(repo)
-            .output()
-            .unwrap();
+            ],
+        );
 
         assert!(checkout_main(repo).is_err());
     }
