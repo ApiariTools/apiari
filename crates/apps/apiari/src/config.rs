@@ -1473,6 +1473,8 @@ fn extract_github_slug(repo_path: &Path) -> Option<String> {
     let output = Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(repo_path)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
         .output()
         .ok()?;
 
