@@ -149,6 +149,18 @@ pub async fn create_system_pr(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // If the worker already opened the PR, gh exits non-zero with "already exists: <url>".
+        // Treat this as success — extract the URL from the error message.
+        if let Some(url) = stderr
+            .lines()
+            .find(|l| l.contains("already exists"))
+            .and_then(|l| l.split_whitespace().find(|w| w.starts_with("https://")))
+            .map(|s| s.trim_end_matches('.').to_string())
+        {
+            info!("[workflow] PR already exists for {branch_name}: {url}");
+            let pr_number = url.rsplit('/').next().and_then(|s| s.parse::<i64>().ok());
+            return Ok(PrCreationResult { pr_url: url, pr_number });
+        }
         bail!("gh pr create failed: {stderr}");
     }
 

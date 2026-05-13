@@ -4288,7 +4288,10 @@ fn format_brief_as_prompt(brief: &serde_json::Value) -> String {
 
     // Always instruct workers to push the branch only — the orchestrator creates the PR.
     parts.push(
-        "# When Done\n\nCommit your changes and push the branch. Do NOT open a PR — the system creates it automatically after you finish."
+        "# When Done\n\nCommit your changes and push the branch. \
+        **Do NOT run `gh pr create`** — the orchestrator creates the PR automatically \
+        once you write `report.json` with `branch_ready: true`. \
+        Running `gh pr create` yourself will cause a duplicate PR error."
             .to_string(),
     );
 
