@@ -6847,6 +6847,8 @@ mod tests {
         Command::new("git")
             .args(["init", "-q"])
             .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
     }
@@ -6855,6 +6857,8 @@ mod tests {
         Command::new("git")
             .args(["remote", "add", "origin", origin])
             .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
     }
@@ -6863,11 +6867,15 @@ mod tests {
         Command::new("git")
             .args(["config", "user.email", "test@example.com"])
             .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
         Command::new("git")
             .args(["config", "user.name", "Test User"])
             .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
     }
@@ -6876,6 +6884,8 @@ mod tests {
         let status = Command::new("git")
             .args(args)
             .current_dir(path)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
         assert!(

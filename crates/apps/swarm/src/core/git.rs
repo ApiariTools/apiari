@@ -431,6 +431,8 @@ pub fn detect_repos(dir: &Path) -> Result<Vec<PathBuf>> {
                 let c = std::process::Command::new("git")
                     .args(["rev-list", "--count", "--since=3 months ago", "HEAD"])
                     .current_dir(&repo)
+                    .env_remove("GIT_DIR")
+                    .env_remove("GIT_WORK_TREE")
                     .output()
                     .ok()
                     .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())

@@ -7632,6 +7632,8 @@ model = "sonnet"
         Command::new("git")
             .args(["init", "-q"])
             .current_dir(&repo_root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
 
@@ -7682,6 +7684,8 @@ model = "sonnet"
         Command::new("git")
             .args(["init", "-q"])
             .current_dir(&repo_root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
 
@@ -7739,6 +7743,8 @@ default_agent = "codex"
         Command::new("git")
             .args(["init", "-q"])
             .current_dir(&repo_root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
 
@@ -7799,6 +7805,8 @@ default_agent = "codex"
         Command::new("git")
             .args(["init", "-q"])
             .current_dir(&repo_root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .status()
             .unwrap();
 
@@ -8017,6 +8025,8 @@ provider = "claude"
         std::process::Command::new("git")
             .args(["init"])
             .current_dir(&apiari_repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
 
@@ -8025,6 +8035,8 @@ provider = "claude"
         std::process::Command::new("git")
             .args(["init"])
             .current_dir(&other_repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
 
@@ -8048,6 +8060,8 @@ provider = "claude"
         std::process::Command::new("git")
             .args(["init"])
             .current_dir(&apiari_repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
 
@@ -8056,6 +8070,8 @@ provider = "claude"
         std::process::Command::new("git")
             .args(["init"])
             .current_dir(&swarm_repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
             .output()
             .unwrap();
 
