@@ -797,7 +797,13 @@ impl SwarmReconciler {
             self.emit_event(&updated)?;
         }
         // Auto-promote associated task stage based on the new worker state.
-        self.advance_task_for_worker(&worker.id, new_state);
+        self.advance_task_for_worker(&worker.id, new_state.clone());
+        // When a PR is merged, pull the main repo so the workspace reflects the merged changes.
+        if new_state == WorkerState::Done
+            && let Some(ref repo_path) = worker.repo_path
+        {
+            apiari_swarm::core::git::pull_main(std::path::Path::new(repo_path));
+        }
         Ok(())
     }
 
