@@ -354,6 +354,7 @@ async fn register_workspace(
 // ── Main daemon loop ─────────────────────────────────────
 
 /// Handle to a swarm daemon running in-process.
+#[allow(dead_code)]
 pub struct InProcessHandle {
     /// Send requests directly to the daemon's main loop (bypasses Unix socket).
     pub request_tx: tokio::sync::mpsc::UnboundedSender<(
@@ -365,6 +366,7 @@ pub struct InProcessHandle {
 }
 
 impl InProcessHandle {
+    #[allow(dead_code)]
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<protocol::DaemonResponse> {
         self.event_tx.subscribe()
     }
@@ -375,6 +377,7 @@ impl InProcessHandle {
 /// The daemon loop runs as a detached tokio task. The Unix socket is still
 /// started so external tools (TUI, CLI) can connect to it if needed.
 /// No PID file is written and no signal handlers are installed.
+#[allow(dead_code)]
 pub async fn start_in_process(
     initial_work_dir: std::path::PathBuf,
 ) -> color_eyre::Result<InProcessHandle> {
