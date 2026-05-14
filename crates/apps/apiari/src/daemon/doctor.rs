@@ -268,6 +268,7 @@ mod tests {
             token_controls: TokenControls::default(),
             context_bot_model: None,
             auto_bots: vec![],
+            services: std::collections::HashMap::new(),
         }
     }
 

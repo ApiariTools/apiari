@@ -95,6 +95,7 @@ mod tests {
             has_scripts: false,
             script_names: vec![],
             has_telegram: false,
+            services: vec![],
             prompt_preamble: None,
             default_agent: "claude".to_string(),
             authority: crate::config::WorkspaceAuthority::Autonomous,

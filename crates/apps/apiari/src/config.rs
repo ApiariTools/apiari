@@ -380,6 +380,12 @@ pub struct WorkspaceConfig {
     /// Identified by workspace+name so the same config always produces the same bot.
     #[serde(default)]
     pub auto_bots: Vec<AutoBotDefinition>,
+
+    /// Generic external service credentials, keyed by service name.
+    /// Each entry is a map of field names to values (e.g. url, token).
+    /// Used by the `services` coordinator skill to tell bots where to find credentials.
+    #[serde(default)]
+    pub services: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 }
 
 /// An AutoBot declared in the workspace TOML (`[[auto_bots]]`).
@@ -1206,6 +1212,7 @@ fn hive_workspace_to_current(value: &HiveWorkspaceFile) -> WorkspaceConfig {
         token_controls: TokenControls::default(),
         context_bot_model: None,
         auto_bots: vec![],
+        services: std::collections::HashMap::new(),
     }
 }
 
@@ -1556,6 +1563,15 @@ pub fn build_skill_context(
         .collect();
     let resolved_caps = config.capabilities.resolved(config.authority);
     let has_swarm_runtime = config.resolved_swarm_dir().exists();
+    let services: Vec<(String, Vec<String>)> = config
+        .services
+        .iter()
+        .map(|(name, fields)| {
+            let mut keys: Vec<String> = fields.keys().cloned().collect();
+            keys.sort();
+            (name.clone(), keys)
+        })
+        .collect();
     crate::buzz::coordinator::skills::SkillContext {
         workspace_name: workspace_name.to_string(),
         workspace_root: config.root.clone(),
@@ -1575,6 +1591,7 @@ pub fn build_skill_context(
         has_scripts: !script_names.is_empty(),
         script_names,
         has_telegram: config.telegram.is_some(),
+        services,
         prompt_preamble: config.coordinator.prompt.clone(),
         default_agent: config.swarm.default_agent.clone(),
         authority: config.authority,
@@ -2151,6 +2168,7 @@ max_session_turns = 0
             token_controls: TokenControls::default(),
             context_bot_model: None,
             auto_bots: vec![],
+            services: std::collections::HashMap::new(),
         };
         assert_eq!(resolve_repos(&config), vec!["Org/Repo"]);
     }
@@ -2184,6 +2202,7 @@ max_session_turns = 0
             token_controls: TokenControls::default(),
             context_bot_model: None,
             auto_bots: vec![],
+            services: std::collections::HashMap::new(),
         };
         assert!(resolve_repos(&config).is_empty());
     }
@@ -2221,6 +2240,7 @@ max_session_turns = 0
             token_controls: TokenControls::default(),
             context_bot_model: None,
             auto_bots: vec![],
+            services: std::collections::HashMap::new(),
         };
 
         let buzz = to_buzz_config(&ws);
@@ -2612,6 +2632,7 @@ watch = ["sentry"]
             token_controls: TokenControls::default(),
             context_bot_model: None,
             auto_bots: vec![],
+            services: std::collections::HashMap::new(),
         }
     }
 

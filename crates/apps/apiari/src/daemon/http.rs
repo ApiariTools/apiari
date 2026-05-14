@@ -7170,6 +7170,7 @@ mod tests {
             token_controls: crate::config::TokenControls::default(),
             context_bot_model: None,
             auto_bots: vec![],
+            services: std::collections::HashMap::new(),
         }
     }
 

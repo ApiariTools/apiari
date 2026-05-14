@@ -20,6 +20,7 @@ mod memory;
 mod notion;
 mod scripts;
 mod sentry;
+mod services;
 mod signals;
 mod swarm;
 mod widgets;
@@ -60,6 +61,9 @@ pub struct SkillContext {
     pub has_scripts: bool,
     pub script_names: Vec<String>,
     pub has_telegram: bool,
+    /// External services with credentials in [services.*] config sections.
+    /// Each entry is (service_name, field_names).
+    pub services: Vec<(String, Vec<String>)>,
     /// Custom prompt preamble loaded from prompt_file.
     /// If set, replaces the default identity/role sections in the system prompt.
     pub prompt_preamble: Option<String>,
@@ -212,6 +216,9 @@ pub fn build_skills_prompt(ctx: &SkillContext) -> String {
     if let Some(s) = notion::build_prompt(ctx) {
         tool_sections.push(s);
     }
+    if let Some(s) = services::build_prompt(ctx) {
+        tool_sections.push(s);
+    }
 
     prompt.push_str("\n# Skills\nYou have the following tools and capabilities:\n\n");
     prompt.push_str(&tool_sections.join("\n"));
@@ -349,6 +356,7 @@ mod tests {
             has_scripts: false,
             script_names: vec![],
             has_telegram: false,
+            services: vec![],
             prompt_preamble: None,
             default_agent: "claude".to_string(),
             authority: WorkspaceAuthority::Autonomous,
