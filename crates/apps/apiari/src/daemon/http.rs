@@ -10196,4 +10196,173 @@ model = "sonnet"
         assert_eq!(detect_context_bot_provider("o4-mini"), "codex");
         assert_eq!(detect_context_bot_provider("o3"), "codex");
     }
+
+    // ── Codex provider integration test ──────────────────────────────────────
+
+    /// Install a fake `codex` binary that emits the minimal JSONL the SDK expects:
+    /// one `item.completed` event with an `agent_message` item.
+    fn install_fake_codex(dir: &Path, response_text: &str) -> FakePathGuard {
+        let bin_dir = dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("codex");
+        // Codex SDK reads JSONL from stdout. Emit one agent_message completed event.
+        let safe = response_text.replace('\'', r#"'"'"'"#);
+        let body = format!(
+            "#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"id\":\"msg_1\",\"text\":\"{safe}\"}}}}'\n"
+        );
+        fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![bin_dir];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        let joined = std::env::join_paths(paths).unwrap();
+        unsafe { std::env::set_var("PATH", joined) };
+        FakePathGuard { old_path }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn context_bot_chat_codex_provider_returns_response() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _codex = install_fake_codex(temp.path(), "Codex says hello.");
+        let db = temp.path().join("test.db");
+        let state = make_context_bot_state(&db);
+
+        let mut rx = state.updates_tx.subscribe();
+
+        let resp = v2_context_bot_chat(
+            axum::extract::Path("apiari".to_string()),
+            axum::extract::State(state),
+            axum::extract::Json(ContextBotChatBody {
+                message: "What's the status?".to_string(),
+                session_id: None,
+                model: Some("o4-mini".to_string()),
+                history: None,
+                title: None,
+                context: ContextBotContext {
+                    view: "dashboard".to_string(),
+                    entity_id: None,
+                    entity_snapshot: None,
+                },
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let ack = response_json(resp).await;
+        let session_id = ack["session_id"].as_str().expect("session_id in ack");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(WsUpdate::ContextBotResponse {
+                        response,
+                        session_id: sid,
+                        error,
+                        ..
+                    }) => return (response, sid, error),
+                    Ok(_) => continue,
+                    Err(_) => panic!("broadcast channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("ContextBotResponse must arrive within 5s");
+
+        assert_eq!(event.0, "Codex says hello.", "codex response content");
+        assert_eq!(event.1, session_id, "session_id must match ack");
+        assert!(event.2.is_none(), "no error expected");
+    }
+
+    // ── Gemini provider integration test ─────────────────────────────────────
+
+    /// Install a fake `gemini` binary that emits the minimal JSONL the SDK expects:
+    /// a `message` event with role `assistant`.
+    fn install_fake_gemini(dir: &Path, response_text: &str) -> FakePathGuard {
+        let bin_dir = dir.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let script = bin_dir.join("gemini");
+        let safe = response_text.replace('\'', r#"'"'"'"#);
+        let body = format!(
+            "#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '{{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"{safe}\"}}'\n"
+        );
+        fs::write(&script, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&script, perms).unwrap();
+        }
+        let old_path = std::env::var_os("PATH");
+        let mut paths = vec![bin_dir];
+        paths.extend(std::env::split_paths(&old_path.clone().unwrap_or_default()));
+        let joined = std::env::join_paths(paths).unwrap();
+        unsafe { std::env::set_var("PATH", joined) };
+        FakePathGuard { old_path }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn context_bot_chat_gemini_provider_returns_response() {
+        let _env_guard = env_lock();
+        let temp = tempfile::tempdir().unwrap();
+        let _gemini = install_fake_gemini(temp.path(), "Gemini says hello.");
+        let db = temp.path().join("test.db");
+        let state = make_context_bot_state(&db);
+
+        let mut rx = state.updates_tx.subscribe();
+
+        let resp = v2_context_bot_chat(
+            axum::extract::Path("apiari".to_string()),
+            axum::extract::State(state),
+            axum::extract::Json(ContextBotChatBody {
+                message: "What's the status?".to_string(),
+                session_id: None,
+                model: Some("gemini-2.5-pro".to_string()),
+                history: None,
+                title: None,
+                context: ContextBotContext {
+                    view: "dashboard".to_string(),
+                    entity_id: None,
+                    entity_snapshot: None,
+                },
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let ack = response_json(resp).await;
+        let session_id = ack["session_id"].as_str().expect("session_id in ack");
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(WsUpdate::ContextBotResponse {
+                        response,
+                        session_id: sid,
+                        error,
+                        ..
+                    }) => return (response, sid, error),
+                    Ok(_) => continue,
+                    Err(_) => panic!("broadcast channel closed"),
+                }
+            }
+        })
+        .await
+        .expect("ContextBotResponse must arrive within 5s");
+
+        assert_eq!(event.0, "Gemini says hello.", "gemini response content");
+        assert_eq!(event.1, session_id, "session_id must match ack");
+        assert!(event.2.is_none(), "no error expected");
+    }
 }
