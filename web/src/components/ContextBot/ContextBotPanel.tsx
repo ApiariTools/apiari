@@ -160,7 +160,18 @@ export default function ContextBotPanel({
               ),
             )}
 
-            {session.loading && (
+            {session.loading && session.streaming_content && (
+              <div className={styles.msgAssistant} data-testid="streaming-message">
+                <div className={styles.msgAssistantContent}>
+                  <ReactMarkdown>{session.streaming_content}</ReactMarkdown>
+                </div>
+                {session.activity && (
+                  <span className={styles.loadingActivityLabel}>{session.activity}</span>
+                )}
+              </div>
+            )}
+
+            {session.loading && !session.streaming_content && (
               <div className={styles.loadingActivity} data-testid="loading-dots">
                 <Dots />
                 {session.activity && (

@@ -187,6 +187,12 @@ pub enum WsUpdate {
         session_id: String,
         activity: String,
     },
+    /// Incremental text delta from the context bot (arrives before ContextBotResponse).
+    ContextBotChunk {
+        workspace: String,
+        session_id: String,
+        delta: String,
+    },
     /// Context bot turn completed — response ready for client.
     ContextBotResponse {
         workspace: String,
@@ -5924,6 +5930,7 @@ async fn v2_context_bot_chat(
                             .arg("--output-format")
                             .arg("stream-json")
                             .arg("--verbose")
+                            .arg("--include-partial-messages")
                             .arg("--dangerously-skip-permissions")
                             .arg("--model")
                             .arg(&model_bg)
@@ -5958,49 +5965,47 @@ async fn v2_context_bot_chat(
                             }
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
                                 match val.get("type").and_then(|t| t.as_str()) {
+                                    Some("stream_event") => {
+                                        // content_block_delta + text_delta → stream chunk
+                                        if val["event"]["type"].as_str()
+                                            == Some("content_block_delta")
+                                            && val["event"]["delta"]["type"].as_str()
+                                                == Some("text_delta")
+                                            && let Some(text) =
+                                                val["event"]["delta"]["text"].as_str()
+                                            && !text.is_empty()
+                                        {
+                                            let _ = updates_tx.send(WsUpdate::ContextBotChunk {
+                                                workspace: workspace_bg.clone(),
+                                                session_id: session_id_bg.clone(),
+                                                delta: text.to_string(),
+                                            });
+                                        }
+                                    }
                                     Some("assistant") => {
+                                        // Tool-use activity events (not text — text comes via stream_event)
                                         if let Some(blocks) = val["message"]["content"].as_array() {
                                             for block in blocks {
-                                                match block.get("type").and_then(|t| t.as_str()) {
-                                                    Some("tool_use") => {
-                                                        let name = block
-                                                            .get("name")
-                                                            .and_then(|n| n.as_str())
-                                                            .unwrap_or("tool");
-                                                        let input = block
-                                                            .get("input")
-                                                            .cloned()
-                                                            .unwrap_or_default();
-                                                        let _ = updates_tx.send(
-                                                            WsUpdate::ContextBotActivity {
-                                                                workspace: workspace_bg.clone(),
-                                                                session_id: session_id_bg.clone(),
-                                                                activity: format_tool_activity(
-                                                                    name, &input,
-                                                                ),
-                                                            },
-                                                        );
-                                                    }
-                                                    Some("text") => {
-                                                        if let Some(t) = block
-                                                            .get("text")
-                                                            .and_then(|t| t.as_str())
-                                                        {
-                                                            response.push_str(t);
-                                                        }
-                                                    }
-                                                    _ => {}
+                                                if block["type"].as_str() == Some("tool_use") {
+                                                    let name =
+                                                        block["name"].as_str().unwrap_or("tool");
+                                                    let input = block["input"].clone();
+                                                    let _ = updates_tx.send(
+                                                        WsUpdate::ContextBotActivity {
+                                                            workspace: workspace_bg.clone(),
+                                                            session_id: session_id_bg.clone(),
+                                                            activity: format_tool_activity(
+                                                                name, &input,
+                                                            ),
+                                                        },
+                                                    );
                                                 }
                                             }
                                         }
                                     }
                                     Some("result") => {
-                                        let is_error = val
-                                            .get("is_error")
-                                            .and_then(|v| v.as_bool())
-                                            .unwrap_or(false);
-                                        if let Some(r) = val.get("result").and_then(|r| r.as_str())
-                                        {
+                                        let is_error = val["is_error"].as_bool().unwrap_or(false);
+                                        if let Some(r) = val["result"].as_str() {
                                             if is_error {
                                                 result_error = Some(r.to_string());
                                             } else {
@@ -6059,6 +6064,7 @@ async fn v2_context_bot_chat(
                             .map_err(|e| format!("failed to spawn codex: {e}"))?;
 
                         let mut response = String::new();
+                        let mut prev_text_len: usize = 0;
                         loop {
                             match execution.next_event().await {
                                 Ok(Some(event)) => match &event {
@@ -6078,6 +6084,22 @@ async fn v2_context_bot_chat(
                                             ),
                                         });
                                     }
+                                    apiari_codex_sdk::Event::ItemUpdated {
+                                        item:
+                                            apiari_codex_sdk::Item::AgentMessage {
+                                                text: Some(text),
+                                                ..
+                                            },
+                                        // ItemUpdated carries cumulative text; compute delta.
+                                    } if text.len() > prev_text_len => {
+                                        let delta = text[prev_text_len..].to_string();
+                                        prev_text_len = text.len();
+                                        let _ = updates_tx.send(WsUpdate::ContextBotChunk {
+                                            workspace: workspace_bg.clone(),
+                                            session_id: session_id_bg.clone(),
+                                            delta,
+                                        });
+                                    }
                                     apiari_codex_sdk::Event::ItemCompleted {
                                         item:
                                             apiari_codex_sdk::Item::AgentMessage {
@@ -6086,6 +6108,7 @@ async fn v2_context_bot_chat(
                                             },
                                     } => {
                                         response = text.clone();
+                                        prev_text_len = text.len();
                                     }
                                     apiari_codex_sdk::Event::TurnFailed { error, .. } => {
                                         let msg = error
@@ -6143,6 +6166,12 @@ async fn v2_context_bot_chat(
                                             && let Some(text) = event.text()
                                         {
                                             if delta.unwrap_or(false) {
+                                                let _ =
+                                                    updates_tx.send(WsUpdate::ContextBotChunk {
+                                                        workspace: workspace_bg.clone(),
+                                                        session_id: session_id_bg.clone(),
+                                                        delta: text.clone(),
+                                                    });
                                                 response.push_str(&text);
                                             } else {
                                                 response = text;

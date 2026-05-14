@@ -363,6 +363,18 @@ export default function App() {
         );
       }
 
+      if (event.type === "context_bot_chunk") {
+        const sid = event.session_id as string;
+        const delta = event.delta as string;
+        setContextSessions((prev) =>
+          prev.map((s) =>
+            s.server_session_id === sid
+              ? { ...s, streaming_content: (s.streaming_content ?? "") + delta }
+              : s,
+          ),
+        );
+      }
+
       if (event.type === "context_bot_response") {
         const sid = event.session_id as string;
         const response = event.response as string;
@@ -382,6 +394,7 @@ export default function App() {
               ...s,
               loading: false,
               activity: undefined,
+              streaming_content: undefined,
               model,
               messages: [...s.messages, assistantMsg],
             };

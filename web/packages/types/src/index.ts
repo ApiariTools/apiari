@@ -377,6 +377,7 @@ export interface ContextBotSession {
   minimized: boolean;
   loading: boolean;
   activity?: string; // current tool being used (e.g. "Bash: git log")
+  streaming_content?: string; // incremental text arriving before the final response
 }
 
 // ── Dashboard Widgets ──────────────────────────────────────────────────
